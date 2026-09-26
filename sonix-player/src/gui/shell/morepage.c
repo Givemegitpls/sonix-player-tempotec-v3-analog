@@ -4,6 +4,7 @@
 
 #include "src/gui/audio/dacpage.h"
 #include "src/gui/ebook/ebookpage.h"
+#include "src/gui/flappybird/flappybird.h"
 #include "src/gui/library/filespage.h"
 #include "src/gui/gearboy/gearboypage.h"
 #include "src/gui/shell/gridpage.h"
@@ -28,6 +29,8 @@ void morepage_init(gui_config_t *cfg) {
 		// when the page is entered, so a card that changed under the player
 		// shows what is on it now.
 		{"file_explorer", &icon_menu_file_explorer, NULL, filespage_open},
+		// An action: the artwork is read from the resource tree on the way in.
+		{"flappy_bird", &icon_menu_flappy_bird, NULL, flappybird_open},
 	};
 
 	// Two columns by three rows, like the Music and Wireless pages, so a tile

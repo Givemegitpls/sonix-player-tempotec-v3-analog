@@ -217,6 +217,7 @@ extern const lv_image_dsc_t icon_menu_settings;
 extern const lv_image_dsc_t icon_menu_more;
 extern const lv_image_dsc_t icon_menu_dac;
 extern const lv_image_dsc_t icon_menu_gearboy;
+extern const lv_image_dsc_t icon_menu_flappy_bird;
 extern const lv_image_dsc_t icon_menu_books;
 extern const lv_image_dsc_t icon_menu_file_explorer;
 extern const lv_image_dsc_t icon_qobuz_badge;

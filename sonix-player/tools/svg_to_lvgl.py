@@ -376,6 +376,7 @@ COLOR_ICONS = [
     # What lives inside "More", at section size.
     ("dac.png", "menu_dac", SECTION_ICON_SIZE),
     ("gearboy.png", "menu_gearboy", SECTION_ICON_SIZE),
+    ("flappy-bird.png", "menu_flappy_bird", SECTION_ICON_SIZE),
     ("ebook.png", "menu_books", SECTION_ICON_SIZE),
     ("file-explorer.png", "menu_file_explorer", SECTION_ICON_SIZE),
 
