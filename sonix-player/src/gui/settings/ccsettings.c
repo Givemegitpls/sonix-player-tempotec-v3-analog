@@ -13,188 +13,214 @@
 lv_obj_t *ccsettings_screen;
 
 // ---------------------------------------------------------------------------
-// The grid
+// Two lists on one canvas
 //
-// Four tiles to a line, laid out by hand rather than by a flex: a tile being
-// dragged has to be able to land in a named place, and a place has to keep its
-// coordinates whether or not anything is standing in it. Both cards use the
-// same cell, so a tile does not change size as it crosses between them.
+// The same page as the keyboard layouts: the buttons in the panel on top, the
+// ones left out underneath, a heading each. Each row carries the button's glyph
+// and its name, so what a glyph is for can be read here rather than guessed.
+//
+// A row moves the way a playlist entry does while it is being reordered: it is
+// taken by its grip and nowhere else, it wears the accent border while it is
+// carried, and an accent rule shows where it would land. Both lists live on one
+// canvas, so a row crossing from one to the other is one coordinate and not a
+// change of parent. Fourteen rows do not fit on the screen, so the page
+// scrolls, and it scrolls by itself while a row is held near its top or bottom
+// edge.
 // ---------------------------------------------------------------------------
 
-#define TILE_SIZE 84
-#define GRID_COLUMNS 4
-#define CELL_HEIGHT 104
-#define CARD_PAD 12
-#define CARD_RADIUS 12
+#define ROW_HEIGHT 72
+#define ROW_GAP 8
+#define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
+#define ROW_RADIUS 12
+#define ROW_PAD 20
+#define ICON_BOX 56
+#define HEADING_H 40
 
-// The two cards. The top one is the panel itself and is always eight places;
-// the bottom one holds whatever is not in the panel, and three lines is room
-// for every button there is.
-#define IN_ROWS ((QP_SLOT_COUNT + GRID_COLUMNS - 1) / GRID_COLUMNS)
-#define OUT_ROWS 3
-#define CARD_HEIGHT(rows) ((rows) * CELL_HEIGHT + 2 * CARD_PAD)
+// The grip is only as large as its glyph and a margin round it; the room kept
+// for it at the end of the row is wider.
+#define GRIP_SIZE 48
+#define GRIP_SPACE 64
 
-// How far the finger has to travel before a release counts as a drop. A press
-// that never moved is a tap, and a tap must not rearrange anything.
-#define DROP_MIN_TRAVEL 10
+// Either list is a drop target even when it is empty, so neither is ever
+// shorter than one row.
+#define LIST_MIN_ROWS 1
 
-static lv_obj_t *in_card;
-static lv_obj_t *out_card;
+// How far the finger has to travel before a release counts as a drop.
+#define DROP_MIN_TRAVEL 8
 
-// One tile per place in the grid, plus one per button for the card below. Both
-// pools are built once and rebound, so nothing is created or destroyed while a
-// finger is on the screen.
-static lv_obj_t *slot_tiles[QP_SLOT_COUNT];
-static lv_obj_t *out_tiles[QP_BTN_COUNT];
+// How close to the top or bottom of the page a held row has to be before the
+// page moves under it, and how far it moves each time the event comes round.
+#define EDGE_PX 70
+#define EDGE_STEP 18
 
-// Ghosts are dragged on this rather than on the screen: it has no padding of
-// its own, so a position set on it is the position on the panel, and nothing
-// has to work back from the screen's own insets.
-static lv_obj_t *drag_layer;
-static lv_obj_t *drag_ghost;
+typedef struct {
+	lv_obj_t *row;
+	lv_obj_t *icon;
+	lv_obj_t *name;
+	lv_obj_t *grip;
+} entry_t;
 
-// What is being dragged, and from where. `drag_slot` is -1 when it came from
-// the card below.
-static quickpanel_button_t drag_button;
-static int drag_slot;
+static lv_obj_t *page;
+static lv_obj_t *body;
+static lv_obj_t *in_use_count;
+static lv_obj_t *others_heading;
+static lv_obj_t *drop_line;
+static entry_t entries[QP_BTN_COUNT];
+
+// Which button each row is showing. The first quickpanel_in_use_count() rows
+// are the panel's, the rest the ones left out. Rebuilt at every repaint, so the
+// drag reads them rather than a number baked in at build time.
+static quickpanel_button_t row_button[QP_BTN_COUNT];
+static int row_count;
+
+// The row being carried, or -1.
+static int drag_row = -1;
 static bool drag_moved;
 static lv_point_t drag_from;
-static int drag_grab_dx, drag_grab_dy;
 
 static void refresh(void);
 static void refresh_async(void *unused);
 
-// Where the tile for cell `index` of a card sits inside that card.
-static int cell_x(lv_obj_t *card, int index) {
-	int inner = lv_obj_get_width(card) - 2 * CARD_PAD;
-	int cell = inner / GRID_COLUMNS;
-	return CARD_PAD + (index % GRID_COLUMNS) * cell + (cell - TILE_SIZE) / 2;
+// Where each part of the canvas starts. The second heading follows the first
+// list, so both move as buttons cross between them.
+static int in_use_top(void) { return HEADING_H; }
+
+static int others_heading_y(void) {
+	int n = quickpanel_in_use_count();
+	return in_use_top() + (n < LIST_MIN_ROWS ? LIST_MIN_ROWS : n) * ROW_PITCH + 8;
 }
 
-static int cell_y(int index) { return CARD_PAD + (index / GRID_COLUMNS) * CELL_HEIGHT + (CELL_HEIGHT - TILE_SIZE) / 2; }
+static int others_top(void) { return others_heading_y() + HEADING_H; }
 
-// Which place of the top card a point is over, or -1 for none. Worked out from
-// the cell the point falls in rather than from the tiles, so an empty place
-// catches a drop exactly as a full one does.
-static int slot_at_point(lv_point_t point) {
-	lv_area_t area;
-	lv_obj_get_coords(in_card, &area);
-	if (point.x < area.x1 || point.x > area.x2 || point.y < area.y1 || point.y > area.y2) {
-		return -1;
+static void refresh(void) {
+	int in_n = quickpanel_in_use_count();
+	int out_n = quickpanel_hidden_count();
+	row_count = 0;
+
+	for (int i = 0; i < in_n && row_count < QP_BTN_COUNT; i++, row_count++) {
+		row_button[row_count] = quickpanel_in_use_at(i);
+		lv_obj_set_y(entries[row_count].row, in_use_top() + i * ROW_PITCH);
+	}
+	for (int i = 0; i < out_n && row_count < QP_BTN_COUNT; i++, row_count++) {
+		row_button[row_count] = quickpanel_hidden_at(i);
+		lv_obj_set_y(entries[row_count].row, others_top() + i * ROW_PITCH);
 	}
 
-	int inner = lv_obj_get_width(in_card) - 2 * CARD_PAD;
-	int cell = inner / GRID_COLUMNS;
-	int col = (point.x - area.x1 - CARD_PAD) / cell;
-	int row = (point.y - area.y1 - CARD_PAD) / CELL_HEIGHT;
-	if (col < 0) {
-		col = 0;
-	} else if (col >= GRID_COLUMNS) {
-		col = GRID_COLUMNS - 1;
-	}
-	if (row < 0) {
-		row = 0;
-	}
-
-	int slot = row * GRID_COLUMNS + col;
-	return slot < QP_SLOT_COUNT ? slot : -1;
-}
-
-static bool point_in(lv_obj_t *obj, lv_point_t point) {
-	lv_area_t area;
-	lv_obj_get_coords(obj, &area);
-	return point.x >= area.x1 && point.x <= area.x2 && point.y >= area.y1 && point.y <= area.y2;
-}
-
-// ---------------------------------------------------------------------------
-// Tiles
-// ---------------------------------------------------------------------------
-
-// Paints a tile as a button or as an empty place. The empty one is a ring
-// rather than nothing at all: it says the panel has room here and that this is
-// where a button dropped into it will go.
-static void tile_set_button(lv_obj_t *tile, quickpanel_button_t which) {
-	lv_obj_t *icon = lv_obj_get_child(tile, 0);
-	bool empty = which >= QP_BTN_COUNT;
-
-	if (empty) {
-		lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_set_style_bg_opa(tile, 0, 0);
-		lv_obj_set_style_border_width(tile, 2, 0);
-		lv_obj_set_style_border_color(tile, theme()->text_secondary, 0);
-		lv_obj_set_style_border_opa(tile, LV_OPA_40, 0);
-		lv_obj_remove_flag(tile, LV_OBJ_FLAG_CLICKABLE);
-		return;
-	}
-
-	lv_image_set_src(icon, quickpanel_button_icon(which));
-	lv_obj_remove_flag(icon, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_local_style_prop(tile, LV_STYLE_BG_OPA, 0);
-	lv_obj_set_style_border_width(tile, 0, 0);
-	lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
-}
-
-static lv_obj_t *make_tile(lv_obj_t *parent) {
-	lv_obj_t *tile = lv_obj_create(parent);
-	lv_obj_set_size(tile, TILE_SIZE, TILE_SIZE);
-	lv_obj_set_style_radius(tile, LV_RADIUS_CIRCLE, 0);
-	lv_obj_add_style(tile, &theme_style_switch, 0); // the panel's own neutral circle
-	lv_obj_set_style_shadow_width(tile, 0, 0);
-	lv_obj_set_style_border_width(tile, 0, 0);
-	lv_obj_set_style_pad_all(tile, 0, 0);
-	lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
-
-	lv_obj_t *icon = lv_image_create(tile);
-	lv_obj_add_style(icon, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
-	lv_obj_center(icon);
-
-	return tile;
-}
-
-// ---------------------------------------------------------------------------
-// Dragging
-// ---------------------------------------------------------------------------
-
-// Puts the ghost where the finger is holding it.
-//
-// Worked out from where the ghost actually landed rather than from the
-// coordinates it was given: lv_obj_set_pos() is relative to the parent's
-// content area, and reading back the difference costs one subtraction and
-// removes the need to know anything about that parent.
-static void ghost_follow(lv_point_t point) {
-	lv_area_t here;
-	lv_obj_get_coords(drag_ghost, &here);
-	int32_t dx = (point.x - drag_grab_dx) - here.x1;
-	int32_t dy = (point.y - drag_grab_dy) - here.y1;
-	lv_obj_set_pos(drag_ghost, lv_obj_get_x(drag_ghost) + dx, lv_obj_get_y(drag_ghost) + dy);
-}
-
-// Where a drop lands. `from_slot` is -1 for a tile that came from the card
-// below.
-static void drop(quickpanel_button_t button, int from_slot, lv_point_t point) {
-	int slot = slot_at_point(point);
-
-	if (slot >= 0) {
-		if (from_slot >= 0) {
-			quickpanel_slot_move(from_slot, slot);
-		} else {
-			quickpanel_slot_place(button, slot);
+	for (int i = 0; i < QP_BTN_COUNT; i++) {
+		if (i >= row_count) {
+			lv_obj_add_flag(entries[i].row, LV_OBJ_FLAG_HIDDEN);
+			continue;
 		}
-		return;
+		lv_obj_remove_flag(entries[i].row, LV_OBJ_FLAG_HIDDEN);
+		lv_image_set_src(entries[i].icon, quickpanel_button_icon(row_button[i]));
+		lv_label_set_text(entries[i].name, tr(quickpanel_button_tag(row_button[i])));
 	}
 
-	// Into the card below: out of the panel, leaving its place open. A tile
-	// dropped back where it came from, or anywhere that is neither card, stays
-	// where it was.
-	if (from_slot >= 0 && point_in(out_card, point)) {
-		quickpanel_slot_clear(from_slot);
+	lv_label_set_text_fmt(in_use_count, "%d/%d", in_n, QP_SLOT_COUNT);
+	lv_obj_set_y(others_heading, others_heading_y() + 10);
+
+	int rows_below = out_n < LIST_MIN_ROWS ? LIST_MIN_ROWS : out_n;
+	lv_obj_set_height(body, others_top() + rows_below * ROW_PITCH + 8);
+}
+
+static void refresh_async(void *unused) {
+	(void)unused;
+	refresh();
+}
+
+// ---------------------------------------------------------------------------
+// Carrying a row
+// ---------------------------------------------------------------------------
+
+// Where a row would land if the finger lifted at `point`: which list, and the
+// gap it would go into, counted with the carried row still in its place.
+typedef struct {
+	bool in_use;
+	int at;
+} target_t;
+
+static target_t target_at(lv_point_t point) {
+	lv_area_t area;
+	lv_obj_get_coords(body, &area);
+	int y = point.y - area.y1;
+
+	target_t t;
+	t.in_use = y < others_heading_y();
+	int top = t.in_use ? in_use_top() : others_top();
+	int count = t.in_use ? quickpanel_in_use_count() : quickpanel_hidden_count();
+	t.at = (y - top + ROW_PITCH / 2) / ROW_PITCH;
+	if (t.at < 0) {
+		t.at = 0;
+	}
+	if (t.at > count) {
+		t.at = count;
+	}
+	return t;
+}
+
+// The accent rule in the gap a drop would go into. On the canvas, so it
+// scrolls with the rows.
+static void drop_line_show(target_t t) {
+	int top = t.in_use ? in_use_top() : others_top();
+	lv_obj_set_pos(drop_line, 0, top + t.at * ROW_PITCH - ROW_GAP / 2 - 2);
+	lv_obj_remove_flag(drop_line, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_move_foreground(drop_line);
+}
+
+static void carried_look(int index, bool on) {
+	lv_obj_t *row = entries[index].row;
+	lv_obj_set_style_border_width(row, on ? 2 : 0, 0);
+	if (on) {
+		lv_obj_set_style_border_color(row, theme()->accent, 0);
+		lv_obj_set_style_border_opa(row, LV_OPA_COVER, 0);
+	}
+}
+
+// The gap is counted with the carried row in place; once it is lifted out,
+// every gap below it in its own list is one earlier.
+static void drop(int index, target_t t) {
+	int in_n = quickpanel_in_use_count();
+	bool from_in_use = index < in_n;
+	int from = from_in_use ? index : index - in_n;
+	int at = t.at;
+	if (t.in_use == from_in_use && from < at) {
+		at--;
+	}
+	if (t.in_use == from_in_use && at == from) {
+		return;
+	}
+	if (t.in_use) {
+		quickpanel_move_in_use(row_button[index], at);
+	} else {
+		quickpanel_move_hidden(row_button[index], at);
+	}
+}
+
+// The page follows the finger when a held row reaches either end of it.
+static void edge_scroll(lv_point_t point) {
+	lv_area_t view;
+	lv_obj_get_coords(page, &view);
+	int step = 0;
+	if (point.y < view.y1 + EDGE_PX) {
+		step = -EDGE_STEP;
+	} else if (point.y > view.y2 - EDGE_PX) {
+		step = EDGE_STEP;
+	}
+	if (step == 0) {
+		return;
+	}
+	int scroll = lv_obj_get_scroll_y(page);
+	int limit = scroll + lv_obj_get_scroll_bottom(page);
+	int wanted = scroll + step;
+	wanted = wanted < 0 ? 0 : (wanted > limit ? limit : wanted);
+	if (wanted != scroll) {
+		lv_obj_scroll_to_y(page, wanted, LV_ANIM_OFF);
 	}
 }
 
 static void drag_cb(lv_event_t *e) {
 	lv_event_code_t code = lv_event_get_code(e);
-	lv_obj_t *tile = lv_event_get_current_target(e);
+	lv_obj_t *grip = lv_event_get_current_target(e);
 
 	lv_indev_t *indev = lv_indev_active();
 	lv_point_t point = {0, 0};
@@ -203,181 +229,166 @@ static void drag_cb(lv_event_t *e) {
 	}
 
 	if (code == LV_EVENT_PRESSED) {
-		// Which tile this is, worked out from the pools rather than carried in
-		// the callback's user data: the tiles are rebound at every change, and
-		// a number baked in at build time would go stale with the first drop.
-		drag_slot = -1;
-		drag_button = QP_BTN_NONE;
-		for (int i = 0; i < QP_SLOT_COUNT; i++) {
-			if (slot_tiles[i] == tile) {
-				drag_slot = i;
-				drag_button = quickpanel_slot_at(i);
+		drag_row = -1;
+		for (int i = 0; i < row_count; i++) {
+			if (entries[i].grip == grip) {
+				drag_row = i;
 			}
 		}
-		for (int i = 0; i < quickpanel_hidden_count(); i++) {
-			if (out_tiles[i] == tile) {
-				drag_button = quickpanel_hidden_at(i);
-			}
+		if (drag_row < 0) {
+			return;
 		}
-		if (drag_button >= QP_BTN_COUNT) {
-			return; // an empty place: there is nothing to pick up
-		}
-
-		lv_area_t tile_area;
-		lv_obj_get_coords(tile, &tile_area);
 		drag_moved = false;
 		drag_from = point;
-		drag_grab_dx = point.x - tile_area.x1;
-		drag_grab_dy = point.y - tile_area.y1;
-
-		// A copy on the drag layer rather than the tile itself: the tile lives
-		// inside one of the two cards, and LVGL clips a child to its parent, so
-		// the real one would be cut off the moment it left the card it has to
-		// be dragged out of. The one left behind goes empty, so the grid shows
-		// where the button would come back to.
-		drag_ghost = make_tile(drag_layer);
-		tile_set_button(drag_ghost, drag_button);
-		lv_obj_set_style_bg_color(drag_ghost, theme()->accent, 0);
-		lv_obj_set_style_bg_opa(drag_ghost, LV_OPA_COVER, 0);
-		lv_obj_set_style_image_recolor(lv_obj_get_child(drag_ghost, 0), lv_color_white(), 0);
-		ghost_follow(point);
-
-		lv_obj_add_flag(tile, LV_OBJ_FLAG_HIDDEN);
-		if (drag_slot >= 0) {
-			tile_set_button(slot_tiles[drag_slot], QP_BTN_NONE);
-			lv_obj_remove_flag(slot_tiles[drag_slot], LV_OBJ_FLAG_HIDDEN);
-		}
+		carried_look(drag_row, true);
 		return;
 	}
 
-	if (!drag_ghost) {
+	if (drag_row < 0) {
 		return;
 	}
 
 	if (code == LV_EVENT_PRESSING) {
-		ghost_follow(point);
-		if (LV_ABS(point.x - drag_from.x) > DROP_MIN_TRAVEL || LV_ABS(point.y - drag_from.y) > DROP_MIN_TRAVEL) {
+		edge_scroll(point);
+		if (LV_ABS(point.y - drag_from.y) > DROP_MIN_TRAVEL || LV_ABS(point.x - drag_from.x) > DROP_MIN_TRAVEL) {
 			drag_moved = true;
+		}
+		if (drag_moved) {
+			drop_line_show(target_at(point));
 		}
 		return;
 	}
 
 	if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
-		lv_obj_delete(drag_ghost);
-		drag_ghost = NULL;
+		int index = drag_row;
+		drag_row = -1;
+		lv_obj_add_flag(drop_line, LV_OBJ_FLAG_HIDDEN);
+		carried_look(index, false);
 
 		if (code == LV_EVENT_RELEASED && drag_moved) {
-			drop(drag_button, drag_slot, point);
+			drop(index, target_at(point));
 		}
-
-		// Not here: rebinding the cards touches the very tile whose release is
-		// being handled. The repaint waits for the event to unwind.
+		// Not here: the repaint rebinds the very row whose release is being
+		// handled. It waits for the event to unwind.
 		lv_async_call(refresh_async, NULL);
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Painting
-// ---------------------------------------------------------------------------
-
-static void refresh(void) {
-	for (int i = 0; i < QP_SLOT_COUNT; i++) {
-		lv_obj_remove_flag(slot_tiles[i], LV_OBJ_FLAG_HIDDEN);
-		lv_obj_set_pos(slot_tiles[i], cell_x(in_card, i), cell_y(i));
-		tile_set_button(slot_tiles[i], quickpanel_slot_at(i));
-	}
-
-	int out_count = quickpanel_hidden_count();
-	for (int i = 0; i < QP_BTN_COUNT; i++) {
-		if (i >= out_count) {
-			lv_obj_add_flag(out_tiles[i], LV_OBJ_FLAG_HIDDEN);
-			continue;
-		}
-		lv_obj_remove_flag(out_tiles[i], LV_OBJ_FLAG_HIDDEN);
-		lv_obj_set_pos(out_tiles[i], cell_x(out_card, i), cell_y(i));
-		tile_set_button(out_tiles[i], quickpanel_hidden_at(i));
-	}
-}
-
-static void refresh_async(void *unused) {
-	(void)unused;
-	refresh();
-}
-
-static void loaded_cb(lv_event_t *e) {
-	(void)e;
-	refresh();
 }
 
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
 
-// `tag` may be NULL: the panel's own card needs no heading, since the page is
-// named after it and the card is the first thing on it.
-static lv_obj_t *make_card(lv_obj_t *parent, const char *tag, int rows) {
-	if (tag) {
-		lv_obj_t *heading = lv_label_create(parent);
-		lv_label_set_text(heading, tr(tag));
-		lv_obj_add_style(heading, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(heading, &font_ui_22, 0);
-		lv_obj_set_style_pad_hor(heading, 4, 0);
-		lv_obj_set_style_margin_top(heading, 8, 0);
-	}
-
-	lv_obj_t *card = lv_obj_create(parent);
-	lv_obj_set_width(card, lv_pct(100));
-	lv_obj_set_height(card, CARD_HEIGHT(rows));
-	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, CARD_RADIUS, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 0, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-	return card;
+static void loaded_cb(lv_event_t *e) {
+	(void)e;
+	refresh();
 }
 
-static void arm_tile(lv_obj_t *tile) {
-	lv_obj_add_event_cb(tile, drag_cb, LV_EVENT_PRESSED, NULL);
-	lv_obj_add_event_cb(tile, drag_cb, LV_EVENT_PRESSING, NULL);
-	lv_obj_add_event_cb(tile, drag_cb, LV_EVENT_RELEASED, NULL);
-	lv_obj_add_event_cb(tile, drag_cb, LV_EVENT_PRESS_LOST, NULL);
+static lv_obj_t *make_heading(lv_obj_t *parent, const char *tag, int y) {
+	lv_obj_t *label = lv_label_create(parent);
+	lv_label_set_text(label, tr(tag));
+	lv_obj_add_style(label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(label, &font_ui_22, 0);
+	lv_obj_set_pos(label, 4, y + 10);
+	return label;
+}
+
+static void make_row(entry_t *entry, int width) {
+	lv_obj_t *row = lv_obj_create(body);
+	lv_obj_set_size(row, width, ROW_HEIGHT);
+	lv_obj_set_x(row, 0);
+	lv_obj_add_style(row, &theme_style_card, 0);
+	lv_obj_set_style_radius(row, ROW_RADIUS, 0);
+	lv_obj_set_style_border_width(row, 0, 0);
+	lv_obj_set_style_shadow_width(row, 0, 0);
+	lv_obj_set_style_pad_hor(row, ROW_PAD, 0);
+	lv_obj_set_style_pad_ver(row, 0, 0);
+	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+	entry->row = row;
+
+	lv_obj_t *box = lv_obj_create(row);
+	lv_obj_remove_style_all(box);
+	lv_obj_set_size(box, ICON_BOX, ROW_HEIGHT);
+	lv_obj_align(box, LV_ALIGN_LEFT_MID, 0, 0);
+	lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
+
+	entry->icon = lv_image_create(box);
+	lv_obj_add_style(entry->icon, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor_opa(entry->icon, LV_OPA_COVER, 0);
+	lv_obj_center(entry->icon);
+
+	entry->name = lv_label_create(row);
+	lv_obj_add_style(entry->name, &theme_style_text, 0);
+	lv_obj_set_style_text_font(entry->name, &font_ui_24, 0);
+	lv_label_set_long_mode(entry->name, LV_LABEL_LONG_DOT);
+	lv_obj_set_width(entry->name, width - ROW_PAD - ICON_BOX - 16 - GRIP_SPACE);
+	lv_obj_align(entry->name, LV_ALIGN_LEFT_MID, ICON_BOX + 16, 0);
+
+	// The handle, and the only part of the row that can be taken hold of. Not
+	// a button: a tap on it does nothing. A drag on it must not find the page
+	// and scroll it, hence no scroll chain.
+	entry->grip = lv_obj_create(row);
+	lv_obj_set_size(entry->grip, GRIP_SIZE, GRIP_SIZE);
+	// Centred in its room, which runs into the row's right padding.
+	lv_obj_align(entry->grip, LV_ALIGN_RIGHT_MID, ROW_PAD - (GRIP_SPACE - GRIP_SIZE) / 2, 0);
+	lv_obj_set_style_bg_opa(entry->grip, 0, 0);
+	lv_obj_set_style_border_width(entry->grip, 0, 0);
+	lv_obj_set_style_pad_all(entry->grip, 0, 0);
+	lv_obj_remove_flag(entry->grip, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_remove_flag(entry->grip, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
+	lv_obj_remove_flag(entry->grip, LV_OBJ_FLAG_SCROLL_CHAIN_HOR);
+	lv_obj_add_flag(entry->grip, LV_OBJ_FLAG_CLICKABLE);
+
+	lv_obj_t *grip_icon = lv_image_create(entry->grip);
+	lv_image_set_src(grip_icon, &icon_grip);
+	lv_obj_add_style(grip_icon, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor_opa(grip_icon, LV_OPA_COVER, 0);
+	lv_obj_center(grip_icon);
+
+	lv_obj_add_event_cb(entry->grip, drag_cb, LV_EVENT_PRESSED, NULL);
+	lv_obj_add_event_cb(entry->grip, drag_cb, LV_EVENT_PRESSING, NULL);
+	lv_obj_add_event_cb(entry->grip, drag_cb, LV_EVENT_RELEASED, NULL);
+	lv_obj_add_event_cb(entry->grip, drag_cb, LV_EVENT_PRESS_LOST, NULL);
 }
 
 void ccsettings_init(gui_config_t *cfg) {
 	ccsettings_screen = lv_obj_create(NULL);
 	lv_obj_add_style(ccsettings_screen, &theme_style_screen, 0);
 
-	lv_obj_t *container = settingsrow_page(ccsettings_screen, cfg, "control_centre");
-	lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+	page = settingsrow_page(ccsettings_screen, cfg, "control_centre");
 
-	in_card = make_card(container, NULL, IN_ROWS);
-	out_card = make_card(container, "controlcentre_not_in_use", OUT_ROWS);
+	int width = cfg->screen_width - 2 * cfg->padding;
 
-	// The widths are needed before anything can be placed in them, and the
-	// layout has not run yet.
-	lv_obj_update_layout(container);
+	body = lv_obj_create(page);
+	lv_obj_set_width(body, width);
+	lv_obj_set_height(body, ROW_PITCH);
+	lv_obj_set_style_bg_opa(body, 0, 0);
+	lv_obj_set_style_border_width(body, 0, 0);
+	lv_obj_set_style_pad_all(body, 0, 0);
+	lv_obj_remove_flag(body, LV_OBJ_FLAG_SCROLLABLE);
 
-	for (int i = 0; i < QP_SLOT_COUNT; i++) {
-		slot_tiles[i] = make_tile(in_card);
-		arm_tile(slot_tiles[i]);
-	}
+	make_heading(body, "in_use", 0);
+	others_heading = make_heading(body, "controlcentre_not_in_use", 0);
+
+	// How many of the eight places are taken, level with the first heading.
+	in_use_count = lv_label_create(body);
+	lv_obj_add_style(in_use_count, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(in_use_count, &font_ui_22, 0);
+	lv_obj_align(in_use_count, LV_ALIGN_TOP_RIGHT, -4, 10);
+
 	for (int i = 0; i < QP_BTN_COUNT; i++) {
-		out_tiles[i] = make_tile(out_card);
-		arm_tile(out_tiles[i]);
+		make_row(&entries[i], width);
 	}
 
-	// Over everything, and transparent to the finger: only the ghost is ever on
-	// it, and only while one is being dragged.
-	drag_layer = lv_obj_create(ccsettings_screen);
-	lv_obj_set_size(drag_layer, lv_pct(100), lv_pct(100));
-	lv_obj_set_pos(drag_layer, 0, 0);
-	lv_obj_set_style_bg_opa(drag_layer, 0, 0);
-	lv_obj_set_style_border_width(drag_layer, 0, 0);
-	lv_obj_set_style_pad_all(drag_layer, 0, 0);
-	lv_obj_remove_flag(drag_layer, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(drag_layer, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(drag_layer, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	drop_line = lv_obj_create(body);
+	lv_obj_set_size(drop_line, width, 4);
+	lv_obj_remove_flag(drop_line, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_remove_flag(drop_line, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_style_border_width(drop_line, 0, 0);
+	lv_obj_set_style_shadow_width(drop_line, 0, 0);
+	lv_obj_set_style_pad_all(drop_line, 0, 0);
+	lv_obj_add_style(drop_line, &theme_style_accent_bg, 0);
+	lv_obj_set_style_radius(drop_line, 2, 0);
+	lv_obj_add_flag(drop_line, LV_OBJ_FLAG_HIDDEN);
 
 	lv_obj_add_event_cb(ccsettings_screen, loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	switcher_attach_back_gesture(ccsettings_screen);

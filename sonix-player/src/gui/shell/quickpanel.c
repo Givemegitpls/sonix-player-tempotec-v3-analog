@@ -1018,14 +1018,6 @@ static void order_apply(void) {
 	}
 }
 
-quickpanel_button_t quickpanel_slot_at(int slot) {
-	order_load();
-	if (slot < 0 || slot >= QP_SLOT_COUNT) {
-		return QP_BTN_NONE;
-	}
-	return (quickpanel_button_t)slots[slot];
-}
-
 int quickpanel_hidden_count(void) {
 	order_load();
 	return hidden_n;
@@ -1057,46 +1049,89 @@ static void layout_changed(void) {
 	order_apply();
 }
 
-void quickpanel_slot_move(int from_slot, int to_slot) {
+int quickpanel_in_use_count(void) {
 	order_load();
-	if (from_slot < 0 || from_slot >= QP_SLOT_COUNT || to_slot < 0 || to_slot >= QP_SLOT_COUNT ||
-		from_slot == to_slot || slots[from_slot] >= QP_BTN_COUNT) {
+	int n = 0;
+	for (int i = 0; i < QP_SLOT_COUNT; i++) {
+		n += slots[i] < QP_BTN_COUNT;
+	}
+	return n;
+}
+
+quickpanel_button_t quickpanel_in_use_at(int position) {
+	order_load();
+	for (int i = 0; i < QP_SLOT_COUNT; i++) {
+		if (slots[i] < QP_BTN_COUNT && position-- == 0) {
+			return (quickpanel_button_t)slots[i];
+		}
+	}
+	return QP_BTN_NONE;
+}
+
+// The buttons in the panel without `button`, in order and with no gaps.
+static int in_use_without(quickpanel_button_t button, uint8_t *out) {
+	int n = 0;
+	for (int i = 0; i < QP_SLOT_COUNT; i++) {
+		if (slots[i] < QP_BTN_COUNT && slots[i] != button) {
+			out[n++] = slots[i];
+		}
+	}
+	return n;
+}
+
+static void hidden_insert(quickpanel_button_t button, int position) {
+	if (position < 0) {
+		position = 0;
+	}
+	if (position > hidden_n) {
+		position = hidden_n;
+	}
+	memmove(&hidden[position + 1], &hidden[position], (size_t)(hidden_n - position));
+	hidden[position] = (uint8_t)button;
+	hidden_n++;
+}
+
+void quickpanel_move_in_use(quickpanel_button_t button, int position) {
+	order_load();
+	if (button < 0 || button >= QP_BTN_COUNT) {
 		return;
 	}
+	uint8_t list[QP_SLOT_COUNT + 1];
+	int n = in_use_without(button, list);
+	hidden_remove(button);
 
-	// A swap and not an insert-and-shift. The grid has visible gaps in it, and
-	// shifting everything along past a gap moves buttons the finger never
-	// touched; exchanging the two places is the move the drop actually looks
-	// like.
-	uint8_t held = slots[from_slot];
-	slots[from_slot] = slots[to_slot];
-	slots[to_slot] = held;
+	if (position < 0) {
+		position = 0;
+	}
+	if (position > n) {
+		position = n;
+	}
+	memmove(&list[position + 1], &list[position], (size_t)(n - position));
+	list[position] = (uint8_t)button;
+	n++;
+
+	// One too many: the last goes to the top of the ones left out.
+	if (n > QP_SLOT_COUNT) {
+		hidden_insert((quickpanel_button_t)list[--n], 0);
+	}
+	for (int i = 0; i < QP_SLOT_COUNT; i++) {
+		slots[i] = i < n ? list[i] : QP_BTN_NONE;
+	}
 	layout_changed();
 }
 
-void quickpanel_slot_place(quickpanel_button_t button, int slot) {
+void quickpanel_move_hidden(quickpanel_button_t button, int position) {
 	order_load();
-	if (button < 0 || button >= QP_BTN_COUNT || slot < 0 || slot >= QP_SLOT_COUNT || slots[slot] == button) {
+	if (button < 0 || button >= QP_BTN_COUNT) {
 		return;
 	}
-
-	// Whatever was there goes out, which is what keeps the panel at eight
-	// without anything having to count.
-	if (slots[slot] < QP_BTN_COUNT) {
-		hidden[hidden_n++] = slots[slot];
+	uint8_t list[QP_SLOT_COUNT];
+	int n = in_use_without(button, list);
+	for (int i = 0; i < QP_SLOT_COUNT; i++) {
+		slots[i] = i < n ? list[i] : QP_BTN_NONE;
 	}
 	hidden_remove(button);
-	slots[slot] = (uint8_t)button;
-	layout_changed();
-}
-
-void quickpanel_slot_clear(int slot) {
-	order_load();
-	if (slot < 0 || slot >= QP_SLOT_COUNT || slots[slot] >= QP_BTN_COUNT) {
-		return;
-	}
-	hidden[hidden_n++] = slots[slot];
-	slots[slot] = QP_BTN_NONE;
+	hidden_insert(button, position);
 	layout_changed();
 }
 

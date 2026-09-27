@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/fonts/fonts.h"
@@ -193,6 +194,9 @@ typedef struct {
 	// what the corner buttons do.
 	library_filter_t filter;
 	char filter_value[256];
+	// Inside one album: the artist it is credited to, so a track is only
+	// credited when its own artist is someone else.
+	char album_artist[128];
 	char title[160];
 	bool from_paths; // filled by medialist_open_paths: not a query, cannot reorder
 	// The playlist this list came from, empty when it came from anywhere else.
@@ -743,10 +747,10 @@ static void row_update_quality(panel_t *p, row_t *row, const char *path) {
 	lv_obj_remove_flag(row->quality, LV_OBJ_FLAG_HIDDEN);
 }
 
-// Whether this list is one "Show artist" is on for: all the tracks, the albums,
-// or the tracks of a genre. Not an artist's own lists, where the name is the
-// page's title already, and not the name lists, whose rows are artists or
-// genres themselves.
+// Whether this list is one "Show artist" is on for: all the tracks, the albums
+// and the tracks inside one, or the tracks of a genre. Not an artist's own
+// lists, where the name is the page's title already, and not the name lists,
+// whose rows are artists or genres themselves.
 static bool panel_shows_artist(const panel_t *p) {
 	if (!show_artist || p->from_paths) {
 		return false;
@@ -754,7 +758,8 @@ static bool panel_shows_artist(const panel_t *p) {
 	if (p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_NONE) {
 		return (artist_lists & MEDIALIST_ARTIST_TRACKS) != 0;
 	}
-	if (p->kind == LIBRARY_LIST_ALBUMS && p->filter == LIBRARY_FILTER_NONE) {
+	if ((p->kind == LIBRARY_LIST_ALBUMS && p->filter == LIBRARY_FILTER_NONE) ||
+		(p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_ALBUM)) {
 		return (artist_lists & MEDIALIST_ARTIST_ALBUMS) != 0;
 	}
 	if (p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_GENRE) {
@@ -769,6 +774,11 @@ static void row_update_detail(panel_t *p, row_t *row, int index, const char *pat
 	row_update_quality(p, row, path);
 
 	const char *artist = panel_shows_artist(p) ? row_artist_at(p, index) : NULL;
+	// Inside an album, only a track by someone other than the album's artist.
+	if (artist && p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_ALBUM &&
+		(!artist[0] || strcasecmp(artist, p->album_artist) == 0)) {
+		artist = NULL;
+	}
 	if (artist) {
 		lv_label_set_text(row->artist, artist);
 		lv_obj_remove_flag(row->artist, LV_OBJ_FLAG_HIDDEN);
@@ -3254,6 +3264,11 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	p->from_paths = false;
 	snprintf(p->filter_value, sizeof(p->filter_value), "%s", filter_value ? filter_value : "");
 	snprintf(p->title, sizeof(p->title), "%s", title ? title : "");
+	if (kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_ALBUM) {
+		library_album_artist(p->filter_value, p->album_artist, sizeof(p->album_artist));
+	} else {
+		p->album_artist[0] = '\0';
+	}
 
 	// Coming back to the very list that was open before? Then put the user
 	// back where they left it instead of at the top.

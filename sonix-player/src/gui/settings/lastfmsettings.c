@@ -27,6 +27,7 @@ static lv_obj_t *enabled_switch;
 static lv_obj_t *account_value;
 static lv_obj_t *status_value;
 static lv_obj_t *queued_value;
+static lv_obj_t *note_label;
 
 static lv_obj_t *login_screen;
 static lv_obj_t *user_field;
@@ -61,7 +62,7 @@ static void refresh(void) {
 	const char *status = "";
 	switch (st.state) {
 	case LASTFM_STATE_UNAVAILABLE:
-		status = tr("lastfm_not_configured");
+		status = tr("lastfm_unavailable");
 		break;
 	case LASTFM_STATE_OFF:
 		status = tr("lastfm_state_off");
@@ -83,6 +84,7 @@ static void refresh(void) {
 		break;
 	}
 	lv_label_set_text(status_value, status);
+	lv_label_set_text(note_label, tr(st.state == LASTFM_STATE_UNAVAILABLE ? "api_keys_unavailable" : "lastfm_note"));
 	lv_label_set_text_fmt(queued_value, "%d", st.queued);
 }
 
@@ -127,7 +129,7 @@ static void account_cb(lv_event_t *e) {
 	lastfm_status_t st;
 	lastfm_get_status(&st);
 	if (st.state == LASTFM_STATE_UNAVAILABLE) {
-		toast_error("lastfm_not_configured");
+		toast_error("api_keys_unavailable");
 		return;
 	}
 	if (st.state == LASTFM_STATE_SIGNING_IN) {
@@ -156,12 +158,21 @@ static void build_page(gui_config_t *cfg) {
 	settingsrow_add(container, "lastfm_status", &status_value, NULL, NULL);
 	settingsrow_add(container, "lastfm_queued", &queued_value, NULL, NULL);
 
-	lv_obj_t *note = lv_label_create(container);
-	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-	lv_obj_set_width(note, lv_pct(100));
-	lv_obj_add_style(note, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(note, &font_ui_22, 0);
-	lv_label_set_text(note, tr("lastfm_note"));
+	// A user name or a message from Last.fm can be longer than the room beside
+	// the row's name: one line, cut with an ellipsis.
+	lv_obj_t *values[] = {account_value, status_value};
+	for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+		lv_label_set_long_mode(values[i], LV_LABEL_LONG_DOT);
+		lv_obj_set_style_max_width(values[i], lv_pct(60), 0);
+		lv_obj_set_height(values[i], lv_font_get_line_height(&font_ui_24));
+	}
+
+	note_label = lv_label_create(container);
+	lv_label_set_long_mode(note_label, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(note_label, lv_pct(100));
+	lv_obj_add_style(note_label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(note_label, &font_ui_22, 0);
+	lv_label_set_text(note_label, tr("lastfm_note"));
 
 	lv_obj_add_event_cb(page_screen, loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	switcher_attach_back_gesture(page_screen);

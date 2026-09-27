@@ -2255,7 +2255,7 @@ static bool refresh_notes(void) {
 	refresh_corner_buttons();
 
 	if (!podcast_configured()) {
-		show_note("podcast_key_note");
+		show_note("api_keys_unavailable");
 		return false;
 	}
 

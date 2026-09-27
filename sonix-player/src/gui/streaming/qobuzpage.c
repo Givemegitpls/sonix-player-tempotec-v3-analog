@@ -2269,8 +2269,7 @@ static void rebuild_home(void) {
 		lv_obj_set_width(note, lv_pct(100));
 		lv_obj_add_style(note, &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(note, &font_ui_20, 0);
-		// Not an "error": it is fixable, and the line says how.
-		lv_label_set_text(note, tr("qobuz_not_configured"));
+		lv_label_set_text(note, tr("api_keys_unavailable"));
 		return;
 	}
 

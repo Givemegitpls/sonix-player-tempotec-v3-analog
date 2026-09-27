@@ -548,7 +548,7 @@ static bool api_call(const char *url, char **body, json_doc_t *doc) {
 	clear_error();
 
 	if (!tidal_configured()) {
-		set_error("%s", tr("tidal_keys_missing"));
+		set_error("%s", tr("api_keys_unavailable"));
 		return false;
 	}
 	if (!tidal_logged_in()) {
@@ -700,7 +700,7 @@ bool tidal_login_begin(tidal_login_t *out) {
 	memset(out, 0, sizeof(*out));
 
 	if (!tidal_configured()) {
-		set_error("%s", tr("tidal_keys_missing"));
+		set_error("%s", tr("api_keys_unavailable"));
 		return false;
 	}
 

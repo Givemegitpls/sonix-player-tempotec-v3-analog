@@ -147,6 +147,11 @@ int library_match_basenames(const char *const *names, int count, library_basenam
 // query to name them.
 bool library_track_names(const char *path, char *title_out, size_t title_size, char *artist_out, size_t artist_size);
 
+// The artist an album is credited to: the album artist of its first track, or
+// that track's artist when it has none -- the name the album list shows. False
+// when the album has no tracks.
+bool library_album_artist(const char *album, char *out, size_t size);
+
 // --- Audio quality ---
 //
 // Which of four badges a track earns, from what the scan wrote down: the

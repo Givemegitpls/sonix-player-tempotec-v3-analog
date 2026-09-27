@@ -139,7 +139,7 @@ static bool api_call(const char *url, const char *extra_headers, char **body, js
 	clear_error();
 
 	if (!qobuz_configured()) {
-		set_error("%s", tr("qobuz_the_qobuz_app_keys_are_missing"));
+		set_error("%s", tr("api_keys_unavailable"));
 		return false;
 	}
 
@@ -196,7 +196,7 @@ bool qobuz_login(const char *username, const char *password) {
 	clear_error();
 
 	if (!qobuz_configured()) {
-		set_error("%s", tr("qobuz_the_qobuz_app_keys_are_missing"));
+		set_error("%s", tr("api_keys_unavailable"));
 		return false;
 	}
 	if (!username || !*username || !password || !*password) {

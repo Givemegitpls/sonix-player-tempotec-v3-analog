@@ -2756,10 +2756,7 @@ static void rebuild_home(void) {
 		lv_obj_set_width(note, lv_pct(100));
 		lv_obj_add_style(note, &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(note, &font_ui_20, 0);
-		// Not an "error": this is fixable, and the text says how. The second
-		// sentence exists because Tidal revokes keys now and then, leaving the
-		// file present but worthless.
-		lv_label_set_text(note, tr("tidal_not_configured"));
+		lv_label_set_text(note, tr("api_keys_unavailable"));
 		return;
 	}
 

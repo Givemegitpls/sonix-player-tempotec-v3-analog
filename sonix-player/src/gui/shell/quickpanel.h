@@ -32,14 +32,13 @@ void quickpanel_drag_end(void);
 // Which round buttons the panel carries, and where
 //
 // The panel holds eight, in a grid of eight places. A place can also be empty:
-// the panel simply draws one button fewer, but the settings page shows the gap
-// where the button was taken from, so putting it back is a matter of putting it
-// where it was rather than of finding it a new home.
+// the panel simply draws one button fewer.
 //
 // Both the grid and the buttons left out of it live in [quickpanel] as lists of
 // names -- `order`, with "-" for an empty place, and `hidden`. Names and not
 // indices, so a button added to the enum later joins a saved layout instead of
-// invalidating it. Settings > More > Control centre is the page that edits it.
+// invalidating it. Settings > More > Control centre is the page that edits it,
+// as two lists (see quickpanel_move_in_use).
 // ---------------------------------------------------------------------------
 
 #define QP_SLOT_COUNT 8
@@ -67,29 +66,22 @@ typedef enum {
 	QP_BTN_NONE = QP_BTN_COUNT, // an empty place in the grid
 } quickpanel_button_t;
 
-// What is in grid place `slot`, or QP_BTN_NONE if nothing is.
-quickpanel_button_t quickpanel_slot_at(int slot);
-
-// The buttons that are not in the grid, in the order they were taken out.
-int quickpanel_hidden_count(void);
-quickpanel_button_t quickpanel_hidden_at(int position);
-
 // The row's name (a translation tag) and the glyph it carries. The gain button
 // draws whichever of the two glyphs matches the current setting; this is the
 // low one, which is what the list should show.
 const char *quickpanel_button_tag(quickpanel_button_t button);
 const lv_image_dsc_t *quickpanel_button_icon(quickpanel_button_t button);
 
-// The three things the settings page can do, each of which saves the layout and
-// rearranges the panel:
-//
-//   move  one grid place to another. An empty destination takes the button and
-//         leaves the source empty; an occupied one swaps the two.
-//   place a button from outside the grid into a place. Whatever was there goes
-//         out, so the grid never holds more than eight.
-//   clear a place, sending its button out of the grid.
-void quickpanel_slot_move(int from_slot, int to_slot);
-void quickpanel_slot_place(quickpanel_button_t button, int slot);
-void quickpanel_slot_clear(int slot);
+// The layout as two lists, the way the settings page shows it: the buttons in
+// the panel, in order with the empty places left out, and the ones left out of
+// it. Moving a button to a position in either list saves the layout and closes
+// the gaps in the panel; a ninth button in the panel pushes the last one out,
+// to the top of the other list.
+int quickpanel_in_use_count(void);
+quickpanel_button_t quickpanel_in_use_at(int position);
+int quickpanel_hidden_count(void);
+quickpanel_button_t quickpanel_hidden_at(int position);
+void quickpanel_move_in_use(quickpanel_button_t button, int position);
+void quickpanel_move_hidden(quickpanel_button_t button, int position);
 
 #endif // QUICKPANEL_H

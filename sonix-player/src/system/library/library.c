@@ -1279,6 +1279,37 @@ bool library_track_title(const char *path, char *out, size_t out_size) {
 // query -- a playlist. The scan already put both in the row, so a lookup here
 // costs one indexed SELECT instead of opening the file and parsing its tags.
 // Either output may be left empty: a track can be indexed without an artist.
+bool library_album_artist(const char *album, char *out, size_t size) {
+	if (!out || size == 0) {
+		return false;
+	}
+	out[0] = '\0';
+	if (!album || !album[0]) {
+		return false;
+	}
+
+	// The same first track, and the same choice, as the album row names.
+	pthread_mutex_lock(&db_lock);
+	bool found = false;
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db,
+								 "SELECT COALESCE(NULLIF(album_artist,''), artist) FROM MEDIA_TABLE WHERE album=?"
+								 " ORDER BY COALESCE(disc,1), dis_id LIMIT 1",
+								 -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, album, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			const unsigned char *artist = sqlite3_column_text(stmt, 0);
+			if (artist && artist[0]) {
+				snprintf(out, size, "%s", (const char *)artist);
+				found = true;
+			}
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return found;
+}
+
 bool library_track_names(const char *path, char *title_out, size_t title_size, char *artist_out, size_t artist_size) {
 	if (!path || !path[0]) {
 		return false;

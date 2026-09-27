@@ -73,7 +73,7 @@ static char *api_get(const char *path) {
 	const char *key = streamkeys_podcast_key();
 	const char *secret = streamkeys_podcast_secret();
 	if (!key || !secret) {
-		set_error(tr("podcast_keys_missing"));
+		set_error(tr("api_keys_unavailable"));
 		return NULL;
 	}
 
