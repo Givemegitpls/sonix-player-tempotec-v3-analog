@@ -58,6 +58,22 @@
 #define LV_FREETYPE_USE_LVGL_PORT 0
 #define LV_FREETYPE_CACHE_FT_GLYPH_CNT 256
 
+/* Song titles, tags and station names in Arabic. The text is kept in the
+ * order it is written in and LVGL draws each line right to left where the
+ * letters ask for it. A label takes its direction from its first letter that
+ * has one: in a box wider than the text an Arabic line sits on the right, a
+ * Latin one on the left as before. It costs a pass over every line each time
+ * it is drawn, a few microseconds for a title. */
+#define LV_USE_BIDI 1
+#define LV_BIDI_BASE_DIR_DEF LV_BASE_DIR_AUTO
+
+/* Arabic letters change shape with their neighbours. Labels store the text
+ * with each letter already in the form it takes there -- the presentation
+ * forms the arabic face carries -- so lv_label_get_text() does not return
+ * what was set when there is Arabic in it. It costs a pass over the text on
+ * every lv_label_set_text(), Arabic or not. */
+#define LV_USE_ARABIC_PERSIAN_CHARS 1
+
 /* The power menu photographs the screen behind it for its blurred backdrop. */
 #define LV_USE_SNAPSHOT 1
 

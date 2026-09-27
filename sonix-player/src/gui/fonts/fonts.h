@@ -13,14 +13,22 @@
 //   default.otf   MiSans Regular -- Latin, Greek, Cyrillic, kana, full CJK
 //   bold.otf      optional bold weight for the headings; regular stands in
 //                 when it is not there
-//   Korean.ttf    Hangul
-//   Thai.ttf      Thai
+//   korean.otf    Hangul, and the few Japanese marks MiSans lacks (the
+//                 middle dot, the wave dash): a subset of Pretendard
+//                 matched to MiSans
+//   thai.otf      MiSans Thai
+//   arabic.otf    MiSans Arabic
 //
-// fonts_init() opens them once and builds one fallback chain per size:
-// default answers first, Korean and Thai fill in what it lacks. FreeType maps
-// the files -- nothing is decoded up front -- and rendered glyphs live in the
-// shared FTC cache (LV_FREETYPE_CACHE_FT_GLYPH_CNT), so memory stays flat no
-// matter how much text is on screen.
+// The last three each have a -bold file for the bold sizes, optional like
+// bold.otf. fonts_init() opens them once and builds one fallback chain per
+// size: default answers first, Korean, Thai and Arabic fill in what it lacks.
+// FreeType maps the files -- nothing is decoded up front -- and rendered
+// glyphs live in the shared FTC cache (LV_FREETYPE_CACHE_FT_GLYPH_CNT), so
+// memory stays flat no matter how much text is on screen.
+//
+// Arabic is drawn right to left and in its joined forms by LVGL itself
+// (LV_USE_BIDI and LV_USE_ARABIC_PERSIAN_CHARS in lv_conf.h); the face only
+// has to carry the presentation forms, which MiSans Arabic does.
 //
 // These are real objects, not pointers, so `&font_ui_24` is a valid
 // lv_font_t * at every call site.
@@ -70,7 +78,7 @@ bool fonts_set_large_text(bool large);
 void fonts_register_change(void (*cb)(void));
 
 // For the developer options page: which font files are in use, e.g.
-// "default.otf, bold.otf, Korean + Thai". Never NULL.
+// "default.otf, bold.otf, Korean + Thai + Arabic". Never NULL.
 const char *fonts_summary(void);
 
 #endif // FONTS_H

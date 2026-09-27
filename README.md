@@ -227,12 +227,12 @@ assets/R3PII/                           (and assets/R1/, the same shape)
 │   ├── lib/                         the bluealsa ALSA plugin
 │   ├── resource/
 │   │   └── sonix/
-│   │       ├── language/            the 7 .ini files
+│   │       ├── language/            the 8 .ini files
 │   │       ├── components/
 │   │       │   ├── streaming-keys.bin   Tidal / Qobuz / Podcast Index / Last.fm keys, sealed - see "Streaming keys" below.
 │   │       │   ├── system-info.json     required: names the player, and the packer writes to it
 │   │       │   └── GB*-Database.dat     the Game Boy ROM databases
-│   │       ├── fonts/               default.otf, bold.otf, Korean.ttf, Thai.ttf
+│   │       ├── fonts/               default.otf, bold.otf, then korean, thai and arabic .otf, each with a -bold
 │   │       └── gui/                 some of the .png assets the UI loads at runtime - the rest are inside the binary.
 │   └── share/web/                   icons and images for the Wi-Fi transfer page                        
 └── module_driver/                   the patched touch driver and its load script
@@ -370,7 +370,7 @@ sonix-player/
 ├── sonix-player/                    
 │   ├── assets/                      
 │   │   ├── gui/                     some of the .png assets the UI loads at runtime - the rest are inside the binary.
-│   │   ├── fonts/ 					 the four faces: default, bold, Korean, Thai
+│   │   ├── fonts/ 					 the faces: default, bold, Korean (Hangul from Pretendard, OFL), Thai, Arabic
 │   │   └── icons/                   196 SVGs and PNGs, baked into src/gui/shell/icons.c
 │   │   
 │   │

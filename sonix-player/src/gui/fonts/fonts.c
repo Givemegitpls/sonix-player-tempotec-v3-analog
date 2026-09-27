@@ -2,6 +2,7 @@
 
 #include "src/system/core/respath.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -32,20 +33,46 @@
 #define FONT_DIR_FALLBACK FONT_DIR
 #endif
 
-// The same four faces ship as .ttf on some firmwares and .otf on others, and
+// The main faces ship as .ttf on some firmwares and .otf on others, and
 // FreeType reads both. Each face is therefore a list of candidate names, tried
 // in order, and the first one present wins. A default face that is not found
 // means an interface with no text in it at all.
-static const char *const FONT_DEFAULT_FILES[] = {FONT_DIR "/default.ttf", FONT_DIR "/default.otf",
-												 FONT_DIR_FALLBACK "/default.ttf", FONT_DIR_FALLBACK "/default.otf",
-												 NULL};
-static const char *const FONT_BOLD_FILES[] = {FONT_DIR "/bold.ttf", FONT_DIR "/bold.otf",
-											  FONT_DIR_FALLBACK "/bold.ttf", FONT_DIR_FALLBACK "/bold.otf", NULL};
-static const char *const FONT_KOREAN_FILES[] = {FONT_DIR "/Korean.ttf", FONT_DIR "/Korean.otf",
-												FONT_DIR_FALLBACK "/Korean.ttf", FONT_DIR_FALLBACK "/Korean.otf",
-												NULL};
-static const char *const FONT_THAI_FILES[] = {FONT_DIR "/Thai.ttf", FONT_DIR "/Thai.otf",
-											  FONT_DIR_FALLBACK "/Thai.ttf", FONT_DIR_FALLBACK "/Thai.otf", NULL};
+#define FACE_FILES(base)                                                                                               \
+	{FONT_DIR "/" base ".ttf", FONT_DIR "/" base ".otf", FONT_DIR_FALLBACK "/" base ".ttf",                          \
+	 FONT_DIR_FALLBACK "/" base ".otf", NULL}
+
+static const char *const FONT_DEFAULT_FILES[] = FACE_FILES("default");
+static const char *const FONT_BOLD_FILES[] = FACE_FILES("bold");
+
+// The scripts MiSans has no letters for, one face each, chained behind the
+// main face so they only answer for what it lacks. The bold file is optional:
+// the regular one stands in at the bold sizes when it is not there.
+typedef struct {
+	const char *name; // for the summary
+	const char *const regular_files[5];
+	const char *const bold_files[5];
+	// Letters drawn this much higher than the file places them, in
+	// thousandths of the size. See ARABIC_RAISE.
+	int raise_per_mille;
+	const char *regular; // the files found, or NULL
+	const char *bold;
+	bool used;
+} script_face_t;
+
+// MiSans Arabic sits lower than MiSans. Its tails, and the dots under them,
+// reach 0.39 em below the baseline, where a line here has room for 0.28 (the
+// main face's descent), and a label cuts off whatever passes its bottom edge:
+// the two dots of a final ya were not drawn at all. Raised by this much, the
+// deepest of the common letters ends where the line does.
+#define ARABIC_RAISE 105
+
+static script_face_t scripts[] = {
+	{"Korean", FACE_FILES("korean"), FACE_FILES("korean-bold"), 0, NULL, NULL, false},
+	{"Thai", FACE_FILES("thai"), FACE_FILES("thai-bold"), 0, NULL, NULL, false},
+	{"Arabic", FACE_FILES("arabic"), FACE_FILES("arabic-bold"), ARABIC_RAISE, NULL, NULL, false},
+};
+
+#define SCRIPT_COUNT (sizeof(scripts) / sizeof(scripts[0]))
 
 static const char *basename_of(const char *path) {
 	const char *slash = strrchr(path, '/');
@@ -94,7 +121,7 @@ static const ui_font_t ui_fonts[] = {
 
 #define UI_FONT_COUNT (sizeof(ui_fonts) / sizeof(ui_fonts[0]))
 
-static char summary[128] = "";
+static char summary[160] = "";
 
 // Settings -> Appearance -> Text size: Large. The small sizes -- the ones
 // secondary lines, notes, clocks and counters are set in -- are drawn a step
@@ -136,10 +163,6 @@ static bool set_built[2];
 
 static const char *regular_file;
 static const char *bold_file;
-static const char *korean_file;
-static const char *thai_file;
-static bool have_korean;
-static bool have_thai;
 
 static lv_font_t *open_face(const char *path, int size) {
 	if (access(path, R_OK) != 0) {
@@ -149,7 +172,30 @@ static lv_font_t *open_face(const char *path, int size) {
 								   LV_FREETYPE_FONT_STYLE_NORMAL);
 }
 
-// One size as the interface draws it: the main face with Hangul and Thai
+// LVGL's FreeType lookup, which every face starts with. A raised face goes
+// through it and then moves the glyph up by the pixels kept in its user_data.
+static bool (*freetype_glyph_dsc)(const lv_font_t *, lv_font_glyph_dsc_t *, uint32_t, uint32_t);
+
+static bool raised_glyph_dsc(const lv_font_t *font, lv_font_glyph_dsc_t *dsc, uint32_t letter,
+							 uint32_t letter_next) {
+	if (!freetype_glyph_dsc(font, dsc, letter, letter_next)) {
+		return false;
+	}
+	dsc->ofs_y += (int32_t)(intptr_t)font->user_data;
+	return true;
+}
+
+static void raise_face(lv_font_t *face, int size, int per_mille) {
+	int pixels = (size * per_mille + 500) / 1000;
+	if (pixels <= 0) {
+		return;
+	}
+	freetype_glyph_dsc = face->get_glyph_dsc;
+	face->user_data = (void *)(intptr_t)pixels;
+	face->get_glyph_dsc = raised_glyph_dsc;
+}
+
+// One size as the interface draws it: the main face with the other scripts
 // chained behind. NULL when the main face cannot be opened.
 static lv_font_t *open_chain(const ui_font_t *ui, int size) {
 	// The face this size draws from. The bold heading font uses the bold
@@ -167,19 +213,24 @@ static lv_font_t *open_chain(const ui_font_t *ui, int size) {
 		return NULL;
 	}
 
-	// Hangul and Thai live in their own files, chained behind the main
-	// face as fallbacks so they only answer for what it lacks.
 	lv_font_t *tail = head;
-	lv_font_t *korean = korean_file ? open_face(korean_file, size) : NULL;
-	if (korean) {
-		tail->fallback = korean;
-		tail = korean;
-		have_korean = true;
-	}
-	lv_font_t *thai = thai_file ? open_face(thai_file, size) : NULL;
-	if (thai) {
-		tail->fallback = thai;
-		have_thai = true;
+	for (size_t i = 0; i < SCRIPT_COUNT; i++) {
+		script_face_t *script = &scripts[i];
+		lv_font_t *face = NULL;
+		if (ui->bold && script->bold) {
+			face = open_face(script->bold, size);
+		}
+		if (!face && script->regular) {
+			face = open_face(script->regular, size);
+		}
+		if (face) {
+			if (script->raise_per_mille) {
+				raise_face(face, size, script->raise_per_mille);
+			}
+			tail->fallback = face;
+			tail = face;
+			script->used = true;
+		}
 	}
 	return head;
 }
@@ -210,8 +261,10 @@ static bool build_set(bool large) {
 bool fonts_init(void) {
 	regular_file = first_present(FONT_DEFAULT_FILES);
 	bold_file = first_present(FONT_BOLD_FILES);
-	korean_file = first_present(FONT_KOREAN_FILES);
-	thai_file = first_present(FONT_THAI_FILES);
+	for (size_t i = 0; i < SCRIPT_COUNT; i++) {
+		scripts[i].regular = first_present(scripts[i].regular_files);
+		scripts[i].bold = first_present(scripts[i].bold_files);
+	}
 
 	if (!regular_file) {
 		fprintf(stderr, "fonts: no default.ttf or default.otf in %s or %s\n", FONT_DIR, FONT_DIR_FALLBACK);
@@ -229,9 +282,15 @@ bool fonts_init(void) {
 
 	// Records the actual file names, so the log shows which container this
 	// firmware ships.
-	snprintf(summary, sizeof(summary), "%s%s%s%s", basename_of(regular_file),
-			 bold_file ? ", " : "", bold_file ? basename_of(bold_file) : "",
-			 have_korean || have_thai ? (have_korean && have_thai ? ", Korean + Thai" : (have_korean ? ", Korean" : ", Thai")) : "");
+	int len = snprintf(summary, sizeof(summary), "%s%s%s", basename_of(regular_file), bold_file ? ", " : "",
+					   bold_file ? basename_of(bold_file) : "");
+	const char *sep = ", ";
+	for (size_t i = 0; i < SCRIPT_COUNT && len > 0 && (size_t)len < sizeof(summary); i++) {
+		if (scripts[i].used) {
+			len += snprintf(summary + len, sizeof(summary) - (size_t)len, "%s%s", sep, scripts[i].name);
+			sep = " + ";
+		}
+	}
 
 	char from[256];
 	snprintf(from, sizeof(from), "%.*s", (int)(basename_of(regular_file) - regular_file - 1), regular_file);

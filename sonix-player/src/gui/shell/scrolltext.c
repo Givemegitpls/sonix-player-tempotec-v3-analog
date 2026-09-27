@@ -2,6 +2,8 @@
 
 #include "src/gui/fonts/fonts.h"
 
+#include "lvgl/src/misc/lv_text_ap.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -398,6 +400,42 @@ static char *one_line(const char *text) {
 	return copy;
 }
 
+// Whether `label` already shows `text`. A label keeps Arabic in its joined
+// forms (LV_USE_ARABIC_PERSIAN_CHARS), never as it was set, so a line with
+// Arabic in it is put in those forms before the two are compared. Otherwise
+// an Arabic title would look new every time the same words came in, and its
+// scroll would start again from the beginning each time.
+static bool label_shows(lv_obj_t *label, const char *text) {
+	const char *current = lv_label_get_text(label);
+	if (!current) {
+		return false;
+	}
+	if (strcmp(current, text) == 0) {
+		return true;
+	}
+#if LV_USE_ARABIC_PERSIAN_CHARS
+	// The Arabic block, U+0600 to U+06FF, is the code points whose UTF-8
+	// starts with 0xD8 to 0xDB.
+	const unsigned char *p = (const unsigned char *)text;
+	while (*p && (*p < 0xD8 || *p > 0xDB)) {
+		p++;
+	}
+	if (!*p) {
+		return false;
+	}
+	char *joined = malloc(lv_text_ap_calc_bytes_count(text));
+	if (!joined) {
+		return false;
+	}
+	lv_text_ap_proc(text, joined);
+	bool same = strcmp(current, joined) == 0;
+	free(joined);
+	return same;
+#else
+	return false;
+#endif
+}
+
 void scrolltext_set(lv_obj_t *label, const char *text) {
 	if (!label) {
 		return;
@@ -406,8 +444,7 @@ void scrolltext_set(lv_obj_t *label, const char *text) {
 		text = "";
 	}
 	char *line = one_line(text);
-	const char *current = lv_label_get_text(label);
-	if (current && strcmp(current, line) == 0) {
+	if (label_shows(label, line)) {
 		if (line != text) {
 			free(line);
 		}

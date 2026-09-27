@@ -137,10 +137,13 @@ certificate checking, and HLS.
   six hours, and a charge limit from 80 to 100 %.
 - **Date and time** - set by hand and written to the RTC, 24-hour clock, and a
   time zone with its own standard and daylight choice.
-- **Language** - English, Italiano, Deutsch, Español, Français, Russian.
+- **Language** - English, Italiano, Deutsch, Español, Français, Russian, Chinese,
+  Japanese. Titles and tags in Korean, Thai and Arabic are shown too, Arabic
+  right to left.
 - **Remap buttons** - the three media buttons and the two volume buttons, each
   assignable to nothing, play/pause, previous, next, volume up or volume down.
-- **Keyboard layout** - six layouts, one for each language.
+- **Keyboard layout** - six layouts: English, Italian, German, Spanish, French
+  and Russian.
 - **System** - device, DAC, serial number, card space, OS version, firmware
   update from a `.upt` on the card, and factory reset.
 - **Developer options** - unlocked by tapping the build number: ADB,
