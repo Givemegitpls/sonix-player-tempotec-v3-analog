@@ -18,7 +18,8 @@
 
 // The page behind the PEQ gear: save the parametric chain under a name and
 // load it back. Same shape as the MSEB and graphic equalizer settings pages;
-// only the contents of a preset differ.
+// only the contents of a preset differ -- here an Equalizer APO file in the
+// card's PEQ folder, which is also where AutoEq's ParametricEQ.txt files go.
 
 #define NAME_MAX 100
 
@@ -62,11 +63,20 @@ static void preset_clicked_cb(lv_event_t *e) {
 		return;
 	}
 
-	if (peq_preset_load(name)) {
+	int ignored = 0;
+	if (peq_preset_load(name, &ignored)) {
 		if (reload_cb) {
 			reload_cb();
 		}
-		toast_success("preset_loaded");
+		if (ignored > 0) {
+			// Said plainly rather than left for the ear to find: the curve that
+			// plays is not the whole of the one in the file.
+			char message[256];
+			snprintf(message, sizeof(message), tr("peq_preset_loaded_partly"), ignored);
+			gui_notify_popup(message);
+		} else {
+			toast_success("preset_loaded");
+		}
 		back_btn_cb(NULL);
 	} else {
 		gui_notify_popup("cannot_load_the_preset");
@@ -288,7 +298,9 @@ static void build_list_page(gui_config_t *cfg) {
 	list_container = container;
 
 	list_empty = lv_label_create(list_screen);
-	lv_label_set_text(list_empty, tr("no_saved_presets"));
+	lv_label_set_text(list_empty, tr("peq_presets_empty_note"));
+	lv_label_set_long_mode(list_empty, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(list_empty, cfg->screen_width - 4 * cfg->padding);
 	lv_obj_set_style_text_align(list_empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(list_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
@@ -306,8 +318,8 @@ void peqsettings_init(gui_config_t *cfg) {
 
 	// No factory presets here: the graphic equalizer's canned curves are ten
 	// gains, which mean nothing for a parametric chain where a band also has a
-	// frequency, a Q and a shape. A parametric preset is always a curve someone
-	// built, never a pick from a list.
+	// frequency, a Q and a shape. A parametric preset is a curve someone built,
+	// or the one AutoEq built for a pair of headphones.
 	settingsrow_action(container, "save_preset", open_name_dialog_cb, NULL);
 	settingsrow_add(container, "load_preset", NULL, open_preset_list_cb, NULL);
 

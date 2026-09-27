@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -190,7 +191,8 @@ static void peq_key(char *out, size_t size, int index, const char *what) {
 	snprintf(out, size, "b%d_%s", index, what);
 }
 
-static void peq_save_band(int index) {
+// Into the config, not yet onto the card.
+static void peq_store_band(int index) {
 	const peq_band_t *b = &peq_bands[index];
 	char key[24];
 
@@ -204,7 +206,10 @@ static void peq_save_band(int index) {
 	config_set_int("peq", key, b->gain_tenths);
 	peq_key(key, sizeof(key), index, "q");
 	config_set_int("peq", key, b->q_cent);
+}
 
+static void peq_save_band(int index) {
+	peq_store_band(index);
 	config_save();
 }
 
@@ -561,86 +566,398 @@ void peq_set_preamp(int tenths) {
 // ---------------------------------------------------------------------------
 // Parametric presets
 //
-// Same shape as the graphic EQ's -- one .ini per name in a folder on the card
-// -- but a band here is five numbers instead of one, plus the preamp. One line
-// per band, prefixed with the band number, so a file written by a version with
-// fewer bands still loads and the remaining bands keep their defaults.
+// A preset is a text file in the Equalizer APO format that AutoEq publishes
+// for every headphone ("ParametricEQ.txt"), so a file downloaded from AutoEq,
+// written by Equalizer APO or exported by REW loads as it is, and a preset
+// saved here opens in any of them:
+//
+//     Preamp: -6.2 dB
+//     Filter 1: ON LSC Fc 105 Hz Gain 6.5 dB Q 0.70
+//     Filter 2: ON PK Fc 162 Hz Gain -2.8 dB Q 0.60
+//     ...
+//
+// They live in <card>/PEQ, a folder the user can see and copy files into.
+// Presets from before live in <card>/.local/peq as .ini files of this
+// program's own; they are rewritten in the new form the first time the card
+// is seen.
+//
+// The filters are the same arithmetic as APO's: RBJ biquads, and shelves that
+// take their width from Q (APO's LSC and HSC). What APO has and this chain
+// does not -- band-pass, notch, all-pass, more than PEQ_BANDS filters, a
+// different curve per channel -- is left out and counted, so the page can
+// say so.
 // ---------------------------------------------------------------------------
+
+static char peq_legacy_dir[512];
+
+// A band reset to its defaults, without touching the live chain.
+static peq_band_t peq_default_band(int index) {
+	peq_band_t b = {
+		.on = false,
+		.type = PEQ_TYPE_PEAK,
+		.freq = PEQ_DEFAULT_FREQ[index],
+		.gain_tenths = 0,
+		.q_cent = PEQ_Q_DEFAULT,
+	};
+	return b;
+}
+
+// "-6.2", "0.0", "3.5" from tenths, without printf's %f: the decimal point
+// is always a point, whatever the locale, because that is what APO reads.
+static void tenths_text(int tenths, char *out, size_t size) {
+	int abs_tenths = tenths < 0 ? -tenths : tenths;
+	snprintf(out, size, "%s%d.%d", tenths < 0 ? "-" : "", abs_tenths / 10, abs_tenths % 10);
+}
+
+static const char *apo_type_name(int type) {
+	switch (type) {
+	case PEQ_TYPE_LOWSHELF:
+		return "LSC";
+	case PEQ_TYPE_HIGHSHELF:
+		return "HSC";
+	case PEQ_TYPE_LOWPASS:
+		return "LPQ";
+	case PEQ_TYPE_HIGHPASS:
+		return "HPQ";
+	case PEQ_TYPE_PEAK:
+	default:
+		return "PK";
+	}
+}
+
+static bool peq_write_apo(const char *path, const peq_band_t *bands, int preamp_tenths) {
+	FILE *f = fopen(path, "w");
+	if (!f) {
+		fprintf(stderr, "peq: cannot write '%s': %s\n", path, strerror(errno));
+		return false;
+	}
+	char number[16];
+	tenths_text(preamp_tenths, number, sizeof(number));
+	fprintf(f, "Preamp: %s dB\n", number);
+	for (int i = 0; i < PEQ_BANDS; i++) {
+		const peq_band_t *b = &bands[i];
+		fprintf(f, "Filter %d: %s %s Fc %d Hz", i + 1, b->on ? "ON" : "OFF", apo_type_name(b->type), b->freq);
+		// APO's LPQ and HPQ have no gain; writing one would not load back.
+		if (b->type != PEQ_TYPE_LOWPASS && b->type != PEQ_TYPE_HIGHPASS) {
+			tenths_text(b->gain_tenths, number, sizeof(number));
+			fprintf(f, " Gain %s dB", number);
+		}
+		fprintf(f, " Q %d.%02d\n", b->q_cent / 100, b->q_cent % 100);
+	}
+	bool ok = ferror(f) == 0;
+	if (fclose(f) != 0) {
+		ok = false;
+	}
+	return ok;
+}
+
+// APO's filter names, and what each becomes here. The ones without a Q of
+// their own (LP, HP, and the shelves written without one) get 0.71, the
+// Butterworth value APO uses for them.
+static bool apo_type(const char *name, int *type) {
+	static const struct {
+		const char *name;
+		int type;
+	} TYPES[] = {
+		{"PK", PEQ_TYPE_PEAK},		   {"PEQ", PEQ_TYPE_PEAK},	  {"MODAL", PEQ_TYPE_PEAK},
+		{"LSC", PEQ_TYPE_LOWSHELF},	   {"LS", PEQ_TYPE_LOWSHELF}, {"HSC", PEQ_TYPE_HIGHSHELF},
+		{"HS", PEQ_TYPE_HIGHSHELF},	   {"LP", PEQ_TYPE_LOWPASS},  {"LPQ", PEQ_TYPE_LOWPASS},
+		{"HP", PEQ_TYPE_HIGHPASS},	   {"HPQ", PEQ_TYPE_HIGHPASS},
+	};
+	for (size_t i = 0; i < sizeof(TYPES) / sizeof(TYPES[0]); i++) {
+		if (strcasecmp(name, TYPES[i].name) == 0) {
+			*type = TYPES[i].type;
+			return true;
+		}
+	}
+	return false;
+}
+
+#define APO_Q_DEFAULT 0.71
+
+static int round_scaled(double value, double scale) {
+	double v = value * scale;
+	return (int)(v >= 0 ? v + 0.5 : v - 0.5);
+}
+
+// The next word of `*cursor`, split on blanks, NULL at the end of the line.
+static char *next_word(char **cursor) {
+	char *p = *cursor;
+	while (*p == ' ' || *p == '\t') {
+		p++;
+	}
+	if (!*p || *p == '\r' || *p == '\n') {
+		*cursor = p;
+		return NULL;
+	}
+	char *word = p;
+	while (*p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') {
+		p++;
+	}
+	if (*p) {
+		*p++ = '\0';
+	}
+	*cursor = p;
+	return word;
+}
+
+static bool word_number(const char *word, double *out) {
+	if (!word) {
+		return false;
+	}
+	char *end = NULL;
+	*out = strtod(word, &end);
+	return end != word;
+}
+
+typedef enum {
+	APO_FILTER_OK,
+	APO_FILTER_UNUSABLE, // a shape this chain does not have, or no frequency
+	APO_FILTER_EMPTY,	 // REW's "None": a slot with no filter in it
+} apo_filter_t;
+
+// One "Filter N: ON PK Fc 105 Hz Gain -2.8 dB Q 0.70" line, everything after
+// the colon. An OFF filter comes back as a band that is off.
+static apo_filter_t apo_parse_filter(char *rest, peq_band_t *out) {
+	char *cursor = rest;
+	char *word = next_word(&cursor);
+	if (!word) {
+		return APO_FILTER_EMPTY;
+	}
+	bool on = strcasecmp(word, "OFF") != 0;
+	if (strcasecmp(word, "ON") == 0 || strcasecmp(word, "OFF") == 0) {
+		word = next_word(&cursor);
+	}
+	if (!word || strcasecmp(word, "None") == 0) {
+		return APO_FILTER_EMPTY;
+	}
+	int type;
+	if (!apo_type(word, &type)) {
+		return APO_FILTER_UNUSABLE;
+	}
+
+	double fc = 0, gain = 0, q = APO_Q_DEFAULT;
+	bool have_fc = false;
+	while ((word = next_word(&cursor)) != NULL) {
+		double value;
+		if (strcasecmp(word, "Fc") == 0 && word_number(next_word(&cursor), &value)) {
+			fc = value;
+			have_fc = true;
+		} else if (strcasecmp(word, "Gain") == 0 && word_number(next_word(&cursor), &value)) {
+			gain = value;
+		} else if (strcasecmp(word, "Q") == 0 && word_number(next_word(&cursor), &value)) {
+			q = value;
+		} else if (strcasecmp(word, "BW") == 0) {
+			// "BW Oct 1.5": a width in octaves, the same thing as Q said
+			// another way.
+			char *unit = next_word(&cursor);
+			if (unit && strcasecmp(unit, "Oct") == 0 && word_number(next_word(&cursor), &value) && value > 0) {
+				double n = pow(2.0, value);
+				q = sqrt(n) / (n - 1.0);
+			}
+		}
+	}
+	if (!have_fc) {
+		return APO_FILTER_UNUSABLE;
+	}
+
+	out->on = on;
+	out->type = type;
+	out->freq = round_scaled(fc, 1.0);
+	out->gain_tenths = round_scaled(gain, 10.0);
+	out->q_cent = round_scaled(q, 100.0);
+	peq_clamp_band(out);
+	return APO_FILTER_OK;
+}
+
+// Reads an APO file into `bands` and `*preamp_tenths`. The bands not named in
+// the file are left at their defaults. `*ignored` counts the filters that were
+// in the file and could not come along. False when the file cannot be opened
+// or holds no filter this chain can play.
+static bool peq_read_apo(const char *path, peq_band_t *bands, int *preamp_tenths, int *ignored) {
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		return false;
+	}
+	for (int i = 0; i < PEQ_BANDS; i++) {
+		bands[i] = peq_default_band(i);
+	}
+	*preamp_tenths = 0;
+	*ignored = 0;
+
+	int count = 0;
+	char line[256];
+	bool first = true;
+	while (fgets(line, sizeof(line), f)) {
+		char *p = line;
+		// A file saved by Notepad starts with a UTF-8 byte order mark, and
+		// "\xEF\xBB\xBFPreamp" is not "Preamp": the preamp line was skipped.
+		if (first && (unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) {
+			p += 3;
+		}
+		first = false;
+		while (*p == ' ' || *p == '\t') {
+			p++;
+		}
+		if (*p == '#' || *p == '\0') {
+			continue;
+		}
+		char *colon = strchr(p, ':');
+		if (!colon) {
+			continue;
+		}
+		*colon = '\0';
+		char *rest = colon + 1;
+
+		if (strcasecmp(p, "Preamp") == 0) {
+			double db;
+			char *cursor = rest;
+			if (word_number(next_word(&cursor), &db)) {
+				*preamp_tenths = clamp_int(round_scaled(db, 10.0), PEQ_PREAMP_MIN_TENTHS, PEQ_PREAMP_MAX_TENTHS);
+			}
+		} else if (strncasecmp(p, "Channel", 7) == 0) {
+			// A second curve for one of the channels. This chain has one curve
+			// for both, so the first is the one that is used.
+			if (count > 0) {
+				break;
+			}
+		} else if (strncasecmp(p, "Filter", 6) == 0) {
+			peq_band_t b;
+			apo_filter_t parsed = apo_parse_filter(rest, &b);
+			if (parsed == APO_FILTER_EMPTY) {
+				continue;
+			}
+			if (parsed == APO_FILTER_UNUSABLE) {
+				(*ignored)++;
+			} else if (count < PEQ_BANDS) {
+				bands[count++] = b;
+			} else {
+				(*ignored)++;
+			}
+		}
+	}
+	fclose(f);
+	return count > 0;
+}
+
+// The .ini of the presets saved before the move to the APO format.
+static bool peq_read_legacy(const char *path, peq_band_t *bands, int *preamp_tenths) {
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		return false;
+	}
+	for (int i = 0; i < PEQ_BANDS; i++) {
+		bands[i] = peq_default_band(i);
+	}
+	*preamp_tenths = 0;
+
+	char line[160];
+	while (fgets(line, sizeof(line), f)) {
+		int preamp = 0;
+		if (sscanf(line, "preamp=%d", &preamp) == 1) {
+			*preamp_tenths = clamp_int(preamp, PEQ_PREAMP_MIN_TENTHS, PEQ_PREAMP_MAX_TENTHS);
+			continue;
+		}
+		int index = 0, on = 0, type = 0, freq = 0, gain = 0, q = 0;
+		if (sscanf(line, "b%d=%d,%d,%d,%d,%d", &index, &on, &type, &freq, &gain, &q) == 6 && index >= 0 &&
+			index < PEQ_BANDS) {
+			peq_band_t b = {.on = on != 0, .type = type, .freq = freq, .gain_tenths = gain, .q_cent = q};
+			peq_clamp_band(&b);
+			bands[index] = b;
+		}
+	}
+	fclose(f);
+	return true;
+}
+
+// Rewrites every preset left in <card>/.local/peq into <card>/PEQ. The old
+// file is renamed rather than deleted, and a preset already in the new folder
+// under the same name is left as it is.
+static void peq_migrate_legacy(void) {
+	DIR *dir = opendir(peq_legacy_dir);
+	if (!dir) {
+		return;
+	}
+	struct dirent *de;
+	while ((de = readdir(dir)) != NULL) {
+		size_t len = strlen(de->d_name);
+		if (len < 5 || strcasecmp(de->d_name + len - 4, ".ini") != 0) {
+			continue;
+		}
+		char from[700], to[700], done[720];
+		snprintf(from, sizeof(from), "%s/%s", peq_legacy_dir, de->d_name);
+		snprintf(to, sizeof(to), "%s/%.*s.txt", peq_preset_dir, (int)(len - 4), de->d_name);
+		snprintf(done, sizeof(done), "%s.migrated", from);
+
+		peq_band_t bands[PEQ_BANDS];
+		int preamp = 0;
+		if (!peq_read_legacy(from, bands, &preamp)) {
+			continue;
+		}
+		mkdir(peq_preset_dir, 0777);
+		if (access(to, F_OK) != 0 && !peq_write_apo(to, bands, preamp)) {
+			continue;
+		}
+		rename(from, done);
+		fprintf(stderr, "peq: preset '%s' moved to %s\n", de->d_name, to);
+	}
+	closedir(dir);
+}
 
 void peq_presets_set_dir(const char *sd_root) {
 	if (!sd_root || !sd_root[0]) {
 		peq_preset_dir[0] = '\0';
+		peq_legacy_dir[0] = '\0';
 		return;
 	}
-	snprintf(peq_preset_dir, sizeof(peq_preset_dir), "%s/.local/peq", sd_root);
+	snprintf(peq_preset_dir, sizeof(peq_preset_dir), "%s/PEQ", sd_root);
+	snprintf(peq_legacy_dir, sizeof(peq_legacy_dir), "%s/.local/peq", sd_root);
+	peq_migrate_legacy();
 }
 
 bool peq_preset_save(const char *name) {
 	if (!peq_preset_dir[0] || !name_is_usable(name)) {
 		return false;
 	}
-	mkdir_with_parent(peq_preset_dir);
+	mkdir(peq_preset_dir, 0777);
 
 	char path[700];
-	snprintf(path, sizeof(path), "%s/%s.ini", peq_preset_dir, name);
-
-	FILE *f = fopen(path, "w");
-	if (!f) {
-		fprintf(stderr, "peq: cannot write '%s': %s\n", path, strerror(errno));
-		return false;
-	}
-	fputs("# parametric preset\n", f);
-	fprintf(f, "preamp=%d\n", peq_preamp_tenths);
-	for (int i = 0; i < PEQ_BANDS; i++) {
-		const peq_band_t *b = &peq_bands[i];
-		fprintf(f, "b%d=%d,%d,%d,%d,%d\n", i, b->on ? 1 : 0, b->type, b->freq, b->gain_tenths, b->q_cent);
-	}
-	fclose(f);
-	return true;
+	snprintf(path, sizeof(path), "%s/%s.txt", peq_preset_dir, name);
+	return peq_write_apo(path, peq_bands, peq_preamp_tenths);
 }
 
-bool peq_preset_load(const char *name) {
+bool peq_preset_load(const char *name, int *ignored) {
+	int dropped = 0;
+	if (ignored) {
+		*ignored = 0;
+	}
 	if (!peq_preset_dir[0] || !name_is_usable(name)) {
 		return false;
 	}
 
 	char path[700];
-	snprintf(path, sizeof(path), "%s/%s.ini", peq_preset_dir, name);
+	snprintf(path, sizeof(path), "%s/%s.txt", peq_preset_dir, name);
 
-	FILE *f = fopen(path, "r");
-	if (!f) {
+	peq_band_t bands[PEQ_BANDS];
+	int preamp = 0;
+	if (!peq_read_apo(path, bands, &preamp, &dropped)) {
 		return false;
 	}
 
-	// Every band is reset before loading: a preset written when there were
-	// fewer bands (8, before the move to 10) never names the last ones, and
-	// without this they would carry over from the previous preset.
+	// Into the chain and the config together, with one write to the card at
+	// the end rather than one per band.
 	for (int i = 0; i < PEQ_BANDS; i++) {
-		peq_reset_band(i);
+		peq_bands[i] = bands[i];
+		peq_store_band(i);
 	}
+	peq_preamp_tenths = preamp;
+	config_set_int("peq", "preamp", peq_preamp_tenths);
+	config_save();
+	settings_version++;
 
-	char line[160];
-	while (fgets(line, sizeof(line), f)) {
-		int preamp = 0;
-		if (sscanf(line, "preamp=%d", &preamp) == 1) {
-			peq_set_preamp(preamp);
-			continue;
-		}
-
-		int index = 0, on = 0, type = 0, freq = 0, gain = 0, q = 0;
-		if (sscanf(line, "b%d=%d,%d,%d,%d,%d", &index, &on, &type, &freq, &gain, &q) == 6 && index >= 0 &&
-			index < PEQ_BANDS) {
-			peq_band_t b = {
-				.on = on != 0,
-				.type = type,
-				.freq = freq,
-				.gain_tenths = gain,
-				.q_cent = q,
-			};
-			peq_set_band(index, &b);
-		}
+	if (ignored) {
+		*ignored = dropped;
 	}
-	fclose(f);
 	return true;
 }
 
@@ -649,9 +966,18 @@ bool peq_preset_delete(const char *name) {
 		return false;
 	}
 	char path[700];
-	snprintf(path, sizeof(path), "%s/%s.ini", peq_preset_dir, name);
+	snprintf(path, sizeof(path), "%s/%s.txt", peq_preset_dir, name);
 	return remove(path) == 0;
 }
+
+static int compare_names(const void *a, const void *b) {
+	return strcasecmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+// In alphabetical order: a folder of AutoEq downloads is a list of headphone
+// names, and in the order the card happens to store them it cannot be searched
+// by eye.
+#define PEQ_LIST_MAX 512
 
 int peq_preset_for_each(peq_preset_name_cb_t cb, void *user) {
 	if (!cb || !peq_preset_dir[0]) {
@@ -663,21 +989,29 @@ int peq_preset_for_each(peq_preset_name_cb_t cb, void *user) {
 		return 0;
 	}
 
+	char *names[PEQ_LIST_MAX];
 	int count = 0;
 	struct dirent *de;
-	while ((de = readdir(dir)) != NULL) {
+	while (count < PEQ_LIST_MAX && (de = readdir(dir)) != NULL) {
 		size_t len = strlen(de->d_name);
-		if (len < 5 || strcasecmp(de->d_name + len - 4, ".ini") != 0) {
+		if (len < 5 || de->d_name[0] == '.' || strcasecmp(de->d_name + len - 4, ".txt") != 0) {
 			continue;
 		}
-		char name[128];
-		snprintf(name, sizeof(name), "%.*s", (int)(len - 4), de->d_name);
-		count++;
-		if (!cb(name, user)) {
-			break;
+		char *name = strndup(de->d_name, len - 4);
+		if (name) {
+			names[count++] = name;
 		}
 	}
 	closedir(dir);
+
+	qsort(names, (size_t)count, sizeof(names[0]), compare_names);
+	bool going = true;
+	for (int i = 0; i < count; i++) {
+		if (going) {
+			going = cb(names[i], user);
+		}
+		free(names[i]);
+	}
 	return count;
 }
 
@@ -685,14 +1019,7 @@ void peq_reset_band(int index) {
 	if (index < 0 || index >= PEQ_BANDS) {
 		return;
 	}
-	peq_band_t b = {
-		.on = false,
-		.type = PEQ_TYPE_PEAK,
-		.freq = PEQ_DEFAULT_FREQ[index],
-		.gain_tenths = 0,
-		.q_cent = PEQ_Q_DEFAULT,
-	};
-	peq_bands[index] = b;
+	peq_bands[index] = peq_default_band(index);
 	peq_save_band(index);
 	settings_version++;
 }
@@ -1035,6 +1362,15 @@ static bool biquad_set_coeffs(biquad_t *f, int type, int freq, double gain_db, d
 	return true;
 }
 
+// The level the graphic equaliser and the parametric play at, in dB: the
+// manual preamp plus whatever of the biggest boost it does not already cover.
+// Never above the preamp, and never less attenuation than the boost.
+static double headroom_db(double max_boost, double manual) {
+	double covered = manual < 0.0 ? -manual : 0.0;
+	double more = max_boost - covered;
+	return manual - (more > 0.0 ? more : 0.0);
+}
+
 static void slot_update(int slot, int type, int freq, double gain_db, double q, int rate, bool rate_changed) {
 	bool was_active = chain_active[slot];
 	bool now_active = biquad_set_coeffs(&chain[slot], type, freq, gain_db, q, rate);
@@ -1283,11 +1619,15 @@ static void filters_rebuild(int rate) {
 	// running gain toward this over ~20 ms, which is what kills the zipper
 	// crackle while a slider is moving.
 	//
-	// The parametric's manual preamp multiplies the automatic headroom rather
-	// than replacing it: they are different things -- one is computed to keep
-	// the peaks from clipping, the other is a listening choice.
+	// The parametric's preamp and the automatic headroom are one budget. A
+	// preset from AutoEq or Equalizer APO carries its own clip guard in its
+	// preamp ("Preamp: -6.2 dB" for a curve whose peak is +6.2), and taking the
+	// boost off again on top of it played the curve 6 dB quieter than it plays
+	// anywhere else. So the headroom only takes what a negative preamp has not
+	// already taken; a positive preamp, which guards nothing, is applied on top
+	// of the full headroom.
 	double manual = peq_enabled ? (double)peq_preamp_tenths / 10.0 : 0.0;
-	pregain_target = (float)(pow(10.0, -max_boost / 20.0) * pow(10.0, manual / 20.0));
+	pregain_target = (float)pow(10.0, headroom_db(max_boost, manual) / 20.0);
 	if (rate_changed) {
 		pregain = pregain_target;
 		mseb_pregain = mseb_pregain_target;
@@ -1381,7 +1721,10 @@ int eq_auto_headroom_tenths(void) {
 		}
 	}
 
-	total -= max_boost;
+	// Only the automatic part: the preamp has its own slider, and the page
+	// shows this beside it.
+	double manual = peq_enabled ? (double)peq_preamp_tenths / 10.0 : 0.0;
+	total += headroom_db(max_boost, manual) - manual;
 
 	return (int)(total >= 0 ? total * 10.0 + 0.5 : total * 10.0 - 0.5);
 }

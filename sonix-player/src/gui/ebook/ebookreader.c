@@ -46,7 +46,7 @@ lv_obj_t *ebookreader_screen;
 #define READER_MARGIN_MIN 8
 #define READER_MARGIN_MAX 40
 #define READER_SIZE_MIN 14
-#define READER_SIZE_MAX 34
+#define READER_SIZE_MAX 50
 #define READER_LINE_MIN 0	// extra pixels between lines
 #define READER_LINE_MAX 16
 // Word spacing, in thin spaces added after every space. LVGL styles a line's
@@ -117,9 +117,9 @@ static bool at_chapter_end;
 // A page number cannot be remembered between one visit and the next, for the
 // reason load_chapter_at_end() gives about the last page: how the chapter falls
 // into pages depends on the font, the spacing and the margins. So it is either
-// counted while reading, which is free, or worked out by laying the chapter out
-// from its beginning, which is the same walk that function already does and is
-// only done when the strip is actually showing the number.
+// counted while reading, which is free, or worked out by the count further down,
+// which lays the chapter out from its beginning a page at a time and is only
+// started when the strip is actually showing the number.
 static int page_number;
 
 // And how many pages of the book lie before this chapter, so the strip can show
@@ -662,41 +662,160 @@ static void lay_out(lv_obj_t *box, uint32_t block, uint32_t offset, uint32_t *en
 	*ended = block >= ebook_block_count(book);
 }
 
-// Lays the chapter out from its beginning, page by page, in the spare box.
-// Returns how many pages it has, and writes the 1-based number of the page that
-// `block`/`offset` falls on into `*page_out`.
+// ---------------------------------------------------------------------------
+// Counting the chapter's pages
 //
-// The same walk as load_chapter_at_end(), and it costs the same: one layout of
-// one chapter. It is called only when the reader has arrived somewhere without
-// counting its way there AND the strip is showing the page number, so a reader
-// who has not switched that on never pays for it.
+// Where a page begins depends on the font, the spacing and the margins, so the
+// only way to know which page of the chapter the reader is on, after arriving
+// somewhere without turning the pages to get there, is to lay the chapter out
+// from its beginning. That is one layout of every page before this one and
+// after it, and near the end of a long chapter it is hundreds: done in one go
+// it held the screen for seconds after every change of the text size and every
+// chapter picked from the list.
 //
-// The position is answered by the page that CONTAINS it rather than by an exact
-// match, because after a font change the saved offset can sit in the middle of a
-// page rather than at its start.
-static int paginate_chapter(uint32_t block, uint32_t offset, int *page_out) {
-	uint32_t at_block = 0, at_offset = 0;
-	int pages = 0;
-	int found = 0;
-	for (int guard = 0; guard < PAGE_STACK_MAX; guard++) {
-		uint32_t end_block = 0, end_offset = 0;
-		bool ended = false;
-		lay_out(page_spare, at_block, at_offset, &end_block, &end_offset, &ended);
-		pages++;
-		if (!found && (end_block > block || (end_block == block && end_offset > offset))) {
-			found = pages;
-		}
-		if (ended) {
+// So it is done a page at a time, from a timer, in a box of its own off the
+// screen, while the page is already there to be read. The number on the strip
+// appears when the count is done. The walk also records where every page
+// begins, which is what turning back needs after such an arrival: without it
+// the first page back from the middle of a chapter was the end of the chapter
+// before.
+// ---------------------------------------------------------------------------
+
+// How long one tick of the count may take. A page is often more than this on
+// the device, so in practice one page per tick, and a tap waits at most one.
+#define COUNT_SLICE_MS 8
+
+static lv_obj_t *count_box;
+static lv_timer_t *count_timer;
+
+static struct {
+	uint32_t block, offset;
+} walk_starts[PAGE_STACK_MAX];
+static int walk_pages;				  // pages laid out so far, which is also the starts recorded
+static uint32_t walk_block, walk_offset; // where the next one begins
+static bool walk_done;				  // the chapter ran out, or the record is full
+static bool walk_wanted;			  // the strip is waiting for the number
+
+// -1, 0, 1 as `a` is before, at or after `b`.
+static int position_cmp(uint32_t a_block, uint32_t a_offset, uint32_t b_block, uint32_t b_offset) {
+	if (a_block != b_block) {
+		return a_block < b_block ? -1 : 1;
+	}
+	return a_offset < b_offset ? -1 : (a_offset > b_offset ? 1 : 0);
+}
+
+// Forgets the count. Called whenever what it counted stops being true: another
+// chapter, another size, other margins.
+static void walk_reset(void) {
+	walk_pages = 0;
+	walk_block = walk_offset = 0;
+	walk_done = false;
+	walk_wanted = false;
+	if (count_timer) {
+		lv_timer_pause(count_timer);
+	}
+	if (count_box) {
+		lv_obj_clean(count_box);
+	}
+}
+
+// Lays out one more page and records where it began.
+static void walk_page(void) {
+	if (walk_done) {
+		return;
+	}
+	if (walk_pages >= PAGE_STACK_MAX) {
+		walk_done = true;
+		return;
+	}
+	walk_starts[walk_pages].block = walk_block;
+	walk_starts[walk_pages].offset = walk_offset;
+	walk_pages++;
+
+	uint32_t end_block = 0, end_offset = 0;
+	bool ended = false;
+	lay_out(count_box, walk_block, walk_offset, &end_block, &end_offset, &ended);
+	walk_block = end_block;
+	walk_offset = end_offset;
+	if (ended) {
+		walk_done = true;
+	}
+}
+
+// How many recorded pages begin before the position (`inclusive`: at or
+// before it).
+static int walk_starts_before(uint32_t block, uint32_t offset, bool inclusive) {
+	int n = 0;
+	while (n < walk_pages) {
+		int cmp = position_cmp(walk_starts[n].block, walk_starts[n].offset, block, offset);
+		if (cmp > 0 || (cmp == 0 && !inclusive)) {
 			break;
 		}
-		at_block = end_block;
-		at_offset = end_offset;
+		n++;
 	}
-	lv_obj_clean(page_spare);
-	if (page_out) {
-		*page_out = found ? found : pages;
+	return n;
+}
+
+// Puts the pages the walk found before the first entry of the trail -- or
+// before the page on screen, when the trail is empty -- in front of the trail,
+// so turning back from where the reader arrived goes through them.
+static void walk_fill_trail(void) {
+	uint32_t block = page_stack_depth > 0 ? page_stack[0].block : page_block;
+	uint32_t offset = page_stack_depth > 0 ? page_stack[0].offset : page_offset;
+	int before = walk_starts_before(block, offset, false);
+	if (before <= 0) {
+		return;
 	}
-	return pages;
+	if (before + page_stack_depth > PAGE_STACK_MAX) {
+		before = PAGE_STACK_MAX - page_stack_depth;
+	}
+	memmove(&page_stack[before], &page_stack[0], (size_t)page_stack_depth * sizeof(page_stack[0]));
+	for (int i = 0; i < before; i++) {
+		page_stack[i].block = walk_starts[i].block;
+		page_stack[i].offset = walk_starts[i].offset;
+	}
+	page_stack_depth += before;
+}
+
+static void anchor_pages_before(int pages_in_chapter);
+
+static void count_timer_cb(lv_timer_t *timer) {
+	(void)timer;
+	// Not while a page slides: the tick would take its frames.
+	if (!book || turning) {
+		return;
+	}
+	uint32_t started = lv_tick_get();
+	do {
+		walk_page();
+	} while (!walk_done && lv_tick_elaps(started) < COUNT_SLICE_MS);
+	lv_obj_clean(count_box);
+	if (!walk_done) {
+		return;
+	}
+
+	lv_timer_pause(count_timer);
+	walk_fill_trail();
+	if (walk_wanted) {
+		walk_wanted = false;
+		page_number = walk_starts_before(page_block, page_offset, true);
+		if (page_number < 1) {
+			page_number = 1;
+		}
+		anchor_pages_before(walk_pages);
+		update_status();
+	}
+}
+
+// The trail behind the page on screen, when there is none: the reader arrived
+// here without turning pages and now turns one back. Whatever the count has
+// not reached yet is walked now, but only as far as this page.
+static void walk_to_page_on_screen(void) {
+	while (!walk_done && position_cmp(walk_block, walk_offset, page_block, page_offset) < 0) {
+		walk_page();
+	}
+	lv_obj_clean(count_box);
+	walk_fill_trail();
 }
 
 // How many pages of the book lie before the chapter on screen, guessed from how
@@ -759,24 +878,22 @@ static void update_status(void) {
 	ebookbar_refresh(&status_bar, &state);
 }
 
-// Counts the page the reader is on, for the times it cannot be reached by
-// counting: a position restored, a bookmark followed, a font size changed.
+// The page number goes unknown: a position restored, a bookmark followed, a
+// chapter picked, the text size changed. The count starts again from the top
+// of the chapter and puts the number on the strip when it is done; until then
+// the strip shows none.
 //
-// Never called from update_status(), which would be the obvious place: a slide
-// lays the arriving page out in the spare box and only then repaints the strip,
-// and the walk above uses that same box. Counting from in there would throw
-// away the page about to slide in. So it is done where the number goes unknown
-// instead, which is always a moment with the spare box free.
+// The walk has a box of its own, so a slide that lays the arriving page out in
+// the spare box while it runs takes nothing from it.
 static void page_number_recount(void) {
 	page_number = 0;
 	pages_before = 0;
+	walk_reset();
 	if (!book || !ebookbar_option(EBOOKBAR_PAGE) || opt_turn == TURN_VERTICAL) {
 		return;
 	}
-	int page = 0;
-	int pages = paginate_chapter(page_block, page_offset, &page);
-	page_number = page;
-	anchor_pages_before(pages);
+	walk_wanted = true;
+	lv_timer_resume(count_timer);
 }
 
 static void render_page(void) {
@@ -929,6 +1046,7 @@ static bool load_chapter_dir(uint32_t spine, uint32_t block, uint32_t offset, in
 	bool carry = direction > 0 && block == 0 && offset == 0 && page_number > 0;
 	int carried = pages_before + page_number;
 
+	walk_reset(); // it was counting the chapter being left
 	if (!ebook_open_chapter(book, spine)) {
 		return false;
 	}
@@ -963,6 +1081,7 @@ static bool load_chapter(uint32_t spine, uint32_t block, uint32_t offset) {
 // It costs one layout of one chapter, and it happens only when a reader crosses
 // a chapter boundary backwards.
 static bool load_chapter_at_end(uint32_t spine) {
+	walk_reset();
 	if (!ebook_open_chapter(book, spine)) {
 		return false;
 	}
@@ -1105,6 +1224,9 @@ static void page_next(void) {
 static void page_prev(void) {
 	if (!book || turning) {
 		return;
+	}
+	if (page_stack_depth == 0 && (page_block > 0 || page_offset > 0)) {
+		walk_to_page_on_screen();
 	}
 	if (page_stack_depth > 0) {
 		page_stack_depth--;
@@ -2013,6 +2135,7 @@ static void reader_unloaded_cb(lv_event_t *e) {
 	lv_anim_delete(page_box, NULL);
 	lv_anim_delete(page_spare, NULL);
 	turning = false;
+	walk_reset();
 	if (page_box) {
 		lv_obj_clean(page_box);
 	}
@@ -2158,6 +2281,18 @@ void ebookreader_init(gui_config_t *cfg) {
 	page_box = make_page_box(cfg);
 	page_spare = make_page_box(cfg);
 	lv_obj_set_x(page_spare, (int32_t)cfg->screen_width);
+
+	// Where the pages are counted: laid out like the others but never shown,
+	// parked a whole screen to the left, past where the slide ever goes.
+	count_box = lv_obj_create(ebookreader_screen);
+	lv_obj_remove_style_all(count_box);
+	lv_obj_set_size(count_box, cfg->screen_width, cfg->screen_height - bar_space());
+	lv_obj_set_pos(count_box, -2 * (int32_t)cfg->screen_width, 0);
+	lv_obj_remove_flag(count_box, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_remove_flag(count_box, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_flex_flow(count_box, LV_FLEX_FLOW_COLUMN);
+	count_timer = lv_timer_create(count_timer_cb, 1, NULL);
+	lv_timer_pause(count_timer);
 
 	ebookbar_create(&status_bar, ebookreader_screen, cfg->screen_width);
 	lv_obj_align(status_bar.root, LV_ALIGN_BOTTOM_MID, 0, -6);

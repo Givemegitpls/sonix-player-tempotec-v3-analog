@@ -1480,20 +1480,21 @@ static void musicsettings_loaded_cb(lv_event_t *e) {
 void musicsettings_init(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(musicsettings_screen, cfg, "music");
 
-	// The two pages of behaviour first: how the index is built, and what
-	// playback does around a track. Then the sound, from the widest tool to the
-	// narrowest, and the DAC's own switches at the end.
+	// The pages of behaviour first: how the index is built, what playback does
+	// around a track, how the lists look, and Last.fm, which only reports what
+	// was played. Then the sound, from the widest tool to the narrowest, and the
+	// DAC's own switches at the end.
 	build_scan_page(cfg);
 	settingsrow_add(container, "musicsettings_scan_options", NULL, switch_screen_cb, scan_screen);
 
 	build_playback_page(cfg);
 	settingsrow_add(container, "musicsettings_playback_options", NULL, switch_screen_cb, playback_screen);
 
-	lastfmsettings_init(cfg);
-	settingsrow_add(container, "lastfm", NULL, switch_screen_cb, lastfmsettings_screen());
-
 	build_display_page(cfg);
 	settingsrow_add(container, "musicsettings_display_options", NULL, switch_screen_cb, display_screen);
+
+	lastfmsettings_init(cfg);
+	settingsrow_add(container, "lastfm", NULL, switch_screen_cb, lastfmsettings_screen());
 
 	build_eq_page(cfg);
 	eq_row = settingsrow_add(container, "equaliser", NULL, switch_screen_cb, eq_screen);

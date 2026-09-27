@@ -19,7 +19,10 @@
 - **Parametric EQ** - 10 bands, each with frequency 20 Hz to 20 kHz, gain
   ±15 dB in tenths, Q from 0.10 to 10.00, and five shapes: peak, low shelf,
   high shelf, low-pass, high-pass. Preamp −15 to +6 dB. The page draws the real
-  response, computed from the coefficients that are running.
+  response, computed from the coefficients that are running. Presets are
+  Equalizer APO files in the `PEQ` folder of the card: the `ParametricEQ.txt`
+  that AutoEq publishes for your headphones loads as it is, and a preset saved
+  on the player opens in APO.
 - **MSEB** - HiBy's MageSound tuning, matched to the stock player: 10
   characteristics driven by 13 filters, with the slider travel selectable
   between 20, 40 and 100.
@@ -109,7 +112,7 @@ certificate checking, and HLS.
 - Support for EPUB 2 and 3.
 - Headings, emphasis, lists, quotes, rules, images, alignment and the table of
   contents.
-- Text size, line spacing, word spacing, margins, three reading themes (Paper,
+- Text size from 14 to 50, line spacing, word spacing, margins, three reading themes (Paper,
   Sepia, Night) and three page-turn animations.
 - **Bookmarks** - double-tap the top of a page; up to 64 per book.
 - A **reading bar** along the bottom with chapter, page, progress, battery and

@@ -125,12 +125,20 @@ void peq_reset(void);
 // pre-gain is left alone -- it belongs to the chain, not to the band.
 void peq_reset_band(int index);
 
-// Parametric presets, one file per name in <card>/.local/peq. Same shape as the
-// graphic EQ's and MSEB's; the contents are the whole chain -- all PEQ_BANDS
-// bands plus the pre-gain.
+// Parametric presets: Equalizer APO text files, the ParametricEQ.txt AutoEq
+// publishes for every headphone, one per name in <card>/PEQ. A preset saved
+// here is written in the same form, so it opens in APO too. Setting the
+// directory also moves the presets of the older format out of
+// <card>/.local/peq.
+//
+// Loading replaces the whole chain: the file's filters in order from the first
+// band, the rest off, and its preamp. `ignored` (may be NULL) gets how many
+// filters of the file could not come along -- past the tenth, or of a kind the
+// chain does not have. False, changing nothing, when the file cannot be read
+// or holds no usable filter at all.
 void peq_presets_set_dir(const char *sd_root);
 bool peq_preset_save(const char *name);
-bool peq_preset_load(const char *name);
+bool peq_preset_load(const char *name, int *ignored);
 bool peq_preset_delete(const char *name);
 typedef bool (*peq_preset_name_cb_t)(const char *name, void *user);
 int peq_preset_for_each(peq_preset_name_cb_t cb, void *user);
@@ -145,7 +153,8 @@ int peq_response_tenths(int freq, int sample_rate);
 // added together, because that is what the ear gets:
 //
 //   - the headroom taken off the graphic equaliser and the parametric, an
-//     attenuation equal to their most boosted band, so never above zero;
+//     attenuation equal to their most boosted band, less whatever a negative
+//     parametric preamp already takes off, so never above zero;
 //   - MSEB's own normalisation, which is not a clip guard and can go either
 //     way (see the note over mseb_auto_preamp_db in eq.c).
 //
