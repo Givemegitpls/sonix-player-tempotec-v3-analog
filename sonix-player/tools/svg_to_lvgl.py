@@ -125,9 +125,14 @@ ICONS = [
     ("circle-play.svg", "circle_play", 34),
     ("ellipsis-vertical.svg", "ellipsis_vertical", 30),
     ("list-music.svg", "list_music", 34),
-    # Selection mode on the library lists: its corner button that adds the
-    # chosen rows to a playlist.
+    # Selection mode on the library lists and the file browser: its corner
+    # buttons that add the chosen rows to a playlist, to the favourites and to
+    # the queue, and inside a playlist or the favourites take them out.
     ("list-plus.svg", "list_plus", 34),
+    ("star-plus.svg", "star_plus", 34),
+    ("list-queue.svg", "list_queue", 34),
+    ("list-x.svg", "list_x", 34),
+    ("star-x.svg", "star_x", 34),
     ("search.svg", "search", 34),
     ("wifi.svg", "wifi", 46),
     ("bluetooth.svg", "bluetooth", 46),

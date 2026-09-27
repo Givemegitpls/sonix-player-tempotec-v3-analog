@@ -47,7 +47,7 @@
 - **A–Z strip** - shown when scrolling a list.
 - **Search** across tracks, albums and artists.
 - **Quality badges** under a title: lossy, CD, Hi-Fi, DSD.
-- **Playlists** - create, rename, reorder, delete. A long press on a row of All tracks, Albums, Artists or Album artists starts a selection, and the chosen tracks, albums or artists go into a playlist together. A backup writes an extended M3U to the card that other players can read; import reads one back, resolves missing entries by file name, and reports what it found.
+- **Playlists** - create, rename, reorder, delete. A long press on a row of All tracks, Albums, Artists or Album artists starts a selection, and the chosen tracks, albums or artists go into the queue, the favourites or a playlist together. Inside a playlist or the favourites the selection also takes the chosen tracks out, after asking. In the file browser the same works on tracks and folders, a folder bringing everything under it. A backup writes an extended M3U to the card that other players can read; import reads one back, resolves missing entries by file name, and reports what it found.
 - **Playback modes** - normal, repeat all, repeat one, shuffle, and a continuous shuffle that deals a fresh order each round.
 - **Album and folder chaining** - the next album starts when one ends, or the next folder in a depth-first walk when you came in through the browser.
 - **The queue survives a reboot**, with positions, and so does the volume.

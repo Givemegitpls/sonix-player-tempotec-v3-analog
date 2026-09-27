@@ -177,6 +177,20 @@ bool library_fav_toggle(const char *path, const char *name, const char *artist);
 
 bool library_fav_contains(const char *path);
 
+// Stars every track in `rows` that is not starred yet, in one transaction and
+// in the order given; one already starred keeps its place. Returns how many of
+// them are favourites afterwards.
+typedef struct {
+	const char *path;
+	const char *name;
+	const char *artist;
+} library_fav_row_t;
+int library_fav_add_many(const library_fav_row_t *rows, int count);
+
+// Unstars every track in `paths`, in one transaction. Returns how many were
+// favourites and are not any more.
+int library_fav_remove_many(const char *const *paths, int count);
+
 // Removes from the favourites (and from the saved playback state) everything
 // under `prefix`. It is what clears rows pointing into the stream cache, whose
 // files are emptied and would otherwise show as dead favourites. Run once at
@@ -417,6 +431,11 @@ bool library_playlist_set_presence(const char *name, const library_playlist_pres
 
 // The first row naming this path, gone.
 bool library_playlist_remove_path(const char *name, const char *path);
+
+// Removes the entries at `positions` -- counted as the page shows the list,
+// entries whose file is missing left out -- in one transaction. Returns how
+// many went.
+int library_playlist_remove_positions(const char *name, const int *positions, int count);
 
 // One entry moved from one position to another, the rest closing up behind it.
 // Positions are counted from the top of the list as the page shows it, not row

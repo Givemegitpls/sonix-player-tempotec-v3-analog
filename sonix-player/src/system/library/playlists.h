@@ -51,6 +51,12 @@ bool playlists_create(const char *name);
 // display name come from the file's tags, like the stock player's entries.
 bool playlists_add_track(const char *name, const char *track_path);
 
+// The name and artist a track is listed under: the index's, else the file's
+// tags, else the file name for the title. The artist may come back empty, the
+// title does not. Reads the card, so not on the GUI thread for many tracks.
+void playlists_track_names(const char *track_path, char *title, size_t title_size, char *artist,
+						   size_t artist_size);
+
 // Reads a playlist. `paths_out` receives the resolved paths; `titles_out` and
 // `artists_out` (either may be NULL) receive the name each row should show,
 // taken from the track's own tags -- the #EXTINF line, when there is one, is
@@ -72,6 +78,10 @@ bool playlists_rename(const char *name, const char *new_name);
 // Removes the first entry whose path matches, and the #EXTINF line above it if
 // there is one. Returns false when the playlist or the entry is not there.
 bool playlists_remove_track(const char *name, const char *track_path);
+
+// Removes the entries at those positions of the list as the page shows it (see
+// library_playlist_remove_positions). Returns how many went.
+int playlists_remove_positions(const char *name, const int *positions, int count);
 
 // How many tracks a playlist holds: a COUNT over its table, so no card is
 // touched and nothing is read. The two are the same question, and

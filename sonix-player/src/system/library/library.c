@@ -1533,6 +1533,74 @@ bool library_fav_toggle(const char *path, const char *name, const char *artist) 
 	return now_favourite;
 }
 
+int library_fav_add_many(const library_fav_row_t *rows, int count) {
+	if (!rows || count <= 0) {
+		return 0;
+	}
+
+	pthread_mutex_lock(&db_lock);
+	int starred = 0;
+	if (db) {
+		exec("BEGIN");
+		sqlite3_stmt *stmt = NULL;
+		bool ok = sqlite3_prepare_v2(db,
+									 "INSERT OR IGNORE INTO FAVOURITES(path,name,artist,added_at)"
+									 " VALUES(?,?,?,strftime('%s','now'))",
+									 -1, &stmt, NULL) == SQLITE_OK;
+		for (int i = 0; i < count && ok; i++) {
+			if (!rows[i].path || !rows[i].path[0]) {
+				continue;
+			}
+			sqlite3_bind_text(stmt, 1, rows[i].path, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(stmt, 2, rows[i].name ? rows[i].name : "", -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(stmt, 3, rows[i].artist ? rows[i].artist : "", -1, SQLITE_TRANSIENT);
+			if (sqlite3_step(stmt) == SQLITE_DONE) {
+				starred++;
+			}
+			sqlite3_reset(stmt);
+		}
+		sqlite3_finalize(stmt);
+		exec(ok ? "COMMIT" : "ROLLBACK");
+		if (!ok) {
+			starred = 0;
+		}
+		bump_generation(GEN_FAVOURITES);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return starred;
+}
+
+int library_fav_remove_many(const char *const *paths, int count) {
+	if (!paths || count <= 0) {
+		return 0;
+	}
+
+	pthread_mutex_lock(&db_lock);
+	int removed = 0;
+	if (db) {
+		exec("BEGIN");
+		sqlite3_stmt *stmt = NULL;
+		bool ok = sqlite3_prepare_v2(db, "DELETE FROM FAVOURITES WHERE path=?", -1, &stmt, NULL) == SQLITE_OK;
+		for (int i = 0; i < count && ok; i++) {
+			if (!paths[i] || !paths[i][0]) {
+				continue;
+			}
+			sqlite3_bind_text(stmt, 1, paths[i], -1, SQLITE_TRANSIENT);
+			ok = sqlite3_step(stmt) == SQLITE_DONE;
+			removed += ok && sqlite3_changes(db) > 0 ? 1 : 0;
+			sqlite3_reset(stmt);
+		}
+		sqlite3_finalize(stmt);
+		exec(ok ? "COMMIT" : "ROLLBACK");
+		if (!ok) {
+			removed = 0;
+		}
+		bump_generation(GEN_FAVOURITES);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return removed;
+}
+
 int library_forget_under(const char *prefix) {
 	if (!prefix || !prefix[0]) {
 		return 0;
@@ -1583,7 +1651,7 @@ int library_for_each_ordered(library_list_t kind, library_filter_t filter, const
 	const char *by_name = list_uses_sortkey(kind) ? "sortkey" : "name COLLATE listorder";
 
 	if (kind == LIBRARY_LIST_FAVOURITES) {
-		snprintf(sql, sizeof(sql), "SELECT name, path, artist FROM FAVOURITES ORDER BY added_at");
+		snprintf(sql, sizeof(sql), "SELECT name, path, artist FROM FAVOURITES ORDER BY added_at, rowid");
 	} else if (kind == LIBRARY_LIST_TRACKS) {
 		// Inside one album the disc order is the natural one; everywhere else
 		// the titles read best alphabetically.
@@ -1746,7 +1814,7 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 	const char *col = filter_column(filter);
 
 	if (kind == LIBRARY_LIST_FAVOURITES) {
-		snprintf(sql, size, "SELECT %s FROM FAVOURITES ORDER BY added_at", select);
+		snprintf(sql, size, "SELECT %s FROM FAVOURITES ORDER BY added_at, rowid", select);
 		return;
 	}
 
@@ -3895,6 +3963,65 @@ bool library_playlist_remove_path(const char *name, const char *path) {
 	}
 	pthread_mutex_unlock(&db_lock);
 	return ok;
+}
+
+int library_playlist_remove_positions(const char *name, const int *positions, int count) {
+	char quoted[PLAYLIST_TABLE_MAX];
+	if (!positions || count <= 0 || !playlist_table(name, quoted, sizeof(quoted))) {
+		return 0;
+	}
+	// Positions counted as the page counts them, present<>0 (see
+	// library_playlist_move). Every idx is read before anything is deleted,
+	// since each deletion moves the positions after it.
+	char read_sql[PLAYLIST_TABLE_MAX + 80];
+	char delete_sql[PLAYLIST_TABLE_MAX + 40];
+	snprintf(read_sql, sizeof(read_sql), "SELECT idx FROM %s WHERE present<>0 ORDER BY idx LIMIT 1 OFFSET ?", quoted);
+	snprintf(delete_sql, sizeof(delete_sql), "DELETE FROM %s WHERE idx=?", quoted);
+
+	int64_t *keys = calloc((size_t)count, sizeof(*keys));
+	if (!keys) {
+		return 0;
+	}
+
+	pthread_mutex_lock(&db_lock);
+	int removed = 0;
+	if (db && playlist_table_exists_locked(name)) {
+		int found = 0;
+		sqlite3_stmt *stmt = NULL;
+		if (sqlite3_prepare_v2(db, read_sql, -1, &stmt, NULL) == SQLITE_OK) {
+			for (int i = 0; i < count; i++) {
+				if (positions[i] < 0) {
+					continue;
+				}
+				sqlite3_bind_int(stmt, 1, positions[i]);
+				if (sqlite3_step(stmt) == SQLITE_ROW) {
+					keys[found++] = sqlite3_column_int64(stmt, 0);
+				}
+				sqlite3_reset(stmt);
+			}
+			sqlite3_finalize(stmt);
+		}
+
+		exec("BEGIN");
+		bool ok = sqlite3_prepare_v2(db, delete_sql, -1, &stmt, NULL) == SQLITE_OK;
+		for (int i = 0; i < found && ok; i++) {
+			sqlite3_bind_int64(stmt, 1, keys[i]);
+			ok = sqlite3_step(stmt) == SQLITE_DONE;
+			removed += ok && sqlite3_changes(db) > 0 ? 1 : 0;
+			sqlite3_reset(stmt);
+		}
+		sqlite3_finalize(stmt);
+		exec(ok ? "COMMIT" : "ROLLBACK");
+		if (!ok) {
+			removed = 0;
+		}
+		if (removed > 0) {
+			bump_generation(GEN_PLAYLISTS);
+		}
+	}
+	pthread_mutex_unlock(&db_lock);
+	free(keys);
+	return removed;
 }
 
 int library_playlist_count(const char *name) {

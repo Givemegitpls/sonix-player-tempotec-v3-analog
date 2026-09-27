@@ -145,6 +145,97 @@ static bool batch_start(const char *name) {
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// Starring a set of tracks
+//
+// The same kind of work as adding them to a playlist -- a name and an artist
+// read for each track -- on the same terms: a thread of its own, one set at a
+// time, under a card that stays until it is done. Written in chunks, one
+// transaction each.
+// ---------------------------------------------------------------------------
+
+#define FAV_CHUNK 64
+
+typedef struct {
+	char **paths;
+	int count;
+	int starred;
+} fav_batch_t;
+
+static void fav_done_cb(void *arg) {
+	fav_batch_t *b = arg;
+	toast_busy_end();
+	if (b->starred == b->count) {
+		toast_success("favourites_tracks_added");
+	} else if (b->starred > 0) {
+		toast_error("favourites_some_tracks_not_added");
+	} else {
+		gui_notify_popup("favourites_cannot_add_the_tracks");
+	}
+	for (int i = 0; i < b->count; i++) {
+		free(b->paths[i]);
+	}
+	free(b->paths);
+	free(b);
+}
+
+static void *fav_worker(void *arg) {
+	fav_batch_t *b = arg;
+	thread_be_low_priority("favouritesadd");
+
+	library_fav_row_t *rows = malloc(FAV_CHUNK * sizeof(*rows));
+	char(*titles)[512] = malloc(FAV_CHUNK * sizeof(*titles));
+	char(*artists)[256] = malloc(FAV_CHUNK * sizeof(*artists));
+
+	pthread_mutex_lock(&batch_lock);
+	for (int first = 0; rows && titles && artists && first < b->count; first += FAV_CHUNK) {
+		int n = b->count - first < FAV_CHUNK ? b->count - first : FAV_CHUNK;
+		for (int i = 0; i < n; i++) {
+			const char *path = b->paths[first + i];
+			playlists_track_names(path, titles[i], sizeof(titles[i]), artists[i], sizeof(artists[i]));
+			rows[i] = (library_fav_row_t){path, titles[i], artists[i]};
+		}
+		b->starred += library_fav_add_many(rows, n);
+	}
+	pthread_mutex_unlock(&batch_lock);
+
+	free(rows);
+	free(titles);
+	free(artists);
+	gui_post(fav_done_cb, b);
+	return NULL;
+}
+
+void playlistpage_add_favourites(const char *const *paths, int count) {
+	if (!paths || count <= 0) {
+		return;
+	}
+	fav_batch_t *b = calloc(1, sizeof(*b));
+	if (!b) {
+		return;
+	}
+	b->paths = malloc((size_t)count * sizeof(*b->paths));
+	if (!b->paths) {
+		free(b);
+		return;
+	}
+	for (int i = 0; i < count; i++) {
+		b->paths[b->count] = strdup(paths[i] ? paths[i] : "");
+		if (!b->paths[b->count]) {
+			break;
+		}
+		b->count++;
+	}
+
+	toast_busy("favourites_adding_tracks");
+	pthread_t thread;
+	if (pthread_create(&thread, NULL, fav_worker, b) != 0) {
+		fav_done_cb(b);
+		return;
+	}
+	pthread_detach(thread);
+}
+
 // The naming dialog.
 static lv_obj_t *name_layer; // full-screen cover holding the field + keyboard
 static lv_obj_t *name_field;

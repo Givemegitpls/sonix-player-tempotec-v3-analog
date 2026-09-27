@@ -24,4 +24,9 @@ void playlistpage_add_track(const char *track_path);
 // order, written in the background. The page keeps its own copy of the paths.
 void playlistpage_add_tracks(const char *const *paths, int count);
 
+// Stars a set of local tracks, in this order, in the background: not a picker,
+// only a card while it works and one that says how it went. A track already
+// starred stays where it is. The page keeps its own copy of the paths.
+void playlistpage_add_favourites(const char *const *paths, int count);
+
 #endif /* PLAYLISTPAGE_H */

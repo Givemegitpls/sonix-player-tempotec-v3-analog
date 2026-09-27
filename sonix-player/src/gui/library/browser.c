@@ -21,13 +21,13 @@
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/settings/musicsettings.h"
+#include "src/gui/library/playlistpage.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/library/cue.h"
 #include "src/system/playback/device_state.h"
-#include "src/gui/shell/popover.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/core/lang.h"
@@ -84,6 +84,9 @@
 // directory cannot eat the heap.
 #define MAX_ENTRIES 20000
 
+// The longest folder path list_directory() is given.
+#define PATH_BUF 1024
+
 lv_obj_t *browser_screen;
 
 static lv_obj_t *file_list; // the scrolling viewport
@@ -103,6 +106,9 @@ static char root_path[512];
 static lv_obj_t *root_button;
 static lv_obj_t *shuffle_button;
 static char current_path[512];
+
+static lv_obj_t *title_label;
+static gui_config_t *config;
 
 // ---------------------------------------------------------------------------
 // the entries
@@ -209,9 +215,9 @@ static bool listing_add(listing_t *list, const char *name, const char *file, boo
 	return true;
 }
 
-// qsort has no way to pass the pool through, and only the reader thread ever
-// sorts, so a file-scope pointer is enough.
-static const char *sort_pool;
+// qsort has no way to pass the pool through. Per thread: the reader and the
+// selection's gatherer both sort, each its own listing.
+static __thread const char *sort_pool;
 
 // Directories sort before files, otherwise alphabetical (case-insensitive).
 //
@@ -244,6 +250,7 @@ typedef struct {
 	lv_obj_t *button;
 	lv_obj_t *icon;
 	lv_obj_t *label;
+	lv_obj_t *check;	// the tick on a chosen row in selection mode
 	lv_obj_t *playmark; // the accent bar on the row of the playing file
 
 	// Which entry this row is currently showing, or -1 when parked.
@@ -272,6 +279,8 @@ static uint32_t listing_generation = 1;
 static void adopt_listing(void);
 static bool reader_has_result(void);
 static bool reader_busy(void);
+static void row_update_selection(row_t *row);
+static bool list_directory(const char *path, listing_t *out, cue_sheet_t *sheets, char (*claims)[512]);
 
 static void row_show_glyph(row_t *row, bool is_dir) {
 	// Audio files get the note, not a generic sheet of paper -- everything a
@@ -365,6 +374,7 @@ static void row_bind(row_t *row, int index) {
 
 	if (index < 0 || (size_t)index >= shown.count) {
 		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
 		// The mark goes with the entry, or it outlives it: the row is hidden
 		// here, but set_message() shows the first one again for "reading" and
 		// "no audio files" without rebinding it, and a row that comes back for
@@ -379,6 +389,7 @@ static void row_bind(row_t *row, int index) {
 	lv_label_set_text(row->label, entry_name((size_t)index));
 	row_show_glyph(row, shown.entries[index].is_dir != 0);
 	row_update_playmark(row);
+	row_update_selection(row);
 }
 
 // ---------------------------------------------------------------------------
@@ -541,73 +552,340 @@ static int scroll_stack[SCROLL_STACK_DEPTH];
 static int scroll_stack_len;
 static int pending_scroll = -1; // applied by adopt_listing() when >= 0
 
-// A long press on a file: the same "add to the queue" the library lists offer,
-// so a track reached by walking the card behaves like one reached through the
-// index. A folder has nothing to add, so it gets no menu.
-static char menu_path[sizeof(current_path) + 256 + 1];
-
-static void menu_queue_action(void *user) {
-	(void)user;
-	if (menu_path[0] && playlist_insert_next(menu_path)) {
-		// Written down now: the mirror on disk is otherwise refreshed only when
-		// a track is loaded, and a power-off before that loses the addition.
-		device_state_queue_changed();
-		toast_success("added_to_the_queue");
-	}
-}
-
 // Which row the pointer is over, or -1. The pool of row objects is reused as
 // the list scrolls, so a row's index has to be looked up rather than carried.
-static int row_index_of(lv_obj_t *button) {
+static row_t *row_of_button(lv_obj_t *button) {
 	for (int i = 0; i < ROW_POOL; i++) {
 		if (rows[i].button == button) {
-			return rows[i].index;
+			return &rows[i];
 		}
 	}
-	return -1;
+	return NULL;
 }
 
-// True from a long press until the release it belongs to has gone by. LVGL
-// sends LV_EVENT_CLICKED on release whether or not a long press was sent first,
-// so without this a hold would open the pop-over and start the track behind it.
-static bool swallow_next_click;
+// ---------------------------------------------------------------------------
+// selection
+//
+// A long press on a row starts it, as on the library lists: from then on a tap
+// chooses a row or lets it go, and letting go of the last one ends it. The
+// corner trades its buttons for the ones that act on what is chosen -- the
+// queue, the favourites, a playlist -- and close. A chosen folder stands for
+// everything playable under it, at any depth, in the order the browser lists
+// it. Opening another folder or leaving the page ends the mode.
+// ---------------------------------------------------------------------------
+
+#define SELECTION_MAX_TRACKS 20000
+#define GATHER_MAX_DEPTH 16
+
+static bool selecting;
+static uint8_t *chosen; // one per entry of `shown`, while selecting
+static size_t chosen_count;
+static bool gathering; // the chosen rows are being turned into tracks
+
+static lv_obj_t *sel_queue_btn;
+static lv_obj_t *sel_fav_btn;
+static lv_obj_t *sel_add_btn;
+static lv_obj_t *sel_close_btn;
+
+static void update_corner_buttons(void);
+
+static void row_update_selection(row_t *row) {
+	bool on = selecting && chosen && row->index >= 0 && (size_t)row->index < shown.count && chosen[row->index];
+	if (on) {
+		lv_obj_set_style_image_recolor(row->check, theme()->accent, 0);
+		lv_obj_remove_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+	} else {
+		lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+	}
+}
+
+static void rows_update_selection(void) {
+	for (int i = 0; i < ROW_POOL; i++) {
+		row_update_selection(&rows[i]);
+	}
+}
+
+static void selection_stop(void) {
+	if (!selecting) {
+		return;
+	}
+	selecting = false;
+	free(chosen);
+	chosen = NULL;
+	chosen_count = 0;
+	update_corner_buttons();
+	rows_update_selection();
+}
+
+static bool selection_start(void) {
+	if (selecting) {
+		return true;
+	}
+	if (shown.count == 0) {
+		return false;
+	}
+	chosen = calloc(shown.count, 1);
+	if (!chosen) {
+		return false;
+	}
+	selecting = true;
+	chosen_count = 0;
+	update_corner_buttons();
+	rows_update_selection();
+	return true;
+}
+
+// Chooses the row, or lets it go. Letting go of the last one leaves the mode.
+static void selection_toggle(row_t *row) {
+	int index = row->index;
+	if (!selecting || index < 0 || (size_t)index >= shown.count) {
+		return;
+	}
+	chosen[index] = !chosen[index];
+	if (chosen[index]) {
+		chosen_count++;
+	} else if (--chosen_count == 0) {
+		selection_stop();
+		return;
+	}
+	row_update_selection(row);
+}
 
 static void entry_long_pressed_cb(lv_event_t *e) {
-	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+	if (player_sheet_drag_active() || switcher_back_drag_active() || gathering) {
 		return;
 	}
-	lv_obj_t *button = lv_event_get_current_target(e);
-	int index = row_index_of(button);
-	if (index < 0 || (size_t)index >= shown.count || shown.entries[index].is_dir) {
+	row_t *row = row_of_button(lv_event_get_current_target(e));
+	if (!row || row->index < 0 || (size_t)row->index >= shown.count) {
 		return;
 	}
-	snprintf(menu_path, sizeof(menu_path), "%s/%s", current_path, entry_file((size_t)index));
 
-	swallow_next_click = true;
-	static const popover_item_t items[] = {{"add_to_queue", menu_queue_action, NULL, false}};
-	popover_show(button, items, 1);
+	// The lift that ends this press would otherwise arrive as a click and
+	// take the row straight back out of the selection.
+	lv_indev_t *indev = lv_indev_active();
+	if (indev) {
+		lv_indev_wait_release(indev);
+	}
+
+	if (!selection_start()) {
+		return;
+	}
+	if (!chosen[row->index]) {
+		selection_toggle(row);
+	}
+}
+
+// What the chosen rows turn into, and where it goes.
+typedef enum {
+	SEND_QUEUE,
+	SEND_FAVOURITES,
+	SEND_PLAYLIST,
+} send_t;
+
+typedef struct {
+	send_t to;
+
+	char **roots; // the chosen rows, in list order
+	uint8_t *root_is_dir;
+	int root_count;
+
+	char **paths; // the tracks behind them
+	int count;
+	int cap;
+
+	cue_sheet_t *sheets;
+	char claims[CUE_CLAIM_MAX][512];
+} gather_t;
+
+static void gather_free(gather_t *g) {
+	for (int i = 0; i < g->root_count; i++) {
+		free(g->roots[i]);
+	}
+	for (int i = 0; i < g->count; i++) {
+		free(g->paths[i]);
+	}
+	free(g->roots);
+	free(g->root_is_dir);
+	free(g->paths);
+	free(g->sheets);
+	free(g);
+}
+
+// False once no more can be taken.
+static bool gather_add(gather_t *g, const char *path) {
+	if (g->count >= SELECTION_MAX_TRACKS) {
+		return false;
+	}
+	if (g->count == g->cap) {
+		int cap = g->cap ? g->cap * 2 : 64;
+		char **grown = realloc(g->paths, (size_t)cap * sizeof(*grown));
+		if (!grown) {
+			return false;
+		}
+		g->paths = grown;
+		g->cap = cap;
+	}
+	char *copy = strdup(path);
+	if (!copy) {
+		return false;
+	}
+	g->paths[g->count++] = copy;
+	return true;
+}
+
+// Everything playable under `dir`, in the order the browser lists it: its
+// folders first, each walked in turn, then its own tracks.
+static bool gather_walk(gather_t *g, const char *dir, int depth) {
+	if (depth > GATHER_MAX_DEPTH) {
+		return true;
+	}
+	listing_t l = {0};
+	bool more = true;
+	if (list_directory(dir, &l, g->sheets, g->claims)) {
+		for (size_t i = 0; i < l.count && more; i++) {
+			char path[PATH_BUF];
+			if (snprintf(path, sizeof(path), "%s/%s", dir, l.pool + l.entries[i].file_offset) >= (int)sizeof(path)) {
+				continue;
+			}
+			more = l.entries[i].is_dir ? gather_walk(g, path, depth + 1) : gather_add(g, path);
+		}
+	}
+	free(l.entries);
+	free(l.pool);
+	return more;
+}
+
+static void gather_done_cb(void *arg) {
+	gather_t *g = arg;
+	gathering = false;
+	toast_busy_end();
+
+	if (g->count == 0) {
+		toast_error("browser_no_audio_files");
+		gather_free(g);
+		return;
+	}
+
+	switch (g->to) {
+	case SEND_QUEUE: {
+		int queued = 0;
+		for (int i = 0; i < g->count; i++) {
+			queued += playlist_insert_next(g->paths[i]) ? 1 : 0;
+		}
+		if (queued > 0) {
+			// Written down now: the mirror on disk is otherwise refreshed only
+			// when a track is loaded, and a power-off before that loses the
+			// addition.
+			device_state_queue_changed();
+			toast_success(queued == 1 ? "added_to_the_queue" : "queue_tracks_added");
+		} else {
+			toast_error("playlist_cannot_add_the_tracks");
+		}
+		break;
+	}
+	case SEND_FAVOURITES:
+		playlistpage_add_favourites((const char *const *)g->paths, g->count);
+		break;
+	case SEND_PLAYLIST:
+		playlistpage_add_tracks((const char *const *)g->paths, g->count);
+		break;
+	}
+	gather_free(g);
+}
+
+static void *gather_worker(void *arg) {
+	gather_t *g = arg;
+	thread_be_low_priority("browser gather");
+	bool more = true;
+	for (int i = 0; i < g->root_count && more; i++) {
+		more = g->root_is_dir[i] ? gather_walk(g, g->roots[i], 0) : gather_add(g, g->roots[i]);
+	}
+	gui_post(gather_done_cb, g);
+	return NULL;
+}
+
+// Hands the chosen rows to a thread that turns them into tracks -- a folder
+// can hold a whole collection, and walking it is card reads -- and leaves the
+// mode.
+static void selection_send(send_t to) {
+	if (!selecting || chosen_count == 0 || gathering) {
+		return;
+	}
+	gather_t *g = calloc(1, sizeof(*g));
+	if (!g) {
+		return;
+	}
+	g->to = to;
+	g->roots = calloc(chosen_count, sizeof(*g->roots));
+	g->root_is_dir = calloc(chosen_count, 1);
+	g->sheets = malloc(sizeof(*g->sheets)); // NULL only leaves cue sheets unsplit
+	if (!g->roots || !g->root_is_dir) {
+		gather_free(g);
+		return;
+	}
+	for (size_t i = 0; i < shown.count && (size_t)g->root_count < chosen_count; i++) {
+		if (!chosen[i]) {
+			continue;
+		}
+		char path[PATH_BUF];
+		snprintf(path, sizeof(path), "%s/%s", current_path, entry_file(i));
+		g->roots[g->root_count] = strdup(path);
+		if (!g->roots[g->root_count]) {
+			break;
+		}
+		g->root_is_dir[g->root_count] = shown.entries[i].is_dir;
+		g->root_count++;
+	}
+	selection_stop();
+
+	gathering = true;
+	toast_busy("browser_gathering_tracks");
+	pthread_t thread;
+	if (pthread_create(&thread, NULL, gather_worker, g) != 0) {
+		gather_done_cb(g);
+		return;
+	}
+	pthread_detach(thread);
+}
+
+static void sel_queue_cb(lv_event_t *e) {
+	(void)e;
+	selection_send(SEND_QUEUE);
+}
+
+static void sel_fav_cb(lv_event_t *e) {
+	(void)e;
+	selection_send(SEND_FAVOURITES);
+}
+
+static void sel_add_cb(lv_event_t *e) {
+	(void)e;
+	selection_send(SEND_PLAYLIST);
+}
+
+static void sel_close_cb(lv_event_t *e) {
+	(void)e;
+	selection_stop();
+}
+
+static void screen_unloaded_cb(lv_event_t *e) {
+	(void)e;
+	selection_stop();
 }
 
 static void entry_clicked_cb(lv_event_t *e) {
-	if (swallow_next_click) {
-		swallow_next_click = false;
-		return; // the release of the hold that opened the pop-over
-	}
 	if (player_sheet_drag_active() || switcher_back_drag_active()) {
 		return; // a swipe across the row, not a tap on it
 	}
 
-	lv_obj_t *button = lv_event_get_target(e);
-
-	int index = -1;
-	for (int i = 0; i < ROW_POOL; i++) {
-		if (rows[i].button == button) {
-			index = rows[i].index;
-			break;
-		}
+	row_t *row = row_of_button(lv_event_get_target(e));
+	if (!row || row->index < 0 || (size_t)row->index >= shown.count) {
+		return;
 	}
+	int index = row->index;
 
-	if (index < 0 || (size_t)index >= shown.count) {
+	if (selecting) {
+		selection_toggle(row);
 		return;
 	}
 
@@ -639,20 +917,26 @@ static bool listing_has_tracks(void) {
 	return false;
 }
 
-static void update_corner_buttons(void) {
-	if (root_button) {
-		if (browser_can_go_up()) {
-			lv_obj_remove_flag(root_button, LV_OBJ_FLAG_HIDDEN);
-		} else {
-			lv_obj_add_flag(root_button, LV_OBJ_FLAG_HIDDEN);
-		}
+static void show_if(lv_obj_t *obj, bool show) {
+	if (!obj) {
+		return;
 	}
-	if (shuffle_button) {
-		if (listing_has_tracks()) {
-			lv_obj_remove_flag(shuffle_button, LV_OBJ_FLAG_HIDDEN);
-		} else {
-			lv_obj_add_flag(shuffle_button, LV_OBJ_FLAG_HIDDEN);
-		}
+	if (show) {
+		lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN);
+	} else {
+		lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+	}
+}
+
+static void update_corner_buttons(void) {
+	show_if(root_button, !selecting && browser_can_go_up());
+	show_if(shuffle_button, !selecting && listing_has_tracks());
+	show_if(sel_queue_btn, selecting);
+	show_if(sel_fav_btn, selecting);
+	show_if(sel_add_btn, selecting);
+	show_if(sel_close_btn, selecting);
+	if (title_label) {
+		settingsrow_title_corner_slots(title_label, config, selecting ? 4 : 2);
 	}
 }
 
@@ -803,21 +1087,17 @@ static uint32_t ready_seq;
 
 static bool is_playable_file(const char *name);
 
-// Reads one directory into `staging`. Runs on the reader thread with the lock
-// released, so nothing on the UI side waits for it. `seq` identifies which
-// request this answers.
-static void read_directory(const char *path, uint32_t seq) {
-	staging.count = 0;
-	staging.pool_used = 0;
+// Reads one directory into `out`, sorted: its folders and what can be played
+// in it, as the browser lists them. `sheets` is a buffer for parsing its cue
+// sheets (NULL leaves them unsplit) and `claims` room for CUE_CLAIM_MAX names.
+// False when the folder cannot be opened. Off the UI thread.
+static bool list_directory(const char *path, listing_t *out, cue_sheet_t *sheets, char (*claims)[512]) {
+	out->count = 0;
+	out->pool_used = 0;
 
 	DIR *dir = opendir(path);
 	if (!dir) {
-		pthread_mutex_lock(&reader_lock);
-		reader_failed = true;
-		reader_ready = true;
-		ready_seq = seq;
-		pthread_mutex_unlock(&reader_lock);
-		return;
+		return false;
 	}
 
 	size_t skipped = 0;
@@ -834,41 +1114,41 @@ static void read_directory(const char *path, uint32_t seq) {
 	// The big file is claimed and not listed: it is the same audio as the rows
 	// above it, and a listing that offers both offers the same album twice.
 	size_t claim_count = 0;
-	if (cue_sheets) {
+	if (sheets) {
 		while ((de = readdir(dir)) != NULL) {
 			if (de->d_name[0] == '.' || !cue_is_sheet(de->d_name)) {
 				continue;
 			}
-			char sheet_path[sizeof(reader_request) + sizeof(de->d_name) + 1];
+			char sheet_path[PATH_BUF + sizeof(de->d_name) + 1];
 			snprintf(sheet_path, sizeof(sheet_path), "%s/%s", path, de->d_name);
-			if (!cue_parse(sheet_path, cue_sheets)) {
+			if (!cue_parse(sheet_path, sheets)) {
 				continue; // not a sheet this player can follow: leave the folder as it is
 			}
 
-			for (int t = 0; t < cue_sheets->track_count; t++) {
+			for (int t = 0; t < sheets->track_count; t++) {
 				char file[300];
-				cue_virtual_path(de->d_name, cue_sheets->tracks[t].number, file, sizeof(file));
+				cue_virtual_path(de->d_name, sheets->tracks[t].number, file, sizeof(file));
 
 				// The row says what the sheet says. A sheet with no title for a
 				// track is rare and still has to read as something.
 				char label[220];
-				const char *title = cue_sheets->tracks[t].title;
+				const char *title = sheets->tracks[t].title;
 				if (title[0]) {
-					snprintf(label, sizeof(label), "%d. %s", cue_sheets->tracks[t].number, title);
+					snprintf(label, sizeof(label), "%d. %s", sheets->tracks[t].number, title);
 				} else {
-					snprintf(label, sizeof(label), "%d", cue_sheets->tracks[t].number);
+					snprintf(label, sizeof(label), "%d", sheets->tracks[t].number);
 				}
 
-				if (staging.count >= MAX_ENTRIES || !listing_add(&staging, label, file, false)) {
+				if (out->count >= MAX_ENTRIES || !listing_add(out, label, file, false)) {
 					break;
 				}
 			}
 
 			// Only the name: the second pass compares names, and a sheet whose
 			// audio lives in another folder claims nothing here.
-			const char *slash = strrchr(cue_sheets->audio_path, '/');
+			const char *slash = strrchr(sheets->audio_path, '/');
 			if (claim_count < CUE_CLAIM_MAX) {
-				snprintf(cue_claims[claim_count], sizeof(cue_claims[0]), "%s", slash ? slash + 1 : cue_sheets->audio_path);
+				snprintf(claims[claim_count], sizeof(claims[0]), "%s", slash ? slash + 1 : sheets->audio_path);
 				claim_count++;
 			}
 		}
@@ -899,7 +1179,7 @@ static void read_directory(const char *path, uint32_t seq) {
 		} else if (is_playable_file(de->d_name)) {
 			is_dir = false;
 		} else {
-			char entry_path[sizeof(reader_request) + sizeof(de->d_name) + 1];
+			char entry_path[PATH_BUF + sizeof(de->d_name) + 1];
 			snprintf(entry_path, sizeof(entry_path), "%s/%s", path, de->d_name);
 
 			struct stat st;
@@ -917,20 +1197,20 @@ static void read_directory(const char *path, uint32_t seq) {
 		if (!is_dir) {
 			bool claimed = false;
 			for (size_t i = 0; i < claim_count && !claimed; i++) {
-				claimed = strcmp(cue_claims[i], de->d_name) == 0;
+				claimed = strcmp(claims[i], de->d_name) == 0;
 			}
 			if (claimed) {
 				continue; // a sheet above already listed this file, track by track
 			}
 		}
 
-		if (staging.count >= MAX_ENTRIES) {
+		if (out->count >= MAX_ENTRIES) {
 			skipped++;
 			continue;
 		}
 
-		if (!listing_add(&staging, de->d_name, NULL, is_dir)) {
-			fprintf(stderr, "browser: out of memory at %zu entries\n", staging.count);
+		if (!listing_add(out, de->d_name, NULL, is_dir)) {
+			fprintf(stderr, "browser: out of memory at %zu entries\n", out->count);
 			break;
 		}
 	}
@@ -939,7 +1219,7 @@ static void read_directory(const char *path, uint32_t seq) {
 	// Telling them apart matters: a truncated listing otherwise just looks like
 	// a folder with fewer files in it.
 	if (errno != 0) {
-		fprintf(stderr, "browser: readdir stopped after %zu entries in '%s': %s\n", staging.count, path,
+		fprintf(stderr, "browser: readdir stopped after %zu entries in '%s': %s\n", out->count, path,
 				strerror(errno));
 	}
 
@@ -949,16 +1229,26 @@ static void read_directory(const char *path, uint32_t seq) {
 		fprintf(stderr, "browser: '%s' holds more than %d entries, %zu not shown\n", path, MAX_ENTRIES, skipped);
 	}
 
-	sort_pool = staging.pool;
-	qsort(staging.entries, staging.count, sizeof(*staging.entries), entry_cmp);
+	sort_pool = out->pool;
+	qsort(out->entries, out->count, sizeof(*out->entries), entry_cmp);
+	return true;
+}
+
+// Reads one directory into `staging`. Runs on the reader thread with the lock
+// released, so nothing on the UI side waits for it. `seq` identifies which
+// request this answers.
+static void read_directory(const char *path, uint32_t seq) {
+	bool ok = list_directory(path, &staging, cue_sheets, cue_claims);
 
 	// Whatever the previous folder's artwork left behind goes back to the
 	// kernel here rather than sitting in the arena as a high-water mark -- and
 	// off the UI thread, where walking the heap would be one more pause.
-	malloc_trim(0);
+	if (ok) {
+		malloc_trim(0);
+	}
 
 	pthread_mutex_lock(&reader_lock);
-	reader_failed = false;
+	reader_failed = !ok;
 	reader_ready = true;
 	ready_seq = seq;
 	pthread_mutex_unlock(&reader_lock);
@@ -1047,6 +1337,9 @@ static void reader_start(void) {
 }
 
 static void browser_open_dir(const char *path) {
+	// The chosen rows are entries of the listing about to go.
+	selection_stop();
+
 	// browser_refresh() passes current_path straight back in, so guard against
 	// copying the buffer onto itself.
 	if (path != current_path) {
@@ -1211,6 +1504,13 @@ static void build_rows(int width) {
 										lv_obj_get_style_text_line_space(row->label, LV_PART_MAIN),
 									0);
 
+		row->check = lv_image_create(row->button);
+		lv_image_set_src(row->check, &icon_check);
+		lv_obj_add_style(row->check, &theme_style_icon, 0);
+		lv_obj_set_style_image_recolor_opa(row->check, LV_OPA_COVER, 0);
+		lv_obj_remove_flag(row->check, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+
 		// Outside the flex layout, in the row's own left padding: it marks the
 		// row without moving anything on it.
 		row->playmark = lv_obj_create(row->button);
@@ -1233,6 +1533,26 @@ static void build_rows(int width) {
 	}
 }
 
+// A button in the title row's corner, `slot` places from the right edge.
+// Hidden until something shows it.
+static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
+	lv_obj_t *btn = lv_btn_create(browser_screen);
+	lv_obj_set_size(btn, 56, 56);
+	lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_border_width(btn, 0, 0);
+	lv_obj_set_style_shadow_width(btn, 0, 0);
+	lv_obj_set_style_pad_all(btn, 0, 0);
+	lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * 62, cfg->padding + cfg->top_bar_height);
+	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+
+	lv_obj_t *image = lv_image_create(btn);
+	lv_image_set_src(image, glyph);
+	lv_obj_add_style(image, &theme_style_icon, 0);
+	lv_obj_center(image);
+	return btn;
+}
+
 void browser_init(gui_config_t *cfg) {
 	init_list_styles();
 
@@ -1250,45 +1570,28 @@ void browser_init(gui_config_t *cfg) {
 
 	lv_obj_add_style(browser_screen, &theme_style_screen, 0);
 
-	lv_obj_t *title = settingsrow_title(browser_screen, cfg, "browser_file_browser");
-	settingsrow_title_corner_slots(title, cfg, 2); // root, and shuffle beside it
+	config = cfg;
+	title_label = settingsrow_title(browser_screen, cfg, "browser_file_browser");
+	settingsrow_title_corner_slots(title_label, cfg, 2); // root, and shuffle beside it
 
 	// Straight back to the top of the card, from however deep the walk went.
 	// Same corner, size and spacing as the buttons on the Music page, so the
 	// two pages' top right corners are the same place.
-	root_button = lv_btn_create(browser_screen);
-	lv_obj_set_size(root_button, 56, 56);
-	lv_obj_set_style_bg_opa(root_button, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_border_width(root_button, 0, 0);
-	lv_obj_set_style_shadow_width(root_button, 0, 0);
-	lv_obj_set_style_pad_all(root_button, 0, 0);
-	lv_obj_align(root_button, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
-	lv_obj_add_event_cb(root_button, root_button_cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_add_flag(root_button, LV_OBJ_FLAG_HIDDEN);
-
-	lv_obj_t *root_glyph = lv_image_create(root_button);
-	lv_image_set_src(root_glyph, &icon_folder_root);
-	lv_obj_add_style(root_glyph, &theme_style_icon, 0);
-	lv_obj_center(root_glyph);
+	root_button = corner_button(cfg, 0, &icon_folder_root, root_button_cb);
 
 	// And this folder in a random order, in the slot to its left. Only where
 	// there is something to play: in a folder of nothing but folders it would
 	// be a control with no meaning, and the walk down to an album passes
 	// through several of those.
-	shuffle_button = lv_btn_create(browser_screen);
-	lv_obj_set_size(shuffle_button, 56, 56);
-	lv_obj_set_style_bg_opa(shuffle_button, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_border_width(shuffle_button, 0, 0);
-	lv_obj_set_style_shadow_width(shuffle_button, 0, 0);
-	lv_obj_set_style_pad_all(shuffle_button, 0, 0);
-	lv_obj_align(shuffle_button, LV_ALIGN_TOP_RIGHT, -cfg->padding - 62, cfg->padding + cfg->top_bar_height);
-	lv_obj_add_event_cb(shuffle_button, shuffle_button_cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_add_flag(shuffle_button, LV_OBJ_FLAG_HIDDEN);
+	shuffle_button = corner_button(cfg, 1, &icon_shuffle, shuffle_button_cb);
 
-	lv_obj_t *shuffle_glyph = lv_image_create(shuffle_button);
-	lv_image_set_src(shuffle_glyph, &icon_shuffle);
-	lv_obj_add_style(shuffle_glyph, &theme_style_icon, 0);
-	lv_obj_center(shuffle_glyph);
+	// Selection mode's buttons, in the same corner while it lasts, from the
+	// right: close, a playlist, the favourites, the queue.
+	sel_close_btn = corner_button(cfg, 0, &icon_close, sel_close_cb);
+	sel_add_btn = corner_button(cfg, 1, &icon_list_plus, sel_add_cb);
+	sel_fav_btn = corner_button(cfg, 2, &icon_star_plus, sel_fav_cb);
+	sel_queue_btn = corner_button(cfg, 3, &icon_list_queue, sel_queue_cb);
+	lv_obj_add_event_cb(browser_screen, screen_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
 
 	int content_top = settingsrow_content_top(cfg);
 

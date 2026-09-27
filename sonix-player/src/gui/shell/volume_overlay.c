@@ -27,7 +27,9 @@
 #define VOLUME_HIGH_PERCENT 55
 
 static lv_obj_t *overlay;
-static lv_obj_t *veil; // invisible, full-screen: a tap anywhere else dismisses
+// Invisible and full-screen, and it takes no input: a tap or a drag anywhere
+// but the pill goes through to the page underneath.
+static lv_obj_t *veil;
 static lv_obj_t *overlay_icon;
 static lv_obj_t *overlay_slider;
 static lv_obj_t *overlay_label;
@@ -83,16 +85,6 @@ static void hide_cb(lv_timer_t *timer) {
 	lv_timer_pause(hide_timer);
 }
 
-// A tap outside the pill closes it at once instead of waiting out the timer.
-static void veil_clicked_cb(lv_event_t *e) {
-	(void)e;
-	if (overlay_slider && lv_obj_has_state(overlay_slider, LV_STATE_PRESSED)) {
-		return;
-	}
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
-	lv_timer_pause(hide_timer);
-}
-
 static void set_icon_for(int percent) {
 	const lv_image_dsc_t *icon = &icon_volume_high;
 	if (percent < VOLUME_LOW_PERCENT) {
@@ -138,19 +130,6 @@ void volume_overlay_show(int percent) {
 		return;
 	}
 
-	// Over the screensaver the veil stops taking taps. Everywhere else it is
-	// what dismisses the pill, but here the only gesture there is -- the swipe
-	// up that puts the screensaver away -- belongs to what is underneath, and a
-	// transparent sheet swallowing it for a second and a half reads as a screen
-	// that has stopped responding. The pill still goes away on its own, and the
-	// slider is still draggable: a parent that takes no input does not stop its
-	// children from taking theirs.
-	if (over_saver) {
-		lv_obj_remove_flag(veil, LV_OBJ_FLAG_CLICKABLE);
-	} else {
-		lv_obj_add_flag(veil, LV_OBJ_FLAG_CLICKABLE);
-	}
-
 	if (percent < 0) {
 		percent = 0;
 	}
@@ -184,8 +163,8 @@ void volume_overlay_show(int percent) {
 void volume_overlay_init(gui_config_t *cfg) {
 	(void)cfg;
 
-	// The veil under the pill: fully transparent, but it takes every tap landing
-	// outside the pill while the volume is up, and that tap dismisses.
+	// The veil under the pill. A parent that takes no input does not stop its
+	// children from taking theirs: the pill and its slider still get the finger.
 	veil = lv_obj_create(lv_layer_top());
 	lv_obj_set_size(veil, lv_pct(100), lv_pct(100));
 	lv_obj_set_pos(veil, 0, 0);
@@ -193,9 +172,8 @@ void volume_overlay_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(veil, 0, 0);
 	lv_obj_set_style_pad_all(veil, 0, 0);
 	lv_obj_remove_flag(veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_remove_flag(veil, LV_OBJ_FLAG_CLICKABLE);
 	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_add_event_cb(veil, veil_clicked_cb, LV_EVENT_CLICKED, NULL);
 
 	overlay = lv_obj_create(veil);
 	lv_obj_set_size(overlay, OVERLAY_WIDTH, OVERLAY_HEIGHT);

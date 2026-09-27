@@ -25,6 +25,7 @@
 #include "src/system/device/power.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/confirm.h"
 #include "src/gui/shell/toast.h"
 
 lv_obj_t *medialist_screen;
@@ -66,14 +67,16 @@ lv_obj_t *medialist_albums_screen;
 // windowful at a time -- so a library is as large as the card allows.
 #define MAX_ENTRIES 20000
 
-// The corner buttons on the title row. Two is the most that ever show at once:
-// circle-play beside the sort direction on All tracks and on Albums, the album
-// grouping beside circle-play on an artist's tracks, shuffle beside the reverse
-// on Favourites. The strip is sized for that many whatever a particular list
-// shows -- see build_panel() for what happens when it is not.
+// The corner buttons on the title row. Four is the most that ever show at
+// once: selection mode's queue, star-plus, list-plus and close. Otherwise two
+// at most
+// -- circle-play beside the sort direction on All tracks and on Albums, the
+// album grouping beside circle-play on an artist's tracks, shuffle beside the
+// reverse on Favourites. The strip is sized for the most whatever a particular
+// list shows -- see build_panel() for what happens when it is not.
 #define CORNER_BUTTON_SIZE 56
 #define CORNER_GAP 4
-#define CORNER_MAX_BUTTONS 2
+#define CORNER_MAX_BUTTONS 4
 
 // How often finished artwork is collected while any is pending.
 #define THUMB_POLL_MS 150
@@ -228,7 +231,11 @@ typedef struct {
 	struct sel_item *sel;
 	int sel_count;
 	int sel_cap;
+	lv_obj_t *sel_queue_btn;
+	lv_obj_t *sel_fav_btn;
 	lv_obj_t *sel_add_btn;
+	lv_obj_t *sel_unfav_btn;  // favourites only
+	lv_obj_t *sel_unlist_btn; // a playlist only
 	lv_obj_t *sel_close_btn;
 	unsigned corner_shown;
 	int corner_slots;
@@ -784,20 +791,27 @@ static void row_update_detail(panel_t *p, row_t *row, int index, const char *pat
 static void play_menu_hide(void);
 static library_filter_t filter_for(library_list_t kind);
 
-// The lists rows can be chosen on: tracks, albums, artists and album artists,
-// read from the index. Not playlists, favourites or genres, and not a list
+// The lists rows can be chosen on: tracks, albums, artists, album artists, a
+// playlist and the favourites, read from the index. Not genres, and not a list
 // handed in as paths.
 static bool panel_selectable(const panel_t *p) {
 	if (p->from_paths) {
 		return false;
 	}
 	return p->kind == LIBRARY_LIST_TRACKS || p->kind == LIBRARY_LIST_ALBUMS || p->kind == LIBRARY_LIST_ARTISTS ||
-		   p->kind == LIBRARY_LIST_ALBUM_ARTISTS;
+		   p->kind == LIBRARY_LIST_ALBUM_ARTISTS || p->kind == LIBRARY_LIST_PLAYLIST ||
+		   p->kind == LIBRARY_LIST_FAVOURITES;
 }
 
-// What a row stands for in the selection: the track on a track list, the name
-// on the others.
-static const char *row_key(const panel_t *p, const char *name, const char *path) {
+// What a row stands for in the selection: its position on a playlist, which
+// can hold the same track twice; the track on the other track lists; the name
+// on the rest. `buf` holds the position.
+static const char *row_key(const panel_t *p, int index, const char *name, const char *path, char *buf,
+						   size_t size) {
+	if (p->kind == LIBRARY_LIST_PLAYLIST) {
+		snprintf(buf, size, "#%d", index);
+		return buf;
+	}
 	return p->is_tracks ? path : name;
 }
 
@@ -814,7 +828,8 @@ static int sel_find(const panel_t *p, const char *key) {
 }
 
 static void row_update_selection(panel_t *p, row_t *row, const char *name, const char *path) {
-	bool chosen = p->selecting && sel_find(p, row_key(p, name, path)) >= 0;
+	char buf[16];
+	bool chosen = p->selecting && sel_find(p, row_key(p, row->index, name, path, buf, sizeof(buf))) >= 0;
 	if (chosen) {
 		lv_obj_set_style_image_recolor(row->check, theme()->accent, 0);
 		lv_obj_remove_flag(row->check, LV_OBJ_FLAG_HIDDEN);
@@ -866,6 +881,28 @@ static lv_obj_t **corner_usual(panel_t *p, int *count) {
 	return buttons;
 }
 
+static void show_if(lv_obj_t *obj, bool show) {
+	if (show) {
+		lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN);
+	} else {
+		lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+	}
+}
+
+// Selection mode's buttons, four on every list: the queue first, close last,
+// and in between what fits the list. A playlist trades "add to a playlist" for
+// "take out of this one", the favourites trade the star for its removal.
+static void sel_buttons_show(panel_t *p, bool on) {
+	bool playlist = p->kind == LIBRARY_LIST_PLAYLIST;
+	bool favourites = p->kind == LIBRARY_LIST_FAVOURITES;
+	show_if(p->sel_queue_btn, on);
+	show_if(p->sel_fav_btn, on && !favourites);
+	show_if(p->sel_add_btn, on && !playlist);
+	show_if(p->sel_unfav_btn, on && favourites);
+	show_if(p->sel_unlist_btn, on && playlist);
+	show_if(p->sel_close_btn, on);
+}
+
 static void selection_stop(panel_t *p) {
 	if (!p->selecting) {
 		return;
@@ -880,8 +917,7 @@ static void selection_stop(panel_t *p) {
 			lv_obj_remove_flag(buttons[i], LV_OBJ_FLAG_HIDDEN);
 		}
 	}
-	lv_obj_add_flag(p->sel_add_btn, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_add_flag(p->sel_close_btn, LV_OBJ_FLAG_HIDDEN);
+	sel_buttons_show(p, false);
 	settingsrow_title_corner_slots(p->title_label, p->cfg, p->corner_slots);
 	rows_update_selection(p);
 }
@@ -902,9 +938,8 @@ static void selection_start(panel_t *p) {
 			lv_obj_add_flag(buttons[i], LV_OBJ_FLAG_HIDDEN);
 		}
 	}
-	lv_obj_remove_flag(p->sel_add_btn, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(p->sel_close_btn, LV_OBJ_FLAG_HIDDEN);
-	settingsrow_title_corner_slots(p->title_label, p->cfg, 2);
+	sel_buttons_show(p, true);
+	settingsrow_title_corner_slots(p->title_label, p->cfg, 4);
 	lv_obj_move_foreground(p->corner);
 	rows_update_selection(p);
 }
@@ -916,7 +951,8 @@ static void selection_toggle(panel_t *p, row_t *row, int index) {
 	if (!row_at(p, index, &name, &path)) {
 		return;
 	}
-	const char *key = row_key(p, name, path);
+	char buf[16];
+	const char *key = row_key(p, index, name, path, buf, sizeof(buf));
 	if (!key || !key[0]) {
 		return;
 	}
@@ -986,7 +1022,9 @@ static void row_long_pressed_cb(lv_event_t *e) {
 		selection_start(p);
 	}
 	const char *name = NULL, *path = NULL;
-	bool chosen = row_at(p, row->index, &name, &path) && sel_find(p, row_key(p, name, path)) >= 0;
+	char buf[16];
+	bool chosen = row_at(p, row->index, &name, &path) &&
+				  sel_find(p, row_key(p, row->index, name, path, buf, sizeof(buf))) >= 0;
 	if (starting || !chosen) {
 		selection_toggle(p, row, row->index);
 	}
@@ -1087,20 +1125,22 @@ static void path_list_dedupe(path_list_t *l) {
 	free(drop);
 }
 
-// The tracks behind the chosen rows, in list order: the rows themselves on a
-// track list; on the others, each album's tracks in its running order, each
-// artist's gathered by record.
-static void sel_add_cb(lv_event_t *e) {
-	panel_t *p = lv_event_get_user_data(e);
-	if (!p || !p->selecting || p->sel_count == 0) {
-		return;
-	}
+// The tracks behind the chosen rows, in list order, without repeats: the rows
+// themselves on a track list; on the others, each album's tracks in its running
+// order, each artist's gathered by record. Leaves the mode.
+static void sel_gather(panel_t *p, path_list_t *list) {
 	qsort(p->sel, (size_t)p->sel_count, sizeof(*p->sel), sel_by_index);
 
-	path_list_t list = {NULL, 0, 0};
 	for (int i = 0; i < p->sel_count; i++) {
+		if (p->kind == LIBRARY_LIST_PLAYLIST) {
+			char path[512];
+			if (row_path_copy(p, p->sel[i].index, path, sizeof(path)) && !path_list_add(list, path)) {
+				break;
+			}
+			continue;
+		}
 		if (p->is_tracks) {
-			if (!path_list_add(&list, p->sel[i].key)) {
+			if (!path_list_add(list, p->sel[i].key)) {
 				break;
 			}
 			continue;
@@ -1111,22 +1151,161 @@ static void sel_add_cb(lv_event_t *e) {
 		bool more = true;
 		for (int first = 0; first < total && more; first += 256) {
 			int want = total - first < 256 ? total - first : 256;
-			int got = library_index_window(ix, first, want, collect_path_cb, &list);
-			more = got == want && list.count < SELECTION_MAX_TRACKS;
+			int got = library_index_window(ix, first, want, collect_path_cb, list);
+			more = got == want && list->count < SELECTION_MAX_TRACKS;
 		}
 		library_index_close(ix);
 	}
-	path_list_dedupe(&list);
-
+	path_list_dedupe(list);
 	selection_stop(p);
-	if (list.count == 0) {
-		gui_notify_popup("playlist_cannot_add_the_tracks");
-		path_list_free(&list);
+}
+
+static void sel_add_cb(lv_event_t *e) {
+	panel_t *p = lv_event_get_user_data(e);
+	if (!p || !p->selecting || p->sel_count == 0) {
 		return;
 	}
-	playlistpage_add_tracks((const char *const *)list.paths, list.count);
+	path_list_t list = {NULL, 0, 0};
+	sel_gather(p, &list);
+	if (list.count == 0) {
+		gui_notify_popup("playlist_cannot_add_the_tracks");
+	} else {
+		playlistpage_add_tracks((const char *const *)list.paths, list.count);
+	}
 	path_list_free(&list);
 }
+
+// Each track right after the one playing, the first chosen first -- see
+// playlist_insert_next() -- and the queue on disk written now rather than at
+// the next track change.
+static void sel_queue_cb(lv_event_t *e) {
+	panel_t *p = lv_event_get_user_data(e);
+	if (!p || !p->selecting || p->sel_count == 0) {
+		return;
+	}
+	path_list_t list = {NULL, 0, 0};
+	sel_gather(p, &list);
+	int queued = 0;
+	for (int i = 0; i < list.count; i++) {
+		queued += playlist_insert_next(list.paths[i]) ? 1 : 0;
+	}
+	if (queued > 0) {
+		device_state_queue_changed();
+		toast_success(queued == 1 ? "added_to_the_queue" : "queue_tracks_added");
+	} else {
+		gui_notify_popup("playlist_cannot_add_the_tracks");
+	}
+	path_list_free(&list);
+}
+
+static void sel_fav_cb(lv_event_t *e) {
+	panel_t *p = lv_event_get_user_data(e);
+	if (!p || !p->selecting || p->sel_count == 0) {
+		return;
+	}
+	path_list_t list = {NULL, 0, 0};
+	sel_gather(p, &list);
+	if (list.count == 0) {
+		gui_notify_popup("favourites_cannot_add_the_tracks");
+	} else {
+		playlistpage_add_favourites((const char *const *)list.paths, list.count);
+	}
+	path_list_free(&list);
+}
+
+static void window_update(panel_t *p);
+
+// Taking rows out of the list on screen. Asked first: a slip of the finger on a
+// selection of fifty is fifty tracks to find again.
+static panel_t *remove_panel;
+static int *remove_positions; // a playlist: positions in the list
+static char **remove_paths;	  // the favourites: the tracks
+static int remove_count;
+
+static void remove_pending_free(void) {
+	for (int i = 0; remove_paths && i < remove_count; i++) {
+		free(remove_paths[i]);
+	}
+	free(remove_paths);
+	free(remove_positions);
+	remove_paths = NULL;
+	remove_positions = NULL;
+	remove_count = 0;
+	remove_panel = NULL;
+}
+
+static void remove_confirmed(void *user) {
+	(void)user;
+	panel_t *p = remove_panel;
+	if (!p || remove_count == 0) {
+		remove_pending_free();
+		return;
+	}
+	int removed = 0;
+	if (remove_positions) {
+		removed = playlists_remove_positions(p->playlist, remove_positions, remove_count);
+	} else {
+		removed = library_fav_remove_many((const char *const *)remove_paths, remove_count);
+	}
+	int wanted = remove_count;
+	remove_pending_free();
+
+	// The index behind the list has moved on; the list follows it.
+	panel_refresh_stale(p);
+	window_update(p);
+
+	if (removed == wanted) {
+		toast_success(removed == 1 ? "medialist_track_removed" : "medialist_tracks_removed");
+	} else if (removed > 0) {
+		toast_error("medialist_some_tracks_not_removed");
+	} else {
+		gui_notify_popup("medialist_remove_failed");
+	}
+}
+
+static void sel_remove_ask(panel_t *p) {
+	if (!p || !p->selecting || p->sel_count == 0) {
+		return;
+	}
+	remove_pending_free();
+	qsort(p->sel, (size_t)p->sel_count, sizeof(*p->sel), sel_by_index);
+
+	int n = p->sel_count;
+	if (p->kind == LIBRARY_LIST_PLAYLIST) {
+		remove_positions = malloc((size_t)n * sizeof(*remove_positions));
+		for (int i = 0; remove_positions && i < n; i++) {
+			remove_positions[remove_count++] = p->sel[i].index;
+		}
+	} else {
+		remove_paths = calloc((size_t)n, sizeof(*remove_paths));
+		for (int i = 0; remove_paths && i < n; i++) {
+			remove_paths[remove_count] = strdup(p->sel[i].key);
+			if (remove_paths[remove_count]) {
+				remove_count++;
+			}
+		}
+	}
+	bool playlist = p->kind == LIBRARY_LIST_PLAYLIST;
+	selection_stop(p);
+	if (remove_count == 0) {
+		remove_pending_free();
+		return;
+	}
+	remove_panel = p;
+
+	char message[96];
+	if (remove_count == 1) {
+		snprintf(message, sizeof(message), "%s", tr("selection_one_track"));
+	} else {
+		snprintf(message, sizeof(message), tr("selection_tracks_count"), remove_count);
+	}
+	confirm_show(playlist ? "medialist_remove_from_playlist_2" : "remove_from_favourites_2", message, "remove",
+				 remove_confirmed, NULL);
+}
+
+static void sel_unlist_cb(lv_event_t *e) { sel_remove_ask(lv_event_get_user_data(e)); }
+
+static void sel_unfav_cb(lv_event_t *e) { sel_remove_ask(lv_event_get_user_data(e)); }
 
 static void row_bind(panel_t *p, row_t *row, int index) {
 	if (row->index == index) {
@@ -2851,10 +3030,18 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	p->sort_btn = corner_button(p->corner, &icon_sort_az, sort_clicked_cb, p);
 	p->sort_icon = lv_obj_get_child(p->sort_btn, 0);
 
-	// Selection mode's pair, last so that they sit at the right edge: add the
-	// chosen rows to a playlist, and leave the mode.
+	// Selection mode's buttons, last so that they sit at the right edge: add
+	// the chosen rows to the queue, to the favourites, to a playlist, take them
+	// out of the favourites or of this playlist, and leave the mode.
+	// sel_buttons_show() picks four of them.
+	p->sel_queue_btn = corner_button(p->corner, &icon_list_queue, sel_queue_cb, p);
+	p->sel_fav_btn = corner_button(p->corner, &icon_star_plus, sel_fav_cb, p);
 	p->sel_add_btn = corner_button(p->corner, &icon_list_plus, sel_add_cb, p);
+	p->sel_unfav_btn = corner_button(p->corner, &icon_star_x, sel_unfav_cb, p);
+	p->sel_unlist_btn = corner_button(p->corner, &icon_list_x, sel_unlist_cb, p);
 	p->sel_close_btn = corner_button(p->corner, &icon_close, sel_close_cb, p);
+	lv_obj_add_flag(p->sel_queue_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_add_flag(p->sel_fav_btn, LV_OBJ_FLAG_HIDDEN);
 	lv_obj_add_flag(p->sel_add_btn, LV_OBJ_FLAG_HIDDEN);
 	lv_obj_add_flag(p->sel_close_btn, LV_OBJ_FLAG_HIDDEN);
 

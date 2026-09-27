@@ -305,33 +305,41 @@ static long track_seconds(const char *track_path) {
 	return (long)((frames + (uint64_t)rate / 2) / (uint64_t)rate);
 }
 
+void playlists_track_names(const char *track_path, char *title, size_t title_size, char *artist,
+						   size_t artist_size) {
+	title[0] = '\0';
+	artist[0] = '\0';
+	if (!track_path || !track_path[0]) {
+		return;
+	}
+	// The index is asked first -- the scan already has both -- and the file's
+	// own tags only when it has never seen this track.
+	if (!library_track_names(track_path, title, title_size, artist, artist_size) || !title[0]) {
+		song_metadata_t meta;
+		metadata_read(track_path, &meta);
+		if (meta.title[0]) {
+			copy_capped(title, title_size, meta.title);
+		}
+		if (meta.artist[0]) {
+			copy_capped(artist, artist_size, meta.artist);
+		}
+	}
+	if (!title[0]) {
+		const char *slash = strrchr(track_path, '/');
+		copy_capped(title, title_size, slash ? slash + 1 : track_path);
+	}
+}
+
 bool playlists_add_track(const char *name, const char *track_path) {
 	if (!name_is_usable(name) || !track_path || !track_path[0]) {
 		return false;
 	}
 
 	// Title and artist are written down with the entry, so that drawing the
-	// playlist later is a read of one table and nothing else. The index is
-	// asked first -- the scan already has both -- and the file's own tags only
-	// when it has never seen this track.
+	// playlist later is a read of one table and nothing else.
 	library_playlist_row_t row = {{0}, {0}, {0}, -1, true, true};
 	copy_capped(row.path, sizeof(row.path), track_path);
-
-	if (!library_track_names(track_path, row.title, sizeof(row.title), row.artist, sizeof(row.artist)) ||
-		!row.title[0]) {
-		song_metadata_t meta;
-		metadata_read(track_path, &meta);
-		if (meta.title[0]) {
-			copy_capped(row.title, sizeof(row.title), meta.title);
-		}
-		if (meta.artist[0]) {
-			copy_capped(row.artist, sizeof(row.artist), meta.artist);
-		}
-	}
-	if (!row.title[0]) {
-		const char *slash = strrchr(track_path, '/');
-		copy_capped(row.title, sizeof(row.title), slash ? slash + 1 : track_path);
-	}
+	playlists_track_names(track_path, row.title, sizeof(row.title), row.artist, sizeof(row.artist));
 	row.seconds = track_seconds(track_path);
 
 	return library_playlist_append(name, &row);
@@ -342,6 +350,13 @@ bool playlists_remove_track(const char *name, const char *track_path) {
 		return false;
 	}
 	return library_playlist_remove_path(name, track_path);
+}
+
+int playlists_remove_positions(const char *name, const int *positions, int count) {
+	if (!name_is_usable(name)) {
+		return 0;
+	}
+	return library_playlist_remove_positions(name, positions, count);
 }
 
 bool playlists_delete(const char *name) { return name_is_usable(name) && library_playlist_drop(name); }
