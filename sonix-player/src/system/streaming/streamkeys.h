@@ -27,6 +27,10 @@
 //     api_key = ...
 //     api_secret = ...
 //
+//     [lastfm]
+//     api_key = ...
+//     api_secret = ...
+//
 // and shipped sealed, as /usr/resource/sonix/components/streaming-keys.bin, by
 // tools/seal_streamkeys.py. The key that opens it is not in the source: the
 // tool keeps it in streaming-keys.key, outside git, and the Makefile compiles
@@ -64,6 +68,10 @@ const char *streamkeys_tidal_client_secret(void);
 // out of the source, in a file whoever assembles the firmware fills in.
 const char *streamkeys_podcast_key(void);
 const char *streamkeys_podcast_secret(void);
+// Last.fm. An API account of this player, requested on last.fm/api: it signs
+// every call with the MD5 of the sorted parameters plus the secret.
+const char *streamkeys_lastfm_key(void);
+const char *streamkeys_lastfm_secret(void);
 
 // Where they were read from, for the log and the information page. NULL when
 // none were found.

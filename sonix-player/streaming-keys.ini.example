@@ -9,3 +9,7 @@ client_secret =
 [podcast]
 api_key = 
 api_secret = 
+
+[lastfm]
+api_key = 
+api_secret = 

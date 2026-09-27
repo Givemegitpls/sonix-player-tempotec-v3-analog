@@ -268,6 +268,13 @@ void device_state_get(device_state_t *out) {
 	out->volume = get_volume_percent();
 }
 
+const song_metadata_t *device_state_loaded_metadata(const char **file_out) {
+	if (file_out) {
+		*file_out = current_metadata_file;
+	}
+	return &current_metadata;
+}
+
 static void playlist_resync_to_current(void);
 
 // ---------------------------------------------------------------------------

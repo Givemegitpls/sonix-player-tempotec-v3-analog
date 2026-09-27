@@ -39,6 +39,11 @@ typedef struct {
 // Fills out with a fresh snapshot of the current device state.
 void device_state_get(device_state_t *out);
 
+// The tags of the loaded track, and in *file_out the file they were read from,
+// which can differ from audio.c's for a moment while a track changes. No copy
+// and no sysfs: cheap enough to call every second. GUI thread only.
+const song_metadata_t *device_state_loaded_metadata(const char **file_out);
+
 // Loads and starts playing a new file: reads its metadata (cached for
 // subsequent device_state_get() calls) and starts playback. Also (re)builds
 // the folder playback queue from the file's directory, so playback can

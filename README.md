@@ -83,7 +83,7 @@ usr/
     └── sonix/
         ├── language/                    the 7 .ini files
         ├── components/
-        │   ├── streaming-keys.bin       Tidal / Qobuz / Podcast Index keys, sealed - see "Streaming keys" below.
+        │   ├── streaming-keys.bin       Tidal / Qobuz / Podcast Index / Last.fm keys, sealed - see "Streaming keys" below.
         │   └── system-info.json         its device-name picks the player the simulator plays
         └── gui/                         some of the .png assets the UI loads at runtime - the rest are inside the binary.
 ```
@@ -93,7 +93,7 @@ The easiest way to get one is to copy `usr/resource/` out of
 next to `sonix_player_host`: the language files, the fonts, the images and the
 `system-info.json` of that player come with it.
 
-Without the language files the interface draws raw tags instead of words, and says so on the first line of the log. Without `streaming-keys.bin` everything works except Tidal, Qobuz and podcasts. The simulator also reads a plain `streaming-keys.ini` in the same folder.
+Without the language files the interface draws raw tags instead of words, and says so on the first line of the log. Without `streaming-keys.bin` everything works except Tidal, Qobuz, podcasts and Last.fm. The simulator also reads a plain `streaming-keys.ini` in the same folder.
 
 Fonts are looked for in `usr/resource/sonix/fonts` first and fall back to
 `assets/fonts` in the repo, so a tree without a resource folder still has text.
@@ -229,7 +229,7 @@ assets/R3PII/                           (and assets/R1/, the same shape)
 │   │   └── sonix/
 │   │       ├── language/            the 7 .ini files
 │   │       ├── components/
-│   │       │   ├── streaming-keys.bin   Tidal / Qobuz / Podcast Index keys, sealed - see "Streaming keys" below.
+│   │       │   ├── streaming-keys.bin   Tidal / Qobuz / Podcast Index / Last.fm keys, sealed - see "Streaming keys" below.
 │   │       │   ├── system-info.json     required: names the player, and the packer writes to it
 │   │       │   └── GB*-Database.dat     the Game Boy ROM databases
 │   │       ├── fonts/               default.otf, bold.otf, Korean.ttf, Thai.ttf
@@ -246,8 +246,9 @@ player's update to a device that cannot survive it.
 
 ### Streaming keys
 
-Tidal, Qobuz and Podcast Index need application keys, and they are not in this
-repository: provide your own. They go into the image sealed, so that unpacking
+Tidal, Qobuz, Podcast Index and Last.fm need application keys, and they are
+not in this repository: provide your own (for Last.fm, an API account from
+last.fm/api). They go into the image sealed, so that unpacking
 it does not hand them out as a text file.
 
 1. Copy `sonix-player/streaming-keys.ini.example` to

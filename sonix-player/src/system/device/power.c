@@ -570,7 +570,8 @@ static bool streaming_playback_active(void) {
 
 // Whether the network is the point rather than an idle drain: an AirPlay
 // receiver waiting to be found, a DLNA server, a browser halfway through an
-// upload, a station streaming, a Qobuz/Tidal/podcast fetch in flight.
+// upload, a station streaming, a Qobuz/Tidal/podcast fetch or a Last.fm request
+// in flight.
 //
 // The *_network_wanted() halves matter as much as the downloading ones: between
 // the end of one track and the first bytes of the next there is an HTTPS request
@@ -584,7 +585,7 @@ static bool wifi_in_use(void) {
 		   dlna_get_enabled() || sonixlink_get_enabled() ||
 		   wifitransfer_get_enabled() || qobuzcache_downloading_id() > 0 ||
 		   qobuzcache_network_wanted() || tidalcache_downloading_id() > 0 || tidalcache_network_wanted() ||
-		   podcastcache_downloading_id() > 0 || podcastcache_network_wanted() || ota_busy();
+		   podcastcache_downloading_id() > 0 || podcastcache_network_wanted() || lastfm_network_wanted() || ota_busy();
 }
 
 // Pushes the next suspend attempt out by the anti-hammer delay. A radio that has
@@ -665,7 +666,7 @@ static void park_bluetooth_now(void) {
 // the Wi-Fi radio staying associated while headphones are connected and quiet;
 // the alternative is dropping the link the user is wearing.
 static bool wifi_wanted(void) {
-	return wifi_in_use() || lastfm_network_wanted() || bluetooth_busy() || bluetooth_audio_active() || bluetooth_connected_device(NULL);
+	return wifi_in_use() || bluetooth_busy() || bluetooth_audio_active() || bluetooth_connected_device(NULL);
 }
 
 // A minute after a radio stops being wanted, it goes off. Not "unless something
@@ -1103,8 +1104,8 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 	// device from scratch, route included, which is the path every unpause
 	// exercises. What must not cross the suspend is a live ALSA object, not a
 	// remembered position: that sits in RAM, and RAM is preserved.
-	if (wifi_in_use() || lastfm_network_wanted()) {
-		mem_skip(lastfm_network_wanted() ? "Last.fm needs Wi-Fi" : "something is using the network");
+	if (wifi_in_use()) {
+		mem_skip("something is using the network");
 		return;
 	}
 	// Busy first, so the log tells the truth: bluetooth_in_use() counts a job in
