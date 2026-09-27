@@ -24,6 +24,7 @@
 
 #include "src/system/bluetooth/airpods.h"
 #include "src/system/audio/audio.h"
+#include "src/system/bluetooth/btreceiver.h"
 #include "src/system/bluetooth/btstack.h"
 #include "src/system/bluetooth/btvolume.h"
 #include "src/system/core/config.h"
@@ -1612,10 +1613,19 @@ static bool wait_for_a2dp(const char *mac, int timeout_ms) {
 // The address of the connected sink other than `except`, if there is one. Only
 // one pair of headphones can hold the A2DP link, and the stock player
 // disconnects the incumbent before connecting the new one.
+//
+// A device streaming to this one is not a sink: a computer or a phone sending
+// to the receiver holds the other direction, and pushing it off would cut the
+// music it is sending.
 static bool other_connected_sink(const char *except, char *out, size_t size) {
+	char sender[BT_MAC_MAX];
+	bool has_sender = btstack_audio_source(sender, sizeof(sender));
 	bool found = false;
 	pthread_mutex_lock(&lock);
 	for (int i = 0; i < g_paired_count; i++) {
+		if (has_sender && strcasecmp(g_paired[i].mac, sender) == 0) {
+			continue;
+		}
 		if (g_paired[i].connected && strcasecmp(g_paired[i].mac, except) != 0) {
 			copy_field(out, size, g_paired[i].mac, sizeof(g_paired[i].mac));
 			found = true;
@@ -1723,15 +1733,37 @@ static bool pair_and_connect(const char *mac) {
 // A sink that belongs to somebody else ends it too: connect_device() disconnects
 // whatever is connected first ("one sink at a time"), which would push off
 // headphones the user has only just connected.
+//
+// So does anything else the user has connected in the meantime, a computer or
+// a phone most of all: one that connects here to send music is using the
+// device as a receiver, and a reconnect running under it would end that link
+// or fight the receiver for the radio. The paired list is refreshed after
+// every attempt, which is when a device that connected meanwhile shows up in
+// it; the sending stream is read from the signal cache and is current.
 static bool reconnect_should_stop(const char *mac) {
-	char sink[BT_MAC_MAX];
-	if (btstack_audio_sink(sink, sizeof(sink)) && strcasecmp(sink, mac) != 0) {
-		fprintf(stderr, "bluetooth: %s is playing now; not going back to %s\n", sink, mac);
+	char other[BT_MAC_MAX];
+	if (btstack_audio_sink(other, sizeof(other)) && strcasecmp(other, mac) != 0) {
+		fprintf(stderr, "bluetooth: %s is playing now; not going back to %s\n", other, mac);
+		return true;
+	}
+	if (btstack_audio_source(other, sizeof(other))) {
+		fprintf(stderr, "bluetooth: %s is streaming to this device; not going back to %s\n", other, mac);
+		return true;
+	}
+	if (btreceiver_is_active()) {
+		fprintf(stderr, "bluetooth: the receiver is on; not going back to %s\n", mac);
 		return true;
 	}
 
 	pthread_mutex_lock(&lock);
 	bool off = !g_enabled;
+	bool someone_else = false;
+	for (int i = 0; i < g_paired_count && !someone_else; i++) {
+		if (g_paired[i].connected && strcasecmp(g_paired[i].mac, mac) != 0) {
+			copy_field(other, sizeof(other), g_paired[i].mac, sizeof(g_paired[i].mac));
+			someone_else = true;
+		}
+	}
 	bool user_waiting = false;
 	for (int i = 0; i < queue_count && !user_waiting; i++) {
 		switch (queue[(queue_head + i) % JOB_QUEUE_LEN].type) {
@@ -1749,6 +1781,10 @@ static bool reconnect_should_stop(const char *mac) {
 	pthread_mutex_unlock(&lock);
 
 	if (off) {
+		return true;
+	}
+	if (someone_else) {
+		fprintf(stderr, "bluetooth: %s is connected now; not going back to %s\n", other, mac);
 		return true;
 	}
 	if (user_waiting) {
@@ -2356,6 +2392,15 @@ bool bluetooth_receiver_playing(void) {
 }
 
 void bluetooth_receiver_note_playing(bool playing) { btstack_note_media_status(playing ? "playing" : "paused"); }
+
+int bluetooth_receiver_sending(unsigned *serial_out) {
+	char mac[BT_MAC_MAX];
+	if (!btstack_audio_source(mac, sizeof(mac))) {
+		btstack_transport_sending(NULL, serial_out);
+		return -1;
+	}
+	return btstack_transport_sending(mac, serial_out);
+}
 
 bool bluetooth_receiver_stream(bt_stream_t *out) {
 	if (!out) {

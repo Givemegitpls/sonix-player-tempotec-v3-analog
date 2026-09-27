@@ -160,6 +160,13 @@ bool btstack_audio_sink(char *address_out, size_t size);
 // object being present and not a guess about a link.
 bool btstack_audio_source(char *address_out, size_t size);
 
+// Whether `address` is actually sending over any of its A2DP transports, as
+// bluez last announced: 1 when one is pending or active, 0 when all of them
+// are idle -- connected and configured, and nothing playing -- and -1 when no
+// transport of it has been announced. `serial_out`, when given, moves on
+// every change to any transport. From the signal cache: no call, any thread.
+int btstack_transport_sending(const char *address, unsigned *serial_out);
+
 // What bluealsa negotiated on one of the two streams, in parts rather than as
 // one line: the receiver page prints the codec and the rate on their own.
 // `receiving` picks the direction -- false for the headphones this device

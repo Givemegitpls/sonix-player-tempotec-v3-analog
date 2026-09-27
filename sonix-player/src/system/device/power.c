@@ -41,6 +41,7 @@
 #include "src/system/device/led.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/device/axpcharge.h"
+#include "src/gui/shell/gui.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -99,16 +100,22 @@ static uint32_t since(uint32_t mark, uint32_t now) {
 // bluetooth.c's job and not a script's: the firmware's bt_suspend ends with
 // `killall dbus-daemon` and would take the bus with it.
 
-// Smooth dim: step size and per-step delay when ramping the backlight up/down.
-// ~17 steps * 12ms ~= 200ms for a full 1<->100 fade.
+// Smooth dim: step size and per-step delay when ramping the backlight down.
+// ~17 steps * 12ms ~= 200ms for a full 100->1 fade.
 #define FADE_STEP 6
 #define FADE_STEP_DELAY_US 12000
+
+// The ramp back up at a wake, over a picture that is already drawn: a few
+// steps, so the screen is there almost at once and still does not snap on.
+#define WAKE_FADE_STEPS 4
+#define WAKE_FADE_STEP_DELAY_US 8000
 
 // --- Module state (owned by the LVGL/main thread unless noted) ---
 static power_config_t g_cfg;
 static lv_display_t *g_disp;
 static lv_timer_t *g_refr_timer; // display refresh timer, paused while screen is off
 static long g_max_brightness = -1;
+static lv_timer_t *g_power_timer;
 static bool g_screen_on = true;
 static uint32_t g_screen_off_at; // lv_tick when the panel last went dark
 
@@ -193,6 +200,17 @@ static void fade_to(long target) {
 		backlight_write(next);
 		if (g_hw_brightness != target) {
 			usleep(FADE_STEP_DELAY_US);
+		}
+	}
+}
+
+// The same ramp in WAKE_FADE_STEPS even steps.
+static void fade_up_quickly(long target) {
+	long from = g_hw_brightness < 0 ? BRIGHTNESS_MIN : g_hw_brightness;
+	for (int i = 1; i <= WAKE_FADE_STEPS; i++) {
+		backlight_write(from + (target - from) * i / WAKE_FADE_STEPS);
+		if (i < WAKE_FADE_STEPS) {
+			usleep(WAKE_FADE_STEP_DELAY_US);
 		}
 	}
 }
@@ -1433,7 +1451,7 @@ void power_screen_on(void) {
 	// tracked value to MIN and fading up guarantees every ramp step is written
 	// to sysfs after the unblank and settle, so the backlight reliably returns.
 	g_hw_brightness = BRIGHTNESS_MIN;
-	fade_to(g_cfg.brightness); // smooth ramp back up over the freshly-drawn UI
+	fade_up_quickly(g_cfg.brightness);
 	lv_display_trigger_activity(g_disp);
 
 	led_set_standby(false);
@@ -1571,10 +1589,20 @@ void power_notify_activity(void) {
 	pthread_mutex_unlock(&g_lock);
 }
 
+// On the UI thread: the press is taken now rather than at the timer's next
+// tick, up to POWER_TICK_MS away.
+static void power_button_now(void *unused) {
+	(void)unused;
+	if (g_power_timer) {
+		lv_timer_ready(g_power_timer);
+	}
+}
+
 void power_notify_power_button(void) {
 	pthread_mutex_lock(&g_lock);
 	g_power_button_pending = true;
 	pthread_mutex_unlock(&g_lock);
+	gui_post(power_button_now, NULL);
 }
 
 // --- Runtime configuration ---
@@ -1702,7 +1730,7 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	}
 	g_radio_park_after_ms = (uint32_t)park_secs * 1000u;
 
-	lv_timer_create(power_timer_cb, POWER_TICK_MS, NULL);
+	g_power_timer = lv_timer_create(power_timer_cb, POWER_TICK_MS, NULL);
 
 	printf("power: initialized (max_brightness=%ld, on=%ld, screen_off=%s/%ums, mem=%s/%lus)\n", g_max_brightness,
 		   g_cfg.brightness, g_cfg.screen_off_enabled ? "on" : "off", g_cfg.screen_off_timeout_ms,

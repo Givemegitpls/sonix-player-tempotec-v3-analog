@@ -55,6 +55,20 @@ static int pcm_count;
 static char rx_addr[MAX_PCMS][BT_ADDR_MAX];
 static int rx_count;
 
+// bluez's A2DP transports and the State each last announced, by object path.
+// Kept per transport rather than per device because a device can have two, one
+// of them an orphan that sits idle next to the live one. Filled from signals
+// only: InterfacesAdded carries the state a transport is born with, and
+// PropertiesChanged every change after it.
+#define MAX_TRANSPORTS 8
+typedef struct {
+	char path[OBJECT_PATH_MAX];
+	bool sending; // pending or active
+} transport_t;
+static transport_t transports[MAX_TRANSPORTS];
+static int transport_count;
+static unsigned transport_serial;
+
 // What the remote player last said it was doing: "playing", "paused",
 // "stopped", or empty when nothing has said. Written both by the signal and by
 // the worker's own reading of the property.
@@ -191,6 +205,111 @@ static bool address_from_path(const char *path, char *out, size_t size) {
 	address[used] = '\0';
 	snprintf(out, size, "%s", address);
 	return true;
+}
+
+static bool path_is_transport(const char *path) {
+	return strncmp(path, "/org/bluez/", 11) == 0 && strstr(path, "/dev_") != NULL && strstr(path, "/fd") != NULL;
+}
+
+// Under `lock`.
+static void transport_note(const char *path, const char *state) {
+	bool sending = strcmp(state, "pending") == 0 || strcmp(state, "active") == 0;
+	int i = 0;
+	while (i < transport_count && strcmp(transports[i].path, path) != 0) {
+		i++;
+	}
+	if (i == transport_count) {
+		if (transport_count == MAX_TRANSPORTS) {
+			// The oldest goes: a transport bluez never announced the removal
+			// of is the likeliest one to be stale.
+			memmove(&transports[0], &transports[1], sizeof(transports[0]) * (MAX_TRANSPORTS - 1));
+			transport_count--;
+			i = transport_count;
+		}
+		snprintf(transports[i].path, sizeof(transports[i].path), "%s", path);
+		transport_count++;
+	}
+	transports[i].sending = sending;
+	transport_serial++;
+}
+
+// Under `lock`.
+static void transport_forget(const char *path) {
+	for (int i = 0; i < transport_count; i++) {
+		if (strcmp(transports[i].path, path) == 0) {
+			memmove(&transports[i], &transports[i + 1], sizeof(transports[0]) * (size_t)(transport_count - i - 1));
+			transport_count--;
+			transport_serial++;
+			return;
+		}
+	}
+}
+
+int btstack_transport_sending(const char *address, unsigned *serial_out) {
+	char dev[BT_ADDR_MAX + 5];
+	snprintf(dev, sizeof(dev), "dev_%s", address ? address : "");
+	for (char *c = dev; *c; c++) {
+		if (*c == ':') {
+			*c = '_';
+		}
+	}
+
+	pthread_mutex_lock(&lock);
+	int answer = -1;
+	for (int i = 0; i < transport_count; i++) {
+		const char *at = strstr(transports[i].path, dev);
+		if (!at || at[strlen(dev)] != '/') {
+			continue;
+		}
+		if (transports[i].sending) {
+			answer = 1;
+			break;
+		}
+		answer = 0;
+	}
+	if (serial_out) {
+		*serial_out = transport_serial;
+	}
+	pthread_mutex_unlock(&lock);
+	return answer;
+}
+
+// The State inside one interfaces dictionary, a{sa{sv}}, if it holds a
+// MediaTransport1. False when it does not, or on a malformed message.
+static bool read_transport_state(dbus_reader_t *r, char *state, size_t size) {
+	bool found = false;
+	dbus_array_iter_t interfaces;
+	if (!dbus_r_array_begin(r, "{sa{sv}}", &interfaces)) {
+		return false;
+	}
+	while (dbus_r_array_more(r, &interfaces)) {
+		char iface[96];
+		if (!dbus_r_string(r, iface, sizeof(iface))) {
+			return found;
+		}
+		if (strcmp(iface, BLUEZ_TRANSPORT_IFACE) != 0) {
+			if (!dbus_r_skip(r, "a{sv}")) {
+				return found;
+			}
+			continue;
+		}
+		dbus_array_iter_t props;
+		if (!dbus_r_array_begin(r, "{sv}", &props)) {
+			return found;
+		}
+		while (dbus_r_array_more(r, &props)) {
+			char key[64], sig[16];
+			if (!dbus_r_string(r, key, sizeof(key)) || !dbus_r_signature(r, sig, sizeof(sig))) {
+				return found;
+			}
+			if (strcmp(key, "State") == 0 && strcmp(sig, "s") == 0) {
+				found = dbus_r_string(r, state, size);
+			} else if (!dbus_r_skip(r, sig)) {
+				return found;
+			}
+		}
+	}
+	return found;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +462,18 @@ static void on_signal(dbus_conn_t *c, const dbus_msg_t *m, void *user) {
 		if (!dbus_r_string(&r, path, sizeof(path))) {
 			return;
 		}
+		if (path_is_transport(path)) {
+			char state[32];
+			if (read_transport_state(&r, state, sizeof(state))) {
+				pthread_mutex_lock(&lock);
+				transport_note(path, state);
+				pthread_mutex_unlock(&lock);
+				const char *leaf = strrchr(path, '/');
+				fprintf(stderr, "btstack: the A2DP stream %s is there, %s\n", leaf ? leaf + 1 : path, state);
+			}
+			note_change();
+			return;
+		}
 		char address[BT_ADDR_MAX];
 		if (path_is_a2dp_sink(path) && address_from_path(path, address, sizeof(address))) {
 			pthread_mutex_lock(&lock);
@@ -364,6 +495,13 @@ static void on_signal(dbus_conn_t *c, const dbus_msg_t *m, void *user) {
 		dbus_reader_init(&r, m);
 		char path[OBJECT_PATH_MAX];
 		if (!dbus_r_string(&r, path, sizeof(path))) {
+			return;
+		}
+		if (path_is_transport(path)) {
+			pthread_mutex_lock(&lock);
+			transport_forget(path);
+			pthread_mutex_unlock(&lock);
+			note_change();
 			return;
 		}
 		char address[BT_ADDR_MAX];
@@ -409,6 +547,9 @@ static void on_signal(dbus_conn_t *c, const dbus_msg_t *m, void *user) {
 					if (strcmp(key, "State") == 0 && strcmp(sig, "s") == 0) {
 						char state[32];
 						if (dbus_r_string(&r, state, sizeof(state))) {
+							pthread_mutex_lock(&lock);
+							transport_note(m->path, state);
+							pthread_mutex_unlock(&lock);
 							const char *leaf = strrchr(m->path, '/');
 							fprintf(stderr, "btstack: the A2DP stream %s -> %s\n", leaf ? leaf + 1 : m->path, state);
 						}

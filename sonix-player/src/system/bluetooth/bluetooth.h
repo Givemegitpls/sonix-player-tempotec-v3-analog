@@ -284,6 +284,13 @@ bool bluetooth_receiver_playing(void);
 // again, so a pause pressed twice stays paused.
 void bluetooth_receiver_note_playing(bool playing);
 
+// Whether that device is actually sending audio: 1 when its A2DP stream is
+// pending or active, 0 when it is connected and idle -- a computer with
+// nothing playing -- and -1 when there is no such device or bluez has said
+// nothing about its stream. `serial_out`, when given, moves on every change
+// of any stream. From a cache, safe on any thread.
+int bluetooth_receiver_sending(unsigned *serial_out);
+
 // Whether the player's volume and the headphones' are one level or two.
 //
 // On, they are the same: the keys here move the headphones over AVRCP absolute

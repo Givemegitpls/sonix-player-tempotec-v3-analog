@@ -467,6 +467,46 @@ static bool still_there(char *mac, size_t mac_size, char *name, size_t name_size
 	return true;
 }
 
+// True while this visit to the mode is still the current one.
+static bool session_live(unsigned session) {
+	pthread_mutex_lock(&lock);
+	bool go = running && session == session_id;
+	pthread_mutex_unlock(&lock);
+	return go;
+}
+
+#define SENDER_POLL_MS 200
+
+// Waits while the sender is connected with its stream idle: a computer with
+// nothing playing. There is no PCM to open until it starts, and bluez says
+// when it does. True when it has started or gone, false when the mode ended.
+static bool wait_while_idle(unsigned session) {
+	while (session_live(session)) {
+		if (bluetooth_receiver_sending(NULL) != 0) {
+			return true;
+		}
+		usleep(SENDER_POLL_MS * 1000);
+	}
+	return false;
+}
+
+// After a sender that is sending could not be opened: waits for its stream to
+// change -- stop and start again, a codec change -- or for it to go. True when
+// either happened, false when the mode ended.
+static bool wait_for_stream_change(unsigned session) {
+	unsigned at = 0;
+	bluetooth_receiver_sending(&at);
+	while (session_live(session)) {
+		unsigned now = 0;
+		int sending = bluetooth_receiver_sending(&now);
+		if (!btreceiver_available() || (now != at && sending == 1)) {
+			return true;
+		}
+		usleep(SENDER_POLL_MS * 1000);
+	}
+	return false;
+}
+
 static void *capture_worker(void *arg) {
 	// The number this visit to the mode was given. Anything this thread does to
 	// the shared state is conditional on it still being the current one.
@@ -510,6 +550,12 @@ static void *capture_worker(void *arg) {
 	// milliseconds while the transport underneath is still being rebuilt and has
 	// nothing to open. A device that has actually gone counts the same as a PCM
 	// that will not open: both are answered by trying again for a few seconds.
+	//
+	// Two things do not use up the window. A sender whose stream is idle has
+	// nothing to open yet, and is waited for. And a sender still connected when
+	// the window runs out keeps the mode on: the error is shown, and the next
+	// change of its stream is the next attempt. Only a sender that has gone ends
+	// the mode.
 	bool blind = false;
 	bool guessed = false;
 	uint32_t blind_since = 0;
@@ -517,9 +563,19 @@ static void *capture_worker(void *arg) {
 	for (;;) {
 		reopen_t what = reopen_decision(blind, blind ? now_ms() - blind_since : 0, guessed);
 		if (what == REOPEN_GIVE_UP) {
-			fprintf(stderr, "btreceiver: nothing to open in %d ms; the mode is over\n", REOPEN_WAIT_MS);
 			set_error(tr("btreceiver_stream_failed"));
-			break;
+			if (!still_there(mac, sizeof(mac), name, sizeof(name))) {
+				fprintf(stderr, "btreceiver: nothing to open in %d ms; the mode is over\n", REOPEN_WAIT_MS);
+				break;
+			}
+			fprintf(stderr, "btreceiver: nothing to open in %d ms; trying again when %s's stream changes\n",
+					REOPEN_WAIT_MS, mac);
+			if (!wait_for_stream_change(session)) {
+				break;
+			}
+			blind = false;
+			guessed = false;
+			continue;
 		}
 		guessed = guessed || what == REOPEN_GUESS;
 
@@ -531,7 +587,7 @@ static void *capture_worker(void *arg) {
 		session_t result = capture_session(mac, name, what == REOPEN_GUESS, watchdog, session, &heard);
 		if (heard) {
 			silent_runs = 0;
-		} else if (watchdog) {
+		} else if (watchdog && result != SESSION_NO_PCM) {
 			silent_runs++;
 			if (silent_runs >= SILENT_RUNS_MAX) {
 				fprintf(stderr, "btreceiver: %d sessions in a row with no audio; leaving the next one alone\n",
@@ -556,6 +612,15 @@ static void *capture_worker(void *arg) {
 		if (!nothing_there) {
 			blind = false;
 			guessed = false;
+		} else if (bluetooth_receiver_sending(NULL) == 0) {
+			fprintf(stderr, "btreceiver: %s is connected and sending nothing; waiting for it to start\n", mac);
+			if (!wait_while_idle(session)) {
+				break;
+			}
+			fprintf(stderr, "btreceiver: %s has started sending\n", mac);
+			blind = false;
+			guessed = false;
+			continue;
 		} else if (!blind) {
 			blind = true;
 			blind_since = now_ms();

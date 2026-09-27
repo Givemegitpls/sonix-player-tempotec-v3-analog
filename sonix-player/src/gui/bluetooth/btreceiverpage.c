@@ -110,11 +110,40 @@ static void refresh(void) {
 	lv_label_set_text(status_label, st.streaming ? tr("btreceiver_playing") : tr("btreceiver_waiting"));
 }
 
+static bool leaving;
+
+// The device the mode was last started for from here. A start that ended in
+// an error is not tried again for the same device until it has gone away:
+// otherwise the page would restart a failing stream every half second.
+static char started_for[24];
+
+// Starts the mode when a sender is connected and the mode is not running --
+// on arrival, and for a phone or a computer that connects while the page is
+// open, which is when a sender usually turns up.
+static void start_if_sender(void) {
+	if (leaving || btreceiver_is_active()) {
+		return;
+	}
+	char mac[sizeof(started_for)];
+	if (!bluetooth_receiver_device(mac, sizeof(mac), NULL, 0)) {
+		started_for[0] = '\0';
+		return;
+	}
+	btreceiver_state_t st;
+	btreceiver_get_state(&st);
+	if (st.error[0] && strcmp(mac, started_for) == 0) {
+		return;
+	}
+	snprintf(started_for, sizeof(started_for), "%s", mac);
+	btreceiver_start();
+}
+
 static void poll_cb(lv_timer_t *timer) {
 	(void)timer;
 	if (lv_screen_active() != btreceiverpage_screen) {
 		return;
 	}
+	start_if_sender();
 	// The codec can be renegotiated mid-stream and the Bluetooth serial moves
 	// when it is, so both serials count. The stream falling silent counts too
 	// and has no serial of its own: nothing runs when frames stop arriving, so
@@ -189,8 +218,6 @@ static void codec_btn_cb(lv_event_t *e) {
 
 // ---------------------------------------------------------------------------
 
-static bool leaving;
-
 static void leave_async(void *user) {
 	(void)user;
 	back_btn_cb(NULL);
@@ -226,7 +253,8 @@ static void loaded_cb(lv_event_t *e) {
 	last_serial = (unsigned)-1;
 	// Arriving is the switch: there is nothing else this page does, so a toggle
 	// on it would only repeat what opening it already said.
-	btreceiver_start();
+	started_for[0] = '\0';
+	start_if_sender();
 	refresh();
 }
 
