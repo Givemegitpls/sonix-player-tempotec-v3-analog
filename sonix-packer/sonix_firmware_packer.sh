@@ -322,6 +322,18 @@ build_one() {
 	MODEL_N="$(cd "$ASSETS_DIR/$MODEL_DIR" && find . -type f | wc -l | tr -d ' ')"
 	say "    $MODEL_DIR/: $MODEL_N files"
 
+	# The streaming keys go in sealed, as streaming-keys.bin. One left in the
+	# clear in the assets is not shipped: an image is unpacked by anyone who
+	# downloads it. See tools/seal_streamkeys.py in sonix-player.
+	PLAIN_KEYS="usr/resource/sonix/components/streaming-keys.ini"
+	if [ -f "$SQUASH_DIR/$PLAIN_KEYS" ]; then
+		rm -f "$SQUASH_DIR/$PLAIN_KEYS"
+		warn "$MODEL_DIR/$PLAIN_KEYS is in the clear and was left out; seal it with tools/seal_streamkeys.py"
+	fi
+	if [ ! -f "$SQUASH_DIR/usr/resource/sonix/components/streaming-keys.bin" ]; then
+		warn "no streaming-keys.bin in $MODEL_DIR: Tidal, Qobuz and podcasts will be off"
+	fi
+
 	# What the other model's tree carries and this one does not. Nothing is
 	# copied across and nothing fails: whatever the stock firmware had at that
 	# path is left alone, which for a boot logo is this model's own at its own

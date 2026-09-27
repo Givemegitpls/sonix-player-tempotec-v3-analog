@@ -12,10 +12,8 @@
 // never appears as a string. They are HiBy's keys, not this project's, and open
 // source that carries them publishes them.
 //
-// So they sit in a text file on the rootfs, which whoever assembles the
-// firmware puts alongside the other resource files:
-//
-//     /usr/resource/sonix/components/streaming-keys.ini
+// So they sit in a file on the rootfs, which whoever assembles the firmware puts
+// alongside the other resource files. It is written as an INI:
 //
 //     [qobuz]
 //     app_id = ...
@@ -29,17 +27,27 @@
 //     api_key = ...
 //     api_secret = ...
 //
-// Without the file, or without a section, the matching service disables itself
-// and its menu entry says so instead of failing halfway through a login. It is
-// also the easy path the day a service changes its keys: rewrite a text file
-// rather than rebuild.
+// and shipped sealed, as /usr/resource/sonix/components/streaming-keys.bin, by
+// tools/seal_streamkeys.py. The key that opens it is not in the source: the
+// tool keeps it in streaming-keys.key, outside git, and the Makefile compiles
+// it into the player. That keeps the keys out of an unpacked image; it does not
+// keep them from whoever takes the binary apart.
+//
+// A plain streaming-keys.ini next to it is still read when there is no .bin,
+// for the simulator and for builds made without a key. Which of the two a file
+// is, is decided by its first bytes, not its name.
+//
+// Without either, or without a section, the matching service disables itself
+// and its menu entry says so instead of failing halfway through a login.
 //
 // The path can be changed with [streaming] keys_file in device_config.ini, to
-// keep the keys on the card instead of the read-only rootfs.
+// keep the keys on the card instead of the read-only rootfs -- the easy path
+// the day a service changes its keys.
 
 #include "src/system/core/respath.h"
 
-#define STREAMKEYS_PATH SONIX_RESOURCE_DIR "/components/streaming-keys.ini"
+#define STREAMKEYS_PATH SONIX_RESOURCE_DIR "/components/streaming-keys.bin"
+#define STREAMKEYS_PLAIN_PATH SONIX_RESOURCE_DIR "/components/streaming-keys.ini"
 
 // Reads the file. Call once at startup, after config_init(). A missing file is
 // not an error.

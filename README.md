@@ -83,7 +83,7 @@ usr/
     └── sonix/
         ├── language/                    the 7 .ini files
         ├── components/
-        │   ├── streaming-keys.ini       Tidal / Qobuz / Podcast Index keys - Need to provide your own.
+        │   ├── streaming-keys.bin       Tidal / Qobuz / Podcast Index keys, sealed - see "Streaming keys" below.
         │   └── system-info.json         its device-name picks the player the simulator plays
         └── gui/                         some of the .png assets the UI loads at runtime - the rest are inside the binary.
 ```
@@ -93,7 +93,7 @@ The easiest way to get one is to copy `usr/resource/` out of
 next to `sonix_player_host`: the language files, the fonts, the images and the
 `system-info.json` of that player come with it.
 
-Without the language files the interface draws raw tags instead of words, and says so on the first line of the log. Without `streaming-keys.ini` everything works except Tidal, Qobuz and podcasts.
+Without the language files the interface draws raw tags instead of words, and says so on the first line of the log. Without `streaming-keys.bin` everything works except Tidal, Qobuz and podcasts. The simulator also reads a plain `streaming-keys.ini` in the same folder.
 
 Fonts are looked for in `usr/resource/sonix/fonts` first and fall back to
 `assets/fonts` in the repo, so a tree without a resource folder still has text.
@@ -229,7 +229,7 @@ assets/R3PII/                           (and assets/R1/, the same shape)
 │   │   └── sonix/
 │   │       ├── language/            the 7 .ini files
 │   │       ├── components/
-│   │       │   ├── streaming-keys.ini	 Tidal / Qobuz / Podcast Index keys - Need to provide your own.
+│   │       │   ├── streaming-keys.bin   Tidal / Qobuz / Podcast Index keys, sealed - see "Streaming keys" below.
 │   │       │   ├── system-info.json     required: names the player, and the packer writes to it
 │   │       │   └── GB*-Database.dat     the Game Boy ROM databases
 │   │       ├── fonts/               default.otf, bold.otf, Korean.ttf, Thai.ttf
@@ -243,6 +243,33 @@ the folder is for: `HiBy R3 Pro II` in `R3PII/`, `HiBy R1` in `R1/`. The packer
 checks it, writes the build stamp into the `build_version` key, and stops if
 either is wrong. An image carrying the other player's name would offer that
 player's update to a device that cannot survive it.
+
+### Streaming keys
+
+Tidal, Qobuz and Podcast Index need application keys, and they are not in this
+repository: provide your own. They go into the image sealed, so that unpacking
+it does not hand them out as a text file.
+
+1. Copy `sonix-player/streaming-keys.ini.example` to
+   `sonix-player/streaming-keys.ini` and fill it in.
+2. Seal it into both assets trees:
+   ```bash
+   cd sonix-player
+   python3 tools/seal_streamkeys.py seal
+   ```
+   The first run creates `streaming-keys.key`, the key that seals them. Keep
+   it: every later `seal` reuses it.
+3. Build the player (`make target`). The Makefile compiles the key into it, so
+   only this build opens the `streaming-keys.bin` sealed with it. A new key
+   means a new build.
+
+`streaming-keys.ini`, `streaming-keys.key` and `streaming-keys.bin` are all
+ignored by git. The packer leaves out a `streaming-keys.ini` found in the
+assets and says so. `python3 tools/seal_streamkeys.py open <file>` prints what
+a `.bin` holds.
+
+This keeps the keys out of plain sight, not out of reach: the key is inside
+`sonix_player`, and whoever takes the binary apart can get them back.
 
 ### What it needs installed
 
