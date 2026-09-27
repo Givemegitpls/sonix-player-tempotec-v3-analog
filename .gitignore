@@ -3,6 +3,7 @@
 sonix-player/sonix_player
 sonix-player/sonix_player_debug
 sonix-player/sonix_player_host
+sonix-player/sonix_launch
 
 sonix-player/build_target
 sonix-player/build_host
