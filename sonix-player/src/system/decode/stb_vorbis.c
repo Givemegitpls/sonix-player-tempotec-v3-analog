@@ -923,6 +923,9 @@ static void *make_block_array(void *mem, int count, int size) {
 	return p;
 }
 
+// A request for zero bytes gets a pointer too, here and in setup_temp_malloc.
+// A codebook may have no entries (OptiVorbis writes them for the codebooks
+// nothing uses), and NULL for its empty tables would read as out of memory.
 static void *setup_malloc(vorb *f, int sz) {
 	sz = (sz + 7) & ~7; // round up to nearest 8 for alignment of future allocs.
 	f->setup_memory_required += sz;
@@ -933,7 +936,7 @@ static void *setup_malloc(vorb *f, int sz) {
 		f->setup_offset += sz;
 		return p;
 	}
-	return sz ? malloc(sz) : NULL;
+	return malloc(sz ? sz : 1);
 }
 
 static void setup_free(vorb *f, void *p) {
@@ -950,7 +953,7 @@ static void *setup_temp_malloc(vorb *f, int sz) {
 		f->temp_offset -= sz;
 		return (char *)f->alloc.alloc_buffer + f->temp_offset;
 	}
-	return malloc(sz);
+	return malloc(sz ? sz : 1);
 }
 
 static void setup_temp_free(vorb *f, void *p, int sz) {
