@@ -442,4 +442,8 @@ sonix-player/
 
 [@noisetta](https://github.com/noisetta)
 
+[@endgame47](https://github.com/endgame47)
+
+[@hkhrithik007](https://github.com/hkhrithik007)
+
 and all the members of this fantastic community!!
