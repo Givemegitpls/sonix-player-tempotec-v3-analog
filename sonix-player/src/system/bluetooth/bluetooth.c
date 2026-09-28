@@ -1357,6 +1357,9 @@ static void refresh_audio_state(void) {
 		a2dp_missing_since = 0;
 		if (g_bluealsa_restarted) {
 			g_bluealsa_restarted = false;
+			// Before the player is told: it opens the stream again at once, at
+			// the rate this reads. See below.
+			read_sink_rate(mac);
 			pthread_mutex_lock(&lock);
 			g_output_generation++;
 			pthread_mutex_unlock(&lock);
@@ -1415,6 +1418,14 @@ static void refresh_audio_state(void) {
 		if (btstack_audio_info(mac, path, sizeof(path))) {
 			fprintf(stderr, "bluetooth: bluealsa is encoding %s\n", path);
 		}
+
+		// The headphones' rate, before the output is pointed at them. The
+		// routing below is what makes the player reopen the track, and it does
+		// so from its own timer, possibly before do_read_codecs() at the end has
+		// run: a rate still at 0 then means no conversion, and a track at
+		// another rate makes bluealsa try to reconfigure the transport -- which
+		// some headphones answer by taking bluetoothd down.
+		read_sink_rate(mac);
 	} else {
 		codec_auto_done[0] = '\0'; // the next connection chooses again
 		read_sink_rate(NULL);
