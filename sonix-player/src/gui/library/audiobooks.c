@@ -45,6 +45,7 @@ static void start_scan(void *user);
 
 typedef enum {
 	LIST_LIBRARY,
+	LIST_CONTINUE,
 	LIST_FINISHED,
 	LIST_AUTHOR_BOOKS,
 	LIST_SERIES_BOOKS,
@@ -70,7 +71,7 @@ typedef struct {
 } list_sorts_t;
 
 static const list_sorts_t LIST_SORTS[LIST_COUNT] = {
-	[LIST_LIBRARY] = {"sort_library", SORT_AZ, 5, {SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD, SORT_PLAYED}}, [LIST_FINISHED] = {"sort_finished", SORT_NEW, 4, {SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD}}, [LIST_AUTHOR_BOOKS] = {"sort_author_books", SORT_AZ, 4, {SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD}}, [LIST_SERIES_BOOKS] = {"sort_series_books", SORT_SERIES, 5, {SORT_SERIES, SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD}}, [LIST_AUTHORS] = {"sort_authors", SORT_AZ, 4, {SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD}}, [LIST_SERIES] = {"sort_series", SORT_AZ, 4, {SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD}},
+	[LIST_LIBRARY] = {"sort_library", SORT_AZ, 5, {SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD, SORT_PLAYED}}, [LIST_CONTINUE] = {"sort_continue", SORT_PLAYED, 3, {SORT_PLAYED, SORT_AZ, SORT_ZA}}, [LIST_FINISHED] = {"sort_finished", SORT_NEW, 4, {SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD}}, [LIST_AUTHOR_BOOKS] = {"sort_author_books", SORT_AZ, 4, {SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD}}, [LIST_SERIES_BOOKS] = {"sort_series_books", SORT_SERIES, 5, {SORT_SERIES, SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD}}, [LIST_AUTHORS] = {"sort_authors", SORT_AZ, 4, {SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD}}, [LIST_SERIES] = {"sort_series", SORT_AZ, 4, {SORT_AZ, SORT_ZA, SORT_NEW, SORT_OLD}},
 };
 
 static const char *const SORT_LABELS[] = {
@@ -282,6 +283,8 @@ static audiobook_list_t books_kind(void) {
 	switch (books_list) {
 	case LIST_FINISHED:
 		return AUDIOBOOK_LIST_FINISHED;
+	case LIST_CONTINUE:
+		return AUDIOBOOK_LIST_CONTINUE;
 	case LIST_AUTHOR_BOOKS:
 		return AUDIOBOOK_LIST_AUTHOR;
 	case LIST_SERIES_BOOKS:
@@ -577,6 +580,8 @@ static const char *books_empty_text(void) {
 	switch (books_list) {
 	case LIST_FINISHED:
 		return tr("audiobook_finished_empty");
+	case LIST_CONTINUE:
+		return tr("audiobook_continue_empty");
 	case LIST_LIBRARY:
 		return tr("audiobook_empty_note");
 	default:
@@ -983,13 +988,18 @@ static void build_names_page(gui_config_t *cfg) {
 }
 
 // ---------------------------------------------------------------------------
-// the section page: four tiles and the options
+// the section page: four tiles, the finished books and the options
 // ---------------------------------------------------------------------------
 
 static void open_library(void) { books_open(LIST_LIBRARY, NULL, tr("audiobook_library")); }
 static void open_series(void) { names_open(LIST_SERIES); }
 static void open_authors(void) { names_open(LIST_AUTHORS); }
-static void open_finished(void) { books_open(LIST_FINISHED, NULL, tr("audiobook_finished")); }
+static void open_continue(void) { books_open(LIST_CONTINUE, NULL, tr("audiobook_continue")); }
+
+static void finished_cb(lv_event_t *e) {
+	(void)e;
+	books_open(LIST_FINISHED, NULL, tr("audiobook_finished"));
+}
 
 // An index written by an older scan has no authors, series or folder books.
 // It is read again once, the first time the section is opened, through the
@@ -1010,14 +1020,16 @@ static void build_section_page(gui_config_t *cfg) {
 		{"audiobook_library", &icon_menu_audiobook_library, NULL, open_library},
 		{"audiobook_series", &icon_menu_audiobook_series, NULL, open_series},
 		{"audiobook_authors", &icon_menu_audiobook_author, NULL, open_authors},
-		{"audiobook_finished", &icon_menu_audiobook_finished, NULL, open_finished},
+		{"audiobook_continue", &icon_menu_audiobook_continue, NULL, open_continue},
 	};
 	// The Music page's grid of two by three, so the tiles are the same size.
 	gridpage_build(audiobooks_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
 
-	settingsrow_title_corner_slots(settingsrow_title(audiobooks_screen, cfg, "audiobooks"), cfg, 1);
+	// The options, and to their left the finished books.
+	settingsrow_title_corner_slots(settingsrow_title(audiobooks_screen, cfg, "audiobooks"), cfg, 2);
 	lv_obj_t *options_btn = corner_button(audiobooks_screen, cfg, 0, &icon_music_settings, NULL);
 	lv_obj_add_event_cb(options_btn, switch_screen_cb, LV_EVENT_CLICKED, audiobooksettings_screen);
+	corner_button(audiobooks_screen, cfg, 1, &icon_book_finished, finished_cb);
 
 	lv_obj_add_event_cb(audiobooks_screen, section_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }

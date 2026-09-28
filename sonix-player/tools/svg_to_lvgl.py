@@ -58,6 +58,7 @@ ICONS = [
     ("folder-root.svg", "folder_root", 34), # browser corner: back to the card root
     ("file.svg", "file", 32),
     ("music-settings.svg", "music_settings", 34),
+    ("book-finished.svg", "book_finished", 34),  # the Audiobooks page's corner: the finished books
     ("repeat.svg", "repeat_all", 30),
     ("repeat-1.svg", "repeat_one", 30),
     ("repeat-off.svg", "repeat_off", 30),
@@ -387,7 +388,7 @@ COLOR_ICONS = [
     ("audiobook-library.png", "menu_audiobook_library", SECTION_ICON_SIZE),
     ("audiobook-series.png", "menu_audiobook_series", SECTION_ICON_SIZE),
     ("audiobook-author.png", "menu_audiobook_author", SECTION_ICON_SIZE),
-    ("audiobook-finished.png", "menu_audiobook_finished", SECTION_ICON_SIZE),
+    ("audiobook-continue.png", "menu_audiobook_continue", SECTION_ICON_SIZE),
     ("settings.png", "menu_settings", MAIN_MENU_ICON_SIZE),
     ("more.png", "menu_more", MAIN_MENU_ICON_SIZE),
     # What lives inside "More", at section size.

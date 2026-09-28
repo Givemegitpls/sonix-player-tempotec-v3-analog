@@ -243,7 +243,7 @@ audiobookdb_index_t *audiobookdb_index_open(audiobook_list_t kind, const char *v
 	ix->with_part = kind == AUDIOBOOK_LIST_SERIES;
 
 	char orderby[160];
-	char sql[400];
+	char sql[640];
 	switch (kind) {
 	case AUDIOBOOK_LIST_FINISHED:
 		// The join keeps a book that has left the card out of the list without
@@ -251,6 +251,16 @@ audiobookdb_index_t *audiobookdb_index_open(audiobook_list_t kind, const char *v
 		// there again.
 		order_clause(orderby, sizeof(orderby), order, desc, "f.finished_at");
 		snprintf(sql, sizeof(sql), "SELECT t.rowid FROM AUDIOBOOK_TABLE t JOIN AUDIOBOOK_FINISHED f ON f.path = t.path ORDER BY %s", orderby);
+		break;
+	case AUDIOBOOK_LIST_CONTINUE:
+		// Listened to, and left somewhere past the start of the first file: a
+		// book finished goes back to that start, and so leaves this list.
+		order_clause(orderby, sizeof(orderby), order, desc, "t.added");
+		snprintf(sql, sizeof(sql),
+				 "SELECT t.rowid FROM AUDIOBOOK_TABLE t WHERE t.last_played > 0 AND t.resume_file IS NOT NULL AND"
+				 " (t.resume_pos > 1 OR t.resume_file != COALESCE((SELECT p.path FROM AUDIOBOOK_PARTS p"
+				 " WHERE p.book = t.path ORDER BY p.idx LIMIT 1), t.path)) ORDER BY %s",
+				 orderby);
 		break;
 	case AUDIOBOOK_LIST_AUTHOR:
 		order_clause(orderby, sizeof(orderby), order, desc, "t.added");

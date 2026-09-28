@@ -5,8 +5,9 @@
 
 #include "lvgl/lvgl.h"
 
-// The audiobooks section: four tiles (library, series, authors, finished) over
-// a books page and an authors-or-series page, an options page carrying the scan
+// The audiobooks section: four tiles (library, series, authors, continue
+// listening) and a corner button for the finished books, over a books page and
+// an authors-or-series page, an options page carrying the scan
 // and the transport-button setting, the page that setting opens, and the scan
 // progress page (the music one's layout with its own icon and words).
 extern lv_obj_t *audiobooks_screen;

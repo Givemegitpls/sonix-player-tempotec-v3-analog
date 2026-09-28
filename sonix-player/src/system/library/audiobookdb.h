@@ -49,6 +49,7 @@ void audiobookdb_scan_stop(void);
 typedef enum {
 	AUDIOBOOK_LIST_ALL,		 // every book
 	AUDIOBOOK_LIST_FINISHED, // the ones heard to the end
+	AUDIOBOOK_LIST_CONTINUE, // the ones started and not back at their beginning
 	AUDIOBOOK_LIST_AUTHOR,	 // the books of one author; "" is the books with none
 	AUDIOBOOK_LIST_SERIES,	 // the books of one series
 } audiobook_list_t;
