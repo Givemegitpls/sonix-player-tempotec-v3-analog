@@ -150,6 +150,12 @@ void bluetooth_power_down_stack(void);
 // connected only confuses.
 bool bluetooth_audio_active(void);
 
+// The rate the A2DP stream to the headphones runs at, in Hz, as bluealsa chose
+// it when the link came up (or when the codec was last changed); 0 when there
+// is no sink or bluealsa has not said. A number kept by the Bluetooth thread:
+// safe and cheap from any thread.
+unsigned bluetooth_sink_rate(void);
+
 // The ALSA device name to play through, or an empty string when the audio
 // belongs to the jack. Safe to call from the interface thread.
 void bluetooth_output_pcm(char *out, int size);
