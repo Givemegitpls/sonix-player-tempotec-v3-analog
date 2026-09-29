@@ -937,6 +937,42 @@ static void gapless_hold(snd_pcm_t *pcm, int channels, int rate, int bits, snd_p
 	fprintf(stderr, "audio[%ld]: gapless: holding the PCM (%d ch, %d Hz, %d bit)\n", log_ms(), channels, rate, bits);
 }
 
+// Whether a bluealsa handle can be held for the next track, or taken back for
+// it.
+//
+// A bluealsa PCM is not a sound card: its A2DP transport is released once the
+// stream stops being fed, and writes after that are accepted by the plugin and
+// go nowhere. So the handle must still be RUNNING with at least
+// BT_HOLD_MIN_QUEUE_MS of audio queued: the transport has never gone idle, and
+// the next track's first write lands before the queue runs out. And it must
+// still be the output: headphones dropping mid-track flip the route back to
+// the jack at once (bluetooth.c, apply_output_routing), and a track ending a
+// moment later would otherwise hold a dead handle.
+#define BT_HOLD_MIN_QUEUE_MS 120
+
+static bool bt_hold_usable(snd_pcm_t *pcm) {
+	if (snd_pcm_state(pcm) != SND_PCM_STATE_RUNNING) {
+		return false;
+	}
+	char device[sizeof(output_pcm)];
+	audio_get_output_device(device, sizeof(device));
+	const char *opened_as = pcm_device_name(pcm);
+	if (!opened_as || strcmp(device, opened_as) != 0) {
+		return false;
+	}
+	unsigned int rate = 0;
+	snd_pcm_hw_params_t *hw;
+	snd_pcm_hw_params_alloca(&hw);
+	if (snd_pcm_hw_params_current(pcm, hw) < 0 || snd_pcm_hw_params_get_rate(hw, &rate, NULL) < 0 || rate == 0) {
+		return false;
+	}
+	snd_pcm_sframes_t queued = 0;
+	if (snd_pcm_delay(pcm, &queued) < 0) {
+		return false;
+	}
+	return queued >= (snd_pcm_sframes_t)(rate * BT_HOLD_MIN_QUEUE_MS / 1000);
+}
+
 // The held PCM, when it is the one needed. On a format mismatch it is closed
 // and NULL returned, so the caller opens a device as usual.
 static snd_pcm_t *gapless_take(int channels, int rate, int bits, snd_pcm_uframes_t *period_out) {
@@ -963,6 +999,15 @@ static snd_pcm_t *gapless_take(int channels, int rate, int bits, snd_pcm_uframes
 	held_pcm = NULL;
 	pthread_mutex_unlock(&held_lock);
 	if (!pcm) {
+		return NULL;
+	}
+	if (pcm_is_bluetooth(pcm) && !bt_hold_usable(pcm)) {
+		fprintf(stderr, "audio[%ld]: gapless: the Bluetooth queue ran low or the stream stopped, reopening\n",
+				log_ms());
+		pthread_mutex_lock(&held_lock);
+		held_pcm = pcm;
+		pthread_mutex_unlock(&held_lock);
+		gapless_release();
 		return NULL;
 	}
 	if (period_out) {
@@ -3506,23 +3551,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// it. See the comment above gapless_release() for the conditions and the
 	// reason behind each.
 	//
-	// Never over Bluetooth, for the reason spelled out at paused_device_close_ms():
-	// a bluealsa PCM is not a sound card. Its A2DP transport is released as soon
-	// as the stream stops being fed, and writes after that are accepted by the
-	// plugin and go nowhere -- so the held handle the next track appends to can
-	// be a handle to nothing, and the album carries on in silence with the
-	// status still reading PLAYING. Over Bluetooth a track change therefore
-	// closes and reopens; the gap that costs is inaudible next to the link's
-	// own latency.
-	//
-	// pcm_is_bluetooth(pcm_handle) and not output_is_bluetooth(): the second
-	// reads the route installed right now, and the two disagree exactly when it
-	// matters. Headphones dropping mid-track flip the route back to the jack
-	// straight away (bluetooth.c, apply_output_routing), so a track ending a
-	// moment later would ask about the wrong device and put a dead bluealsa
-	// handle into the gapless hold.
+	// Over Bluetooth only while the handle is live: see bt_hold_usable().
 	bool keep_open = pcm_handle && gapless_enabled && played_to_the_end && !is_paused && !passthrough &&
-					 !pcm_is_bluetooth(pcm_handle);
+					 (!pcm_is_bluetooth(pcm_handle) || bt_hold_usable(pcm_handle));
 	if (keep_open) {
 		gapless_hold(pcm_handle, channels, out_rate, out_bits, period_size);
 		pcm_handle = NULL;
@@ -3565,9 +3596,8 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			// race is already waited out three lines up.
 			//
 			// A fifth of a second, against a link that already carries the best
-			// part of a second of buffer: it does not add a gap anybody hears,
-			// and it is not what makes Bluetooth not gapless -- the close and
-			// reopen are.
+			// part of a second of buffer. Only when the handle was not held for
+			// the next track.
 			usleep(BT_REOPEN_SETTLE_MS * 1000);
 		}
 	}
