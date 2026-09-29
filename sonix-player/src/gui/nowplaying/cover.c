@@ -1383,6 +1383,7 @@ void cover_free(cover_image_t *img) {
 // cheaper the second time. An entry at that size is worth keeping for the few
 // hundred albums a card holds, but not for anything larger.
 #define THUMB_DISK_MAX_SIZE 216
+#define THUMB_WAV_EPOCH "|w2"
 
 static sqlite3 *thumb_db;
 // The thumbnail worker writes while the GUI thread may be reading, and a card
@@ -1527,12 +1528,17 @@ static uint64_t thumb_hash(const char *path, int box, bool is_dir) {
 	struct stat st;
 	uint64_t h = 1469598103934665603ULL;
 
+	// THUMB_WAV_EPOCH goes into the key of every folder and every .wav: both
+	// were once answered "no artwork" for a WAV that has it in its ID3 chunk,
+	// and that answer is on disk under keys nothing else would change.
+	const char *epoch = (is_dir || has_extension(path, ".wav")) ? THUMB_WAV_EPOCH : "";
+
 	char material[700];
 	if (stat(path, &st) == 0) {
-		snprintf(material, sizeof(material), "%s|%d|%c|%lld|%lld", path, box, is_dir ? 'd' : 'f',
-				 (long long)st.st_mtime, (long long)st.st_size);
+		snprintf(material, sizeof(material), "%s|%d|%c|%lld|%lld%s", path, box, is_dir ? 'd' : 'f',
+				 (long long)st.st_mtime, (long long)st.st_size, epoch);
 	} else {
-		snprintf(material, sizeof(material), "%s|%d|%c|?", path, box, is_dir ? 'd' : 'f');
+		snprintf(material, sizeof(material), "%s|%d|%c|?%s", path, box, is_dir ? 'd' : 'f', epoch);
 	}
 
 	for (const char *p = material; *p; p++) {

@@ -108,6 +108,7 @@ extern const lv_image_dsc_t icon_airplay_quick;
 extern const lv_image_dsc_t icon_peq_quick;
 extern const lv_image_dsc_t icon_sonixlink_quick;
 extern const lv_image_dsc_t icon_dlna_quick;
+extern const lv_image_dsc_t icon_wifi_transfer_quick;
 extern const lv_image_dsc_t icon_sleep_music_quick;
 extern const lv_image_dsc_t icon_sleep_audiobook_quick;
 extern const lv_image_dsc_t icon_sleep_podcast_quick;

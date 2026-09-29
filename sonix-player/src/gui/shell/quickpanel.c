@@ -15,6 +15,7 @@
 #include "src/gui/shell/scrolltext.h"
 #include "src/gui/wireless/dlna.h"
 #include "src/gui/wireless/sonixlink.h"
+#include "src/gui/wireless/wifitransfer.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/playback/audiobook.h"
 #include "src/system/streaming/podcast.h"
@@ -84,6 +85,7 @@ static lv_obj_t *dlna_btn;
 static lv_obj_t *sleep_music_btn;
 static lv_obj_t *sleep_audiobook_btn;
 static lv_obj_t *sleep_podcast_btn;
+static lv_obj_t *wifi_transfer_btn;
 
 // ---------------------------------------------------------------------------
 // Which buttons the panel carries, and where
@@ -116,6 +118,7 @@ static const char *const button_key[QP_BTN_COUNT] = {
 	[QP_BTN_SLEEP_MUSIC] = "sleep_music",
 	[QP_BTN_SLEEP_AUDIOBOOK] = "sleep_audiobook",
 	[QP_BTN_SLEEP_PODCAST] = "sleep_podcast",
+	[QP_BTN_WIFI_TRANSFER] = "wifi_transfer",
 };
 
 static const char *const button_tag[QP_BTN_COUNT] = {
@@ -133,6 +136,7 @@ static const char *const button_tag[QP_BTN_COUNT] = {
 	[QP_BTN_SLEEP_MUSIC] = "quickpanel_sleep_music",
 	[QP_BTN_SLEEP_AUDIOBOOK] = "quickpanel_sleep_audiobook",
 	[QP_BTN_SLEEP_PODCAST] = "quickpanel_sleep_podcast",
+	[QP_BTN_WIFI_TRANSFER] = "wifitransfer_title",
 };
 
 static uint8_t slots[QP_SLOT_COUNT];  // the grid, QP_BTN_NONE where it is empty
@@ -881,7 +885,7 @@ static void order_load(void) {
 		// out to make room for ones they never asked for, so they wait among the
 		// unused ones, where the settings page shows them.
 		bool waits = i == QP_BTN_DLNA || i == QP_BTN_SLEEP_MUSIC || i == QP_BTN_SLEEP_AUDIOBOOK ||
-					 i == QP_BTN_SLEEP_PODCAST;
+					 i == QP_BTN_SLEEP_PODCAST || i == QP_BTN_WIFI_TRANSFER;
 		if ((saved_version < 2 && i == QP_BTN_FADE) || waits) {
 			hidden[hidden_n++] = (uint8_t)i;
 		} else {
@@ -989,6 +993,8 @@ static lv_obj_t *button_widget(quickpanel_button_t which) {
 		return sleep_audiobook_btn;
 	case QP_BTN_SLEEP_PODCAST:
 		return sleep_podcast_btn;
+	case QP_BTN_WIFI_TRANSFER:
+		return wifi_transfer_btn;
 	default:
 		return NULL;
 	}
@@ -1172,6 +1178,8 @@ const lv_image_dsc_t *quickpanel_button_icon(quickpanel_button_t button) {
 		return &icon_sleep_audiobook_quick;
 	case QP_BTN_SLEEP_PODCAST:
 		return &icon_sleep_podcast_quick;
+	case QP_BTN_WIFI_TRANSFER:
+		return &icon_wifi_transfer_quick;
 	default:
 		return &icon_wifi;
 	}
@@ -1242,6 +1250,7 @@ static void refresh_audio_buttons(void) {
 	circle_button_set_on(sleep_music_btn, sleep_timer_armed(SLEEPTIMER_MUSIC));
 	circle_button_set_on(sleep_audiobook_btn, sleep_timer_armed(SLEEPTIMER_AUDIOBOOK));
 	circle_button_set_on(sleep_podcast_btn, sleep_timer_armed(SLEEPTIMER_PODCAST));
+	circle_button_set_on(wifi_transfer_btn, wifitransfer_get_enabled());
 
 	bool high = musicsettings_high_gain();
 	if (gain_btn) {
@@ -1501,6 +1510,41 @@ static void dlna_clicked_cb(lv_event_t *e) {
 	refresh_audio_buttons();
 }
 
+// Wi-Fi transfer. The server lives only as long as its page is open (see
+// gui/wireless/wifitransfer.h), so switching it on opens the page with the
+// server starting; switching it off stops it where it is. Same network gate as
+// the three above.
+static void wifi_transfer_clicked_cb(lv_event_t *e) {
+	(void)e;
+	if (long_press_consumed) {
+		long_press_consumed = false;
+		return;
+	}
+
+	if (wifitransfer_get_enabled()) {
+		wifitransfer_page_stop();
+		refresh_audio_buttons();
+		return;
+	}
+	if (!wifitransfer_available()) {
+		gui_notify_popup("wifitransfer_unavailable");
+		return;
+	}
+	if (network_needed("quickpanel_wifitransfer_only_works_over_wi_fi")) {
+		return;
+	}
+
+	quickpanel_close();
+	bool from_player = player_sheet_is_open();
+	if (from_player) {
+		player_sheet_close(false);
+	}
+	wifitransfer_page_open_started();
+	if (from_player) {
+		switcher_set_player_return(wifitransfer_screen);
+	}
+}
+
 // The parametric equaliser, same contract as the graphic one beside it: a tap
 // switches it, a hold opens its page.
 static void peq_clicked_cb(lv_event_t *e) {
@@ -1722,6 +1766,11 @@ void quickpanel_init(gui_config_t *cfg) {
 
 	sleep_podcast_btn = make_circle_button(row, &icon_sleep_podcast_quick);
 	lv_obj_add_event_cb(sleep_podcast_btn, sleep_podcast_clicked_cb, LV_EVENT_CLICKED, NULL);
+
+	// A tap opens the page with the server starting; a hold opens it as it is.
+	wifi_transfer_btn = make_circle_button(row, &icon_wifi_transfer_quick);
+	lv_obj_add_event_cb(wifi_transfer_btn, wifi_transfer_clicked_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(wifi_transfer_btn, open_page_cb, LV_EVENT_LONG_PRESSED, wifitransfer_screen);
 
 	// Built in the order above, then arranged into the user's -- see
 	// Settings > More > Control centre.

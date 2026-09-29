@@ -191,6 +191,9 @@ ICONS = [
     # DLNA's menu tile is a coloured square, so the circle carries the line
     # drawing of the logo instead.
     ("dlna-quick.svg", "dlna_quick", 46),
+    # Wi-Fi transfer: a folder with the two arrows of a sync, since the tile's
+    # own drawing is a coloured square.
+    ("wifi-transfer-quick.svg", "wifi_transfer_quick", 46),
     # One sleep timer per kind of listening: there are three of them, and
     # stopping one from the control centre must not stop another.
     ("sleep-timer-music.svg", "sleep_music_quick", 46),

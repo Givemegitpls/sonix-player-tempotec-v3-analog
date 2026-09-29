@@ -857,8 +857,11 @@ static bool find_first_track(const char *dirpath, char *out_name, size_t out_siz
 	while ((de = readdir(dir)) != NULL) {
 		if (de->d_name[0] == '.')
 			continue;
-		if (decode_detect_format(de->d_name) == DECODE_FORMAT_UNKNOWN)
-			continue; // only the formats that can carry a picture
+		// Only the formats that can carry a picture. A plain WAV is detected as
+		// no decoder's format (audio.c plays it itself) but carries one in its
+		// ID3 chunk, see read_embedded().
+		if (decode_detect_format(de->d_name) == DECODE_FORMAT_UNKNOWN && !has_extension(de->d_name, ".wav"))
+			continue;
 
 		if (!found || strcasecmp(de->d_name, out_name) < 0) {
 			snprintf(out_name, out_size, "%s", de->d_name);

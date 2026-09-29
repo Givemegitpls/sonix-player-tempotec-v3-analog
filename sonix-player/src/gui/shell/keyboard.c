@@ -50,6 +50,15 @@ static const char *const KB_SYM_ROWS[KB_LAYOUT_ROWS] = {
 	".,:;\"+%",
 };
 
+// The second symbol page, behind shift: the ASCII punctuation the first one
+// has no room for, with the commonest marks repeated so the rows keep their
+// length.
+static const char *const KB_SYM2_ROWS[KB_LAYOUT_ROWS] = {
+	"[]{}#$*=^~",
+	"/\\|<>`_-+",
+	".,?!\'\"%",
+};
+
 // ---------------------------------------------------------------------------
 // T9: the nine-key phone keypad, multitap. Repeated taps on the same key walk
 // its cycle by replacing the last character, and the character commits after a
@@ -58,17 +67,23 @@ static const char *const KB_SYM_ROWS[KB_LAYOUT_ROWS] = {
 // Two modes, switched by the "123"/"abc" key that always sits first on the
 // bottom row: letters (keys 2-9 carry only letters, 1 carries punctuation) and
 // numbers, laid out like the letters -- 123 / 456 / 789 -- each with its share
-// of the QWERTY symbols at the tail of its cycle. Space exists in both modes;
-// in number mode shift is useless and becomes the 0 key.
+// of the QWERTY symbols at the tail of its cycle, and the 0 after the 9. Space
+// exists in both modes; in number mode shift turns to the second symbol set.
 // ---------------------------------------------------------------------------
 #define KB_T9_KEYS KB_LAYOUT_T9_KEYS
 #define KB_T9_COMMIT_MS 800
 
-// Number mode: the digit first, then the sixteen QWERTY symbols shared out at
-// the tail of each cycle (.,:; -_ '" !? () &@ + %) -- the same set as the
-// QWERTY 123 mode, none left out.
+// Number mode: the digit first, then the sixteen symbols of the first QWERTY
+// symbol page shared out at the tail of each cycle (.,:; -_ '" !? () &@ + %),
+// none left out.
 static const char *const KB_T9_NUM[KB_T9_KEYS] = {
-	"1.,:;", "2-_", "3'\"", "4!?", "5()", "6&@", "7+", "8%", "9",
+	"1.,:;", "2-_", "3'\"", "4!?", "5()", "6&@", "7+", "8%", "90",
+};
+
+// Number mode with shift: the same digits over the second symbol page's
+// sixteen marks.
+static const char *const KB_T9_NUM2[KB_T9_KEYS] = {
+	"1[]", "2{}", "3#$", "4*=", "5^~", "6/\\", "7|", "8<>", "90`",
 };
 
 struct keyboard_s {
@@ -107,7 +122,6 @@ struct keyboard_s {
 	lv_obj_t *t9_mode_label;  // the mode-switch key: "123" / "abc"
 	lv_obj_t *t9_shift_btn;
 	lv_obj_t *t9_shift_icon;
-	lv_obj_t *t9_shift_label; // the "0" that replaces the icon in number mode
 	lv_obj_t *t9_accept_btn;
 	key_ref_t t9_refs[KB_T9_KEYS];
 	int t9_last_key; // -1 = no pending character
@@ -126,6 +140,7 @@ struct keyboard_s {
 	bool caps; // set by a shift double-tap: upper case until shift is pressed again
 	uint32_t shift_tap_ms; // last shift tap, to recognise the double
 	bool symbols;
+	bool symbols2;	  // the second symbol page, in the QWERTY panel and on the keypad
 
 	key_ref_t refs[KB_MAX_KEYS];
 
@@ -171,7 +186,8 @@ static int kb_row_len(const keyboard_t *kb, int row) {
 	if (row < 0 || row >= KB_LAYOUT_ROWS) {
 		return 0;
 	}
-	return kb->symbols ? (int)strlen(KB_SYM_ROWS[row]) : kblayout_row_len(kb->layout, row);
+	return kb->symbols ? (int)strlen((kb->symbols2 ? KB_SYM2_ROWS : KB_SYM_ROWS)[row])
+					   : kblayout_row_len(kb->layout, row);
 }
 
 static const char *kb_key_text(const keyboard_t *kb, int row, int col) {
@@ -180,7 +196,7 @@ static const char *kb_key_text(const keyboard_t *kb, int row, int col) {
 	}
 	if (kb->symbols) {
 		static char one[2];
-		one[0] = KB_SYM_ROWS[row][col];
+		one[0] = (kb->symbols2 ? KB_SYM2_ROWS : KB_SYM_ROWS)[row][col];
 		one[1] = '\0';
 		return one;
 	}
@@ -196,13 +212,14 @@ static int kb_t9_len(const keyboard_t *kb, int key) {
 	if (key < 0 || key >= KB_T9_KEYS) {
 		return 0;
 	}
-	return kb->t9_numbers ? (int)strlen(KB_T9_NUM[key]) : kblayout_t9_len(kb->layout, key);
+	return kb->t9_numbers ? (int)strlen((kb->symbols2 ? KB_T9_NUM2 : KB_T9_NUM)[key])
+						  : kblayout_t9_len(kb->layout, key);
 }
 
 static const char *kb_t9_step(const keyboard_t *kb, int key, int tap) {
 	if (kb->t9_numbers) {
 		static char one[2];
-		one[0] = KB_T9_NUM[key][tap];
+		one[0] = (kb->symbols2 ? KB_T9_NUM2 : KB_T9_NUM)[key][tap];
 		one[1] = '\0';
 		return one;
 	}
@@ -268,6 +285,7 @@ static void kb_layout_pick(void *user) {
 	keyboard_t *kb = layout_choices[i].kb;
 	kb->layout = layout_choices[i].layout;
 	kb->symbols = false;	 // the letters are the point of the choice
+	kb->symbols2 = false;
 	kb->t9_numbers = false;	 // and the same on the keypad
 	kb->t9_last_key = -1;
 	kb_apply_layout(kb); // repaints both panels' caps
@@ -281,6 +299,7 @@ static void kb_screen_left_cb(lv_event_t *e) {
 	}
 	kb->layout = kblayout_default();
 	kb->symbols = false;
+	kb->symbols2 = false;
 	kb_apply_layout(kb);
 }
 
@@ -322,7 +341,7 @@ static void kb_refresh_caps(keyboard_t *kb) {
 	// Shift wears the caps-lock icon while caps lock is on (set by a fast
 	// double tap), on both keyboards.
 	lv_image_set_src(kb->shift_icon, kb->caps ? &icon_caps_lock : &icon_shift);
-	if (kb->shift && !kb->symbols) {
+	if (kb->symbols ? kb->symbols2 : kb->shift) {
 		lv_obj_set_style_bg_color(kb->shift_btn, theme()->accent, 0);
 		lv_obj_set_style_bg_opa(kb->shift_btn, LV_OPA_COVER, 0);
 		lv_obj_set_style_image_recolor(kb->shift_icon, lv_color_white(), 0);
@@ -341,7 +360,7 @@ static void kb_refresh_caps(keyboard_t *kb) {
 		}
 		char cap[16];
 		if (kb->t9_numbers) {
-			const char *cycle = KB_T9_NUM[i];
+			const char *cycle = (kb->symbols2 ? KB_T9_NUM2 : KB_T9_NUM)[i];
 			if (cycle[1] != '\0') {
 				snprintf(cap, sizeof(cap), "%c\n%s", cycle[0], cycle + 1);
 			} else {
@@ -362,17 +381,8 @@ static void kb_refresh_caps(keyboard_t *kb) {
 	}
 	if (kb->t9_shift_btn && kb->t9_shift_icon) {
 		lv_image_set_src(kb->t9_shift_icon, kb->caps ? &icon_caps_lock : &icon_shift);
-		// Shift is useless in number mode: the same key becomes the 0.
-		if (kb->t9_shift_label) {
-			if (kb->t9_numbers) {
-				lv_obj_add_flag(kb->t9_shift_icon, LV_OBJ_FLAG_HIDDEN);
-				lv_obj_remove_flag(kb->t9_shift_label, LV_OBJ_FLAG_HIDDEN);
-			} else {
-				lv_obj_remove_flag(kb->t9_shift_icon, LV_OBJ_FLAG_HIDDEN);
-				lv_obj_add_flag(kb->t9_shift_label, LV_OBJ_FLAG_HIDDEN);
-			}
-		}
-		if (kb->shift && !kb->t9_numbers) {
+		// In number mode shift turns to the second symbol set; the 0 is on 9.
+		if (kb->t9_numbers ? kb->symbols2 : kb->shift) {
 			lv_obj_set_style_bg_color(kb->t9_shift_btn, theme()->accent, 0);
 			lv_obj_set_style_bg_opa(kb->t9_shift_btn, LV_OPA_COVER, 0);
 			lv_obj_set_style_image_recolor(kb->t9_shift_icon, lv_color_white(), 0);
@@ -476,21 +486,22 @@ static void kb_t9_mode_cb(lv_event_t *e) {
 	kb_t9_commit(kb);
 	kb->t9_last_key = -1; // a cycle does not carry across a table change
 	kb->t9_numbers = !kb->t9_numbers;
+	kb->symbols2 = false;
 	kb_refresh_caps(kb);
 }
 
-// The T9 shift key: shift/caps in letter mode, the 0 in number mode, where
-// case means nothing.
+// The T9 shift key: shift/caps in letter mode, the second symbol set in number
+// mode, where case means nothing.
 static void kb_t9_shift_cb(lv_event_t *e) {
 	keyboard_t *kb = lv_event_get_user_data(e);
 	if (!kb) {
 		return;
 	}
 	if (kb->t9_numbers) {
-		if (kb->field) {
-			kb_t9_commit(kb);
-			lv_textarea_add_text(kb->field, "0");
-		}
+		kb_t9_commit(kb);
+		kb->t9_last_key = -1; // a cycle does not carry across a table change
+		kb->symbols2 = !kb->symbols2;
+		kb_refresh_caps(kb);
 		return;
 	}
 	kb_shift_press(kb);
@@ -513,7 +524,7 @@ static void kb_letter_cb(lv_event_t *e) {
 
 	lv_textarea_add_text(kb->field, kb_key_text(kb, kb->key_row[index], kb->key_col[index]));
 	if (kb->symbols) {
-		return; // shift means nothing on the symbol page
+		return; // on the symbol pages shift picks the page and stays
 	}
 	if (kb->shift && !kb->caps) {
 		kb->shift = false; // one-shot, like every phone keyboard, unless caps lock
@@ -543,7 +554,12 @@ static void kb_shift_press(keyboard_t *kb) {
 
 static void kb_shift_cb(lv_event_t *e) {
 	keyboard_t *kb = lv_event_get_user_data(e);
-	if (!kb || kb->symbols) {
+	if (!kb) {
+		return;
+	}
+	if (kb->symbols) {
+		kb->symbols2 = !kb->symbols2;
+		kb_apply_layout(kb);
 		return;
 	}
 	kb_shift_press(kb);
@@ -576,6 +592,7 @@ static void kb_mode_cb(lv_event_t *e) {
 		return;
 	}
 	kb->symbols = !kb->symbols;
+	kb->symbols2 = false;
 	kb->shift = false;
 	// Not just a repaint: the symbol page and the alphabet do not have the same
 	// number of keys per row, so the keys have to be dealt out again.
@@ -859,9 +876,6 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	kb->t9_shift_btn = kb_make_key(t9_row4, key_w + 14, kb_t9_shift_cb, kb);
 	kb->t9_shift_icon = kb_key_icon(kb->t9_shift_btn, &icon_shift);
 	// The "0" that takes the shift icon's place in number mode.
-	kb->t9_shift_label = kb_key_label(kb->t9_shift_btn);
-	lv_label_set_text(kb->t9_shift_label, "0");
-	lv_obj_add_flag(kb->t9_shift_label, LV_OBJ_FLAG_HIDDEN);
 	lv_obj_t *t9_space = kb_make_key(t9_row4, 0, kb_t9_space_cb, kb); // grows
 	kb_key_icon(t9_space, &icon_space);
 	lv_obj_t *t9_del = kb_make_key(t9_row4, key_w + 14, kb_delete_cb, kb);
@@ -1070,6 +1084,7 @@ void keyboard_reset(keyboard_t *kb) {
 	kb->shift = false;
 	kb->caps = false;
 	kb->symbols = false;
+	kb->symbols2 = false;
 	kb->t9_last_key = -1;
 	kb->t9_tap = 0;
 	kb->t9_numbers = false;

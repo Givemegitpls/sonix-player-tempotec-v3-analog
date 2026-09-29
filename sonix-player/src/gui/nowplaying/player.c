@@ -1152,6 +1152,7 @@ static void slider_over_waveform(bool over) {
 #define STUDIO_QUALITY_GAP 10 // between the sleeve and the line under it
 #define STUDIO_QUALITY_H 30
 #define STUDIO_BOTTOM 10 // under that line, before the controls begin
+#define STUDIO_COVER_MAX_PCT 83
 
 static lv_obj_t *studio_bg;		  // the blurred sleeve, the size of the screen
 static lv_obj_t *studio_box;	  // what everything else is laid out on
@@ -1214,7 +1215,10 @@ static int studio_cover_geometry(int *top_out) {
 	}
 
 	int top = head_top + STUDIO_HEAD_H + STUDIO_COVER_GAP;
-	int size = studio_box_w - 2 * STUDIO_MARGIN;
+	// Never wider than STUDIO_COVER_MAX_PCT of the panel: where the height
+	// allows the full width (the R1), a sleeve from edge to edge crowds the
+	// title above it and reads as the standard arrangement.
+	int size = studio_box_w * STUDIO_COVER_MAX_PCT / 100;
 	int room = studio_box_h - top - STUDIO_QUALITY_GAP - STUDIO_QUALITY_H - STUDIO_BOTTOM;
 	if (size > room) {
 		size = room;

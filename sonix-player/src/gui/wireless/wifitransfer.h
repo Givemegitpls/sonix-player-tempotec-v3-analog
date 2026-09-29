@@ -17,4 +17,12 @@ extern lv_obj_t *wifitransfer_screen;
 
 void wifitransfer_page_init(gui_config_t *cfg);
 
+// Opens the page with the server starting, as if its switch had been turned on
+// there: the control centre's button. The caller has checked that the server
+// is available and the Wi-Fi connected.
+void wifitransfer_page_open_started(void);
+
+// Stops the server and turns the page's switch off, wherever the page is.
+void wifitransfer_page_stop(void);
+
 #endif /* GUI_WIFITRANSFER_H */

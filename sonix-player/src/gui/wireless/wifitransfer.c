@@ -371,6 +371,10 @@ static void poll_cb(lv_timer_t *timer) {
 	}
 }
 
+// Set by wifitransfer_page_open_started(): the next arrival on the page turns
+// the switch on.
+static bool start_on_load;
+
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
 
@@ -392,6 +396,14 @@ static void screen_loaded_cb(lv_event_t *e) {
 		lv_obj_remove_state(toggle, LV_STATE_CHECKED);
 	}
 
+	if (start_on_load) {
+		start_on_load = false;
+		if (!switch_is_on() && wifitransfer_available() && wifi_is_connected()) {
+			lv_obj_add_state(toggle, LV_STATE_CHECKED);
+			set_transfer(true);
+		}
+	}
+
 	refresh();
 	lv_timer_resume(poll_timer);
 	lv_timer_ready(poll_timer);
@@ -410,6 +422,27 @@ static void screen_unloaded_cb(lv_event_t *e) {
 		led_set_wifi_transfer(false);
 	}
 	wifi_set_status_poll_slow(false);
+}
+
+void wifitransfer_page_open_started(void) {
+	if (!wifitransfer_screen) {
+		return;
+	}
+	start_on_load = true;
+	if (lv_screen_active() == wifitransfer_screen) {
+		lv_obj_send_event(wifitransfer_screen, LV_EVENT_SCREEN_LOADED, NULL);
+	} else {
+		switch_screen(wifitransfer_screen);
+	}
+}
+
+void wifitransfer_page_stop(void) {
+	if (toggle) {
+		lv_obj_remove_state(toggle, LV_STATE_CHECKED);
+	}
+	if (wifitransfer_get_enabled()) {
+		set_transfer(false);
+	}
 }
 
 static void wifi_row_cb(lv_event_t *e) {
