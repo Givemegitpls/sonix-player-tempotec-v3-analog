@@ -8,6 +8,7 @@
 #include "src/system/audio/speed.h"
 #include "src/system/audio/swvolume.h"
 #include "src/system/audio/eq.h"
+#include "src/system/audio/decimate.h"
 #include "src/system/core/config.h"
 #include "src/system/device/power.h"
 #include "src/system/core/utils.h"
@@ -23,8 +24,10 @@
 #include <unistd.h>
 
 #include <sched.h>
+#include <poll.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <alloca.h>
 #include <alsa/asoundlib.h>
 #include <time.h>
@@ -1551,6 +1554,9 @@ typedef struct {
 	unsigned recoveries;
 	int64_t stage_ns[STAGE_COUNT];
 	int64_t lap_ns;
+	// Clock ticks from /proc, -1 when unreadable: the whole system (total and
+	// idle), the interface thread, and bluealsa while the output is Bluetooth.
+	long long sys_total, sys_idle, ui_ticks, bluealsa_ticks;
 } health_t;
 
 static int64_t thread_cpu_ns(void) {
@@ -1577,7 +1583,114 @@ static long mem_available_kb(void) {
 	return kb;
 }
 
+// "cpu" line of /proc/stat: all ticks, and idle plus iowait.
+static bool system_ticks(long long *total, long long *idle) {
+	FILE *f = fopen("/proc/stat", "r");
+	if (!f) {
+		return false;
+	}
+	unsigned long long v[8] = {0};
+	int n = fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6],
+				   &v[7]);
+	fclose(f);
+	if (n < 4) {
+		return false;
+	}
+	*total = 0;
+	for (int i = 0; i < 8; i++) {
+		*total += (long long)v[i];
+	}
+	*idle = (long long)(v[3] + v[4]);
+	return true;
+}
+
+// utime + stime of a /proc/.../stat file, -1 when unreadable. The fields
+// after the command name, which can hold spaces, are counted from the last ')'.
+static long long stat_ticks(const char *path) {
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		return -1;
+	}
+	char line[512];
+	char *ok = fgets(line, sizeof(line), f);
+	fclose(f);
+	char *p = ok ? strrchr(line, ')') : NULL;
+	if (!p) {
+		return -1;
+	}
+	unsigned long long utime = 0, stime = 0;
+	// state ppid pgrp session tty tpgid flags minflt cminflt majflt cmajflt utime stime
+	if (sscanf(p + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &utime, &stime) != 2) {
+		return -1;
+	}
+	return (long long)(utime + stime);
+}
+
+// bluealsa's pid, looked up in /proc and kept while its comm still matches.
+static int bluealsa_pid;
+
+static bool pid_is_bluealsa(int pid) {
+	char path[48], comm[32] = {0};
+	snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		return false;
+	}
+	bool ok = fgets(comm, sizeof(comm), f) != NULL;
+	fclose(f);
+	return ok && strncmp(comm, "bluealsa\n", 9) == 0;
+}
+
+static long long bluealsa_ticks(void) {
+	if (bluealsa_pid <= 0 || !pid_is_bluealsa(bluealsa_pid)) {
+		bluealsa_pid = 0;
+		DIR *dir = opendir("/proc");
+		if (!dir) {
+			return -1;
+		}
+		struct dirent *de;
+		while ((de = readdir(dir)) != NULL) {
+			int pid = atoi(de->d_name);
+			if (pid > 0 && pid_is_bluealsa(pid)) {
+				bluealsa_pid = pid;
+				break;
+			}
+		}
+		closedir(dir);
+		if (bluealsa_pid <= 0) {
+			return -1;
+		}
+	}
+	char path[48];
+	snprintf(path, sizeof(path), "/proc/%d/stat", bluealsa_pid);
+	return stat_ticks(path);
+}
+
+// The interface runs on the process's main thread, whose tid is the pid.
+static long long interface_ticks(void) {
+	char path[64];
+	snprintf(path, sizeof(path), "/proc/self/task/%d/stat", (int)getpid());
+	return stat_ticks(path);
+}
+
+static void health_sample_system(health_t *h) {
+	if (!system_ticks(&h->sys_total, &h->sys_idle)) {
+		h->sys_total = h->sys_idle = -1;
+	}
+	h->ui_ticks = interface_ticks();
+	h->bluealsa_ticks = output_is_bluetooth() ? bluealsa_ticks() : -1;
+}
+
+// Percent of the whole machine between two readings, -1 when either is missing.
+static int ticks_percent(long long before, long long after, long long total) {
+	if (before < 0 || after < 0 || total <= 0) {
+		return -1;
+	}
+	return (int)((after - before) * 100 / total);
+}
+
 static void health_start(health_t *h) {
+	health_sample_system(h);
 	h->at_ms = log_ms();
 	h->cpu_ns = thread_cpu_ns();
 	h->recoveries = write_recoveries;
@@ -1599,7 +1712,7 @@ static int health_permille(int64_t ns, long span_ms) { return (int)(ns / 1000 / 
 
 // Called after every write. A window stretched by a pause says nothing about
 // playing, so it is restarted instead of reported.
-static void health_tick(health_t *h, int rate, int bits) {
+static void health_tick(health_t *h, int rate, int out_rate, int bits) {
 	long now = log_ms();
 	long span = now - h->at_ms;
 	if (span < HEALTH_PERIOD_MS) {
@@ -1611,11 +1724,29 @@ static void health_tick(health_t *h, int rate, int bits) {
 		int rd = health_permille(h->stage_ns[STAGE_READ], span);
 		int fx = health_permille(h->stage_ns[STAGE_EFFECTS], span);
 		int wr = health_permille(h->stage_ns[STAGE_WRITE], span);
+		char to[32] = "";
+		if (out_rate != rate) {
+			snprintf(to, sizeof(to), " (%d Hz out)", out_rate);
+		}
 		fprintf(stderr,
-				"audio[%ld]: %ld s at %d Hz / %d bit: playback thread %d.%d%% of the core (read+decode %d.%d%%, "
+				"audio[%ld]: %ld s at %d Hz%s / %d bit: playback thread %d.%d%% of the core (read+decode %d.%d%%, "
 				"effects %d.%d%%, ALSA write %d.%d%%), %u write recoveries, MemAvailable %ld kB\n",
-				now, span / 1000, rate, bits, all / 10, all % 10, rd / 10, rd % 10, fx / 10, fx % 10, wr / 10, wr % 10,
-				write_recoveries - h->recoveries, mem_available_kb());
+				now, span / 1000, rate, to, bits, all / 10, all % 10, rd / 10, rd % 10, fx / 10, fx % 10, wr / 10,
+				wr % 10, write_recoveries - h->recoveries, mem_available_kb());
+
+		long long total = 0, idle = 0;
+		if (h->sys_total >= 0 && system_ticks(&total, &idle) && total > h->sys_total) {
+			long long dt = total - h->sys_total;
+			int idle_pct = (int)((idle - h->sys_idle) * 100 / dt);
+			int ui_pct = ticks_percent(h->ui_ticks, interface_ticks(), dt);
+			int ba_pct = h->bluealsa_ticks >= 0 ? ticks_percent(h->bluealsa_ticks, bluealsa_ticks(), dt) : -1;
+			char ba[32] = "";
+			if (ba_pct >= 0) {
+				snprintf(ba, sizeof(ba), ", bluealsa %d%%", ba_pct);
+			}
+			fprintf(stderr, "audio[%ld]: the core over the same span: idle %d%%, interface %d%%%s\n", now, idle_pct,
+					ui_pct, ba);
+		}
 	}
 	health_start(h);
 }
@@ -1780,6 +1911,55 @@ static void bt_seek_probe_report(snd_pcm_t *pcm) {
 			BT_SEEK_PROBE_MS, (long)queued, snd_pcm_state_name(snd_pcm_state(pcm)));
 }
 
+// Waits up to `timeout_ms` for room in a bluealsa PCM: 1 with room, 0 without,
+// negative on an error.
+//
+// Not snd_pcm_wait(). Its loop in alsa-lib calls poll() again, with the full
+// timeout, whenever poll() reports a descriptor ready but the plugin's revents
+// hold neither POLLIN nor POLLOUT, and never sleeps in between. The bluealsa
+// plugin polls an event fd and its D-Bus connection alongside the PCM, and
+// either can be readable while the PCM has no room: the caller, at real-time
+// priority on the one core, then spins inside alsa-lib and nothing below it
+// runs again -- not the interface, not the card's I/O, not the kernel threads.
+// Here one poll() is made per call, and a readiness that is not room is
+// answered with a sleep.
+#define BT_POLL_FDS_MAX 8
+#define BT_SPURIOUS_SLEEP_US (5 * 1000)
+
+static int pcm_wait_bluetooth(snd_pcm_t *pcm, int timeout_ms) {
+	struct pollfd pfd[BT_POLL_FDS_MAX];
+	int count = snd_pcm_poll_descriptors_count(pcm);
+	if (count <= 0 || count > BT_POLL_FDS_MAX) {
+		usleep(BT_SPURIOUS_SLEEP_US);
+		return 0;
+	}
+	count = snd_pcm_poll_descriptors(pcm, pfd, (unsigned)count);
+	if (count <= 0) {
+		usleep(BT_SPURIOUS_SLEEP_US);
+		return 0;
+	}
+	int ready = poll(pfd, (nfds_t)count, timeout_ms);
+	if (ready < 0) {
+		return errno == EINTR ? 0 : -errno;
+	}
+	if (ready == 0) {
+		return 0;
+	}
+	unsigned short revents = 0;
+	int err = snd_pcm_poll_descriptors_revents(pcm, pfd, (unsigned)count, &revents);
+	if (err < 0) {
+		return err;
+	}
+	if (revents & (POLLERR | POLLNVAL)) {
+		return -EIO;
+	}
+	if (revents & POLLOUT) {
+		return 1;
+	}
+	usleep(BT_SPURIOUS_SLEEP_US);
+	return 0;
+}
+
 // Writes a whole period to a bluealsa PCM without ever blocking indefinitely.
 //
 // snd_pcm_writei() on a blocking handle waits for room, and over A2DP that room
@@ -1838,7 +2018,7 @@ static snd_pcm_sframes_t pcm_write_bluetooth(snd_pcm_t *pcm, const void *buf, sn
 			return done > 0 ? (snd_pcm_sframes_t)done : -EIO;
 		}
 
-		int ready = snd_pcm_wait(pcm, 100);
+		int ready = pcm_wait_bluetooth(pcm, 100);
 		if (ready < 0) {
 			return done > 0 ? (snd_pcm_sframes_t)done : (snd_pcm_sframes_t)ready;
 		}
@@ -1877,11 +2057,13 @@ static snd_pcm_sframes_t pcm_write_recover(snd_pcm_t **pcm, const void *buf, snd
 		snd_pcm_state_t pcm_state = snd_pcm_state(*pcm);
 		if (pcm_state == SND_PCM_STATE_RUNNING || pcm_state == SND_PCM_STATE_DRAINING) {
 			room = false;
-			for (int slice = 0; slice < 20 && !room; slice++) {
+			bool bluetooth = pcm_is_bluetooth(*pcm);
+			long give_up_at = log_ms() + 2000;
+			while (!room && log_ms() < give_up_at) {
 				if (playback_reader_should_abort()) {
 					return -EINTR; // a command is pending: the main loop handles it
 				}
-				int r = snd_pcm_wait(*pcm, 100);
+				int r = bluetooth ? pcm_wait_bluetooth(*pcm, 100) : snd_pcm_wait(*pcm, 100);
 				if (r != 0) {
 					room = true; // ready (1) or error (<0): the writei will say which
 				}
@@ -2125,6 +2307,24 @@ static void rebuffer_after_short_read(decoder_t *dec, int sample_rate, uint64_t 
 // the file, no decode step needed.
 static void play_decoded_file(const char *filepath, decode_format_t format);
 
+// What a seek does to the queued audio.
+//
+// A card: dropped and prepared, so the new position is heard at once.
+//
+// bluealsa: left alone. A drop makes bluealsa release the A2DP transport, and
+// a prepare does not acquire it back -- the writes after it are accepted and
+// the headphones hear nothing, or a transport torn down and set up again
+// under a run of seeks. The queue (under 700 ms) plays out and the new
+// position follows it. `already_dropped`: the stream was dropped anyway (a
+// wait for a download), so it is prepared again as a card would be.
+static void seek_flush(snd_pcm_t *pcm, bool already_dropped) {
+	if (pcm_is_bluetooth(pcm) && !already_dropped) {
+		return;
+	}
+	snd_pcm_drop(pcm);
+	snd_pcm_prepare(pcm);
+}
+
 static void play_wav_file(const char *filepath) {
 	FILE *f = NULL;
 	wav_info_t info;
@@ -2250,8 +2450,7 @@ static void play_wav_file(const char *filepath) {
 			// already at the new position, the track stays paused, and the
 			// unpause opens a fresh stream from there.
 			if (pcm_handle) {
-				snd_pcm_drop(pcm_handle);
-						snd_pcm_prepare(pcm_handle);
+				seek_flush(pcm_handle, false);
 				is_paused = false;
 				bt_seek_probe_arm(pcm_handle);
 			}
@@ -2538,7 +2737,7 @@ static void play_wav_file(const char *filepath) {
 		bt_start_probe_note(pcm_handle, written, info.sample_rate);
 
 		bytes_played += (int64_t)written * src_frame_bytes;
-		health_tick(&health, info.sample_rate, info.bits_per_sample);
+		health_tick(&health, info.sample_rate, info.sample_rate, info.bits_per_sample);
 		host_pace(written, info.sample_rate);
 		pthread_mutex_lock(&audio_mutex);
 		progress_current_secs = (double)bytes_played / bytes_per_sec;
@@ -2581,6 +2780,43 @@ static void play_wav_file(const char *filepath) {
 
 // Play routine for compressed formats (MP3/FLAC/OGG Vorbis) via the decoder
 // abstraction in decode.h. Always decodes to interleaved signed 16-bit PCM.
+// How much a track is decimated before the effects chain: over Bluetooth, when
+// the sink runs at a fraction of the track's rate, the chain and alsa's plug
+// then work at the sink's rate. S32 stereo or mono only; 1 means untouched.
+//
+//   [bluetooth]
+//   decimate = 0    leave the whole conversion to the plug
+//
+// A turn of a decimated track, in the track's frames. The decoding and the
+// filtering of four input frames per output frame happen at real-time priority
+// on the one core, so the turn is held to DECIMATED_TURN_MS of audio: the
+// interface waits for a whole turn, and at 90 ms a turn it misses frames. The
+// writes are non-blocking and paced by the PCM's avail_min, so shorter turns
+// only mean more of them.
+#define DECIMATED_TURN_MS 24
+
+static snd_pcm_uframes_t decimated_chunk(snd_pcm_uframes_t period, int out_rate, int decim) {
+	snd_pcm_uframes_t chunk = chunk_for(period, out_rate);
+	if (decim > 1) {
+		snd_pcm_uframes_t cap = (snd_pcm_uframes_t)((long)out_rate * DECIMATED_TURN_MS / 1000);
+		if (cap > 0 && chunk > cap) {
+			chunk = cap;
+		}
+	}
+	return chunk * (snd_pcm_uframes_t)decim;
+}
+
+static int bluetooth_decimation(int sample_rate, int channels, int out_bits, bool passthrough) {
+	if (passthrough || out_bits != 32 || channels < 1 || channels > DECIMATE_CHANNELS_MAX || !output_is_bluetooth()) {
+		return 1;
+	}
+	if (!config_get_int("bluetooth", "decimate", 1) || config_get_int("bluetooth", "follow_track_rate", 0)) {
+		return 1;
+	}
+	unsigned sink_rate = bluetooth_sink_rate();
+	return sink_rate ? decimate_factor_for(sample_rate, (int)sink_rate) : 1;
+}
+
 static void play_decoded_file(const char *filepath, decode_format_t format) {
 	decoder_t *dec = decoder_open(filepath, format);
 	if (!dec) {
@@ -2645,6 +2881,19 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// flips its stream to "PCM_FORMAT_PCM 32bit". Everything else stays 16.
 	int out_bits = source_bits > 16 ? 32 : 16;
 
+	// The rate the device is opened at. The position, the fade and every
+	// byte count below stay in the track's own frames.
+	decimator_t decim;
+	int decim_factor = bluetooth_decimation(sample_rate, channels, out_bits, passthrough);
+	if (decim_factor > 1 && decimate_init(&decim, decim_factor, channels) != 0) {
+		decim_factor = 1;
+	}
+	int out_rate = sample_rate / decim_factor;
+	if (decim_factor > 1) {
+		fprintf(stderr, "audio: the %d Hz track is decimated by %d to %d Hz before the effects, for the headphones\n",
+				sample_rate, decim_factor, out_rate);
+	}
+
 	pthread_mutex_lock(&audio_mutex);
 	progress_total_secs = (double)total_frames / sample_rate;
 	progress_current_secs = 0.0;
@@ -2683,11 +2932,11 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// The previous track's PCM, if it stayed open and suits this one too: that
 	// is the whole of gapless. Never for DoP -- see the comment above
 	// gapless_release().
-	snd_pcm_t *pcm_handle = passthrough ? NULL : gapless_take(channels, sample_rate, out_bits, &period_size);
+	snd_pcm_t *pcm_handle = passthrough ? NULL : gapless_take(channels, out_rate, out_bits, &period_size);
 	if (pcm_handle) {
 		pcm_device_open = true;
 	} else {
-		pcm_handle = open_pcm_device(channels, sample_rate, out_bits, &period_size);
+		pcm_handle = open_pcm_device(channels, out_rate, out_bits, &period_size);
 	}
 	if (!pcm_handle && out_bits == 32 && !passthrough && last_open_err == -ENOMEM) {
 		// Not the device refusing S32: the driver found no memory even for the
@@ -2701,6 +2950,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		// DSD, it is noise.
 		fprintf(stderr, "Audio: S32 open failed, falling back to 16-bit\n");
 		out_bits = 16;
+		// The decimator is S32 only.
+		decim_factor = 1;
+		out_rate = sample_rate;
 		pcm_handle = open_pcm_device(channels, sample_rate, out_bits, &period_size);
 	}
 	if (!pcm_handle && passthrough) {
@@ -2728,7 +2980,8 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	double bytes_per_sec = (double)sample_rate * channels * (out_bits / 8);
 	int frame_bytes = channels * (out_bits / 8);
 	long paused_at_ms = 0; // when the current pause began (device power-down clock)
-	snd_pcm_uframes_t chunk_frames = chunk_for(period_size, sample_rate);
+	// In the track's frames: one chunk decimated is one chunk at the device.
+	snd_pcm_uframes_t chunk_frames = decimated_chunk(period_size, out_rate, decim_factor);
 	void *buffer = malloc(chunk_frames * frame_bytes);
 	if (!buffer) {
 		fprintf(stderr, "Audio: Out of memory for period buffer\n");
@@ -2792,13 +3045,15 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			// silent, and the wait giving up on any command (including another
 			// seek: the last touch always wins).
 			uint64_t reachable = decoder_seekable_limit(dec);
+			bool dropped_while_waiting = false;
 			if (reachable > 0 && target_frame > reachable && decoder_is_growing(dec)) {
 				fprintf(stderr, "audio[%ld]: the requested point has not downloaded yet: waiting for it\n", log_ms());
 				// Silence while waiting, when there is a stream to silence: a
 				// seek can arrive with the device handed back.
 				if (pcm_handle) {
 					snd_pcm_drop(pcm_handle);
-							}
+					dropped_while_waiting = true;
+				}
 
 				// The bar sits on the requested point: that is where this is going.
 				pthread_mutex_lock(&audio_mutex);
@@ -2847,6 +3102,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			// the point just left, which without this is heard crossing from
 			// one ear to the other.
 			crossfeed_reset();
+			if (decim_factor > 1) {
+				decimate_reset(&decim);
+			}
 
 			// And the starvation flag recorded before the seek: it belonged to
 			// the old position (growfile_seek already clears it; this is the
@@ -2856,8 +3114,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			// As in the WAV loop above: no device means no stream to flush, and
 			// asking alsa to drop a null one aborts the audio thread.
 			if (pcm_handle) {
-				snd_pcm_drop(pcm_handle);
-						snd_pcm_prepare(pcm_handle);
+				seek_flush(pcm_handle, dropped_while_waiting);
 				is_paused = false;
 				bt_seek_probe_arm(pcm_handle);
 			}
@@ -2877,7 +3134,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			pthread_mutex_unlock(&audio_mutex);
 
 			if (entering) {
-				int64_t rewind_bytes = pause_stop_stream(pcm_handle, frame_bytes);
+				int64_t rewind_bytes = pause_stop_stream(pcm_handle, frame_bytes) * decim_factor;
 				if (rewind_bytes > 0) {
 					// The frames still queued were never heard: put the decoder
 					// back over them so resuming carries on from where the
@@ -2886,6 +3143,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 					uint64_t rewind_frames = (uint64_t)(rewind_bytes / frame_bytes);
 					uint64_t resume_frame = played_frames > rewind_frames ? played_frames - rewind_frames : 0;
 					if (decoder_seek_to_frame(dec, resume_frame)) {
+						if (decim_factor > 1) {
+							decimate_reset(&decim);
+						}
 						bytes_played = (int64_t)(resume_frame * frame_bytes);
 						pthread_mutex_lock(&audio_mutex);
 						progress_floor_secs = progress_current_secs; // the bar stays put
@@ -2953,7 +3213,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				auto_set_output();
 				{
 					snd_pcm_uframes_t new_period = period_size;
-					pcm_handle = open_pcm_device(channels, sample_rate, out_bits, &new_period);
+					pcm_handle = open_pcm_device(channels, out_rate, out_bits, &new_period);
 					if (!pcm_handle) {
 						fprintf(stderr, "Audio: cannot reopen the device after a pause\n");
 						audio_command = AUDIO_CMD_STOP;
@@ -2961,7 +3221,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 						pthread_mutex_unlock(&audio_mutex);
 						break;
 					}
-					snd_pcm_uframes_t new_chunk = chunk_for(new_period, sample_rate);
+					snd_pcm_uframes_t new_chunk = decimated_chunk(new_period, out_rate, decim_factor);
 					if (new_chunk > chunk_frames) {
 						void *bigger = realloc(buffer, new_chunk * frame_bytes);
 						if (!bigger) {
@@ -2996,7 +3256,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			int now_route = alsa_output_key();
 			if (now_route != track_route) {
 				track_route = now_route;
-				if (!pcm_reroute(&pcm_handle, channels, sample_rate, out_bits, &period_size)) {
+				if (!pcm_reroute(&pcm_handle, channels, out_rate, out_bits, &period_size)) {
 					fprintf(stderr, "Audio: reroute failed\n");
 					pthread_mutex_lock(&audio_mutex);
 					audio_command = AUDIO_CMD_STOP;
@@ -3032,17 +3292,26 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			frames_read = decoder_read_pcm_frames_s32(dec, chunk_frames, (int32_t *)buffer);
 			input_frames = frames_read;
 			health_lap(&health, STAGE_READ);
+			if (frames_read != 0 && decim_factor > 1) {
+				frames_read = (uint64_t)decimate_s32(&decim, (int32_t *)buffer, (int)frames_read);
+				if (frames_read == 0) {
+					// Too few frames for one output frame; the delay lines
+					// hold them.
+					bytes_played += (int64_t)input_frames * frame_bytes;
+					continue;
+				}
+			}
 			if (frames_read != 0 && !passthrough) {
 				// ReplayGain first: it is a correction to the source level, so
 				// everything after it works on the level the listener will
 				// actually hear.
 				replaygain_process_s32((int32_t *)buffer, (int)frames_read, channels);
-				eq_process_s32((int32_t *)buffer, (int)frames_read, channels, sample_rate);
+				eq_process_s32((int32_t *)buffer, (int)frames_read, channels, out_rate);
 				soundfield_process_s32((int32_t *)buffer, (int)frames_read, channels);
 				// Crossfeed after soundfield and before balance: one widens the
 				// image, this pulls it back inside the head, and balance stays
 				// the last word on what reaches each ear.
-				crossfeed_process_s32((int32_t *)buffer, (int)frames_read, channels, sample_rate);
+				crossfeed_process_s32((int32_t *)buffer, (int)frames_read, channels, out_rate);
 				balance_process_s32((int32_t *)buffer, (int)frames_read, channels);
 			}
 		} else {
@@ -3085,7 +3354,8 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		// Either way, do not trickle onwards: stop and refill, like any
 		// streaming app. (What the read already produced is still played below:
 		// the gap starts after the last good sample.)
-		if (decoder_is_growing(dec) && (frames_read < chunk_frames || decoder_take_starved(dec))) {
+		uint64_t read_count = decim_factor > 1 ? input_frames : frames_read;
+		if (decoder_is_growing(dec) && (read_count < chunk_frames || decoder_take_starved(dec))) {
 			rebuffer_after_short_read(dec, sample_rate, (uint64_t)(bytes_played / frame_bytes));
 			if (frames_read == 0) {
 				// Nothing at all came out: retry after refilling. Falling
@@ -3189,7 +3459,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 
 		health_lap(&health, STAGE_EFFECTS);
 		snd_pcm_sframes_t written =
-			pcm_write_recover(&pcm_handle, buffer, frames_read, channels, sample_rate, out_bits, &period_size);
+			pcm_write_recover(&pcm_handle, buffer, frames_read, channels, out_rate, out_bits, &period_size);
 		health_lap(&health, STAGE_WRITE);
 
 		if (written == -EINTR) {
@@ -3212,7 +3482,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		}
 
 		bt_seek_probe_report(pcm_handle);
-		bt_start_probe_note(pcm_handle, written, sample_rate);
+		bt_start_probe_note(pcm_handle, written, out_rate);
 
 		// The position moves by INPUT frames: at 1.5x, one period written to
 		// the card is a period and a half of the book. Scaled by how much of
@@ -3220,8 +3490,8 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		if (frames_read > 0) {
 			bytes_played += (int64_t)((double)written * frame_bytes * (double)input_frames / (double)frames_read);
 		}
-		health_tick(&health, sample_rate, source_bits);
-		host_pace(written, sample_rate);
+		health_tick(&health, sample_rate, out_rate, source_bits);
+		host_pace(written, out_rate);
 		pthread_mutex_lock(&audio_mutex);
 		progress_current_secs = (double)bytes_played / bytes_per_sec;
 		pthread_mutex_unlock(&audio_mutex);
@@ -3254,7 +3524,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	bool keep_open = pcm_handle && gapless_enabled && played_to_the_end && !is_paused && !passthrough &&
 					 !pcm_is_bluetooth(pcm_handle);
 	if (keep_open) {
-		gapless_hold(pcm_handle, channels, sample_rate, out_bits, period_size);
+		gapless_hold(pcm_handle, channels, out_rate, out_bits, period_size);
 		pcm_handle = NULL;
 	}
 

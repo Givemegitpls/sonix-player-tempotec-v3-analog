@@ -18,4 +18,14 @@ void factoryreset_run(void);
 // which is worth saying in the log rather than glossing over.
 bool factoryreset_supported(void);
 
+// On the first start after the player is installed over the stock firmware,
+// removes what the stock firmware left in /usr/data -- its settings, the
+// Bluetooth pairings, the Wi-Fi networks, the daemons' state -- as a factory
+// reset would, without restarting. Some of it keeps Bluetooth and Wi-Fi from
+// working. The card's mount point, the radios' addresses and this player's own
+// files stay. `first_start` is whether this player's configuration file was
+// missing; nothing happens unless it was and the stock player's settings file
+// is there. Call before the card is mounted and before either radio starts.
+void factoryreset_clear_stock_data(bool first_start);
+
 #endif /* FACTORYRESET_H */

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "src/system/core/config.h"
 
@@ -111,5 +112,29 @@ void headset_init(void) {
 	// Applied even when the option is off: the module keeps whatever was last
 	// written to it until it is reloaded, so restarting only the binary would
 	// leave the controls enabled from before.
+	apply(headset_controls_enabled());
+}
+
+// Set while the module is off for a suspend, so the wake turns it back on only
+// if the suspend switched it off.
+static bool suspended_off;
+
+void headset_suspend_prepare(void) {
+	suspended_off = false;
+	if (!headset_controls_enabled() || !config_get_int("system", "headset_off_in_standby", 1) || !switch_file()) {
+		return;
+	}
+	apply(false);
+	suspended_off = true;
+	// Time for the bias on the microphone ring to fall while the output is
+	// still parked.
+	usleep(150 * 1000);
+}
+
+void headset_suspend_finish(void) {
+	if (!suspended_off) {
+		return;
+	}
+	suspended_off = false;
 	apply(headset_controls_enabled());
 }

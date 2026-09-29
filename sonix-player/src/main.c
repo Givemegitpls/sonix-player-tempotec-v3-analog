@@ -32,6 +32,7 @@
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/bluetooth/btplayer.h"
 #include "src/system/device/clock.h"
+#include "src/system/device/factoryreset.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/led.h"
@@ -1715,6 +1716,46 @@ static lv_display_t *init_target_display(void) {
 }
 #endif
 
+#ifndef HOST_BUILD
+// The kernel's real-time throttling: of every sched_rt_period_us, at most
+// sched_rt_runtime_us goes to real-time threads and the rest to everything
+// else. At -1 there is no limit, and one real-time thread that stops blocking
+// holds the single core for good: the interface, the card's I/O and the kernel
+// threads never run again, and the device resets with nothing on the card.
+// Held to nine tenths of the period, so a spin slows the device down instead.
+#define RT_SHARE_TENTHS 9
+
+static long read_proc_long(const char *path) {
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		return 0;
+	}
+	long v = 0;
+	if (fscanf(f, "%ld", &v) != 1) {
+		v = 0;
+	}
+	fclose(f);
+	return v;
+}
+
+static void limit_realtime_share(void) {
+	long period = read_proc_long("/proc/sys/kernel/sched_rt_period_us");
+	long runtime = read_proc_long("/proc/sys/kernel/sched_rt_runtime_us");
+	if (period <= 0) {
+		return;
+	}
+	long wanted = period / 10 * RT_SHARE_TENTHS;
+	if (runtime >= 0 && runtime <= wanted) {
+		return;
+	}
+	FILE *f = fopen("/proc/sys/kernel/sched_rt_runtime_us", "w");
+	if (f) {
+		fprintf(f, "%ld", wanted);
+		fclose(f);
+	}
+}
+#endif
+
 int main(int argc, char **argv) {
 	// Before anything at all -- before the signal guards, before the allocator
 	// is tuned, before a display is opened. thttpd runs this same binary as the
@@ -1752,6 +1793,9 @@ int main(int argc, char **argv) {
 	set_oom_priority("-500");
 
 	lock_code_pages();
+
+	// Before the first real-time thread starts.
+	limit_realtime_share();
 #endif
 
 #ifndef HOST_BUILD
@@ -1773,8 +1817,14 @@ int main(int argc, char **argv) {
 	if (!config_file) {
 		config_file = "/usr/data/device_config.ini";
 	}
+	struct stat config_st;
+	bool first_start = stat(config_file, &config_st) != 0;
 #endif
 	config_init(config_file);
+#ifndef HOST_BUILD
+	// Before the card is mounted and before either radio starts.
+	factoryreset_clear_stock_data(first_start);
+#endif
 
 	// The reader's own file, beside the settings. SONIX_EBOOK_CONFIG moves it for
 	// the host build the same way SONIX_CONFIG moves the other one; with neither

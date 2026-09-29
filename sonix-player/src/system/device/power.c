@@ -18,6 +18,7 @@
 
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/audio/audio.h"
+#include "src/system/audio/headset.h"
 #include "src/system/library/audiobookdb.h"
 #include "src/system/device/clock.h"
 #include "src/system/playback/device_state.h"
@@ -36,6 +37,7 @@
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/bluetooth/btreceiver.h"
 #include "src/system/core/config.h"
+#include "src/system/core/logging.h"
 #include "src/system/device/usb.h"
 #include "src/system/audio/usbdac.h"
 #include "src/system/gearboy/gearboy.h"
@@ -920,6 +922,7 @@ static void power_auto_off_now(const char *why) {
 	tidalcache_clear_on_exit();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
+	logging_flush();
 	sync();
 	reboot(RB_POWER_OFF);
 }
@@ -945,6 +948,10 @@ static void suspend_to_ram(void) {
 	// 1-bis. The socket in use muted by the driver, so the amplifier losing
 	//        its power is not heard in the headphones.
 	audio_park_output_before_suspend();
+
+	// 1-ter. The cable remote's module off, so its bias on the microphone ring
+	//        is gone before mem cuts the power under it.
+	headset_suspend_prepare();
 
 	// 2. The time written where it survives: the RTC domain stays powered in
 	//    suspend (RTCLDO at 1.8 V), but the copy in config is the insurance.
@@ -972,12 +979,16 @@ static void suspend_to_ram(void) {
 		printf("power: mem: %s will not open (%s) -- prototype off for this session\n", path, strerror(errno));
 		g_mem_enabled = false;
 		rtc_alarm_disarm(); // armed a moment ago for a sleep that never began
+		headset_suspend_finish();
 		headset_keys_wake();
 		return;
 	}
 	fputs("mem", f);
 	int rc = fclose(f);
 	int write_errno = errno;
+	// Back on before the settle window starts: whatever the module reports as
+	// it comes up falls inside the window and is ignored.
+	headset_suspend_finish();
 	headset_keys_wake();
 	uint32_t slept_s = (boottime_ms() - before_wall) / 1000;
 

@@ -63,8 +63,13 @@ void logging_report_previous_run(void);
 // Writes the card's log through to the card if it grew since the last call.
 // Without it the last lines before a kernel crash or a hardware reset are
 // still in the page cache and are lost with it. Never blocks on the log being
-// moved; call about once a second.
+// moved; call about once a second. Once the log's own writer thread runs it
+// syncs by itself and this does nothing.
 void logging_sync(void);
+
+// Waits, for a second and a half at most, until every line printed so far has
+// been handed to the log's file. Call before powering off or rebooting.
+void logging_flush(void);
 
 // Copies the kernel's warnings and errors printed since the last call into the
 // log, as "kernel:" lines. Call about once a second, from one thread.

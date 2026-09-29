@@ -1096,6 +1096,10 @@ static void log_key_event(const char *node, const struct input_event *ev) {
 	if (!power_screen_is_on() && ev->code >= 0x100) {
 		return;
 	}
+	// Every finger on the panel: two lines a tap, and they name no button.
+	if (ev->code == BTN_TOUCH) {
+		return;
+	}
 	fprintf(stderr, "input: %s key code=%d (0x%x) value=%d (%s)\n", node, ev->code, ev->code, ev->value,
 		   ev->value == 1 ? "press" : (ev->value == 0 ? "release" : "repeat"));
 }
@@ -1785,10 +1789,17 @@ static void start_headset_input_thread(void) {
 // disconnect the kernel removes the node, the read fails and the thread exits by
 // itself. On reconnection the node reappears (often under a different number)
 // and the scanner picks it up again.
+//
+// USB-C headphones and dongles with buttons are the same shape: usbhid builds a
+// BUS_USB node when they are plugged in and removes it when they come out. They
+// are read by the same thread, and with Bluetooth off the scan still runs, at
+// USB_INPUT_SCAN_MS. A kernel without usbhid builds no node and the scan finds
+// nothing.
 // ---------------------------------------------------------------------------
 
 #define BT_INPUT_SCAN_MS 2000
-#define BT_INPUT_MAX 4 // more Bluetooth remotes connected AT ONCE do not exist
+#define USB_INPUT_SCAN_MS 3000
+#define BT_INPUT_MAX 4 // remotes connected at once, Bluetooth and USB together
 
 static pthread_mutex_t bt_input_lock = PTHREAD_MUTEX_INITIALIZER;
 static char bt_input_claimed[BT_INPUT_MAX][32];
@@ -1809,22 +1820,29 @@ static const int BT_REMOTE_KEYS[] = {
 // hardware on, so between them nothing of ours can be mistaken for a remote.
 // Then the keys: a node offering none of the transport keys is not what this
 // is looking for, whatever bus it claims.
-static bool bt_input_is_remote(const char *node) {
+//
+// Over USB the volume keys count too: a USB-C cable remote can have only those.
+// `usb_only`: Bluetooth is off, so only a BUS_USB node is wanted. Returns the
+// bus of a remote, or 0.
+static int bt_input_is_remote(const char *node, bool usb_only) {
 	int fd = open(node, O_RDONLY | O_NONBLOCK);
 	if (fd < 0) {
-		return false;
+		return 0;
 	}
 
-	bool remote = false;
+	int remote = 0;
 	struct input_id id;
-	if (ioctl(fd, EVIOCGID, &id) == 0 && (id.bustype == BUS_BLUETOOTH || id.bustype == BUS_VIRTUAL)) {
+	if (ioctl(fd, EVIOCGID, &id) == 0) {
+		bool usb = id.bustype == BUS_USB;
+		bool wanted = usb || (!usb_only && (id.bustype == BUS_BLUETOOTH || id.bustype == BUS_VIRTUAL));
 		unsigned long bits[(KEY_MAX + 1 + 8 * sizeof(long) - 1) / (8 * sizeof(long))];
 		memset(bits, 0, sizeof(bits));
-		if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(bits)), bits) >= 0) {
-			for (size_t i = 0; i < sizeof(BT_REMOTE_KEYS) / sizeof(BT_REMOTE_KEYS[0]); i++) {
-				int code = BT_REMOTE_KEYS[i];
+		if (wanted && ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(bits)), bits) >= 0) {
+			size_t n = sizeof(BT_REMOTE_KEYS) / sizeof(BT_REMOTE_KEYS[0]);
+			for (size_t i = 0; i < n + (usb ? 2 : 0); i++) {
+				int code = i < n ? BT_REMOTE_KEYS[i] : (i == n ? KEY_VOLUMEUP : KEY_VOLUMEDOWN);
 				if (bits[code / (8 * sizeof(long))] & (1UL << (code % (8 * sizeof(long))))) {
-					remote = true;
+					remote = id.bustype;
 					break;
 				}
 			}
@@ -1895,12 +1913,14 @@ static void bt_input_release(const char *node) {
 // headphones state which condition they want (an AirPod taken out of the ear
 // sends PAUSE, put back sends PLAY), and if that state already holds nothing is
 // done -- with a blind toggle a second PAUSE would restart the music.
-static void handle_bt_remote_key(const char *node, int code) {
+// `usb`: the node is a USB cable remote, which bluez's registered player never
+// hears, so there is no duplicate to drop.
+static void handle_bt_remote_key(const char *node, int code, bool usb) {
 	power_notify_activity();
 
 	// The same command can reach the player twice -- here, and as a method call
 	// on the media player registered with bluez. Acting on both toggles twice.
-	if (btplayer_command_is_duplicate()) {
+	if (!usb && btplayer_command_is_duplicate()) {
 		printf("input: %s code %d already handled by the registered player\n", node, code);
 		return;
 	}
@@ -1974,14 +1994,21 @@ static void handle_bt_remote_key(const char *node, int code) {
 	}
 }
 
+typedef struct {
+	char node[32];
+	bool usb;
+} remote_node_t;
+
 static void *bt_input_thread_func(void *arg) {
-	char *node = arg; // strdup from the scanner: freed here
+	remote_node_t *info = arg; // allocated by the scanner: freed here
+	char *node = info->node;
+	bool usb = info->usb;
 	int fd = open(node, O_RDONLY);
 	if (fd < 0) {
 		// Appeared and vanished between the scan and the open: release it, and
 		// the scanner picks it up again if it comes back.
 		bt_input_release(node);
-		free(node);
+		free(info);
 		return NULL;
 	}
 
@@ -2012,7 +2039,7 @@ static void *bt_input_thread_func(void *arg) {
 			}
 		}
 	}
-	printf("input: %s is a Bluetooth remote (%s), declared keys: %s\n", node, name,
+	printf("input: %s is a %s remote (%s), declared keys: %s\n", node, usb ? "USB" : "Bluetooth", name,
 		   keys[0] ? keys : "none");
 
 	for (;;) {
@@ -2020,17 +2047,22 @@ static void *bt_input_thread_func(void *arg) {
 		if (read(fd, &ev, sizeof(ev)) != (ssize_t)sizeof(ev)) {
 			break; // the node dies with the disconnection: ENODEV, so exit
 		}
-		if (ev.type != EV_KEY || ev.value != 1) {
-			continue; // AVRCP commands act on press, not on release
+		// Presses only. usbhid also sends the kernel's autorepeat (value 2)
+		// for a held key, which steps the volume and nothing else.
+		bool repeat = usb && ev.value == 2 && (ev.code == KEY_VOLUMEUP || ev.code == KEY_VOLUMEDOWN);
+		if (ev.type != EV_KEY || (ev.value != 1 && !repeat)) {
+			continue;
 		}
-		log_key_event(node, &ev);
-		handle_bt_remote_key(node, ev.code);
+		if (!repeat) {
+			log_key_event(node, &ev);
+		}
+		handle_bt_remote_key(node, ev.code, usb);
 	}
 
 	close(fd);
-	printf("input: %s is gone (Bluetooth remote disconnected)\n", node);
+	printf("input: %s is gone (%s remote disconnected)\n", node, usb ? "USB" : "Bluetooth");
 	bt_input_release(node);
-	free(node);
+	free(info);
 	return NULL;
 }
 
@@ -2038,13 +2070,9 @@ static void *bt_input_scan_thread(void *arg) {
 	(void)arg;
 	int last_node_count = bt_input_node_count();
 	for (;;) {
-		// With Bluetooth off the node cannot exist: sleep longer and do not even
-		// open the directory.
-		if (!bluetooth_get_enabled()) {
-			usleep(5000 * 1000);
-			continue;
-		}
-		usleep(BT_INPUT_SCAN_MS * 1000);
+		// With Bluetooth off only a USB remote can appear.
+		bool usb_only = !bluetooth_get_enabled();
+		usleep((usb_only ? USB_INPUT_SCAN_MS : BT_INPUT_SCAN_MS) * 1000);
 
 		int count = bt_input_node_count();
 		if (count >= 0 && count != last_node_count) {
@@ -2069,16 +2097,21 @@ static void *bt_input_scan_thread(void *arg) {
 			if ((size_t)snprintf(node, sizeof(node), "/dev/input/%s", e->d_name) >= sizeof(node)) {
 				continue;
 			}
-			if (!bt_input_is_remote(node) || !bt_input_claim(node)) {
+			int bus = bt_input_is_remote(node, usb_only);
+			if (!bus || !bt_input_claim(node)) {
 				continue;
 			}
-			char *copy = strdup(node);
+			remote_node_t *info = calloc(1, sizeof(*info));
+			if (info) {
+				snprintf(info->node, sizeof(info->node), "%s", node);
+				info->usb = bus == BUS_USB;
+			}
 			pthread_t thread;
-			if (copy && pthread_create(&thread, NULL, bt_input_thread_func, copy) == 0) {
+			if (info && pthread_create(&thread, NULL, bt_input_thread_func, info) == 0) {
 				pthread_detach(thread);
 			} else {
 				bt_input_release(node);
-				free(copy);
+				free(info);
 			}
 		}
 		closedir(d);

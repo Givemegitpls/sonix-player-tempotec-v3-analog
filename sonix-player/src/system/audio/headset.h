@@ -41,6 +41,14 @@ void headset_init(void);
 bool headset_controls_enabled(void);
 void headset_set_controls_enabled(bool enabled); // saves and applies at once
 
+// Around suspend-to-RAM: the module switched off before the `mem` write and
+// back on after the wake, when the controls are enabled and [system]
+// headset_off_in_standby is not 0. The microphone ring of a four-pole plug
+// carries the module's bias, and the step when mem cuts it can reach the
+// drivers through the shared ground.
+void headset_suspend_prepare(void);
+void headset_suspend_finish(void);
+
 // True when the module's sysfs file exists: on a device without the module
 // loaded (or on the desktop build) the option has nothing to switch on.
 bool headset_supported(void);

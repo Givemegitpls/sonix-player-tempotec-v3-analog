@@ -1,6 +1,10 @@
+// nftw
+#define _GNU_SOURCE
+
 #include "factoryreset.h"
 
 #include "src/system/audio/audio.h"
+#include "src/system/core/config.h"
 #include "src/system/library/audiobookdb.h"
 #include "src/system/device/clock.h"
 #include "src/system/library/library.h"
@@ -12,8 +16,11 @@
 #include "src/system/device/sysserver.h"
 #include "src/system/device/system.h"
 
+#include <dirent.h>
+#include <ftw.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/reboot.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -206,4 +213,121 @@ void factoryreset_run(void) {
 		sleep(1);
 	}
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// The stock firmware's data, on the first start
+// ---------------------------------------------------------------------------
+
+// The folders the erase empties. /data is a link to /usr/data on the device;
+// both are walked in case it is not, and one that is the same folder as an
+// earlier one is skipped.
+static const char *const USER_DATA[] = {"/usr/data", "/data"};
+
+// The stock player's settings. Nothing in this player writes it, so its
+// presence means the folders above still hold what the stock firmware left.
+#define STOCK_SETTINGS "menu_cfg"
+
+// Left in place:
+//   mnt                          the card's mount point
+//   macaddr.txt, bt_macaddr.txt  the Wi-Fi and Bluetooth addresses the radios
+//                                are already running with; the Bluetooth one
+//                                also names the folder bluetoothd keeps
+//                                pairings in
+//   the rest                     this player's own files
+static const char *const KEEP[] = {
+	"mnt",
+	"macaddr.txt",
+	"bt_macaddr.txt",
+	"device_config.ini",
+	"device_config.ini.tmp",
+	"ebook_config.ini",
+	"ebook_config.ini.tmp",
+	"tidal_session.ini",
+	"lastfm.session",
+};
+
+static bool kept(const char *name) {
+	for (size_t i = 0; i < sizeof(KEEP) / sizeof(KEEP[0]); i++) {
+		if (strcmp(name, KEEP[i]) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static int removed_count;
+
+// Depth first, so a folder comes after what it held. Only files, links and
+// folders go: sockets and FIFOs belong to daemons already running, and they
+// stay, with the folders around them.
+static int remove_entry(const char *path, const struct stat *st, int type, struct FTW *ftw) {
+	(void)ftw;
+	if (type == FTW_NS || !(S_ISREG(st->st_mode) || S_ISLNK(st->st_mode) || S_ISDIR(st->st_mode))) {
+		return 0;
+	}
+	int rc = (type == FTW_DP) ? rmdir(path) : unlink(path);
+	if (rc == 0) {
+		removed_count++;
+	}
+	return 0;
+}
+
+static void clear_folder(const char *folder) {
+	DIR *dir = opendir(folder);
+	if (!dir) {
+		return;
+	}
+	struct dirent *de;
+	while ((de = readdir(dir)) != NULL) {
+		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0 || kept(de->d_name)) {
+			continue;
+		}
+		char path[512];
+		snprintf(path, sizeof(path), "%s/%.255s", folder, de->d_name);
+		// FTW_MOUNT: never into another filesystem mounted below.
+		nftw(path, remove_entry, 16, FTW_DEPTH | FTW_PHYS | FTW_MOUNT);
+	}
+	closedir(dir);
+}
+
+void factoryreset_clear_stock_data(bool first_start) {
+	if (!first_start) {
+		return;
+	}
+
+	enum { FOLDERS = sizeof(USER_DATA) / sizeof(USER_DATA[0]) };
+	struct stat folder[FOLDERS];
+	bool walk[FOLDERS];
+	bool stock = false;
+	for (size_t i = 0; i < FOLDERS; i++) {
+		walk[i] = stat(USER_DATA[i], &folder[i]) == 0 && S_ISDIR(folder[i].st_mode);
+		for (size_t j = 0; walk[i] && j < i; j++) {
+			if (walk[j] && folder[j].st_dev == folder[i].st_dev && folder[j].st_ino == folder[i].st_ino) {
+				walk[i] = false;
+			}
+		}
+		if (walk[i]) {
+			char path[64];
+			struct stat st;
+			snprintf(path, sizeof(path), "%s/%s", USER_DATA[i], STOCK_SETTINGS);
+			stock |= stat(path, &st) == 0;
+		}
+	}
+	if (!stock) {
+		return;
+	}
+
+	for (size_t i = 0; i < FOLDERS; i++) {
+		if (walk[i]) {
+			clear_folder(USER_DATA[i]);
+		}
+	}
+	sync();
+
+	printf("factoryreset: first start over the stock firmware's data: %d entries removed\n", removed_count);
+
+	// The next start finds a configuration and does not come back here.
+	config_set_bool("system", "stock_data_cleared", true);
+	config_save();
 }

@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -112,8 +113,7 @@ static void drain_held(FILE *held, FILE *destination) {
 	}
 	// A line still in stdout's buffer is headed for the held file, through
 	// the descriptors that point at it: it goes in now or it is lost.
-	fflush(stdout);
-	fflush(stderr);
+	logging_flush();
 	fflush(held);
 	long size = ftell(held);
 	rewind(held);
@@ -172,6 +172,246 @@ static stamp_stream_t stamp_err = {STDERR_FILENO, true};
 // Year and day of the year of the last date line; -1 before the first.
 static int stamp_day = -1;
 
+static void write_all(int fd, const char *data, size_t size);
+
+// ---------------------------------------------------------------------------
+// The queue in front of the card
+//
+// A write() to the log's file takes the file's inode lock, and so does the
+// fdatasync that follows it once a second; with the card busy (a hi-res track
+// streaming off it, a shape being worked out) a sync can hold that lock for as
+// long as the card takes to answer. Every thread that prints waits behind it:
+// the interface, the playback thread, the buttons.
+//
+// So a printed line goes into this queue in memory and one thread of its own
+// writes it out and syncs. A thread that prints never waits on the card. When
+// the queue is full the line is dropped and counted, and the count goes into
+// the log in front of the next line that fits.
+//
+// Each record is a one-byte descriptor, a two-byte length, then the bytes.
+// ---------------------------------------------------------------------------
+
+#define QUEUE_BYTES (64 * 1024)
+#define QUEUE_RECORD_MAX 2048
+#define QUEUE_HEADER 3
+#define QUEUE_WRITE_MAX 8192
+#define QUEUE_SYNC_MS 1000
+#define QUEUE_DRAIN_MS 1500
+
+static pthread_mutex_t queue_lock;
+static pthread_cond_t queue_filled;
+static pthread_cond_t queue_emptied;
+static char queue_ring[QUEUE_BYTES];
+static size_t queue_head; // oldest byte
+static size_t queue_len;
+static bool queue_writing; // the writer holds bytes it has taken out
+static bool queue_running; // the writer thread exists (never in a forked child)
+static unsigned long queue_dropped;
+
+static void ring_put(const char *data, size_t size) {
+	size_t tail = (queue_head + queue_len) % QUEUE_BYTES;
+	size_t first = QUEUE_BYTES - tail < size ? QUEUE_BYTES - tail : size;
+	memcpy(queue_ring + tail, data, first);
+	memcpy(queue_ring, data + first, size - first);
+	queue_len += size;
+}
+
+static void ring_get(char *out, size_t size) {
+	size_t first = QUEUE_BYTES - queue_head < size ? QUEUE_BYTES - queue_head : size;
+	memcpy(out, queue_ring + queue_head, first);
+	memcpy(out + first, queue_ring, size - first);
+	queue_head = (queue_head + size) % QUEUE_BYTES;
+	queue_len -= size;
+}
+
+static void ring_peek(char *out, size_t size) {
+	size_t first = QUEUE_BYTES - queue_head < size ? QUEUE_BYTES - queue_head : size;
+	memcpy(out, queue_ring + queue_head, first);
+	memcpy(out + first, queue_ring, size - first);
+}
+
+// One record, or nothing if it does not fit. Caller holds queue_lock.
+static bool queue_record(int fd, const char *data, size_t size) {
+	if (QUEUE_BYTES - queue_len < size + QUEUE_HEADER) {
+		return false;
+	}
+	char header[QUEUE_HEADER] = {(char)fd, (char)(size & 0xff), (char)(size >> 8)};
+	ring_put(header, QUEUE_HEADER);
+	ring_put(data, size);
+	return true;
+}
+
+// Bytes for descriptor `fd`: into the queue while the writer runs, straight
+// to the descriptor before it starts and in a forked child.
+static void emit(int fd, const char *data, size_t size) {
+	if (!queue_running) {
+		write_all(fd, data, size);
+		return;
+	}
+	pthread_mutex_lock(&queue_lock);
+	if (queue_dropped > 0) {
+		char note[80];
+		int len = snprintf(note, sizeof(note), "---- %lu bytes of log dropped: the card fell behind ----\n",
+						   queue_dropped);
+		if (len > 0 && queue_record(fd, note, (size_t)len)) {
+			queue_dropped = 0;
+		}
+	}
+	while (size > 0) {
+		size_t part = size < QUEUE_RECORD_MAX ? size : QUEUE_RECORD_MAX;
+		if (queue_dropped > 0 || !queue_record(fd, data, part)) {
+			queue_dropped += size;
+			break;
+		}
+		data += part;
+		size -= part;
+	}
+	pthread_cond_signal(&queue_filled);
+	pthread_mutex_unlock(&queue_lock);
+}
+
+static long queue_now_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (long)ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+static void sync_card(void);
+
+// Takes out the records at the front that go to one descriptor, up to
+// QUEUE_WRITE_MAX bytes. Caller holds queue_lock and has checked queue_len.
+static size_t queue_take(char *out, int *fd_out) {
+	size_t used = 0;
+	int fd = -1;
+	while (queue_len >= QUEUE_HEADER) {
+		char header[QUEUE_HEADER];
+		ring_peek(header, QUEUE_HEADER);
+		int rec_fd = (unsigned char)header[0];
+		size_t size = (unsigned char)header[1] | ((size_t)(unsigned char)header[2] << 8);
+		if ((fd >= 0 && rec_fd != fd) || used + size > QUEUE_WRITE_MAX) {
+			break;
+		}
+		ring_get(header, QUEUE_HEADER);
+		ring_get(out + used, size);
+		used += size;
+		fd = rec_fd;
+	}
+	*fd_out = fd;
+	return used;
+}
+
+static void *queue_writer(void *arg) {
+	(void)arg;
+	prctl(PR_SET_NAME, "logwriter", 0, 0, 0);
+	static char out[QUEUE_WRITE_MAX];
+	bool unsynced = false;
+	long synced_at = queue_now_ms();
+
+	for (;;) {
+		pthread_mutex_lock(&queue_lock);
+		while (queue_len == 0) {
+			queue_writing = false;
+			pthread_cond_broadcast(&queue_emptied);
+			if (!unsynced) {
+				pthread_cond_wait(&queue_filled, &queue_lock);
+				continue;
+			}
+			long wait_ms = synced_at + QUEUE_SYNC_MS - queue_now_ms();
+			if (wait_ms <= 0) {
+				break;
+			}
+			struct timespec due;
+			clock_gettime(CLOCK_MONOTONIC, &due);
+			long ns = due.tv_nsec + (wait_ms % 1000) * 1000000L;
+			due.tv_sec += wait_ms / 1000 + ns / 1000000000L;
+			due.tv_nsec = ns % 1000000000L;
+			if (pthread_cond_timedwait(&queue_filled, &queue_lock, &due) == ETIMEDOUT) {
+				break;
+			}
+		}
+		int fd = -1;
+		size_t size = 0;
+		if (queue_len > 0) {
+			size = queue_take(out, &fd);
+			queue_writing = true;
+		}
+		pthread_mutex_unlock(&queue_lock);
+
+		if (size > 0) {
+			write_all(fd, out, size);
+			unsynced = true;
+		}
+		if (unsynced && queue_now_ms() - synced_at >= QUEUE_SYNC_MS) {
+			sync_card();
+			synced_at = queue_now_ms();
+			unsynced = false;
+		}
+	}
+	return NULL;
+}
+
+// Waits until everything queued so far is written, for at most
+// QUEUE_DRAIN_MS: the card may be the thing that is stuck.
+static void queue_drain(void) {
+	if (!queue_running) {
+		return;
+	}
+	struct timespec due;
+	clock_gettime(CLOCK_MONOTONIC, &due);
+	long ns = due.tv_nsec + (QUEUE_DRAIN_MS % 1000) * 1000000L;
+	due.tv_sec += QUEUE_DRAIN_MS / 1000 + ns / 1000000000L;
+	due.tv_nsec = ns % 1000000000L;
+	pthread_mutex_lock(&queue_lock);
+	while (queue_len > 0 || queue_writing) {
+		if (pthread_cond_timedwait(&queue_emptied, &queue_lock, &due) == ETIMEDOUT) {
+			break;
+		}
+	}
+	pthread_mutex_unlock(&queue_lock);
+}
+
+// A forked child has no writer and writes straight through, so it never needs
+// the queue; it gets a fresh lock all the same. The lock is priority
+// inheriting, which stores the owner's thread id: one taken in the parent can
+// be neither unlocked nor taken in the child, whose thread has another id.
+static void queue_after_fork_child(void) {
+	queue_running = false;
+	pthread_mutex_init(&queue_lock, NULL);
+}
+
+static void queue_start(void) {
+	pthread_mutexattr_t mattr;
+	pthread_mutexattr_init(&mattr);
+	// The playback thread prints at real-time priority.
+	pthread_mutexattr_setprotocol(&mattr, PTHREAD_PRIO_INHERIT);
+	pthread_mutex_init(&queue_lock, &mattr);
+	pthread_mutexattr_destroy(&mattr);
+
+	pthread_condattr_t cattr;
+	pthread_condattr_init(&cattr);
+	pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC);
+	pthread_cond_init(&queue_filled, &cattr);
+	pthread_cond_init(&queue_emptied, &cattr);
+	pthread_condattr_destroy(&cattr);
+
+	pthread_atfork(NULL, NULL, queue_after_fork_child);
+
+	pthread_t thread;
+	pthread_attr_t tattr;
+	pthread_attr_init(&tattr);
+	pthread_attr_setdetachstate(&tattr, PTHREAD_CREATE_DETACHED);
+	if (pthread_create(&thread, &tattr, queue_writer, NULL) == 0) {
+		queue_running = true;
+	}
+	pthread_attr_destroy(&tattr);
+}
+
+void logging_flush(void) {
+	fflush(stdout);
+	fflush(stderr);
+	queue_drain();
+}
+
 static void write_all(int fd, const char *data, size_t size) {
 	while (size > 0) {
 		ssize_t done = write(fd, data, size);
@@ -200,13 +440,13 @@ static void write_stamp(int fd) {
 	if (day != stamp_day) {
 		stamp_day = day;
 		size_t len = strftime(text, sizeof(text), "---- %Y-%m-%d ----\n", &local);
-		write_all(fd, text, len);
+		emit(fd, text, len);
 	}
 
 	int len = snprintf(text, sizeof(text), "%02d:%02d:%02d.%03ld ", local.tm_hour, local.tm_min, local.tm_sec,
 					   now.tv_nsec / 1000000L);
 	if (len > 0) {
-		write_all(fd, text, (size_t)len);
+		emit(fd, text, (size_t)len);
 	}
 }
 
@@ -224,7 +464,7 @@ static ssize_t stamp_write(void *cookie, const char *data, size_t size) {
 		if (stream->line_start && *start != '\n') {
 			write_stamp(stream->fd);
 		}
-		write_all(stream->fd, start, len);
+		emit(stream->fd, start, len);
 		stream->line_start = newline != NULL;
 		done += len;
 	}
@@ -274,8 +514,7 @@ static bool redirect_to(FILE *stream) {
 	}
 
 	// Whatever stdout and stderr still hold belongs to the old destination.
-	fflush(stdout);
-	fflush(stderr);
+	logging_flush();
 
 	setvbuf(stream, NULL, _IOLBF, 0);
 	int fd = fileno(stream);
@@ -295,6 +534,7 @@ static bool redirect_to(FILE *stream) {
 
 void logging_init(void) {
 	stamp_install();
+	queue_start();
 
 	const char *override = getenv("SONIX_LOG");
 	if (override && override[0]) {
@@ -518,6 +758,12 @@ void logging_set_to_sd(bool enabled) {
 // ---------------------------------------------------------------------------
 
 void logging_sync(void) {
+	if (!queue_running) {
+		sync_card();
+	}
+}
+
+static void sync_card(void) {
 	if (pthread_mutex_trylock(&log_lock) != 0) {
 		return; // the log is moving to another file; the next call catches up
 	}
