@@ -1676,16 +1676,17 @@ void quickpanel_init(gui_config_t *cfg) {
 	// --- First card: the quick controls. ---
 	lv_obj_t *controls_card = make_card(panel, card_w, card_h, top_inset);
 	lv_obj_set_flex_flow(controls_card, LV_FLEX_FLOW_COLUMN);
-	// Buttons at the top, brightness along the bottom, leftover height between
-	// them: with two rows of buttons there is no room to centre both groups and
-	// still keep the slider inside the card.
+	// Brightness along the bottom; the buttons take the height above it and
+	// their rows are centred in it, so a single row of four sits midway between
+	// the top of the card and the slider.
 	lv_obj_set_flex_align(controls_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_gap(controls_card, 12, 0);
 
 	lv_obj_t *row = lv_obj_create(controls_card);
-	// Height from its contents: the row wraps to a second line, and would take a
-	// third if more controls were added.
+	// Wraps to a second line past four buttons. Grows into the free height of
+	// the card; the third flex argument below centres the lines inside it.
 	lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_set_flex_grow(row, 1);
 	lv_obj_set_style_bg_opa(row, 0, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);

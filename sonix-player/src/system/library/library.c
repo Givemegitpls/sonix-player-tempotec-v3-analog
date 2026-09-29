@@ -4199,6 +4199,28 @@ bool library_playlist_remove_path(const char *name, const char *path) {
 	return ok;
 }
 
+bool library_playlist_contains(const char *name, const char *path) {
+	char quoted[PLAYLIST_TABLE_MAX];
+	if (!path || !path[0] || !playlist_table(name, quoted, sizeof(quoted))) {
+		return false;
+	}
+	char sql[PLAYLIST_TABLE_MAX + 48];
+	snprintf(sql, sizeof(sql), "SELECT 1 FROM %s WHERE path=? LIMIT 1", quoted);
+
+	pthread_mutex_lock(&db_lock);
+	bool found = false;
+	if (db && playlist_table_exists_locked(name)) {
+		sqlite3_stmt *stmt = NULL;
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+			found = sqlite3_step(stmt) == SQLITE_ROW;
+			sqlite3_finalize(stmt);
+		}
+	}
+	pthread_mutex_unlock(&db_lock);
+	return found;
+}
+
 int library_playlist_remove_positions(const char *name, const int *positions, int count) {
 	char quoted[PLAYLIST_TABLE_MAX];
 	if (!positions || count <= 0 || !playlist_table(name, quoted, sizeof(quoted))) {

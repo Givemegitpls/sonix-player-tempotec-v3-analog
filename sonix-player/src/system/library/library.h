@@ -464,6 +464,9 @@ bool library_playlist_set_presence(const char *name, const library_playlist_pres
 // The first row naming this path, gone.
 bool library_playlist_remove_path(const char *name, const char *path);
 
+// Whether any row of the playlist names this path.
+bool library_playlist_contains(const char *name, const char *path);
+
 // Removes the entries at `positions` -- counted as the page shows the list,
 // entries whose file is missing left out -- in one transaction. Returns how
 // many went.

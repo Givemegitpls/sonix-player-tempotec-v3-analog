@@ -352,6 +352,10 @@ bool playlists_remove_track(const char *name, const char *track_path) {
 	return library_playlist_remove_path(name, track_path);
 }
 
+bool playlists_has_track(const char *name, const char *track_path) {
+	return name_is_usable(name) && track_path && track_path[0] && library_playlist_contains(name, track_path);
+}
+
 int playlists_remove_positions(const char *name, const int *positions, int count) {
 	if (!name_is_usable(name)) {
 		return 0;

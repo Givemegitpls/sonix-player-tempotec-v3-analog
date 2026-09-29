@@ -79,6 +79,9 @@ bool playlists_rename(const char *name, const char *new_name);
 // there is one. Returns false when the playlist or the entry is not there.
 bool playlists_remove_track(const char *name, const char *track_path);
 
+// Whether the playlist holds this track.
+bool playlists_has_track(const char *name, const char *track_path);
+
 // Removes the entries at those positions of the list as the page shows it (see
 // library_playlist_remove_positions). Returns how many went.
 int playlists_remove_positions(const char *name, const int *positions, int count);

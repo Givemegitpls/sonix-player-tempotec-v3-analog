@@ -12,12 +12,19 @@
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/library/medialist.h"
+#include "src/gui/library/playlistpage.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/gui/shell/gui.h"
+#include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/toast.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
+#include "src/system/library/playlists.h"
+#include "src/system/playback/device_state.h"
+#include "src/system/playback/playlist.h"
 
 lv_obj_t *search_screen;
 
@@ -218,6 +225,130 @@ static void artist_clicked_cb(lv_event_t *e) {
 // on the next rebuild via this deletion hook.
 static void row_user_free_cb(lv_event_t *e) { free(lv_event_get_user_data(e)); }
 
+// ---------------------------------------------------------------------------
+// the menu a track hit opens on a long press
+// ---------------------------------------------------------------------------
+
+// The popover holds at most six rows.
+#define MENU_PLAYLISTS_MAX 6
+
+static char menu_path[512];
+static char menu_name[256];
+static lv_obj_t *menu_anchor;
+// The playlists that hold the track, gathered when the menu opens.
+static char menu_playlists[MENU_PLAYLISTS_MAX][128];
+static int menu_playlist_count;
+
+static void menu_fav_action(void *user) {
+	(void)user;
+	if (menu_path[0]) {
+		library_fav_toggle(menu_path, menu_name, "");
+	}
+}
+
+// Right after the track playing, the same as the library lists' menu. The
+// queue on disk is written now so a power-off does not lose the addition.
+static void menu_queue_action(void *user) {
+	(void)user;
+	if (menu_path[0] && playlist_insert_next(menu_path)) {
+		device_state_queue_changed();
+		toast_success("added_to_the_queue");
+	}
+}
+
+static void menu_playlist_action(void *user) {
+	(void)user;
+	if (menu_path[0]) {
+		playlistpage_add_track(menu_path);
+	}
+}
+
+static void menu_remove_from(const char *playlist) {
+	if (playlists_remove_track(playlist, menu_path)) {
+		toast_success("medialist_track_removed");
+	} else {
+		gui_notify_popup("medialist_remove_failed");
+	}
+}
+
+static void menu_remove_one_action(void *user) {
+	int i = (int)(intptr_t)user;
+	if (i >= 0 && i < menu_playlist_count && menu_path[0]) {
+		menu_remove_from(menu_playlists[i]);
+	}
+}
+
+static void remove_menu_show_async(void *user) {
+	(void)user;
+	if (menu_playlist_count < 1 || !menu_anchor || !lv_obj_is_valid(menu_anchor)) {
+		return;
+	}
+	popover_item_t items[MENU_PLAYLISTS_MAX];
+	for (int i = 0; i < menu_playlist_count; i++) {
+		items[i] = (popover_item_t){menu_playlists[i], menu_remove_one_action, (void *)(intptr_t)i, false};
+	}
+	popover_show(menu_anchor, items, menu_playlist_count);
+}
+
+// One playlist holds the track: it leaves that one. Several: a second menu
+// names them, and the track leaves the one picked. That menu is built on the
+// next pass of the loop, because this runs inside the click of a row the
+// popover is about to delete.
+static void menu_remove_action(void *user) {
+	(void)user;
+	if (menu_playlist_count == 1) {
+		menu_remove_from(menu_playlists[0]);
+	} else if (menu_playlist_count > 1) {
+		lv_async_call(remove_menu_show_async, NULL);
+	}
+}
+
+static bool collect_playlist_cb(const char *name, void *user) {
+	(void)user;
+	if (playlists_has_track(name, menu_path)) {
+		snprintf(menu_playlists[menu_playlist_count], sizeof(menu_playlists[0]), "%s", name);
+		menu_playlist_count++;
+	}
+	return menu_playlist_count < MENU_PLAYLISTS_MAX;
+}
+
+// The row's user data is the path followed by the track's name, see make_row.
+static void track_long_pressed_cb(lv_event_t *e) {
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return;
+	}
+	const char *path = lv_event_get_user_data(e);
+	if (!path || !path[0]) {
+		return;
+	}
+
+	// The lift that ends this press would otherwise arrive as a click and
+	// start the track.
+	lv_indev_t *indev = lv_indev_active();
+	if (indev) {
+		lv_indev_wait_release(indev);
+	}
+
+	snprintf(menu_path, sizeof(menu_path), "%s", path);
+	snprintf(menu_name, sizeof(menu_name), "%s", path + strlen(path) + 1);
+	menu_anchor = lv_event_get_current_target(e);
+
+	menu_playlist_count = 0;
+	playlists_for_each(collect_playlist_cb, NULL);
+
+	popover_item_t items[4];
+	int n = 0;
+	items[n++] = (popover_item_t){
+		library_fav_contains(menu_path) ? "remove_from_favourites" : "medialist_add_to_favourites", menu_fav_action, NULL,
+		false};
+	items[n++] = (popover_item_t){"add_to_queue", menu_queue_action, NULL, false};
+	items[n++] = (popover_item_t){"add_to_playlist", menu_playlist_action, NULL, false};
+	if (menu_playlist_count > 0) {
+		items[n++] = (popover_item_t){"medialist_remove_from_playlist", menu_remove_action, NULL, false};
+	}
+	popover_show(menu_anchor, items, n);
+}
+
 static lv_obj_t *make_section(const char *title) {
 	lv_obj_t *label = lv_label_create(results);
 	lv_label_set_text(label, tr(title));
@@ -228,10 +359,20 @@ static lv_obj_t *make_section(const char *title) {
 }
 
 // One result row. `art_path` is the file its artwork comes from (a track's own
-// file, an album's first track); NULL leaves the glyph in place.
-static void make_row(const char *name, const lv_image_dsc_t *glyph, lv_event_cb_t cb, const char *user_str,
-					 bool chevron, const char *art_path) {
-	char *copy = strdup(user_str ? user_str : "");
+// file, an album's first track); NULL leaves the glyph in place. `long_cb`, when
+// given, answers a long press. Both callbacks get `user_str` as their user data,
+// with `name` stored right after its terminator.
+static void make_row(const char *name, const lv_image_dsc_t *glyph, lv_event_cb_t cb, lv_event_cb_t long_cb,
+					 const char *user_str, bool chevron, const char *art_path) {
+	const char *user = user_str ? user_str : "";
+	const char *named = name ? name : "";
+	size_t user_len = strlen(user);
+	char *copy = malloc(user_len + strlen(named) + 2);
+	if (!copy) {
+		return;
+	}
+	memcpy(copy, user, user_len + 1);
+	strcpy(copy + user_len + 1, named);
 
 	lv_obj_t *row = lv_btn_create(results);
 	lv_obj_set_size(row, lv_pct(100), SEARCH_ROW_H);
@@ -246,6 +387,9 @@ static void make_row(const char *name, const lv_image_dsc_t *glyph, lv_event_cb_
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(row, 12, 0);
 	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, copy);
+	if (long_cb) {
+		lv_obj_add_event_cb(row, long_cb, LV_EVENT_LONG_PRESSED, copy);
+	}
 	lv_obj_add_event_cb(row, row_user_free_cb, LV_EVENT_DELETE, copy);
 
 	lv_obj_t *icon = lv_image_create(row);
@@ -299,7 +443,7 @@ static void search_hit_cb(library_search_type_t type, const char *name, const ch
 			section_tracks = make_section("search_tracks_2");
 		}
 		// A track's artwork comes from the track's own file.
-		make_row(name, &icon_music2, track_clicked_cb, path, false, path);
+		make_row(name, &icon_music2, track_clicked_cb, track_long_pressed_cb, path, false, path);
 		break;
 	case LIBRARY_SEARCH_ALBUM:
 		if (!section_albums) {
@@ -308,7 +452,7 @@ static void search_hit_cb(library_search_type_t type, const char *name, const ch
 		// An album's comes from its first track, which the query brings along.
 		// Until it does -- or if the record has no artwork at all -- the disc
 		// glyph stands in, the same one the Album list uses.
-		make_row(name, &icon_album, album_clicked_cb, name, true, path);
+		make_row(name, &icon_album, album_clicked_cb, NULL, name, true, path);
 		break;
 	case LIBRARY_SEARCH_ARTIST:
 		if (!section_artists) {
@@ -316,7 +460,7 @@ static void search_hit_cb(library_search_type_t type, const char *name, const ch
 		}
 		// An artist row never carries artwork: the glyph is the final image,
 		// not a stand-in.
-		make_row(name, &icon_artist, artist_clicked_cb, name, true, NULL);
+		make_row(name, &icon_artist, artist_clicked_cb, NULL, name, true, NULL);
 		break;
 	}
 }
