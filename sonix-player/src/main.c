@@ -783,6 +783,11 @@ static void *watchdog_thread(void *arg) {
 	for (;;) {
 		sleep(1);
 
+		// Above every other real-time thread, so this still runs while one of
+		// them holds the core.
+		logging_follow_kernel();
+		logging_sync();
+
 		unsigned turns = audio_loop_turns();
 		unsigned turns_this_second = turns - last_turns;
 		last_turns = turns;
@@ -794,6 +799,7 @@ static void *watchdog_thread(void *arg) {
 				fprintf(stderr, "watchdog: the playback thread has not taken a play request for %ld ms -- thread dump:\n",
 						waiting_ms);
 				watchdog_dump_threads();
+				logging_sync();
 			}
 		} else {
 			play_dumped = false;
@@ -816,6 +822,7 @@ static void *watchdog_thread(void *arg) {
 							"-- thread dump:\n",
 					stalled_for, turns_this_second);
 			watchdog_dump_threads();
+			logging_sync();
 			dumped = true; // once per stall, not once per second
 		}
 	}

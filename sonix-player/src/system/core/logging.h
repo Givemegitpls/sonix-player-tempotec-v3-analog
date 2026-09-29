@@ -52,8 +52,22 @@ void logging_resume_after_usb(void);
 // at every start, it turns "it died and nobody knows why" into a line naming
 // the killer and the victim.
 //
-// Says nothing when the buffer holds nothing of interest, which is the normal
-// case. Call once, after the log is on the card.
+// Also copies the end of what pstore or /proc/last_kmsg kept of the kernel's
+// log from before the start, when it shows a crash, and says so in one line
+// when the kernel keeps neither.
+//
+// Says nothing else when the buffer holds nothing of interest, which is the
+// normal case. Call once, after the log is on the card.
 void logging_report_previous_run(void);
+
+// Writes the card's log through to the card if it grew since the last call.
+// Without it the last lines before a kernel crash or a hardware reset are
+// still in the page cache and are lost with it. Never blocks on the log being
+// moved; call about once a second.
+void logging_sync(void);
+
+// Copies the kernel's warnings and errors printed since the last call into the
+// log, as "kernel:" lines. Call about once a second, from one thread.
+void logging_follow_kernel(void);
 
 #endif /* LOGGING_H */

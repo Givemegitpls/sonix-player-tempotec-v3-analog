@@ -5,7 +5,10 @@
 
 #include <sys/klog.h>
 
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +61,15 @@ static FILE *active_stream;
 // diagnostics are not the lines that get lost.
 static FILE *usb_stream;
 static bool usb_was_on_sd;
+
+// Held by everything that moves the log to another file, and by
+// logging_sync(): a sync still running on the card's file would keep the card
+// busy through the unmount that follows a release. Recursive because
+// logging_attach_sd() goes through logging_resume_after_usb().
+static pthread_mutex_t log_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+
+// The size of the card's log at the last sync; -1 before the first.
+static off_t synced_size = -1;
 
 const char *logging_path(void) {
 	if (on_sd && sd_log_path[0]) {
@@ -277,6 +289,7 @@ static bool redirect_to(FILE *stream) {
 		fclose(active_stream);
 	}
 	active_stream = stream;
+	synced_size = -1;
 	return true;
 }
 
@@ -359,7 +372,7 @@ static void open_null_log(void) {
 	on_sd = false;
 }
 
-void logging_attach_sd(const char *sd_root) {
+static void logging_attach_sd_locked(const char *sd_root) {
 	if (getenv("SONIX_LOG")) {
 		return; // an explicit path wins over everything
 	}
@@ -390,12 +403,18 @@ void logging_attach_sd(const char *sd_root) {
 	open_null_log();
 }
 
+void logging_attach_sd(const char *sd_root) {
+	pthread_mutex_lock(&log_lock);
+	logging_attach_sd_locked(sd_root);
+	pthread_mutex_unlock(&log_lock);
+}
+
 // ---------------------------------------------------------------------------
 // The USB mass-storage export unmounts the card, and so does pulling it out;
 // the log usually lives on the card. See the buffer declared at the top.
 // ---------------------------------------------------------------------------
 
-void logging_suspend_for_usb(void) {
+static void logging_suspend_for_usb_locked(void) {
 	if (!on_sd || usb_stream) {
 		// Nothing holding the card, nothing to release, and usb_was_on_sd must
 		// not be touched here. Pulling a card fires two matching uevents, so
@@ -420,7 +439,13 @@ void logging_suspend_for_usb(void) {
 	on_sd = false;
 }
 
-void logging_resume_after_usb(void) {
+void logging_suspend_for_usb(void) {
+	pthread_mutex_lock(&log_lock);
+	logging_suspend_for_usb_locked();
+	pthread_mutex_unlock(&log_lock);
+}
+
+static void logging_resume_after_usb_locked(void) {
 	if (!usb_was_on_sd) {
 		return;
 	}
@@ -456,7 +481,13 @@ void logging_resume_after_usb(void) {
 	}
 }
 
-void logging_set_to_sd(bool enabled) {
+void logging_resume_after_usb(void) {
+	pthread_mutex_lock(&log_lock);
+	logging_resume_after_usb_locked();
+	pthread_mutex_unlock(&log_lock);
+}
+
+static void logging_set_to_sd_locked(bool enabled) {
 	config_set_bool("system", "log_to_sd", enabled);
 	config_save();
 
@@ -474,6 +505,100 @@ void logging_set_to_sd(bool enabled) {
 	printf("log: card logging off\n");
 	fflush(stdout);
 	open_null_log();
+}
+
+void logging_set_to_sd(bool enabled) {
+	pthread_mutex_lock(&log_lock);
+	logging_set_to_sd_locked(enabled);
+	pthread_mutex_unlock(&log_lock);
+}
+
+// ---------------------------------------------------------------------------
+// Lines that survive a reset
+// ---------------------------------------------------------------------------
+
+void logging_sync(void) {
+	if (pthread_mutex_trylock(&log_lock) != 0) {
+		return; // the log is moving to another file; the next call catches up
+	}
+	if (on_sd && active_stream) {
+		int fd = fileno(active_stream);
+		struct stat st;
+		if (fd >= 0 && fstat(fd, &st) == 0 && st.st_size != synced_size) {
+			if (fdatasync(fd) == 0) {
+				synced_size = st.st_size;
+			}
+		}
+	}
+	pthread_mutex_unlock(&log_lock);
+}
+
+// /dev/kmsg, opened on the first call and read from its end: what the ring
+// already held at that point is logging_report_previous_run()'s.
+static int kmsg_fd = -1;
+static bool kmsg_tried;
+
+// Warnings and worse. Below that the kernel talks about every card and
+// interface that comes and goes.
+#define KMSG_LEVEL_MAX 4
+
+// Lines copied per call; the rest are counted, not printed.
+#define KMSG_LINES_PER_CALL 20
+
+void logging_follow_kernel(void) {
+	if (!kmsg_tried) {
+		kmsg_tried = true;
+		kmsg_fd = open("/dev/kmsg", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+		if (kmsg_fd < 0) {
+			fprintf(stderr, "kernel: /dev/kmsg: %s; kernel messages stay out of the log\n", strerror(errno));
+			return;
+		}
+		lseek(kmsg_fd, 0, SEEK_END);
+	}
+	if (kmsg_fd < 0) {
+		return;
+	}
+
+	int printed = 0;
+	int skipped = 0;
+	char record[1024];
+	for (;;) {
+		// One record per read, "level,seq,usec,flags;text\n" followed by
+		// " KEY=value" lines. EPIPE: records were overwritten before this read.
+		ssize_t got = read(kmsg_fd, record, sizeof(record) - 1);
+		if (got < 0) {
+			if (errno == EINTR || errno == EPIPE) {
+				continue;
+			}
+			break; // EAGAIN: nothing more for now
+		}
+		if (got == 0) {
+			break;
+		}
+		record[got] = '\0';
+
+		char *text = strchr(record, ';');
+		if (!text) {
+			continue;
+		}
+		*text++ = '\0';
+		text[strcspn(text, "\n")] = '\0';
+
+		int level = 0;
+		unsigned long long usec = 0;
+		if (sscanf(record, "%d,%*u,%llu", &level, &usec) < 1 || (level & 7) > KMSG_LEVEL_MAX) {
+			continue;
+		}
+		if (printed >= KMSG_LINES_PER_CALL) {
+			skipped++;
+			continue;
+		}
+		fprintf(stderr, "kernel: <%d> [%5llu.%06llu] %s\n", level & 7, usec / 1000000ULL, usec % 1000000ULL, text);
+		printed++;
+	}
+	if (skipped > 0) {
+		fprintf(stderr, "kernel: %d more lines not copied\n", skipped);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -504,7 +629,133 @@ static bool kernel_line_interesting(const char *line) {
 #define KERNEL_BUFFER_BYTES 16384
 #define KERNEL_LINES_MAX 12
 
+// ---------------------------------------------------------------------------
+// What the kernel kept from before a reset
+//
+// A kernel with pstore (ramoops) or /proc/last_kmsg keeps its log across a
+// warm reset. Those are the only records of a panic: the log on the card stops
+// wherever the page cache was last written out.
+// ---------------------------------------------------------------------------
+
+#define KEPT_BYTES_MAX (512 * 1024)
+#define KEPT_LINES 40
+
+static const char *const KEPT_SIGNS[] = {
+	"Kernel panic", "Oops", "Unable to handle", "BUG:", "Call Trace", "Internal error",
+};
+
+// The whole file, NUL-terminated, up to KEPT_BYTES_MAX; *size is its length.
+// /proc files report a size of 0, so this reads rather than stats.
+static char *slurp(const char *path, size_t *size) {
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		return NULL;
+	}
+	size_t cap = 16384;
+	size_t len = 0;
+	char *data = malloc(cap + 1);
+	while (data) {
+		size_t got = fread(data + len, 1, cap - len, f);
+		len += got;
+		if (got == 0 || len >= KEPT_BYTES_MAX) {
+			break;
+		}
+		if (len == cap) {
+			char *bigger = realloc(data, cap * 2 + 1);
+			if (!bigger) {
+				break;
+			}
+			data = bigger;
+			cap *= 2;
+		}
+	}
+	fclose(f);
+	if (data) {
+		// Records can carry NULs; they would end every string search early.
+		for (size_t i = 0; i < len; i++) {
+			if (data[i] == '\0') {
+				data[i] = ' ';
+			}
+		}
+		data[len] = '\0';
+		*size = len;
+	}
+	return data;
+}
+
+static bool kept_shows_a_crash(const char *data) {
+	for (size_t i = 0; i < sizeof(KEPT_SIGNS) / sizeof(KEPT_SIGNS[0]); i++) {
+		if (strstr(data, KEPT_SIGNS[i])) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Prints the last KEPT_LINES lines of `data`.
+static void print_tail(const char *name, char *data, size_t len) {
+	size_t start = len;
+	int lines = 0;
+	while (start > 0) {
+		if (data[start - 1] == '\n' && start != len && ++lines >= KEPT_LINES) {
+			break;
+		}
+		start--;
+	}
+	fprintf(stderr, "kernel: the end of %s --\n", name);
+	char *line = strtok(data + start, "\n");
+	while (line) {
+		fprintf(stderr, "kernel:   %s\n", line);
+		line = strtok(NULL, "\n");
+	}
+	fflush(stderr);
+}
+
+// True when the file was there. `always`: print it even without a crash in
+// it, and delete it afterwards (pstore's dmesg records exist only for a crash
+// and would otherwise be reported at every start).
+static bool report_kept(const char *path, bool always) {
+	size_t len = 0;
+	char *data = slurp(path, &len);
+	if (!data) {
+		return false;
+	}
+	if (len > 0 && (always || kept_shows_a_crash(data))) {
+		print_tail(path, data, len);
+	}
+	free(data);
+	if (always) {
+		unlink(path);
+	}
+	return true;
+}
+
+static void report_kept_kernel_log(void) {
+	bool found = false;
+
+	DIR *dir = opendir("/sys/fs/pstore");
+	if (dir) {
+		struct dirent *de;
+		while ((de = readdir(dir)) != NULL) {
+			if (de->d_name[0] == '.') {
+				continue;
+			}
+			char path[320];
+			snprintf(path, sizeof(path), "/sys/fs/pstore/%.255s", de->d_name);
+			found |= report_kept(path, strncmp(de->d_name, "dmesg-", 6) == 0);
+		}
+		closedir(dir);
+	}
+	found |= report_kept("/proc/last_kmsg", false);
+
+	if (!found) {
+		fprintf(stderr, "kernel: nothing kept from before this start (no pstore, no /proc/last_kmsg)\n");
+	}
+}
+
 void logging_report_previous_run(void) {
+	report_kept_kernel_log();
+
 	char *buffer = malloc(KERNEL_BUFFER_BYTES);
 	if (!buffer) {
 		return;
