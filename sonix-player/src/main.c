@@ -86,14 +86,13 @@ static void host_shot_poll_cb(lv_timer_t *timer) {
 // "Remember track", deferred: restoring the remembered track kicks off a cover
 // decode and an audio open, which must not run while the very first frame is
 // still being put together. It is scheduled a moment after the UI has painted.
-static void restore_track_timer_cb(lv_timer_t *timer) {
-	lv_timer_delete(timer);
-
+// True when a track was put back.
+static bool restore_saved_track(void) {
 	char saved_track[512];
 	double saved_pos = 0;
 	if (!library_playback_state_load(saved_track, sizeof(saved_track), &saved_pos) ||
 		access(saved_track, R_OK) != 0) {
-		return;
+		return false;
 	}
 
 	// The queue is saved next to the track, so a library list or a shuffled
@@ -119,7 +118,7 @@ static void restore_track_timer_cb(lv_timer_t *timer) {
 								 saved_pos);
 			library_queue_free(extra, extra_count);
 			free(extra_slots);
-			return;
+			return true;
 		}
 		library_index_close(ix);
 	}
@@ -134,10 +133,16 @@ static void restore_track_timer_cb(lv_timer_t *timer) {
 	if (queue_count > 0) {
 		player_restore_list((const char *const *)queue, queue_count, queue_index, queue_custom, saved_track, saved_pos);
 		library_queue_free(queue, queue_count);
-		return;
+		return true;
 	}
 
 	player_restore_track(saved_track, saved_pos);
+	return true;
+}
+
+static void restore_track_timer_cb(lv_timer_t *timer) {
+	lv_timer_delete(timer);
+	restore_saved_track();
 }
 
 #ifndef HOST_BUILD
@@ -2180,8 +2185,19 @@ int main(int argc, char **argv) {
 	}
 
 	// "Remember track", once the first frames are on screen (see the timer).
+	//
+	// Except with "Show Now Playing at startup" (Music > Display options): then
+	// the first frame is the now-playing page, so the track is put back here,
+	// before it, and the page opened over the home screen without the slide.
+	// The artwork still arrives from its worker a moment later.
 	if (config_get_int("player", "remember_track", 0)) {
-		lv_timer_create(restore_track_timer_cb, 600, NULL);
+		if (config_get_bool("music", "nowplaying_at_boot", false)) {
+			if (restore_saved_track()) {
+				player_sheet_open(false);
+			}
+		} else {
+			lv_timer_create(restore_track_timer_cb, 600, NULL);
+		}
 	}
 
 

@@ -2,6 +2,8 @@
 
 #include "src/system/audio/audio.h"
 #include "src/system/audio/alsa-controls.h"
+#include "src/system/audio/swvolume.h"
+#include "src/system/core/config.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/device/usb.h"
 
@@ -53,6 +55,10 @@ static char active_name[64];			// its id, for the interface
 static char volume_control[64];			// the control the level is written to
 static long volume_min, volume_max;
 static unsigned int volume_count = 1; // how many channels that control carries
+// The control's dB scale, read from its TLV; volume_has_db is false when the
+// device publishes none.
+static unsigned int volume_tlv[64];
+static bool volume_has_db;
 
 // Which of the two controls the port has. Decided at the first question and
 // kept: both are platform devices, there from boot or not at all.
@@ -390,6 +396,7 @@ static void find_volume_control(int card) {
 	volume_control[0] = '\0';
 	volume_min = volume_max = 0;
 	volume_count = 1;
+	volume_has_db = false;
 
 	snprintf(name, sizeof(name), "hw:%d", card);
 	if (snd_ctl_open(&ctl, name, 0) < 0) {
@@ -436,36 +443,52 @@ static void find_volume_control(int card) {
 		if (volume_count < 1 || volume_count > 8) {
 			volume_count = 1;
 		}
+		long db_min = 0, db_max = 0;
+		volume_has_db = snd_ctl_elem_info_is_tlv_readable(info) &&
+						snd_ctl_elem_tlv_read(ctl, id, volume_tlv, sizeof(volume_tlv)) >= 0 &&
+						snd_tlv_get_dB_range(volume_tlv, volume_min, volume_max, &db_min, &db_max) >= 0;
 	}
 
 	snd_ctl_elem_list_free_space(list);
 	snd_ctl_close(ctl);
 
 	if (volume_control[0]) {
-		fprintf(stderr, "usbaudio: volume goes to '%s' (%ld..%ld, %u ch)\n", volume_control, volume_min,
-				volume_max, volume_count);
+		long db_min = 0, db_max = 0;
+		if (volume_has_db) {
+			snd_tlv_get_dB_range(volume_tlv, volume_min, volume_max, &db_min, &db_max);
+		}
+		fprintf(stderr, "usbaudio: volume goes to '%s' (%ld..%ld, %u ch, %s%.2f..%.2f dB)\n", volume_control,
+				volume_min, volume_max, volume_count, volume_has_db ? "" : "no dB scale, ", db_min / 100.0,
+				db_max / 100.0);
 	} else {
 		fprintf(stderr, "usbaudio: the device has no playback volume control\n");
 	}
 }
 
-// Hands the level to the device's own control, and checks that it landed.
+// The level on a device on the USB-C port.
 //
-// A dongle that publishes a Feature Unit it does not implement takes the write
-// and stays where it was, and there is nothing in the return code to say so.
-// Left unchecked that is the worst failure this player has: the software
-// attenuation stands down for a control that does nothing, and the stream
-// reaches a pair of headphones at full scale with the volume keys moving a
-// number on the screen and nothing else.
+// The index follows the jacks' own law (alsa_volume_gain_db100): the same
+// number is about as loud on a dongle as on the 3.5 mm socket, and 0 is
+// silence.
 //
-// So the value is read back. A driver is allowed to round it -- a control with
-// eight steps will -- and that is not a failure; sitting at the top of its
-// range after being asked for the bottom half is. When that happens the
-// control is given up and swvolume.c takes the level over from the next block
-// of samples, which is a degree of attenuation in software rather than none at
-// all in hardware.
+// How the level is split between the device and the samples:
+//
+//   * no volume control: all of it on the samples (swvolume.c);
+//   * by default, the device's control is held at its 0 dB step (at its top
+//     when it has no dB scale) and all of the level goes on the samples. It is
+//     what a phone does. A dongle's own control can be coarser than it
+//     declares -- a whole run of indices landing on one step -- or stop well
+//     above silence, and neither can be seen from here;
+//   * with [usb] hardware_volume = 1 and a dB scale, the control takes the
+//     nearest step at or above the target and the samples the difference, so
+//     a coarse or shallow control still moves smoothly all the way down.
+//
+// The value written is read back. A driver is allowed to round it; sitting at
+// the top of its range after being asked for well below is a control that does
+// nothing, and then it is given up and the samples take the whole level.
 void usbaudio_apply_volume(int percent) {
-	if (active_card < 0 || !volume_control[0] || volume_max <= volume_min) {
+	if (active_card < 0) {
+		swvolume_clear_usb_gain();
 		return;
 	}
 	if (percent < 0) {
@@ -474,9 +497,37 @@ void usbaudio_apply_volume(int percent) {
 	if (percent > 100) {
 		percent = 100;
 	}
+	bool mute = percent == 0;
+	long target = mute ? 0 : alsa_volume_gain_db100(percent);
 
-	long span = volume_max - volume_min;
-	long value = volume_min + (span * percent + 50) / 100;
+	if (!volume_control[0] || volume_max <= volume_min) {
+		swvolume_set_usb_gain(target, mute);
+		return;
+	}
+
+	bool hardware = volume_has_db && config_get_int("usb", "hardware_volume", 0);
+	long value = volume_max;
+	long hw_db = 0;
+	if (mute) {
+		value = volume_min;
+	} else if (volume_has_db) {
+		long want = hardware ? target : 0;
+		if (snd_tlv_convert_from_dB(volume_tlv, volume_min, volume_max, want, &value, hardware ? 1 : -1) < 0) {
+			value = volume_max;
+		}
+		if (value < volume_min) {
+			value = volume_min;
+		}
+		if (value > volume_max) {
+			value = volume_max;
+		}
+		if (snd_tlv_convert_to_dB(volume_tlv, volume_min, volume_max, value, &hw_db) < 0 ||
+			hw_db <= SND_CTL_TLV_DB_GAIN_MUTE) {
+			hw_db = 0;
+		}
+	}
+	long rest = target - hw_db;
+	swvolume_set_usb_gain(rest < 0 ? rest : 0, mute);
 
 	snd_ctl_t *ctl;
 	char card[32];
@@ -515,7 +566,7 @@ void usbaudio_apply_volume(int percent) {
 	// Asked for something below the top and still sitting at the top. The slack
 	// is never zero: on a control with only a few steps, max - 0 would read as
 	// "stuck" the moment the level really is the maximum.
-	long slack = span / 20;
+	long slack = (volume_max - volume_min) / 20;
 	if (slack < 1) {
 		slack = 1;
 	}
@@ -526,6 +577,7 @@ void usbaudio_apply_volume(int percent) {
 				"instead\n",
 				volume_control, percent, value, back);
 		volume_control[0] = '\0';
+		swvolume_set_usb_gain(target, mute);
 	}
 }
 
@@ -662,6 +714,7 @@ void usbaudio_poll(void) {
 	} else {
 		active_name[0] = '\0';
 		volume_control[0] = '\0';
+		swvolume_clear_usb_gain();
 		fprintf(stderr, "usbaudio: the port is empty again; playback goes back to the jacks\n");
 		audio_set_output_device(NULL);
 	}

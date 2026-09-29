@@ -130,6 +130,19 @@ static int polls_since_stop = POLLS_FAST_AFTER_STOP;
 // full-width square cover on top of it.
 #define PLAYER_MENU_MIN_HEIGHT 210
 
+// The controls block as the R3 Pro II has it, 720 - 480. A taller panel (the
+// R1's 800) spreads what it has over the rows rather than leaving it empty
+// above and below them: a fifth to each end and a fifth to each of the three
+// gaps between the four rows.
+#define PLAYER_MENU_REF_HEIGHT 240
+#define PLAYER_MENU_PAD_VER 10
+#define PLAYER_MENU_GAP 12
+
+// Studio keeps only the bar, the clocks and the transport in the controls
+// block, pushed to the bottom; the panel with the sleeve takes the rest of the
+// screen above them.
+#define STUDIO_CONTROLS_H 172
+
 // Album art: an image on top of a placeholder panel. The panel is always
 // there, so the layout doesn't jump between a track that has a cover and one
 // that doesn't -- the image is simply hidden in the latter case.
@@ -1151,6 +1164,8 @@ static lv_obj_t *studio_quality;	  // the icon and the format line under the sle
 static lv_obj_t *studio_quality_icon;
 static bool studio_up;
 static int studio_box_w, studio_box_h; // the panel this arrangement is laid out on
+static int menu_pad_ver = PLAYER_MENU_PAD_VER; // the controls block's spacing, see PLAYER_MENU_REF_HEIGHT
+static int menu_gap = PLAYER_MENU_GAP;
 static int studio_cover_size;
 
 // Which of the four quality marks belongs to what is playing.
@@ -1374,9 +1389,13 @@ static void studio_take_back(void) {
 	if (studio_up) {
 		studio_up = false;
 		lv_obj_remove_local_style_prop(cover_panel, LV_STYLE_BG_OPA, 0);
+		lv_obj_set_height(cover_panel, cover_box_h);
 		if (player_menu) {
 			lv_obj_remove_local_style_prop(player_menu, LV_STYLE_BG_OPA, 0);
 			lv_obj_remove_local_style_prop(player_menu, LV_STYLE_BG_IMAGE_OPA, 0);
+			lv_obj_set_flex_align(player_menu, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+			lv_obj_set_style_pad_ver(player_menu, menu_pad_ver, 0);
+			lv_obj_set_style_pad_gap(player_menu, menu_gap, 0);
 		}
 		// The picture at full width comes back, and the note with it when there
 		// is no picture. studio_up is already down, so cover_show() agrees.
@@ -1462,7 +1481,15 @@ static void studio_put(void) {
 	// picture at full width, and the note that stands in for it.
 	studio_up = true;
 	lv_obj_set_style_bg_opa(cover_panel, LV_OPA_TRANSP, 0);
+	// The panel with the sleeve reaches down over the top of the controls
+	// block, which in this arrangement holds its rows at the bottom. Grown
+	// rather than left to overflow: a band of the screen redrawn below the
+	// panel's own area would skip it and cut the sleeve off.
+	lv_obj_set_height(cover_panel, studio_box_h);
 	if (player_menu) {
+		lv_obj_set_flex_align(player_menu, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+		lv_obj_set_style_pad_ver(player_menu, PLAYER_MENU_PAD_VER, 0);
+		lv_obj_set_style_pad_gap(player_menu, PLAYER_MENU_GAP, 0);
 		lv_obj_set_style_bg_opa(player_menu, LV_OPA_TRANSP, 0);
 		// Its own blurred copy too: it is the same picture at a different crop,
 		// and two of them meeting at the controls is a seam across the screen.
@@ -3446,8 +3473,13 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(player_menu, 0, 0);
 	lv_obj_set_style_radius(player_menu, 0, 0);
 	lv_obj_set_style_pad_hor(player_menu, cfg->padding, 0);
-	lv_obj_set_style_pad_ver(player_menu, 10, 0);
-	lv_obj_set_style_pad_gap(player_menu, 12, 0);
+	int spare = menu_height - PLAYER_MENU_REF_HEIGHT;
+	if (spare > 0) {
+		menu_pad_ver = PLAYER_MENU_PAD_VER + spare / 5;
+		menu_gap = PLAYER_MENU_GAP + spare / 5;
+	}
+	lv_obj_set_style_pad_ver(player_menu, menu_pad_ver, 0);
+	lv_obj_set_style_pad_gap(player_menu, menu_gap, 0);
 	lv_obj_remove_flag(player_menu, LV_OBJ_FLAG_SCROLLABLE);
 
 	// Track info: the text on the left, the star and the format on the right.
@@ -3891,7 +3923,11 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_add_flag(studio_bg, LV_OBJ_FLAG_HIDDEN);
 	lv_obj_move_background(studio_bg);
 
-	studio_box_w = studio_box_h = cover_size;
+	studio_box_w = cover_size;
+	studio_box_h = (int)cfg->screen_height - STUDIO_CONTROLS_H;
+	if (studio_box_h < cover_size) {
+		studio_box_h = cover_size;
+	}
 	studio_box = lv_obj_create(cover_panel);
 	lv_obj_remove_style_all(studio_box);
 	lv_obj_set_size(studio_box, studio_box_w, studio_box_h);

@@ -101,11 +101,36 @@ int64_t swvolume_coefficient(int percent) {
 // Bluetooth is asked first and separately: usbaudio_poll() gives up as soon as
 // Bluetooth is playing, so a USB card that was in use keeps saying so while the
 // sound is going over the air.
+// The gain usbaudio.c asked for, as a Q31 coefficient; 0 is silence. Written
+// whole by the thread that moves the volume and read by the playback thread,
+// the same word-sized handoff as sw_index.
+static volatile int64_t usb_gain_q31 = 2147483648LL;
+static volatile bool usb_gain_set;
+
+void swvolume_set_usb_gain(long db100, bool mute) {
+	if (db100 > 0) {
+		db100 = 0;
+	}
+	usb_gain_q31 = mute ? 0 : (int64_t)(pow(10.0, (double)db100 / 2000.0) * 2147483648.0);
+	usb_gain_set = true;
+}
+
+void swvolume_clear_usb_gain(void) {
+	usb_gain_set = false;
+	usb_gain_q31 = 2147483648LL;
+}
+
 bool swvolume_active(void) {
 	if (audio_output_is_bluetooth()) {
 		return false;
 	}
-	return usbaudio_active() && !usbaudio_has_volume_control();
+	if (!usbaudio_active()) {
+		return false;
+	}
+	if (usb_gain_set) {
+		return usb_gain_q31 < 2147483648LL;
+	}
+	return !usbaudio_has_volume_control();
 }
 
 // What to do with this buffer: the Q31 coefficient, or one of two answers that
@@ -120,6 +145,18 @@ static sw_action_t gain_now(int64_t *gain) {
 	*gain = 0;
 	if (!table_ready || !swvolume_active()) {
 		return SW_PASS;
+	}
+
+	if (usb_gain_set) {
+		int64_t q31 = usb_gain_q31;
+		if (q31 == 0) {
+			return SW_MUTE;
+		}
+		if (q31 >= 2147483648LL) {
+			return SW_PASS;
+		}
+		*gain = q31;
+		return SW_SCALE;
 	}
 
 	int idx = clamp_index(sw_index);

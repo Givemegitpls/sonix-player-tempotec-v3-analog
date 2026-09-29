@@ -18,8 +18,10 @@ typedef enum {
 	SFX_COUNT,
 } sfx_t;
 
-// Loads the sounds and starts the mixer. False when there is nothing to play
-// or no PCM: the game then runs silently and flappysound_play() does nothing.
+// Starts a thread that loads the sounds and then runs the mixer, and returns at
+// once. False only when the thread cannot be made. Until a sound has loaded, or
+// when none can be or there is no PCM, the game runs silently and
+// flappysound_play() does nothing.
 bool flappysound_start(void);
 
 // Starts `sfx` from its beginning, over whatever else is sounding. Any thread.

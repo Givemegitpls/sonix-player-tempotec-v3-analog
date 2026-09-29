@@ -35,10 +35,18 @@
 // worked out once at startup.
 void swvolume_set_index(int percent);
 
-// Whether the attenuation is being applied to the stream right now. True only
-// on the USB-C port to a device with no volume control of its own: on the jacks
-// the converter holds the level, over Bluetooth the headphones do, and a USB
-// device with a control of its own is written directly.
+// The gain for a device on the USB-C port, in hundredths of a dB (0 or
+// below), set by usbaudio.c: the whole level when the device has no volume
+// control of its own, or whatever its control cannot reach. `mute` silences
+// the stream. While set, it replaces the index curve above.
+void swvolume_set_usb_gain(long db100, bool mute);
+void swvolume_clear_usb_gain(void);
+
+// Whether the attenuation is being applied to the stream right now. Only ever
+// on the USB-C port: on the jacks the converter holds the level and over
+// Bluetooth the headphones do. There it is the gain usbaudio.c set, when that
+// is below unity, or the index curve for a device with no control of its own
+// before usbaudio.c has set one.
 bool swvolume_active(void);
 
 // The attenuation for an index, in tenths of a dB, straight off the curve.

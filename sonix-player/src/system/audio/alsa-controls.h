@@ -86,6 +86,13 @@ int headphone_jack_state(void);
 void change_volume(long amount);
 long get_volume(void);
 
+// The level the jacks play at for a volume index, in hundredths of a dB (0 at
+// the top of the high gain table, negative below), with the gain setting in
+// force. ALSA_VOLUME_MUTE_DB100 at index 0. Other outputs follow it so the same
+// index sounds alike everywhere.
+#define ALSA_VOLUME_MUTE_DB100 (-9999999L)
+long alsa_volume_gain_db100(int percent);
+
 // Writes every control again from the values this file last chose, dropping
 // the "only write it when it changes" caches first.
 //

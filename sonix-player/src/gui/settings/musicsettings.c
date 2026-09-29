@@ -1208,6 +1208,13 @@ static void playlists_first_cb(lv_event_t *e) {
 	music_refresh_layout();
 }
 
+static lv_obj_t *nowplaying_at_boot_switch;
+
+static void nowplaying_at_boot_cb(lv_event_t *e) {
+	config_set_bool("music", "nowplaying_at_boot", lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+	config_save();
+}
+
 static void quality_badges_cb(lv_event_t *e) {
 	medialist_set_quality_badges(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
@@ -1362,6 +1369,15 @@ static void build_display_page(gui_config_t *cfg) {
 	option_note(container, "musicsettings_playlists_first_note");
 	if (musicsettings_playlists_first()) {
 		lv_obj_add_state(playlists_first_switch, LV_STATE_CHECKED);
+	}
+
+	// Whether a start with a remembered track lands on the now-playing page
+	// rather than on the home screen. Read once, at startup (main.c).
+	settingsrow_toggle(container, "musicsettings_nowplaying_at_boot", &nowplaying_at_boot_switch,
+					   nowplaying_at_boot_cb);
+	option_note(container, "musicsettings_nowplaying_at_boot_note");
+	if (config_get_bool("music", "nowplaying_at_boot", false)) {
+		lv_obj_add_state(nowplaying_at_boot_switch, LV_STATE_CHECKED);
 	}
 
 	switcher_attach_back_gesture(display_screen);

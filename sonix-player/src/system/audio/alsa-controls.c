@@ -210,6 +210,14 @@ static long percent_to_raw(int percent) {
 	return high_gain ? HIBY_HW_HDB[percent] : HIBY_HW_MDB[percent];
 }
 
+long alsa_volume_gain_db100(int percent) {
+	if (percent <= 0) {
+		return ALSA_VOLUME_MUTE_DB100;
+	}
+	// One raw step of the CS43198 is 0.5 dB.
+	return -percent_to_raw(percent) * 50;
+}
+
 
 // Every mixer control the card publishes, with its range and its value now.
 //

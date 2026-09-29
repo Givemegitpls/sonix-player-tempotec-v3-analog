@@ -102,12 +102,44 @@ static void mix_into(int32_t *mix) {
 	pthread_mutex_unlock(&lock);
 }
 
-// Paced by the PCM: every write blocks until there is room, so the loop runs at
-// the rate the DAC plays.
+// Decodes the sounds, one at a time, each installed under the lock as soon as
+// it is ready. Stops early when flappysound_stop() is waiting. Returns how many
+// loaded.
+static int load_all(void) {
+	int loaded = 0;
+	for (int i = 0; i < SFX_COUNT && !stop_flag; i++) {
+		sound_t s = {0};
+		if (sound_load(&s, FILES[i])) {
+			pthread_mutex_lock(&lock);
+			sounds[i] = s;
+			pthread_mutex_unlock(&lock);
+			loaded++;
+		}
+	}
+	return loaded;
+}
+
+// Loads the sounds, takes the output from music and radio, then mixes. Paced by
+// the PCM: every write blocks until there is room, so the loop runs at the rate
+// the DAC plays. All of it off the interface thread: decoding five Ogg files
+// and stopping a radio stream take long enough to be seen as a freeze.
 static void *mixer_main(void *unused) {
 	(void)unused;
-	if (!audio_external_begin_latency(RATE, 2, 16, BUFFER_MS)) {
-		fprintf(stderr, "flappysound: no PCM; the game plays silently\n");
+	int loaded = load_all();
+	printf("flappysound: %d of %d sounds loaded\n", loaded, SFX_COUNT);
+	if (loaded == 0 || stop_flag) {
+		return NULL;
+	}
+
+	audio_stop();
+	if (radio_is_playing()) {
+		radio_stop();
+	}
+
+	if (stop_flag || !audio_external_begin_latency(RATE, 2, 16, BUFFER_MS)) {
+		if (!stop_flag) {
+			fprintf(stderr, "flappysound: no PCM; the game plays silently\n");
+		}
 		return NULL;
 	}
 
@@ -129,23 +161,8 @@ static void *mixer_main(void *unused) {
 bool flappysound_start(void) {
 	flappysound_stop();
 
-	int loaded = 0;
-	for (int i = 0; i < SFX_COUNT; i++) {
-		loaded += sound_load(&sounds[i], FILES[i]);
-	}
-	printf("flappysound: %d of %d sounds loaded\n", loaded, SFX_COUNT);
-	if (loaded == 0) {
-		return false;
-	}
-
-	audio_stop();
-	if (radio_is_playing()) {
-		radio_stop();
-	}
-
 	stop_flag = false;
 	if (pthread_create(&mixer, NULL, mixer_main, NULL) != 0) {
-		sounds_free();
 		return false;
 	}
 	mixer_live = true;
