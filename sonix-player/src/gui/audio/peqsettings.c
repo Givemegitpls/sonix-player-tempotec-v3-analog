@@ -149,6 +149,11 @@ static bool add_preset_row(const char *name, void *user) {
 	lv_obj_set_flex_grow(label, 1);
 	lv_obj_add_style(label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(label, &font_ui_24, 0);
+	// Two lines at most, the second ending in an ellipsis.
+	lv_obj_set_style_max_height(label,
+								2 * lv_font_get_line_height(&font_ui_24) +
+									lv_obj_get_style_text_line_space(label, LV_PART_MAIN),
+								0);
 
 	lv_obj_t *menu_btn = lv_btn_create(row);
 	lv_obj_set_size(menu_btn, 44, 44);

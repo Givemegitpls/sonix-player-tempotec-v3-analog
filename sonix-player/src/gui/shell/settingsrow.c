@@ -705,6 +705,42 @@ lv_obj_t *settingsrow_add(lv_obj_t *parent, const char *name, lv_obj_t **value_o
 // only child a caller could want back.
 lv_obj_t *settingsrow_name_label(lv_obj_t *row) { return row ? lv_obj_get_child(row, 0) : NULL; }
 
+// The name's width is whatever the row leaves beside the chevron or value.
+static void fit_row_lines(lv_obj_t *row) {
+	lv_obj_t *label = lv_obj_get_child(row, 0);
+	if (!label || !lv_obj_check_type(label, &lv_label_class)) {
+		return;
+	}
+	int32_t avail = lv_obj_get_content_width(row);
+	lv_obj_t *right = lv_obj_get_child(row, 1);
+	if (right) {
+		avail -= lv_obj_get_width(right) + ROW_LABEL_GAP;
+	}
+	if (avail > 0 && lv_obj_get_style_width(label, LV_PART_MAIN) != avail) {
+		lv_obj_set_width(label, avail);
+	}
+}
+
+static void row_lines_resized_cb(lv_event_t *e) { fit_row_lines(lv_event_get_target(e)); }
+
+void settingsrow_name_lines(lv_obj_t *row, int lines) {
+	lv_obj_t *label = settingsrow_name_label(row);
+	if (!label || lines < 1) {
+		return;
+	}
+	// The name keeps its size and wraps instead of stepping down.
+	lv_obj_remove_event_cb(row, row_resized_cb);
+	lv_obj_set_style_text_font(label, &font_ui_24, 0);
+	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+	lv_obj_set_height(label, LV_SIZE_CONTENT);
+	lv_obj_set_style_max_height(label,
+								lines * lv_font_get_line_height(&font_ui_24) +
+									(lines - 1) * lv_obj_get_style_text_line_space(label, LV_PART_MAIN),
+								0);
+	lv_obj_add_event_cb(row, row_lines_resized_cb, LV_EVENT_SIZE_CHANGED, NULL);
+	fit_row_lines(row);
+}
+
 // ---------------------------------------------------------------------------
 // Pill cards
 // ---------------------------------------------------------------------------

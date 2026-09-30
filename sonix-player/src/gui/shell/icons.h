@@ -24,6 +24,7 @@ extern const lv_image_dsc_t icon_file;
 extern const lv_image_dsc_t icon_music_settings;
 extern const lv_image_dsc_t icon_book_finished;
 extern const lv_image_dsc_t icon_audio_waveform;
+extern const lv_image_dsc_t icon_autoeq_update;
 extern const lv_image_dsc_t icon_repeat_all;
 extern const lv_image_dsc_t icon_repeat_one;
 extern const lv_image_dsc_t icon_repeat_off;

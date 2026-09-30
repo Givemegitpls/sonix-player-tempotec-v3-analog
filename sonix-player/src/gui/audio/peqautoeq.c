@@ -14,6 +14,7 @@
 #include "src/gui/audio/peqpage.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
@@ -23,6 +24,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 #include "src/system/net/http.h"
+#include "src/system/net/wifi.h"
 
 #define RESULT_MAX 20
 #define INDEX_MAX (4u * 1024u * 1024u)
@@ -675,13 +677,7 @@ static void rebuild_results(job_t *job) {
 	lv_obj_clean(search_list);
 	for (int i = 0; i < result_count; i++) {
 		lv_obj_t *row = settingsrow_add(search_list, result_items[i].display, NULL, result_clicked, (void *)(intptr_t)i);
-		lv_obj_update_layout(row);
-		lv_obj_t *label = settingsrow_name_label(row);
-		lv_obj_t *chevron = lv_obj_get_child(row, 1);
-		int32_t width = lv_obj_get_content_width(row) - (chevron ? lv_obj_get_width(chevron) + 12 : 0);
-		lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-		lv_obj_set_width(label, width);
-		lv_obj_set_height(label, lv_font_get_line_height(lv_obj_get_style_text_font(label, LV_PART_MAIN)));
+		settingsrow_name_lines(row, 2);
 	}
 	if (result_count) {
 		lv_obj_add_flag(results_empty, LV_OBJ_FLAG_HIDDEN);
@@ -759,9 +755,27 @@ static void search_accept(lv_event_t *event) {
 	start_job(job, tr("peq_autoeq_downloading_database"));
 }
 
+bool peqautoeq_network_ready(void) {
+#ifdef HOST_BUILD
+	return true;
+#else
+	wifi_status_t status;
+	wifi_get_status(&status);
+	return status.state == WIFI_STATE_CONNECTED && status.ip[0] != '\0';
+#endif
+}
+
+bool peqautoeq_network_needed(void) {
+	if (peqautoeq_network_ready()) {
+		return false;
+	}
+	gui_notify_popup("peq_autoeq_only_works_over_wi_fi");
+	return true;
+}
+
 static void update_database(lv_event_t *event) {
 	(void)event;
-	if (is_busy()) {
+	if (is_busy() || peqautoeq_network_needed()) {
 		return;
 	}
 	job_t *job = calloc(1, sizeof(*job));
@@ -789,7 +803,22 @@ static void build_pages(gui_config_t *config) {
 	lv_obj_set_style_pad_all(search_field, 14, 0);
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
-	settingsrow_action(search_container, "peq_autoeq_update_database", update_database, NULL);
+
+	// The database download sits in the title's corner.
+	settingsrow_title_corner_slots(settingsrow_page_title(search_screen), config, 1);
+	lv_obj_t *update_btn = lv_btn_create(search_screen);
+	lv_obj_set_size(update_btn, 56, 56);
+	lv_obj_set_style_bg_opa(update_btn, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_border_width(update_btn, 0, 0);
+	lv_obj_set_style_shadow_width(update_btn, 0, 0);
+	lv_obj_set_style_pad_all(update_btn, 0, 0);
+	lv_obj_align(update_btn, LV_ALIGN_TOP_RIGHT, -config->padding, config->padding + config->top_bar_height);
+	lv_obj_add_event_cb(update_btn, update_database, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *update_icon = lv_image_create(update_btn);
+	lv_image_set_src(update_icon, &icon_autoeq_update);
+	lv_obj_add_style(update_icon, &theme_style_icon, 0);
+	lv_obj_center(update_icon);
+
 	search_keyboard = keyboard_create(search_screen, config->screen_width, 316, search_field, NULL, "peq_autoeq_search_button", search_accept, NULL);
 
 	results_screen = lv_obj_create(NULL);

@@ -60,6 +60,8 @@ ICONS = [
     ("music-settings.svg", "music_settings", 34),
     ("book-finished.svg", "book_finished", 34),  # the Audiobooks page's corner: the finished books
     ("audio-waveform.svg", "audio_waveform", 34),
+    # AutoEq search corner: download the headphone index again.
+    ("autoeq-update.svg", "autoeq_update", 34),
     ("repeat.svg", "repeat_all", 30),
     ("repeat-1.svg", "repeat_one", 30),
     ("repeat-off.svg", "repeat_off", 30),

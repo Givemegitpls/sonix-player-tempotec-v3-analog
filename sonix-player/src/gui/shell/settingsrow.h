@@ -42,6 +42,11 @@ lv_obj_t *settingsrow_add(lv_obj_t *parent, const char *name, lv_obj_t **value_o
 // name once, at build time, from the language file.
 lv_obj_t *settingsrow_name_label(lv_obj_t *row);
 
+// For a row whose name is data rather than a tag (a search result, a preset):
+// the name stays at the row's size and wraps to at most `lines` lines, ending
+// in an ellipsis past that.
+void settingsrow_name_lines(lv_obj_t *row, int lines);
+
 // The same row without the chevron, for an action that does not open a page:
 // the two library scans, which ask for confirmation instead.
 lv_obj_t *settingsrow_action(lv_obj_t *parent, const char *name, lv_event_cb_t cb, void *user_data);
