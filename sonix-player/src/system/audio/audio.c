@@ -428,6 +428,9 @@ static bool seek_request = false;
 // opposed to being stopped/replaced by the user). Consumed via
 // audio_take_completion() so the controller can auto-advance.
 static bool track_completed = false;
+static void (*completion_hook)(void);
+
+void audio_set_completion_hook(void (*hook)(void)) { completion_hook = hook; }
 
 // Marks the end of a track's playback routine. The catch is that tearing down
 // the old track happens *after* audio_play() has already announced the new one
@@ -2408,8 +2411,15 @@ static void play_wav_file(const char *filepath) {
 	playback_status = (audio_command == AUDIO_CMD_PAUSE) ? AUDIO_STATUS_PAUSED : AUDIO_STATUS_PLAYING;
 	pthread_mutex_unlock(&audio_mutex);
 
+	// The previous track's PCM when it stayed open and suits this one, as on
+	// the decoded path.
 	snd_pcm_uframes_t period_size;
-	snd_pcm_t *pcm_handle = open_pcm_device(info.channels, info.sample_rate, info.out_bits, &period_size);
+	snd_pcm_t *pcm_handle = gapless_take(info.channels, info.sample_rate, info.out_bits, &period_size);
+	if (pcm_handle) {
+		pcm_device_open = true;
+	} else {
+		pcm_handle = open_pcm_device(info.channels, info.sample_rate, info.out_bits, &period_size);
+	}
 	if (!pcm_handle) {
 		fclose(f);
 		pthread_mutex_lock(&audio_mutex);
@@ -2694,12 +2704,14 @@ static void play_wav_file(const char *filepath) {
 				// tone shaping left it and widening that.
 				soundfield_process((short *)buffer, frames_read, info.channels);
 				crossfeed_process((short *)buffer, frames_read, info.channels, info.sample_rate);
+				mono_process((short *)buffer, frames_read, info.channels);
 				balance_process((short *)buffer, frames_read, info.channels);
 			} else {
 				replaygain_process_s32((int32_t *)buffer, frames_read, info.channels);
 				eq_process_s32((int32_t *)buffer, frames_read, info.channels, info.sample_rate);
 				soundfield_process_s32((int32_t *)buffer, frames_read, info.channels);
 				crossfeed_process_s32((int32_t *)buffer, frames_read, info.channels, info.sample_rate);
+				mono_process_s32((int32_t *)buffer, frames_read, info.channels);
 				balance_process_s32((int32_t *)buffer, frames_read, info.channels);
 			}
 		}
@@ -2732,6 +2744,9 @@ static void play_wav_file(const char *filepath) {
 			track_completed = natural_end;
 			pthread_mutex_unlock(&audio_mutex);
 			played_to_the_end = natural_end;
+			if (natural_end && completion_hook) {
+				completion_hook();
+			}
 			break;
 		}
 
@@ -2793,6 +2808,14 @@ static void play_wav_file(const char *filepath) {
 	mark_stopped_unless_replaced();
 	pthread_mutex_unlock(&audio_mutex);
 
+	// Gapless, on the same conditions as the decoded path.
+	bool keep_open = pcm_handle && gapless_enabled && played_to_the_end && !is_paused &&
+					 (!pcm_is_bluetooth(pcm_handle) || bt_hold_usable(pcm_handle));
+	if (keep_open) {
+		gapless_hold(pcm_handle, info.channels, info.sample_rate, info.out_bits, period_size);
+		pcm_handle = NULL;
+	}
+
 	// Leaving a track while the device is paused must not drain: snd_pcm_drain()
 	// waits for a buffer that a paused device never empties, and the playback
 	// thread would never come back for the next track.
@@ -2817,7 +2840,7 @@ static void play_wav_file(const char *filepath) {
 			}
 		snd_pcm_close(pcm_handle);
 	}
-	pcm_device_open = false;
+	pcm_device_open = keep_open;
 	free(buffer);
 	free(raw);
 	fclose(f);
@@ -2906,6 +2929,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		return;
 	}
 
+	// Headphones have no DSD mode to switch into: DSD goes to them as PCM.
+	bool dsd_as_pcm = decoder_passthrough(dec) && output_is_bluetooth() && decoder_dsd_to_pcm(dec);
+
 	int channels = decoder_channels(dec);
 	int sample_rate = decoder_sample_rate(dec);
 	uint64_t total_frames = decoder_total_pcm_frames(dec);
@@ -2930,6 +2956,12 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// byte count below stay in the track's own frames.
 	decimator_t decim;
 	int decim_factor = bluetooth_decimation(sample_rate, channels, out_bits, passthrough);
+	// 176.4 kHz is more than any Bluetooth link carries, whatever the
+	// decimation settings say.
+	if (dsd_as_pcm && decim_factor == 1) {
+		unsigned sink = bluetooth_sink_rate();
+		decim_factor = decimate_factor_for(sample_rate, sink ? (int)sink : 44100);
+	}
 	if (decim_factor > 1 && decimate_init(&decim, decim_factor, channels) != 0) {
 		decim_factor = 1;
 	}
@@ -3002,10 +3034,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	}
 	if (!pcm_handle && passthrough) {
 		// DSD256 asks the card for 705.6 kHz, which an output that is not this
-		// device's own DAC may simply refuse. There is nowhere to fall back to:
-		// filtering the stream down to PCM here costs more than the whole core
-		// at DSD256, so the track does not play and the log says why rather
-		// than leaving a silent stop to be guessed at.
+		// device's own DAC may simply refuse. The track does not play and the
+		// log says why rather than leaving a silent stop to be guessed at; only
+		// Bluetooth is sent PCM instead (decoder_dsd_to_pcm, above).
 		fprintf(stderr, "audio: DoP at %d Hz refused by this output; the track cannot play\n", sample_rate);
 	}
 	if (!pcm_handle) {
@@ -3357,6 +3388,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				// image, this pulls it back inside the head, and balance stays
 				// the last word on what reaches each ear.
 				crossfeed_process_s32((int32_t *)buffer, (int)frames_read, channels, out_rate);
+				mono_process_s32((int32_t *)buffer, (int)frames_read, channels);
 				balance_process_s32((int32_t *)buffer, (int)frames_read, channels);
 			}
 		} else {
@@ -3384,6 +3416,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				crossfeed_process((short *)buffer, (int)frames_read, channels, sample_rate);
 				// Last in the chain, after everything that could have changed
 				// the level: the balance is about what reaches each ear.
+				mono_process((short *)buffer, (int)frames_read, channels);
 				balance_process((short *)buffer, (int)frames_read, channels);
 			}
 		}
@@ -3472,6 +3505,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			track_completed = natural_end;
 			pthread_mutex_unlock(&audio_mutex);
 			played_to_the_end = natural_end;
+			if (natural_end && completion_hook) {
+				completion_hook();
+			}
 
 			if (cut_short) {
 				fprintf(stderr, "audio[%ld]: '%s' stopped at %.1f s of %.1f: cut short, the queue stays put\n", log_ms(),
@@ -3649,9 +3685,6 @@ static void play_file(const char *filepath) {
 	auto_set_output();
 
 	if (format == DECODE_FORMAT_UNKNOWN) {
-		// The WAV path takes no part in gapless: it opens the device on its
-		// own, and a held PCM would leave it busy.
-		gapless_release();
 		play_wav_file(filepath);
 	} else {
 		play_decoded_file(filepath, format);

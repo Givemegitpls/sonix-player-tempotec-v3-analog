@@ -289,6 +289,22 @@ void balance_process(short *frames, int frame_count, int channels);
 void balance_process_s32(int32_t *frames, int frame_count, int channels);
 
 // ---------------------------------------------------------------------------
+// Mono
+// ---------------------------------------------------------------------------
+//
+// Both channels replaced by their mean, for a listener with one ear or one
+// earbud. Runs after crossfeed and before balance, so the balance still sets
+// what reaches each side. Saved as [audio] mono.
+
+void mono_set_enabled(bool enabled);
+bool mono_get_enabled(void);
+
+// In place on interleaved PCM, audio thread only. A no-op when off or on
+// anything that is not stereo.
+void mono_process(short *frames, int frame_count, int channels);
+void mono_process_s32(int32_t *frames, int frame_count, int channels);
+
+// ---------------------------------------------------------------------------
 // Crossfeed
 //
 // On headphones the left channel reaches only the left ear. With speakers, or

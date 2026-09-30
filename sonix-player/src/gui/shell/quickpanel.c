@@ -19,6 +19,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/playback/audiobook.h"
 #include "src/system/streaming/podcast.h"
+#include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
 #include "src/system/bluetooth/btreceiver.h"
 #include "src/system/audio/usbdac.h"
@@ -306,7 +307,8 @@ static void refresh_now_playing_card(void) {
 	// star that follows the feed rather than the track. Same dressing as the
 	// player.
 	long long podcast_feed_id = 0;
-	bool podcast = !state.live && !book && player_current_podcast_feed(&podcast_feed_id, NULL);
+	player_current_podcast_feed(&podcast_feed_id, NULL);
+	bool podcast = !state.live && !book && podcastcache_is_episode(state.current_file);
 	bool skips = book || podcast;
 	int back = book ? audiobook_skip_back() : podcast ? podcast_skip_back() : 0;
 	int forward = book ? audiobook_skip_forward() : podcast ? podcast_skip_forward() : 0;

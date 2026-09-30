@@ -13,6 +13,8 @@
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/popover.h"
+#include "src/gui/shell/toast.h"
+#include "src/gui/streaming/podcastsaved.h"
 #include "src/gui/streaming/qobuzart.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
@@ -25,8 +27,10 @@
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/podcast.h"
 #include "src/system/streaming/podcastcache.h"
+#include "src/system/streaming/podcastdl.h"
 #include "src/system/streaming/podcastsubs.h"
 #include "src/system/streaming/streamturn.h"
+#include "src/system/device/power.h"
 #include "src/system/device/system.h"
 #include "src/system/core/utils.h"
 #include "src/system/net/wifi.h"
@@ -74,6 +78,7 @@ static lv_obj_t *busy_layer;
 static lv_obj_t *busy_label;
 static lv_obj_t *search_btn;
 static lv_obj_t *settings_btn;
+static lv_obj_t *saved_btn; // the downloaded podcasts, which need no network
 
 // The two pills at the top -- "My podcasts" and "Trending" -- and the row that
 // holds them. Shown only while one of the two lists they name is underneath: on
@@ -252,6 +257,9 @@ static lv_obj_t *list_empty;
 // rows. Whatever answers a tap has to look at what is visible, not at what is
 // being done. (qobuzpage.c does the same, under the same name.)
 static job_kind_t list_kind;
+
+// The podcast whose episodes are on screen: the folder a download goes into.
+static char list_feed_title[PODCAST_TITLE_MAX];
 
 // Paging, as in the radio: the last request came back full to the limit, so
 // there may be more -- and one request at a time.
@@ -732,6 +740,7 @@ static bool kind_has_row_menu(job_kind_t kind) {
 }
 
 static void row_menu_cb(lv_event_t *e);
+static void row_long_cb(lv_event_t *e);
 
 // The twelve rows, built once. Everything that can differ between one entry and
 // the next is created here and shown or hidden at bind time: a recycled widget
@@ -759,6 +768,7 @@ static void build_rows(int width) {
 		// button keeps the press to itself.
 		lv_obj_add_flag(row->button, LV_OBJ_FLAG_EVENT_BUBBLE);
 		lv_obj_add_event_cb(row->button, row_clicked_cb, LV_EVENT_CLICKED, NULL);
+		lv_obj_add_event_cb(row->button, row_long_cb, LV_EVENT_LONG_PRESSED, NULL);
 
 		// The thumbnail is always there, even when the catalogue gives no
 		// address: a row without it comes up with nothing on the left, text
@@ -913,6 +923,9 @@ static void fill_list(int from) {
 
 	list_kind = result_kind;
 	list_count = result_count;
+	if (list_kind == JOB_EPISODES) {
+		snprintf(list_feed_title, sizeof(list_feed_title), "%s", result_title);
+	}
 
 	// The addresses of every entry, on screen or not, because the lending looks
 	// for a row that already holds this address and the row that holds it is
@@ -1782,6 +1795,171 @@ static void row_menu_cb(lv_event_t *e) {
 }
 
 // ---------------------------------------------------------------------------
+// keeping an episode: the long press, and the card that follows the download
+// ---------------------------------------------------------------------------
+
+#define DL_POLL_MS 250
+
+static lv_obj_t *dl_veil;
+static lv_obj_t *dl_name;
+static lv_obj_t *dl_bar;
+static lv_obj_t *dl_amount;
+static lv_timer_t *dl_timer;
+static int dl_row = -1;
+
+static void dl_close(void) {
+	lv_timer_pause(dl_timer);
+	lv_obj_add_flag(dl_veil, LV_OBJ_FLAG_HIDDEN);
+	power_hold_screen_on(false);
+}
+
+// "12.4 / 58.0 MB", or the bytes alone when the server gave no length.
+static void dl_paint(long long done, long long total) {
+	double done_mb = (double)done / (1024.0 * 1024.0);
+	if (total > 0) {
+		int permille = (int)(done * 1000 / total);
+		lv_bar_set_value(dl_bar, permille, LV_ANIM_OFF);
+		lv_label_set_text_fmt(dl_amount, "%.1f / %.1f MB \xC2\xB7 %d%%", done_mb, (double)total / (1024.0 * 1024.0),
+							  permille / 10);
+	} else {
+		lv_bar_set_value(dl_bar, 0, LV_ANIM_OFF);
+		lv_label_set_text_fmt(dl_amount, "%.1f MB", done_mb);
+	}
+}
+
+static void dl_poll_cb(lv_timer_t *timer) {
+	(void)timer;
+	long long done = 0, total = 0;
+	podcastdl_state_t state = podcastdl_state(&done, &total);
+	dl_paint(done, total);
+	if (state == PODCASTDL_RUNNING) {
+		return;
+	}
+	dl_close();
+	podcastdl_acknowledge();
+	if (state == PODCASTDL_DONE) {
+		toast_success(tr("podcast_download_done"));
+	} else if (state == PODCASTDL_FAILED) {
+		toast_error(tr("podcast_download_failed"));
+	}
+}
+
+static void dl_cancel_cb(lv_event_t *e) {
+	(void)e;
+	podcastdl_cancel();
+	lv_label_set_text(dl_amount, tr("podcast_download_cancelling"));
+}
+
+static void dl_build(gui_config_t *cfg) {
+	dl_veil = lv_obj_create(lv_layer_top());
+	lv_obj_set_size(dl_veil, lv_pct(100), lv_pct(100));
+	lv_obj_set_style_bg_color(dl_veil, lv_color_black(), 0);
+	lv_obj_set_style_bg_opa(dl_veil, LV_OPA_60, 0);
+	lv_obj_set_style_border_width(dl_veil, 0, 0);
+	lv_obj_set_style_radius(dl_veil, 0, 0);
+	lv_obj_remove_flag(dl_veil, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_add_flag(dl_veil, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+
+	lv_obj_t *card = lv_obj_create(dl_veil);
+	lv_obj_set_size(card, cfg->screen_width - 2 * cfg->padding, LV_SIZE_CONTENT);
+	lv_obj_add_style(card, &theme_style_card, 0);
+	lv_obj_set_style_radius(card, 16, 0);
+	lv_obj_set_style_border_width(card, 0, 0);
+	lv_obj_set_style_shadow_width(card, 0, 0);
+	lv_obj_set_style_pad_all(card, 20, 0);
+	lv_obj_set_style_pad_row(card, 14, 0);
+	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+	lv_obj_align(card, LV_ALIGN_CENTER, 0, cfg->top_bar_height / 2);
+
+	lv_obj_t *title = lv_label_create(card);
+	lv_label_set_text(title, tr("podcast_downloading"));
+	lv_obj_add_style(title, &theme_style_text, 0);
+	lv_obj_set_style_text_font(title, &font_ui_24, 0);
+
+	dl_name = lv_label_create(card);
+	lv_label_set_long_mode(dl_name, LV_LABEL_LONG_DOT);
+	lv_obj_set_width(dl_name, lv_pct(100));
+	lv_obj_set_style_max_height(dl_name, 2 * lv_font_get_line_height(&font_ui_20), 0);
+	lv_obj_add_style(dl_name, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(dl_name, &font_ui_20, 0);
+
+	dl_bar = lv_bar_create(card);
+	lv_obj_set_size(dl_bar, lv_pct(100), 12);
+	lv_bar_set_range(dl_bar, 0, 1000);
+	lv_obj_set_style_bg_color(dl_bar, theme()->surface_pressed, LV_PART_MAIN);
+	lv_obj_set_style_bg_opa(dl_bar, LV_OPA_COVER, LV_PART_MAIN);
+	lv_obj_set_style_bg_color(dl_bar, theme()->accent, LV_PART_INDICATOR);
+	lv_obj_set_style_radius(dl_bar, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+	lv_obj_set_style_radius(dl_bar, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+
+	dl_amount = lv_label_create(card);
+	lv_obj_add_style(dl_amount, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(dl_amount, &font_ui_18, 0);
+
+	lv_obj_t *cancel = lv_btn_create(card);
+	lv_obj_set_size(cancel, lv_pct(100), 56);
+	lv_obj_set_style_radius(cancel, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_shadow_width(cancel, 0, 0);
+	lv_obj_set_style_border_width(cancel, 0, 0);
+	lv_obj_set_style_bg_color(cancel, theme()->surface_pressed, 0);
+	lv_obj_add_event_cb(cancel, dl_cancel_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *cancel_label = lv_label_create(cancel);
+	lv_label_set_text(cancel_label, tr("cancel"));
+	lv_obj_set_style_text_font(cancel_label, &font_ui_22, 0);
+	lv_obj_set_style_text_color(cancel_label, theme()->text_primary, 0);
+	lv_obj_center(cancel_label);
+
+	dl_timer = lv_timer_create(dl_poll_cb, DL_POLL_MS, NULL);
+	lv_timer_pause(dl_timer);
+}
+
+static void download_cb(void *user) {
+	(void)user;
+	if (dl_row < 0 || dl_row >= list_count || list_kind != JOB_EPISODES) {
+		return;
+	}
+	const podcast_episode_t *episode = &result_episodes[dl_row];
+	if (podcastdl_exists(episode, list_feed_title)) {
+		toast_plain(tr("podcast_already_downloaded"));
+		return;
+	}
+	if (!podcastdl_start(episode, list_feed_title, browsing_author, browsing_image)) {
+		toast_error(tr("podcast_download_failed"));
+		return;
+	}
+
+	// Theme colours are read at every opening: the card is built once.
+	lv_obj_set_style_bg_color(dl_bar, theme()->accent, LV_PART_INDICATOR);
+	lv_label_set_text(dl_name, episode->title);
+	dl_paint(0, 0);
+	lv_obj_remove_flag(dl_veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_move_foreground(dl_veil);
+	power_hold_screen_on(true);
+	lv_timer_reset(dl_timer);
+	lv_timer_resume(dl_timer);
+}
+
+// An episode: the long press offers to keep it on the card.
+static void row_long_cb(lv_event_t *e) {
+	if (list_kind != JOB_EPISODES || switcher_back_drag_active() || player_sheet_drag_active()) {
+		return;
+	}
+	dl_row = row_index_of(lv_event_get_current_target(e));
+	if (dl_row < 0 || dl_row >= list_count) {
+		return;
+	}
+	// The lift that ends this press would otherwise arrive as a click and
+	// start the episode.
+	lv_indev_t *indev = lv_indev_active();
+	if (indev) {
+		lv_indev_wait_release(indev);
+	}
+	static const popover_item_t ITEMS[] = {{"podcast_download", download_cb, NULL}};
+	popover_show(lv_event_get_current_target(e), ITEMS, 1);
+}
+
+// ---------------------------------------------------------------------------
 // the page: pills on top, list below
 //
 // ONE screen. "My podcasts" and "Trending" are not different places: they are
@@ -1822,31 +2000,29 @@ static void paint_pill(lv_obj_t *btn, bool on) {
 }
 
 // The corner buttons' visibility has a single owner, because two owners of one
-// flag means whichever runs last wins. The whole rule is here: shown only with
-// the keys configured, a network to use them over, AND on a home view (the two
-// pills).
-// On search and on episodes the magnifier and the gear do not apply: they are
-// the section's controls, not the list's; and over the Wi-Fi notice neither
-// does anything, since both lead to pages that need the catalogue.
+// flag means whichever runs last wins. The magnifier needs the keys, a network
+// and a home view (the two pills). The gear and the downloads need none of
+// that and stay up over the notices too: the podcast settings apply to the
+// downloaded episodes as well. From the edge: gear, downloads, magnifier.
 static void refresh_corner_buttons(void) {
 	bool home_view = list_kind == JOB_FOLLOWED || list_kind == JOB_TRENDING || list_kind == JOB_NONE;
-	bool show = podcast_configured() && network_up() && home_view;
+	bool online = podcast_configured() && network_up();
+	bool search = online && home_view;
+	bool local = home_view || !online;
 	if (list_title && g_cfg) {
 		// The heading gets the width the buttons are not using.
-		settingsrow_title_corner_slots(list_title, g_cfg, show ? 2 : 0);
+		settingsrow_title_corner_slots(list_title, g_cfg, (search ? 1 : 0) + (local ? 2 : 0));
 	}
-	if (search_btn) {
-		if (show) {
-			lv_obj_remove_flag(search_btn, LV_OBJ_FLAG_HIDDEN);
-		} else {
-			lv_obj_add_flag(search_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_t *const buttons[] = {search_btn, settings_btn, saved_btn};
+	const bool shown[] = {search, local, local};
+	for (int i = 0; i < 3; i++) {
+		if (!buttons[i]) {
+			continue;
 		}
-	}
-	if (settings_btn) {
-		if (show) {
-			lv_obj_remove_flag(settings_btn, LV_OBJ_FLAG_HIDDEN);
+		if (shown[i]) {
+			lv_obj_remove_flag(buttons[i], LV_OBJ_FLAG_HIDDEN);
 		} else {
-			lv_obj_add_flag(settings_btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_add_flag(buttons[i], LV_OBJ_FLAG_HIDDEN);
 		}
 	}
 }
@@ -1869,7 +2045,7 @@ static void build_page(gui_config_t *cfg) {
 	// The title follows what is on screen: "Podcasts" on the two home lists, the
 	// query on a search, the podcast's name on episodes.
 	list_title = settingsrow_title(podcast_screen, cfg, "podcasts");
-	settingsrow_title_corner_slots(list_title, cfg, 2);
+	settingsrow_title_corner_slots(list_title, cfg, 3);
 
 	int content_top = settingsrow_content_top(cfg);
 
@@ -2153,6 +2329,11 @@ static void open_search_cb(lv_event_t *e) {
 static void open_settings_cb(lv_event_t *e) {
 	(void)e;
 	switch_screen(settings_screen);
+}
+
+static void open_saved_cb(lv_event_t *e) {
+	(void)e;
+	switch_screen(podcastsaved_screen);
 }
 
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
@@ -2589,13 +2770,16 @@ void podcastpage_init(gui_config_t *cfg) {
 
 	build_page(cfg);
 
-	// The gear to the right of the magnifier: "to the right" means slot zero,
-	// the one against the edge -- the slots are counted from there leftwards.
+	// Slots are counted from the edge leftwards: the gear against it, the
+	// downloads beside it, the magnifier last.
 	settings_btn = corner_button(cfg, 0, &icon_music_settings, open_settings_cb);
-	search_btn = corner_button(cfg, 1, &icon_search, open_search_cb);
+	saved_btn = corner_button(cfg, 1, &icon_podcast_downloaded, open_saved_cb);
+	search_btn = corner_button(cfg, 2, &icon_search, open_search_cb);
 
 	build_search_page(cfg);
 	build_settings_page(cfg);
+	podcastsaved_init(cfg);
+	dl_build(cfg);
 	build_busy_layer();
 	podcastcache_set_slow_start_cb(NULL);
 

@@ -19,6 +19,7 @@
 #include "src/gui/shell/toast.h"
 #include "src/system/library/audiobookdb.h"
 #include "src/system/playback/playlist.h"
+#include "src/system/streaming/podcastdl.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
 #include "src/system/device/power.h"
@@ -126,8 +127,8 @@ static int pick_count;
 static int name_cmp(const void *a, const void *b) { return strcasecmp((const char *)a, (const char *)b); }
 
 // The folders at the root of the card, alphabetically: not the hidden ones,
-// not the ones a desktop leaves behind, and not Audiobooks, which the music
-// scan never reads.
+// not the ones a desktop leaves behind, and not Audiobooks or Podcast, which
+// the music scan never reads.
 static void pick_read_folders(void) {
 	pick_count = 0;
 	DIR *dir = sd_root ? opendir(sd_root) : NULL;
@@ -137,7 +138,8 @@ static void pick_read_folders(void) {
 	struct dirent *de;
 	while ((de = readdir(dir)) != NULL && pick_count < PICK_MAX) {
 		if (de->d_name[0] == '.' || playlist_is_junk_name(de->d_name) ||
-			strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0 || strlen(de->d_name) >= sizeof(pick_names[0])) {
+			strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0 ||
+			strcasecmp(de->d_name, PODCASTDL_FOLDER) == 0 || strlen(de->d_name) >= sizeof(pick_names[0])) {
 			continue;
 		}
 		char path[768];

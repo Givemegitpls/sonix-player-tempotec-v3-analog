@@ -326,7 +326,7 @@ static void tick_cb(lv_timer_t *t) {
 		now.title = tags ? m->title : "";
 		now.album = tags ? m->album : "";
 
-		now.skip = radio_is_active() || audiobook_is_playing() || podcastcache_owns(file);
+		now.skip = radio_is_active() || audiobook_is_playing() || podcastcache_is_episode(file);
 		lastfm_note_playback(&now);
 	}
 

@@ -621,7 +621,7 @@ static void timer_update_cb(lv_timer_t *timer) {
 	// is what nobody is standing over -- the playback colour, Wi-Fi transfer,
 	// DAC mode.
 	led_update_playback(state.status == AUDIO_STATUS_PLAYING, state.stream_sample_rate,
-						!state.live && podcastcache_owns(state.current_file));
+						!state.live && podcastcache_is_episode(state.current_file));
 	// Wi-Fi transfer takes the same route: its pattern stays lit, screen off
 	// included, for as long as the transfer is on. The switch rather than the
 	// process, because this poll is five seconds apart and the server takes a

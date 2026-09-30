@@ -133,6 +133,11 @@ audio_status_t audio_get_status(void);
 // natural track completion (auto-advance) from a deliberate stop.
 bool audio_take_completion(void);
 
+// Called on the playback thread the moment a track reaches its end on its
+// own, so the controller can start the next one while the held PCM still has
+// its queue to play (see gapless). Must not block; NULL clears it.
+void audio_set_completion_hook(void (*hook)(void));
+
 // Empty string when nothing is loaded.
 void audio_get_current_file(char *out, size_t out_size);
 

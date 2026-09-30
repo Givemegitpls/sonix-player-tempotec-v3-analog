@@ -106,6 +106,11 @@ bool podcastcache_network_wanted(void);
 // entry to put in the track menu.
 bool podcastcache_owns(const char *path);
 
+// True for any podcast episode on the card: one in this cache, or one kept for
+// good in the Podcast folder (podcastdl.h). What decides whether the player
+// is dressed for a podcast; podcastcache_owns() is only about the cache.
+bool podcastcache_is_episode(const char *path);
+
 const char *podcastcache_dir(void);
 
 // The sidecars: what the catalogue knows and the file does not. A podcast
@@ -136,7 +141,8 @@ void podcastcache_write_sidecars(long long episode_id, const char *mime, const c
 bool podcastcache_ensure_cover(const char *path);
 
 // The id of the podcast the episode belongs to, read back from the sidecar.
-// False when absent.
+// False when absent. This and podcastcache_tag() answer for a kept episode
+// too.
 bool podcastcache_feed_id(const char *path, long long *out);
 
 // Any sidecar field, by name. Needed by the follow star, which wants three
@@ -146,10 +152,10 @@ bool podcastcache_tag(const char *path, const char *key, char *out, size_t size)
 // Why the last podcastcache_start() failed.
 const char *podcastcache_last_error(void);
 
-// The episode id from the local path, 0 when the path is not this cache's.
-// Named this way
-// rather than track_id as in the other two caches because here there are two
-// ids -- the episode and the podcast -- and "track" would not say which.
+// The episode id: from the file name in this cache, from the sidecar for a
+// kept episode; 0 for anything else. Named this way rather than track_id as
+// in the other two caches because here there are two ids -- the episode and
+// the podcast -- and "track" would not say which.
 long long podcastcache_episode_id(const char *path);
 
 // How many played episodes between sweeps.

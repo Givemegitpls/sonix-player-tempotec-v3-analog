@@ -51,6 +51,7 @@
 #include "src/system/core/utils.h"
 #include "src/system/audio/waveform.h"
 
+#include "lvgl/src/core/lv_obj_event_private.h"
 #include "lvgl/lvgl.h"
 
 lv_obj_t *player_screen;
@@ -647,7 +648,7 @@ static sleeptimer_kind_t sleeptimer_kind_playing(void) {
 	}
 	char path[512];
 	audio_get_current_file(path, sizeof(path));
-	if (podcastcache_owns(path)) {
+	if (podcastcache_is_episode(path)) {
 		return SLEEPTIMER_PODCAST;
 	}
 	return SLEEPTIMER_MUSIC;
@@ -1107,7 +1108,7 @@ static bool playing_local_file(const device_state_t *state) {
 		return false;
 	}
 	const char *f = state->current_file;
-	return !qobuzcache_owns(f) && !tidalcache_owns(f) && !podcastcache_owns(f) && !dlna_owns_path(f) &&
+	return !qobuzcache_owns(f) && !tidalcache_owns(f) && !podcastcache_is_episode(f) && !dlna_owns_path(f) &&
 		   !dlna_owns_playback();
 }
 
@@ -1119,6 +1120,21 @@ static bool playing_local_file(const device_state_t *state) {
 // stretched over the whole of it so that a press anywhere on the bars is a
 // press on the slider, with every part of it drawn as nothing. What is seen is
 // the waveform; what is dragged is the slider.
+// Leaves the shape of the track, where the panel above it overlaps it, to the
+// slider laid over it.
+static void cover_panel_hit_test_cb(lv_event_t *e) {
+	lv_hit_test_info_t *info = lv_event_get_hit_test_info(e);
+	if (!info || !wave_box || lv_obj_has_flag(wave_box, LV_OBJ_FLAG_HIDDEN)) {
+		return;
+	}
+	lv_area_t wave;
+	lv_obj_get_coords(wave_box, &wave);
+	const lv_point_t *p = info->point;
+	if (p->x >= wave.x1 && p->x <= wave.x2 && p->y >= wave.y1 && p->y <= wave.y2) {
+		info->res = false;
+	}
+}
+
 static void slider_over_waveform(bool over) {
 	if (!progress_slider) {
 		return;
@@ -1509,7 +1525,7 @@ static void lyrics_build(void) {
 // needs, and an episode is speech at whatever bitrate the publisher chose:
 // "lossy" beside it is true and says nothing anyone would act on.
 static const lv_image_dsc_t *studio_quality_mark(const device_state_t *state) {
-	if (!state->live && podcastcache_owns(state->current_file)) {
+	if (!state->live && podcastcache_is_episode(state->current_file)) {
 		return NULL;
 	}
 	if (audio_get_dsd_multiple() > 0) {
@@ -2427,7 +2443,7 @@ static void refresh_now_playing(void) {
 	// and the first one forgotten leaves the player dressed as a podcast over
 	// a song.
 	apply_audiobook_mode(!state.live && audiobook_is_playing(),
-						 !state.live && podcastcache_owns(state.current_file));
+						 !state.live && podcastcache_is_episode(state.current_file));
 
 	if (state.live) {
 		// The station on top, what it says is on air underneath -- the same
@@ -2537,10 +2553,10 @@ static bool podcast_current_feed(long long *id_out, podcast_feed_t *feed_out) {
 	return true;
 }
 
-static long long current_podcast_episode(void) {
+static bool current_podcast_episode(void) {
 	device_state_t state;
 	device_state_get(&state);
-	return state.current_file[0] ? podcastcache_episode_id(state.current_file) : 0;
+	return state.current_file[0] && podcastcache_is_episode(state.current_file);
 }
 
 // The playing episode's podcast, for callers outside the player (the control
@@ -2573,7 +2589,7 @@ static void update_qobuz_badge(void) {
 	// have overlapped.
 	bool from_qobuz = !live_mode && current_qobuz_track() != 0;
 	bool from_tidal = !live_mode && !from_qobuz && current_tidal_track() != 0;
-	bool from_podcast = !live_mode && !from_qobuz && !from_tidal && current_podcast_episode() != 0;
+	bool from_podcast = !live_mode && !from_qobuz && !from_tidal && current_podcast_episode();
 
 	if (qobuz_badge) {
 		if (from_qobuz) {
@@ -2792,7 +2808,7 @@ static void update_format_label(const device_state_t *state) {
 	// not chosen for its audio quality, there is no better version to buy, and
 	// the number takes the line under the title without saying anything worth
 	// knowing.
-	if (podcastcache_owns(state->current_file)) {
+	if (podcastcache_is_episode(state->current_file)) {
 		lv_label_set_text(format_label, "");
 		return;
 	}
@@ -2963,7 +2979,7 @@ static void handle_track_finished(void) {
 	// for, which is what makes this the cheaper half of the audiobook's version.
 	char path[512];
 	audio_get_current_file(path, sizeof(path));
-	if (podcast_stop_at_episode_end() && podcastcache_owns(path)) {
+	if (podcast_stop_at_episode_end() && podcastcache_is_episode(path)) {
 		fprintf(stderr, "player: end of the episode; not starting the next\n");
 		refresh_now_playing();
 		return;
@@ -2973,6 +2989,18 @@ static void handle_track_finished(void) {
 		refresh_now_playing();
 	}
 }
+
+// A track ended on its own: the next one is started now rather than at the
+// next poll, while the PCM held for gapless still has its queue to play.
+static void track_end_async(void *user) {
+	(void)user;
+	if (device_state_take_completion()) {
+		handle_track_finished();
+	}
+}
+
+// Playback thread.
+static void track_end_hook(void) { gui_post(track_end_async, NULL); }
 
 // Reads the current device state and reconciles the UI against it. This is the
 // single point that keeps the play/pause button and the progress bar from
@@ -3051,14 +3079,14 @@ static void update_progress(void) {
 	// by which the track can change, and the first one forgotten leaves the
 	// player dressed as a podcast over a song.
 	apply_audiobook_mode(!state.live && audiobook_is_playing(),
-						 !state.live && podcastcache_owns(state.current_file));
+						 !state.live && podcastcache_is_episode(state.current_file));
 	update_format_label(&state); // the rate/bits settle shortly after the start
 
 	// The status LED follows playback promptly from here (the battery poll
 	// only comes round once a minute). Only writes when the colour changes.
 	// A podcast lights purple instead of the sample-rate colour.
 	led_update_playback(state.status == AUDIO_STATUS_PLAYING, state.stream_sample_rate,
-						!state.live && podcastcache_owns(state.current_file));
+						!state.live && podcastcache_is_episode(state.current_file));
 
 	// Where the book got to. Not the same thing as "remember track" below and
 	// not subject to its switch: that setting is about which track comes back
@@ -3990,6 +4018,7 @@ void player_init(gui_config_t *cfg) {
 	lv_timer_pause(smooth_timer); // the poll starts it when something is playing
 
 	progress_slider_timer = lv_timer_create(progress_slider_timer_cb, POLL_PERIOD_IDLE_MS, NULL);
+	audio_set_completion_hook(track_end_hook);
 	// Slowed in standby, never stopped: this timer does more than paint --
 	// update_progress() calls device_state_take_completion(), the engine that
 	// advances the queue when a track ends on its own. Stopping it when the
@@ -4157,6 +4186,10 @@ void player_init(gui_config_t *cfg) {
 	cover_panel = lv_obj_create(player_screen);
 	// Dragging the artwork to the right pushes the player back off screen.
 	player_sheet_attach_drag(cover_panel, false);
+	// Studio stretches the panel down over the top of the controls, where the
+	// taller shape of the track can reach: presses there go to the slider.
+	lv_obj_add_flag(cover_panel, LV_OBJ_FLAG_ADV_HITTEST);
+	lv_obj_add_event_cb(cover_panel, cover_panel_hit_test_cb, LV_EVENT_HIT_TEST, NULL);
 	lv_obj_set_size(cover_panel, cover_size, cover_size);
 	lv_obj_align(cover_panel, LV_ALIGN_TOP_MID, 0, 0);
 	lv_obj_set_style_bg_color(cover_panel, theme()->cover_bg, 0);

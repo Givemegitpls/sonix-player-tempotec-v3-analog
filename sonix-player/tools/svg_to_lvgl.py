@@ -146,6 +146,7 @@ ICONS = [
     ("list-x.svg", "list_x", 34),
     ("star-x.svg", "star_x", 34),
     ("search.svg", "search", 34),
+    ("podcast-downloaded.svg", "podcast_downloaded", 34), # podcasts corner: the downloaded episodes
     ("wifi.svg", "wifi", 46),
     ("bluetooth.svg", "bluetooth", 46),
     # Status bar radios. The wifi glyph is the same arc with none, one, two or

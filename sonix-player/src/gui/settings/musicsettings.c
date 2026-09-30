@@ -1376,6 +1376,12 @@ static void build_display_page(gui_config_t *cfg) {
 }
 
 static lv_obj_t *endless_shuffle_switch;
+static lv_obj_t *mono_switch;
+
+static void mono_cb(lv_event_t *e) {
+	(void)e;
+	mono_set_enabled(lv_obj_has_state(mono_switch, LV_STATE_CHECKED));
+}
 
 static void endless_shuffle_cb(lv_event_t *e) {
 	(void)e;
@@ -1431,6 +1437,12 @@ static void build_playback_page(gui_config_t *cfg) {
 	// a length as well as a switch.
 	build_fade_page(cfg);
 	fade_row = settingsrow_add(container, "fade", NULL, switch_screen_cb, fade_screen);
+
+	// Both channels as one, for a single earbud or one ear.
+	settingsrow_toggle(container, "musicsettings_mono_audio", &mono_switch, mono_cb);
+	if (mono_get_enabled()) {
+		lv_obj_add_state(mono_switch, LV_STATE_CHECKED);
+	}
 
 	// Which of the two shuffles "Play in random order" starts. The mode button
 	// on the player still reaches both by hand; this only decides what that one

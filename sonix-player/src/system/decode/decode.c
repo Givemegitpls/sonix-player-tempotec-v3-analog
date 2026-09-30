@@ -62,6 +62,13 @@ typedef struct {
 	// the first frame or two out of a decoder that has just been cleared are
 	// not yet right, and the PCM before the requested point is then dropped.
 	uint64_t skip_frames;
+
+	// Gapless: the encoder's priming at the start is never handed out, and
+	// nothing past `limit` frames of music (0: no limit known). `pos` is where
+	// the next frame handed out sits in the music.
+	uint64_t priming;
+	uint64_t limit;
+	uint64_t pos;
 } aac_state_t;
 
 // ---------------------------------------------------------------------------
@@ -1398,7 +1405,11 @@ static int mp3_first_frame_kbps(decoder_t *dec) {
 #define MP3_HEAD_FRAMES 200
 #define MP3_HEAD_BYTES (256 * 1024)
 
-static int mp3_head_average_kbps(decoder_t *dec) {
+// `uniform`, when not NULL, says whether every frame read had the same bitrate.
+static int mp3_head_average_kbps(decoder_t *dec, bool *uniform) {
+	if (uniform) {
+		*uniform = false;
+	}
 	FILE *f = fopen(dec->path, "rb");
 	if (!f) {
 		return 0;
@@ -1423,6 +1434,8 @@ static int mp3_head_average_kbps(decoder_t *dec) {
 
 	long total_kbps = 0;
 	int frames = 0;
+	int first_kbps = 0;
+	bool same = true;
 	size_t at = 0;
 	while (at + 4 <= got && frames < MP3_HEAD_FRAMES) {
 		if (!drmp3_hdr_valid(head + at)) {
@@ -1433,7 +1446,13 @@ static int mp3_head_average_kbps(decoder_t *dec) {
 		if (bytes <= 0) {
 			break;
 		}
-		total_kbps += (long)drmp3_hdr_bitrate_kbps(head + at);
+		int kbps = (int)drmp3_hdr_bitrate_kbps(head + at);
+		if (frames == 0) {
+			first_kbps = kbps;
+		} else if (kbps != first_kbps) {
+			same = false;
+		}
+		total_kbps += (long)kbps;
 		frames++;
 		at += (size_t)bytes;
 	}
@@ -1442,6 +1461,9 @@ static int mp3_head_average_kbps(decoder_t *dec) {
 
 	if (frames == 0) {
 		return 0;
+	}
+	if (uniform) {
+		*uniform = same && frames >= 8;
 	}
 	return (int)(total_kbps / frames);
 }
@@ -1482,7 +1504,7 @@ static uint64_t mp3_growing_estimate(decoder_t *dec) {
 	}
 
 	// The head average, with the first frame as a safety net.
-	int kbps = mp3_head_average_kbps(dec);
+	int kbps = mp3_head_average_kbps(dec, NULL);
 	if (kbps <= 0) {
 		kbps = mp3_first_frame_kbps(dec);
 	}
@@ -1492,6 +1514,51 @@ static uint64_t mp3_growing_estimate(decoder_t *dec) {
 	}
 
 	double seconds = (double)(bytes - start) * 8.0 / ((double)kbps * 1000.0);
+	return (uint64_t)(seconds * (double)dec->sample_rate);
+}
+
+// The length of a constant-bitrate MP3 with no Xing/Info header, from its size.
+//
+// dr_mp3 would count it by reading every frame header of the file, which on the
+// card is the whole file read at open -- longer than the queue a gapless change
+// of track has to play out. The tags at the end (ID3v1, APEv2) are left out of
+// the size. 0 when the stream does not look constant.
+static uint64_t mp3_cbr_estimate(decoder_t *dec) {
+	bool uniform = false;
+	int kbps = mp3_head_average_kbps(dec, &uniform);
+	if (!uniform || kbps <= 0 || dec->sample_rate <= 0) {
+		return 0;
+	}
+	FILE *f = fopen(dec->path, "rb");
+	if (!f) {
+		return 0;
+	}
+	long end = 0;
+	if (fseek(f, 0, SEEK_END) == 0) {
+		end = ftell(f);
+	}
+	unsigned char tail[32];
+	if (end > 128 && fseek(f, end - 128, SEEK_SET) == 0 && fread(tail, 1, 3, f) == 3 && memcmp(tail, "TAG", 3) == 0) {
+		end -= 128;
+	}
+	// An APEv2 footer: "APETAGEX", version, then the size of the items and the
+	// footer, little-endian, and a header of 32 more bytes when flag bit 31 is set.
+	if (end > 32 && fseek(f, end - 32, SEEK_SET) == 0 && fread(tail, 1, 32, f) == 32 &&
+		memcmp(tail, "APETAGEX", 8) == 0) {
+		uint32_t size = (uint32_t)tail[12] | (uint32_t)tail[13] << 8 | (uint32_t)tail[14] << 16 | (uint32_t)tail[15] << 24;
+		uint32_t flags = (uint32_t)tail[20] | (uint32_t)tail[21] << 8 | (uint32_t)tail[22] << 16 | (uint32_t)tail[23] << 24;
+		long whole = (long)size + ((flags & 0x80000000u) ? 32 : 0);
+		if (whole > 0 && whole < end) {
+			end -= whole;
+		}
+	}
+	fclose(f);
+
+	long start = (long)dec->impl.mp3.streamStartOffset;
+	if (end <= start) {
+		return 0;
+	}
+	double seconds = (double)(end - start) * 8.0 / ((double)kbps * 1000.0);
 	return (uint64_t)(seconds * (double)dec->sample_rate);
 }
 
@@ -1596,6 +1663,9 @@ static decoder_t *decoder_open_file(const char *filepath, decode_format_t format
 		// instead of counting -- see mp3_growing_estimate().
 		if (dec->growing && dec->impl.mp3.totalPCMFrameCount == DRMP3_UINT64_MAX) {
 			dec->total_pcm_frames = mp3_growing_estimate(dec);
+		} else if (dec->impl.mp3.totalPCMFrameCount == DRMP3_UINT64_MAX &&
+				   (dec->total_pcm_frames = mp3_cbr_estimate(dec)) > 0) {
+			// A constant stream with no header: its size says its length.
 		} else {
 			dec->total_pcm_frames = drmp3_get_pcm_frame_count(&dec->impl.mp3);
 		}
@@ -1857,6 +1927,23 @@ static decoder_t *decoder_open_file(const char *filepath, decode_format_t format
 		// frame count.
 		dec->total_pcm_frames = (uint64_t)(mp4_duration_seconds(s->mp4) * (double)dec->sample_rate);
 		dec->bitrate_kbps = mp4_audio_bitrate_kbps(s->mp4);
+
+		// The priming and the padding the encoder added, when the file says
+		// how much. Only when the decoder runs at the track's own rate: an
+		// HE-AAC stream doubles it, and the numbers would need rescaling by
+		// rules that differ between encoders.
+		uint64_t priming = 0, length = 0;
+		uint32_t timescale = 0;
+		if (mp4_audio_gapless(s->mp4, &priming, &length, &timescale) && timescale == (uint32_t)dec->sample_rate &&
+			priming < (uint64_t)dec->sample_rate && length > 0 && priming + length <= dec->total_pcm_frames + 4096) {
+			s->priming = priming;
+			s->limit = length;
+			uint64_t queued = (uint64_t)(s->pcm_frames - s->pcm_read);
+			uint64_t drop = priming < queued ? priming : queued;
+			s->pcm_read += (int)drop;
+			s->skip_frames = priming - drop;
+			dec->total_pcm_frames = length;
+		}
 		break;
 	}
 
@@ -1952,7 +2039,18 @@ const char *decoder_codec_name(const decoder_t *dec) {
 	}
 }
 
-bool decoder_passthrough(const decoder_t *dec) { return dec && dec->format == DECODE_FORMAT_DSD; }
+bool decoder_passthrough(const decoder_t *dec) {
+	return dec && dec->format == DECODE_FORMAT_DSD && !dsd_is_pcm(dec->impl.dsd);
+}
+
+bool decoder_dsd_to_pcm(decoder_t *dec) {
+	if (!dec || dec->format != DECODE_FORMAT_DSD || !dsd_to_pcm(dec->impl.dsd)) {
+		return false;
+	}
+	dec->sample_rate = dsd_output_rate(dec->impl.dsd);
+	dec->total_pcm_frames = dsd_total_frames(dec->impl.dsd);
+	return true;
+}
 
 int decoder_dsd_multiple(const decoder_t *dec) {
 	return (dec && dec->format == DECODE_FORMAT_DSD) ? dsd_multiple(dec->impl.dsd) : 0;
@@ -2081,6 +2179,11 @@ static uint64_t decoder_read_s16_inner(decoder_t *dec, uint64_t frame_count, sho
 	case DECODE_FORMAT_AAC_MP4: {
 		aac_state_t *s = dec->impl.aac;
 		uint64_t written = 0;
+		if (s->limit) {
+			uint64_t left = s->pos < s->limit ? s->limit - s->pos : 0;
+			if (frame_count > left)
+				frame_count = left;
+		}
 		while (written < frame_count) {
 			if (s->pcm_read >= s->pcm_frames && !aac_fill(dec))
 				break;
@@ -2093,6 +2196,7 @@ static uint64_t decoder_read_s16_inner(decoder_t *dec, uint64_t frame_count, sho
 			s->pcm_read += (int)take;
 			written += take;
 		}
+		s->pos += written;
 		return written;
 	}
 
@@ -2361,7 +2465,9 @@ int decoder_seek_to_frame(decoder_t *dec, uint64_t frame_index) {
 		if (dec->sample_rate <= 0)
 			return 0;
 
-		double target = (double)frame_index / (double)dec->sample_rate;
+		// The container's clock includes the priming.
+		double target = (double)(frame_index + s->priming) / (double)dec->sample_rate;
+		s->pos = frame_index;
 		uint32_t at = mp4_frame_at_time(s->mp4, target);
 		// Two access units of run-up: a decoder that has just been cleared
 		// needs a frame or two before its output is right, and the overlap

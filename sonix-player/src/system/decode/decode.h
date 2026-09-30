@@ -122,6 +122,12 @@ bool decoder_passthrough(const decoder_t *dec);
 // 64, 128 or 256 for a DSD file, 0 for anything else.
 int decoder_dsd_multiple(const decoder_t *dec);
 
+// A DSD file played as PCM rather than DoP, for an output with no DSD mode
+// (Bluetooth): 176.4 kHz, 24 bits in 32, and decoder_passthrough() false from
+// then on, so the effects apply. Call before the first read. False when this
+// is not a DSD file or the filter could not be set up.
+bool decoder_dsd_to_pcm(decoder_t *dec);
+
 // Seek decoder to the specified frame index. Returns nonzero on success, 0 on failure.
 int decoder_seek_to_frame(decoder_t *dec, uint64_t frame_index);
 

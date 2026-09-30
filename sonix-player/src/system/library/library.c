@@ -2,6 +2,7 @@
 
 #include "src/system/library/audiobookdb.h"
 #include "src/system/playback/playlist.h"
+#include "src/system/streaming/podcastdl.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -3307,8 +3308,10 @@ static void scan_directory(const char *path, int depth) {
 		}
 
 		if (S_ISDIR(st.st_mode)) {
-			// The audiobooks have an index of their own (audiobookdb.h).
-			if (depth == 0 && strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0) {
+			// The audiobooks have an index of their own (audiobookdb.h), and the
+			// downloaded podcasts a page of their own (podcastdl.h).
+			if (depth == 0 && (strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0 ||
+							   strcasecmp(de->d_name, PODCASTDL_FOLDER) == 0)) {
 				continue;
 			}
 			if (depth == 0 && scan_folder_count > 0 && !scan_folder_chosen(de->d_name)) {

@@ -12,6 +12,7 @@
 
 #include "src/system/decode/growfile.h"
 #include "src/system/net/http.h"
+#include "src/system/streaming/podcastdl.h"
 #include "src/system/streaming/streamturn.h"
 
 // The smallest head worth starting on, whatever the arithmetic says: a decoder
@@ -521,7 +522,7 @@ static bool read_tag(const char *path, const char *key, char *out, size_t size) 
 }
 
 bool podcastcache_feed_id(const char *path, long long *out) {
-	if (!podcastcache_owns(path) || !out) {
+	if (!podcastcache_is_episode(path) || !out) {
 		return false;
 	}
 	char text[32];
@@ -533,7 +534,7 @@ bool podcastcache_feed_id(const char *path, long long *out) {
 }
 
 bool podcastcache_tag(const char *path, const char *key, char *out, size_t size) {
-	if (!podcastcache_owns(path) || !key || !out || size == 0) {
+	if (!podcastcache_is_episode(path) || !key || !out || size == 0) {
 		return false;
 	}
 	out[0] = '\0';
@@ -544,6 +545,10 @@ bool podcastcache_tag(const char *path, const char *key, char *out, size_t size)
 // ("12345678.flac"), so it can be recovered without keeping any state. Returns
 // 0 when the path is not in this cache or the name is not a number.
 long long podcastcache_episode_id(const char *path) {
+	if (podcastdl_owns(path)) {
+		char text[32];
+		return read_tag(path, "episode_id", text, sizeof(text)) ? strtoll(text, NULL, 10) : 0;
+	}
 	if (!podcastcache_owns(path)) {
 		return 0;
 	}
@@ -1054,6 +1059,8 @@ const char *podcastcache_dir(void) { return cache_dir[0] ? cache_dir : NULL; }
 bool podcastcache_owns(const char *path) {
 	return path && cache_dir[0] && strncmp(path, cache_dir, strlen(cache_dir)) == 0;
 }
+
+bool podcastcache_is_episode(const char *path) { return podcastcache_owns(path) || podcastdl_owns(path); }
 
 static bool fetch_cover_to(const char *path, const char *url); // defined below
 

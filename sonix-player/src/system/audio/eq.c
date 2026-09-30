@@ -64,6 +64,7 @@ static volatile int sf_width = SOUNDFIELD_WIDTH_DEFAULT;
 // ---------------------------------------------------------------------------
 
 static volatile int bal_enabled;
+static volatile int mono_enabled;
 static volatile int bal_tenths;	  // -200..200, the slider's own value
 static volatile int bal_left_q15; // the two attenuations, 32768 = untouched
 static volatile int bal_right_q15;
@@ -256,6 +257,7 @@ void eq_init(void) {
 	sf_width = clamp_width((int)config_get_int("soundfield", "width", SOUNDFIELD_WIDTH_DEFAULT));
 
 	bal_enabled = (int)config_get_int("balance", "enabled", 0);
+	mono_enabled = config_get_int("audio", "mono", 0) ? 1 : 0;
 	balance_set_gains(clamp_balance((int)config_get_int("balance", "value", BALANCE_CENTRE)));
 
 	cf_enabled = (int)config_get_int("crossfeed", "enabled", 0);
@@ -1997,6 +1999,38 @@ void balance_process_s32(int32_t *frames, int frame_count, int channels) {
 	for (int n = 0; n < frame_count; n++) {
 		frames[n * 2] = (int32_t)((frames[n * 2] * gl) >> 15);
 		frames[n * 2 + 1] = (int32_t)((frames[n * 2 + 1] * gr) >> 15);
+	}
+}
+
+void mono_set_enabled(bool enabled) {
+	mono_enabled = enabled ? 1 : 0;
+	config_set_int("audio", "mono", mono_enabled);
+	config_save();
+}
+
+bool mono_get_enabled(void) { return mono_enabled != 0; }
+
+// The mean of the two channels, rounded towards zero: it cannot leave the
+// range of either.
+void mono_process(short *frames, int frame_count, int channels) {
+	if (!mono_enabled || channels != 2 || frame_count <= 0 || !frames) {
+		return;
+	}
+	for (int n = 0; n < frame_count; n++) {
+		short m = (short)(((int)frames[n * 2] + (int)frames[n * 2 + 1]) / 2);
+		frames[n * 2] = m;
+		frames[n * 2 + 1] = m;
+	}
+}
+
+void mono_process_s32(int32_t *frames, int frame_count, int channels) {
+	if (!mono_enabled || channels != 2 || frame_count <= 0 || !frames) {
+		return;
+	}
+	for (int n = 0; n < frame_count; n++) {
+		int32_t m = (int32_t)(((int64_t)frames[n * 2] + (int64_t)frames[n * 2 + 1]) / 2);
+		frames[n * 2] = m;
+		frames[n * 2 + 1] = m;
 	}
 }
 

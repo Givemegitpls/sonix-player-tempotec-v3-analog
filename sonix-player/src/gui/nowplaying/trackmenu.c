@@ -767,7 +767,7 @@ void trackmenu_open(lv_obj_t *anchor) {
 
 	device_state_t state;
 	device_state_get(&state);
-	bool podcast = state.current_file[0] && podcastcache_owns(state.current_file);
+	bool podcast = state.current_file[0] && podcastcache_is_episode(state.current_file);
 
 	popover_show(anchor, podcast ? ITEMS_PODCAST : ITEMS, 5);
 }

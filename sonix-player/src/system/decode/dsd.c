@@ -1,13 +1,15 @@
 #include "dsd.h"
 
 #include <fcntl.h>
+#include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-// See dsd.h for why DoP is the only route out. This file does the container,
-// the bit order and the packing.
+// The container, the bit order, and the two ways out: DoP packing, and the
+// lookup-table filter to PCM (see dsd.h).
 
 #define MAX_CHANNELS 2
 #define DSD64_RATE 2822400u
@@ -52,6 +54,13 @@ struct dsd_file {
 
 	// DoP alternates its marker every frame.
 	int dop_phase;
+
+	// PCM instead of DoP (dsd_to_pcm). Each channel's buffer then has the
+	// last `taps` bytes of the slab before it in front of `chan[c]`.
+	bool pcm_mode;
+	int step; // bytes of stream per channel per output frame
+	int taps; // filter length in bytes
+	const int32_t (*table)[256];
 };
 
 // ---------------------------------------------------------------------------
@@ -269,7 +278,7 @@ static unsigned char to_msb_first(unsigned char v, bool lsb_first) {
 		return v;
 	}
 	// The earliest bit has to end up at the top, because that is the order
-	// both the filter table and DoP expect.
+	// DoP expects.
 	v = (unsigned char)(((v & 0xF0) >> 4) | ((v & 0x0F) << 4));
 	v = (unsigned char)(((v & 0xCC) >> 2) | ((v & 0x33) << 2));
 	v = (unsigned char)(((v & 0xAA) >> 1) | ((v & 0x55) << 1));
@@ -311,6 +320,183 @@ static bool produce(dsd_file_t *d) {
 	}
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// to PCM
+//
+// A linear-phase FIR over the one-bit stream, decimating straight to
+// PCM_RATE. Every bit is +1 or -1, so the filter's work on one byte of stream
+// is one of 256 sums, worked out once per byte position: an output sample is
+// then one table lookup and one add per byte of the filter's span, with no
+// multiplications. The table is built for the file's bit order, so the stream
+// is read where it lies, byte for byte.
+//
+// The span is 16 bytes (128 taps) at DSD64, 32 at DSD128 and 64 at DSD256: a
+// Blackman window whose transition runs from about 20 kHz to 141 kHz at every
+// rate, below the 156 kHz that would fold back under 20 kHz at 176.4 kHz. The
+// half-band decimator after it (decimate.h) takes the result down to the
+// headphones' rate. Per second of stereo that is 5.6, 11.3 or 22.6 million
+// lookups, into a table of 16, 32 or 64 KB.
+//
+// Gain +6 dB: a full-scale DSD signal is 50 % modulation, half of what the
+// stream can carry, so without it DSD plays 6 dB quieter than PCM. What goes
+// past full scale is clamped.
+// ---------------------------------------------------------------------------
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#define PCM_RATE 176400
+#define PCM_CUTOFF_HZ 80000.0
+#define PCM_GAIN 2.0
+#define PCM_BITS 24 // the Q of the tables: 1.0 is 1 << 23
+
+// DSD64, 128, 256, each in the two bit orders.
+static const int32_t (*tables[3][2])[256];
+static pthread_mutex_t table_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static const int32_t (*table_for(int multiple, int taps, bool lsb_first))[256] {
+	int which = multiple == 64 ? 0 : multiple == 128 ? 1 : 2;
+	pthread_mutex_lock(&table_lock);
+	if (!tables[which][lsb_first]) {
+		int n = taps * 8;
+		double *h = malloc(sizeof(double) * (size_t)n);
+		int32_t (*t)[256] = malloc(sizeof(int32_t) * 256 * (size_t)taps);
+		if (h && t) {
+			double fc = PCM_CUTOFF_HZ / ((double)DSD64_RATE / 64.0 * multiple);
+			double sum = 0;
+			for (int i = 0; i < n; i++) {
+				double m = i - (n - 1) / 2.0;
+				double sinc = m == 0 ? 2.0 * fc : sin(2.0 * M_PI * fc * m) / (M_PI * m);
+				double w = 0.42 - 0.5 * cos(2.0 * M_PI * i / (n - 1)) + 0.08 * cos(4.0 * M_PI * i / (n - 1));
+				h[i] = sinc * w;
+				sum += h[i];
+			}
+			double scale = PCM_GAIN * (double)(1 << (PCM_BITS - 1)) / sum;
+			for (int k = 0; k < taps; k++) {
+				for (int v = 0; v < 256; v++) {
+					double acc = 0;
+					for (int b = 0; b < 8; b++) {
+						// The earliest bit of the byte is bit 0 in a .dsf, bit 7
+						// in a .dff.
+						int bit = lsb_first ? (v >> b) & 1 : (v >> (7 - b)) & 1;
+						acc += bit ? h[k * 8 + b] : -h[k * 8 + b];
+					}
+					t[k][v] = (int32_t)lrint(acc * scale);
+				}
+			}
+			tables[which][lsb_first] = (const int32_t (*)[256])t;
+			t = NULL;
+		}
+		free(t);
+		free(h);
+	}
+	const int32_t (*t)[256] = tables[which][lsb_first];
+	pthread_mutex_unlock(&table_lock);
+	return t;
+}
+
+// Fills the history in front of each channel's bytes with DSD's idle pattern,
+// which the filter reads as silence.
+static void history_clear(dsd_file_t *d) {
+	for (int c = 0; c < d->channels; c++) {
+		memset(d->chan[c] - d->taps, 0x69, (size_t)d->taps);
+	}
+}
+
+static bool produce_pcm(dsd_file_t *d) {
+	d->pcm_frames = 0;
+	d->pcm_read = 0;
+	const int32_t top = (1 << (PCM_BITS - 1)) - 1;
+
+	while (d->pcm_frames == 0) {
+		if (d->chan_read >= d->chan_len) {
+			// The last `taps` bytes become the history of the next slab.
+			for (int c = 0; c < d->channels; c++) {
+				memmove(d->chan[c] - d->taps, d->chan[c] + d->chan_len - d->taps, (size_t)d->taps);
+			}
+			if (!fill_channels(d)) {
+				return false;
+			}
+		}
+		int frames = (d->chan_len - d->chan_read) / d->step;
+		if (frames > d->pcm_capacity) {
+			frames = d->pcm_capacity;
+		}
+		if (frames == 0) {
+			d->chan_read = d->chan_len; // a tail shorter than one frame
+			continue;
+		}
+		const int32_t (*t)[256] = d->table;
+		int taps = d->taps;
+		for (int c = 0; c < d->channels; c++) {
+			// The window of an output frame ends with the last byte it takes in.
+			const unsigned char *p = d->chan[c] + d->chan_read + d->step - taps;
+			int32_t *out = d->pcm + c;
+			for (int i = 0; i < frames; i++, p += d->step, out += d->channels) {
+				int32_t acc = 0;
+				for (int k = 0; k < taps; k += 4) {
+					acc += t[k][p[k]] + t[k + 1][p[k + 1]] + t[k + 2][p[k + 2]] + t[k + 3][p[k + 3]];
+				}
+				if (acc > top) {
+					acc = top;
+				} else if (acc < -top) {
+					acc = -top;
+				}
+				*out = acc * (1 << (32 - PCM_BITS));
+			}
+		}
+		d->chan_read += frames * d->step;
+		d->pcm_frames = frames;
+	}
+	return true;
+}
+
+bool dsd_to_pcm(dsd_file_t *d) {
+	if (!d) {
+		return false;
+	}
+	if (d->pcm_mode) {
+		return true;
+	}
+	int step = d->multiple / 32; // 2, 4 or 8 bytes: 176.4 kHz out
+	int taps = d->multiple / 4;	 // 16, 32 or 64
+	const int32_t (*table)[256] = table_for(d->multiple, taps, d->lsb_first);
+	if (!table) {
+		return false;
+	}
+	// Each channel's buffer grows a history of `taps` bytes in front.
+	unsigned char *lines[MAX_CHANNELS] = {0};
+	for (int c = 0; c < d->channels; c++) {
+		lines[c] = malloc((size_t)READ_BYTES + (size_t)taps);
+		if (!lines[c]) {
+			for (int k = 0; k < c; k++) {
+				free(lines[k]);
+			}
+			return false;
+		}
+	}
+	for (int c = 0; c < d->channels; c++) {
+		free(d->chan[c]);
+		d->chan[c] = lines[c] + taps;
+	}
+	d->step = step;
+	d->taps = taps;
+	d->table = table;
+	d->pcm_mode = true;
+	d->out_rate = PCM_RATE;
+	d->total_out = d->bytes_per_ch / (uint64_t)step;
+	d->chan_len = 0;
+	d->chan_read = 0;
+	d->pcm_frames = 0;
+	d->pcm_read = 0;
+	history_clear(d);
+	printf("dsd: DSD%d filtered to PCM %d Hz (%d-byte filter)\n", d->multiple, PCM_RATE, taps);
+	return true;
+}
+
+bool dsd_is_pcm(const dsd_file_t *d) { return d && d->pcm_mode; }
 
 // ---------------------------------------------------------------------------
 // public
@@ -380,7 +566,7 @@ void dsd_close(dsd_file_t *d) {
 		return;
 	}
 	for (int c = 0; c < MAX_CHANNELS; c++) {
-		free(d->chan[c]);
+		free(d->chan[c] && d->pcm_mode ? d->chan[c] - d->taps : d->chan[c]);
 	}
 	free(d->raw);
 	free(d->pcm);
@@ -403,7 +589,7 @@ uint64_t dsd_read(dsd_file_t *d, uint64_t frames, int32_t *out) {
 
 	uint64_t written = 0;
 	while (written < frames) {
-		if (d->pcm_read >= d->pcm_frames && !produce(d)) {
+		if (d->pcm_read >= d->pcm_frames && !(d->pcm_mode ? produce_pcm(d) : produce(d))) {
 			break;
 		}
 		uint64_t available = (uint64_t)(d->pcm_frames - d->pcm_read);
@@ -427,13 +613,17 @@ bool dsd_seek(dsd_file_t *d, uint64_t frame) {
 		frame = d->total_out;
 	}
 
-	// A frame is exactly two bytes, so landing on an odd one would swap the
-	// halves of every word from here on.
-	uint64_t target = frame * 2;
+	// A DoP frame is exactly two bytes, so landing on an odd one would swap
+	// the halves of every word from here on. A PCM frame is `step` bytes.
+	uint64_t step = d->pcm_mode ? (uint64_t)d->step : 2;
+	uint64_t target = frame * step;
 	if (target > d->bytes_per_ch) {
 		target = d->bytes_per_ch;
 	}
-	target &= ~1ull;
+	target -= target % step;
+	if (d->pcm_mode) {
+		history_clear(d);
+	}
 
 	d->pos_bytes = target;
 	d->chan_len = 0;

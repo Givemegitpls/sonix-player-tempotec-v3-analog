@@ -68,6 +68,12 @@ int mp4_audio_channels(const mp4_file_t *m);
 int mp4_audio_sample_rate(const mp4_file_t *m); // as declared; SBR may double it
 double mp4_duration_seconds(const mp4_file_t *m);
 
+// The encoder's priming (samples at the start that are not part of the music)
+// and the length of the music itself, both in `timescale`, the audio track's
+// own. From the iTunSMPB tag, else from the track's edit list. False when the
+// file says neither: the decoded audio is then all there is to go on.
+bool mp4_audio_gapless(const mp4_file_t *m, uint64_t *priming, uint64_t *length, uint32_t *timescale);
+
 // The AAC frames ("samples" in the container's own language: one frame of
 // 1024 PCM samples each, typically).
 uint32_t mp4_audio_frame_count(const mp4_file_t *m);

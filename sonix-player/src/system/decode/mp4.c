@@ -37,6 +37,12 @@ typedef struct {
 	uint64_t duration;
 	uint32_t sample_count;
 
+	// The first edit of the edit list: where the presentation starts in the
+	// media (in `timescale`) and how long it runs (in the movie's timescale).
+	bool has_edit;
+	int64_t edit_media_time;
+	uint64_t edit_duration;
+
 	// sample sizes: either one number for all of them, or a table left in the
 	// file at `size_table_off` with `size_field_bits` bits per entry.
 	uint32_t uniform_size;
@@ -83,6 +89,8 @@ struct mp4_file {
 	track_t tracks[MAX_TRACKS];
 	int track_count;
 	int audio; // index into tracks, -1 when none
+	uint32_t movie_timescale; // mvhd
+	char itunsmpb[160];		  // ----:iTunSMPB, whole
 
 	mp4_chapter_t *chapters;
 	int chapter_count;
@@ -569,7 +577,9 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 				}
 				child = c.next;
 			}
-			if (name[0] && value[0] && strcasecmp(name, "SERIES") == 0) {
+			if (name[0] && value[0] && strcasecmp(name, "iTunSMPB") == 0) {
+				snprintf(m->itunsmpb, sizeof(m->itunsmpb), "%s", value);
+			} else if (name[0] && value[0] && strcasecmp(name, "SERIES") == 0) {
 				snprintf(m->series, sizeof(m->series), "%s", value);
 			} else if (name[0] && value[0] && (strcasecmp(name, "SERIES-PART") == 0 || strcasecmp(name, "SERIES_PART") == 0)) {
 				snprintf(m->series_part, sizeof(m->series_part), "%s", value);
@@ -841,6 +851,7 @@ static void parse_boxes(mp4_file_t *m, uint64_t start, uint64_t end, track_t *cu
 		case FOURCC('s', 't', 'b', 'l'):
 		case FOURCC('u', 'd', 't', 'a'):
 		case FOURCC('t', 'r', 'e', 'f'):
+		case FOURCC('e', 'd', 't', 's'):
 			parse_boxes(m, box.content, box.content + box.body_size, current, depth + 1);
 			break;
 
@@ -849,6 +860,40 @@ static void parse_boxes(mp4_file_t *m, uint64_t start, uint64_t end, track_t *cu
 				track_t *t = &m->tracks[m->track_count++];
 				memset(t, 0, sizeof(*t));
 				parse_boxes(m, box.content, box.content + box.body_size, t, depth + 1);
+			}
+			break;
+
+		case FOURCC('m', 'v', 'h', 'd'): {
+			unsigned char b[24];
+			if (read_at(m, box.content, b, 24)) {
+				m->movie_timescale = (b[0] == 1) ? be32(b + 20) : be32(b + 12);
+			}
+			break;
+		}
+
+		// Only the first edit that is not an empty one: an encoder writes a
+		// single edit whose media time is its priming.
+		case FOURCC('e', 'l', 's', 't'):
+			if (current && !current->has_edit) {
+				unsigned char b[8 + 20];
+				if (read_at(m, box.content, b, 8)) {
+					uint32_t entries = be32(b + 4);
+					bool v1 = b[0] == 1;
+					size_t entry = v1 ? 20 : 12;
+					for (uint32_t i = 0; i < entries && i < 4; i++) {
+						if (!read_at(m, box.content + 8 + i * entry, b, entry)) {
+							break;
+						}
+						int64_t media_time = v1 ? (int64_t)be64(b + 8) : (int64_t)(int32_t)be32(b + 4);
+						if (media_time < 0) {
+							continue; // an empty edit
+						}
+						current->edit_duration = v1 ? be64(b) : be32(b);
+						current->edit_media_time = media_time;
+						current->has_edit = true;
+						break;
+					}
+				}
 			}
 			break;
 
@@ -1341,6 +1386,34 @@ int mp4_audio_channels(const mp4_file_t *m) {
 
 int mp4_audio_sample_rate(const mp4_file_t *m) {
 	return (m && m->audio >= 0) ? (int)m->tracks[m->audio].sr : 0;
+}
+
+bool mp4_audio_gapless(const mp4_file_t *m, uint64_t *priming, uint64_t *length, uint32_t *timescale) {
+	if (!m || m->audio < 0) {
+		return false;
+	}
+	const track_t *t = &m->tracks[m->audio];
+	if (t->timescale == 0) {
+		return false;
+	}
+	*timescale = t->timescale;
+
+	// " 00000000 00000840 000001CA 00000000003F31F6 ...": zero, priming,
+	// padding, then the real length, all in hex.
+	if (m->itunsmpb[0]) {
+		unsigned long long f[4] = {0};
+		if (sscanf(m->itunsmpb, " %llx %llx %llx %llx", &f[0], &f[1], &f[2], &f[3]) == 4 && f[3] > 0) {
+			*priming = f[1];
+			*length = f[3];
+			return true;
+		}
+	}
+	if (t->has_edit && m->movie_timescale > 0 && t->edit_duration > 0) {
+		*priming = (uint64_t)t->edit_media_time;
+		*length = t->edit_duration * t->timescale / m->movie_timescale;
+		return true;
+	}
+	return false;
 }
 
 double mp4_duration_seconds(const mp4_file_t *m) {
