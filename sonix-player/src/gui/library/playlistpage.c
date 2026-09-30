@@ -482,6 +482,8 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 	lv_label_set_text(name_label, name);
 	lv_label_set_long_mode(name_label, LV_LABEL_LONG_DOT);
 	lv_obj_set_width(name_label, lv_pct(100));
+	// One line, cut with dots past it.
+	lv_obj_set_height(name_label, lv_font_get_line_height(&font_ui_24));
 	lv_obj_add_style(name_label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(name_label, &font_ui_24, 0);
 
@@ -906,6 +908,7 @@ static void import_add_candidate_row(int index) {
 	lv_label_set_text(name, import_candidates[index].name);
 	lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
 	lv_obj_set_width(name, lv_pct(100));
+	lv_obj_set_height(name, lv_font_get_line_height(&font_ui_24));
 	lv_obj_add_style(name, &theme_style_text, 0);
 	lv_obj_set_style_text_font(name, &font_ui_24, 0);
 

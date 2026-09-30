@@ -1259,11 +1259,32 @@ static keymap_button_t keymap_button_for_code(int code) {
 	}
 }
 
+// The press that is the second click of a double click (keymap.h) does the
+// double action for as long as it lasts. Per thread: each input node's thread
+// sees only its own presses.
+static __thread keymap_button_t override_button = KEYMAP_BTN_COUNT;
+static __thread keymap_action_t override_action = KEYMAP_ACTION_NONE;
+
+static keymap_action_t effective_action(keymap_button_t button) {
+	if (button != KEYMAP_BTN_COUNT && button == override_button) {
+		return override_action;
+	}
+	return keymap_get(button);
+}
+
+// How long after the first click of the double-click button a second one still
+// counts, and so how long that button's own action waits.
+#define DOUBLE_CLICK_MS 350
+
+static bool is_double_button(int code, bool headset) {
+	return !headset && code >= 0 && keymap_double_enabled() && keymap_button_for_code(code) == keymap_double_button();
+}
+
 // Whether the button, as currently mapped, does something worth repeating while
 // held. Volume yes, everything else no: a button remapped to "next track" and
 // held down would skip fourteen tracks a second.
 static bool mapped_action_repeats(keymap_button_t button) {
-	keymap_action_t action = keymap_get(button);
+	keymap_action_t action = effective_action(button);
 	return action == KEYMAP_ACTION_VOLUME_UP || action == KEYMAP_ACTION_VOLUME_DOWN;
 }
 
@@ -1284,7 +1305,7 @@ static bool mapped_action_repeats(keymap_button_t button) {
 #define SEEK_STEP_SECONDS 5.0
 
 static bool mapped_action_seeks(keymap_button_t button) {
-	keymap_action_t action = keymap_get(button);
+	keymap_action_t action = effective_action(button);
 	return action == KEYMAP_ACTION_NEXT || action == KEYMAP_ACTION_PREV;
 }
 
@@ -1294,7 +1315,7 @@ static bool mapped_action_seeks(keymap_button_t button) {
 // Refuses on anything with no position to move along -- a live radio stream has
 // neither a length nor a point to come back to.
 static void seek_step(keymap_button_t button) {
-	keymap_action_t action = keymap_get(button);
+	keymap_action_t action = effective_action(button);
 	if (action != KEYMAP_ACTION_NEXT && action != KEYMAP_ACTION_PREV) {
 		return;
 	}
@@ -1354,7 +1375,7 @@ static void repeat_held(int code, bool headset) {
 }
 
 static void run_mapped_action(keymap_button_t button) {
-	switch (keymap_get(button)) {
+	switch (effective_action(button)) {
 	case KEYMAP_ACTION_PLAY_PAUSE:
 		gui_notify_key(GUI_KEY_PLAY_PAUSE);
 		break;
@@ -1499,6 +1520,14 @@ static void *input_thread_func(void *arg) {
 	bool seeked = false;
 	// Clicks on the cable remote's centre button waiting to be told apart.
 	hook_clicks_t hook = {0};
+	// The double click: `dbl_first` says the key down now is the double-click
+	// button's first click; `dbl_code` is that key once let go, waiting until
+	// `dbl_until` for a second click before its own action runs.
+	bool dbl_first = false;
+	int dbl_code = -1;
+	uint32_t dbl_until = 0;
+	// The held key has already repeated its action: its release is not a click.
+	bool held_repeated = false;
 
 	for (;;) {
 		// The deadline is whatever the held key is waiting for; with nothing
@@ -1518,6 +1547,12 @@ static void *input_thread_func(void *arg) {
 		int hook_wait = hook_clicks_timeout(&hook, now);
 		if (hook_wait >= 0 && (timeout < 0 || hook_wait < timeout)) {
 			timeout = hook_wait;
+		}
+		if (dbl_code >= 0) {
+			int dbl_wait = (int)(dbl_until > now ? dbl_until - now : 0);
+			if (timeout < 0 || dbl_wait < timeout) {
+				timeout = dbl_wait;
+			}
 		}
 
 		struct pollfd pfd = {.fd = fd, .events = POLLIN};
@@ -1539,6 +1574,13 @@ static void *input_thread_func(void *arg) {
 				run_hook_gesture(&hook);
 			}
 
+			// No second click: the double-click button's own action.
+			if (dbl_code >= 0 && (int32_t)(now - dbl_until) >= 0) {
+				int code = dbl_code;
+				dbl_code = -1;
+				run_mapped_action(keymap_button_for_code(code));
+			}
+
 			// While the screenshot combination is active these two keys are no
 			// longer themselves: the volume does not rise and the power menu
 			// does not open. The check is here and not only on press because the
@@ -1546,7 +1588,11 @@ static void *input_thread_func(void *arg) {
 			// this one is already repeating.
 			bool suppressed = combo_active();
 
+			// The wait may have ended for another deadline than the held key's.
 			if (key_repeats_held(held, info->headset)) {
+				if ((int32_t)(now - next_repeat) < 0) {
+					continue;
+				}
 				bool seeking = key_seeks_held(held, info->headset);
 				if (!suppressed) {
 					repeat_held(held, info->headset);
@@ -1556,8 +1602,10 @@ static void *input_thread_func(void *arg) {
 					// became a seek and must not also change track.
 					seeked = true;
 				}
+				held_repeated = true;
 				next_repeat = now + (seeking ? SEEK_REPEAT_MS : VOLUME_REPEAT_PERIOD_MS);
-			} else if (held == KEY_POWER) {
+			} else if (held == KEY_POWER && !long_press_done &&
+					   (int32_t)(now - (held_since + POWER_LONG_PRESS_MS)) >= 0) {
 				long_press_done = true;
 				if (!suppressed) {
 					printf("input: power held, opening the power menu\n");
@@ -1606,6 +1654,23 @@ static void *input_thread_func(void *arg) {
 				device_state_scrub_commit();
 			}
 
+			// A first click waiting: this press is its second click, or it
+			// was a single click after all and does its own action now.
+			bool second_click = false;
+			if (dbl_code >= 0) {
+				if (ev.code == dbl_code && !combo) {
+					second_click = true;
+				} else {
+					run_mapped_action(keymap_button_for_code(dbl_code));
+				}
+				dbl_code = -1;
+			}
+			override_button = KEYMAP_BTN_COUNT;
+			if (second_click) {
+				override_button = keymap_button_for_code(ev.code);
+				override_action = keymap_double_action();
+			}
+
 			held = ev.code;
 			held_since = now_ms();
 			bool seeks = key_seeks_held(held, info->headset);
@@ -1613,6 +1678,8 @@ static void *input_thread_func(void *arg) {
 			long_press_done = false;
 			deferred = false;
 			seeked = false;
+			held_repeated = false;
+			dbl_first = !second_click && !combo && is_double_button(ev.code, info->headset);
 
 			if (combo) {
 				// No volume repeat and no countdown to the power menu for as
@@ -1625,7 +1692,10 @@ static void *input_thread_func(void *arg) {
 			// (long), so nothing happens here for it. Next and previous are the
 			// same shape of decision for the same reason: a press that turns
 			// into a hold is a seek, and only a press that does not is a skip.
-			if (seeks) {
+			if (dbl_first) {
+				// Decided on release, or by the hold: see the release below.
+				deferred = true;
+			} else if (seeks) {
 				deferred = true;
 			} else if (info->headset && ev.code == KEY_PLAYPAUSE) {
 				// Counted, not acted on: see hookclicks.h.
@@ -1652,8 +1722,17 @@ static void *input_thread_func(void *arg) {
 			}
 
 			if (ev.code == held) {
-				// A skip button let go before it became a seek: now it skips.
-				if (deferred && !seeked && !combo) {
+				if (dbl_first) {
+					// A first click let go before it repeated or seeked: wait
+					// for a second one. Held into a repeat or a seek, it was a
+					// hold and not a click.
+					if (!held_repeated && !combo) {
+						dbl_code = ev.code;
+						dbl_until = now_ms() + DOUBLE_CLICK_MS;
+					}
+				} else if (deferred && !seeked && !combo) {
+					// A skip button let go before it became a seek: now it
+					// skips.
 					run_mapped_action(keymap_button_for_code(ev.code));
 				}
 				// And one that did become a seek: this is where the music moves
@@ -1665,6 +1744,9 @@ static void *input_thread_func(void *arg) {
 				long_press_done = false;
 				deferred = false;
 				seeked = false;
+				held_repeated = false;
+				dbl_first = false;
+				override_button = KEYMAP_BTN_COUNT;
 			}
 		}
 	}

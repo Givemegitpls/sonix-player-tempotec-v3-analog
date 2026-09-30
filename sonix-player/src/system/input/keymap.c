@@ -44,11 +44,46 @@ static keymap_action_t action_from_key(const char *name, keymap_action_t fallbac
 	return fallback;
 }
 
+// The double click, off until chosen. Same threading as the table above.
+static keymap_button_t double_button = KEYMAP_BTN_COUNT;
+static keymap_action_t double_action = KEYMAP_ACTION_NONE;
+
+static keymap_button_t button_from_key(const char *name) {
+	if (name) {
+		for (int i = 0; i < KEYMAP_BTN_COUNT; i++) {
+			if (strcmp(name, KEYS[i]) == 0) {
+				return (keymap_button_t)i;
+			}
+		}
+	}
+	return KEYMAP_BTN_COUNT;
+}
+
 void keymap_init(void) {
 	for (int i = 0; i < KEYMAP_BTN_COUNT; i++) {
 		const char *saved = config_get("keys", KEYS[i], NULL);
 		actions[i] = action_from_key(saved, DEFAULTS[i]);
 	}
+	double_button = button_from_key(config_get("keys", "double_button", NULL));
+	double_action = action_from_key(config_get("keys", "double_action", NULL), KEYMAP_ACTION_NONE);
+}
+
+keymap_button_t keymap_double_button(void) { return double_button; }
+keymap_action_t keymap_double_action(void) { return double_action; }
+
+bool keymap_double_enabled(void) {
+	return double_button < KEYMAP_BTN_COUNT && double_action != KEYMAP_ACTION_NONE;
+}
+
+void keymap_set_double(keymap_button_t button, keymap_action_t action) {
+	if (button < 0 || button > KEYMAP_BTN_COUNT || action < 0 || action >= KEYMAP_ACTION_COUNT) {
+		return;
+	}
+	double_button = button;
+	double_action = action;
+	config_set("keys", "double_button", button < KEYMAP_BTN_COUNT ? KEYS[button] : "none");
+	config_set("keys", "double_action", ACTION_KEYS[action]);
+	config_save();
 }
 
 keymap_action_t keymap_get(keymap_button_t button) {

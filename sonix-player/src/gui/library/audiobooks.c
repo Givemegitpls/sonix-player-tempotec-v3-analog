@@ -1415,8 +1415,6 @@ static lv_obj_t *scan_status_label;
 static lv_obj_t *scan_ok_button;
 static lv_obj_t *scan_cancel_button;
 static lv_timer_t *scan_poll_timer;
-// The one folder audiobooks are read from, at the root of the card.
-#define AUDIOBOOK_FOLDER "Audiobooks"
 
 static char scan_root[512];
 
@@ -1515,7 +1513,7 @@ static void build_scan_page(gui_config_t *cfg) {
 	// The folder and not the whole card: see the note in audiobookdb.c. Built
 	// once here so the scan and the line under the button cannot disagree about
 	// where books live.
-	snprintf(scan_root, sizeof(scan_root), "%s/%s", cfg->sd_root_path ? cfg->sd_root_path : "", AUDIOBOOK_FOLDER);
+	snprintf(scan_root, sizeof(scan_root), "%s/%s", cfg->sd_root_path ? cfg->sd_root_path : "", AUDIOBOOKDB_FOLDER);
 
 	lv_obj_add_style(audiobookscan_screen, &theme_style_screen, 0);
 

@@ -40,6 +40,10 @@ int audiobookdb_count(void);
 bool audiobookdb_needs_rescan(void);
 
 // --- Scanning (same shape as the music library's) ---
+// The folder at the root of the card audiobooks are read from. The music
+// scan leaves it out.
+#define AUDIOBOOKDB_FOLDER "Audiobooks"
+
 bool audiobookdb_scan_start(const char *root);
 bool audiobookdb_scan_running(void);
 int audiobookdb_scan_found(void);

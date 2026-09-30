@@ -1,6 +1,11 @@
 #include "libraryscan.h"
 
+#include <dirent.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 
 #include "lvgl/lvgl.h"
 
@@ -10,6 +15,9 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/toast.h"
+#include "src/system/library/audiobookdb.h"
+#include "src/system/playback/playlist.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
 #include "src/system/device/power.h"
@@ -91,6 +99,256 @@ void libraryscan_begin(void) {
 	lv_timer_resume(poll_timer);
 }
 
+// ---------------------------------------------------------------------------
+// Which folders: the card's top-level folders, ticked, before the scan starts
+// ---------------------------------------------------------------------------
+
+#define PICK_MAX 64
+#define PICK_CHROME_H 250 // the card's title, note, buttons and padding
+
+static gui_config_t *pick_cfg;
+static lv_obj_t *pick_veil;
+static lv_obj_t *pick_list;
+static lv_obj_t *pick_scan_btn;
+static char pick_names[PICK_MAX][256];
+static bool pick_on[PICK_MAX];
+static lv_obj_t *pick_marks[PICK_MAX];
+static int pick_count;
+
+static int name_cmp(const void *a, const void *b) { return strcasecmp((const char *)a, (const char *)b); }
+
+// The folders at the root of the card, alphabetically: not the hidden ones,
+// not the ones a desktop leaves behind, and not Audiobooks, which the music
+// scan never reads.
+static void pick_read_folders(void) {
+	pick_count = 0;
+	DIR *dir = sd_root ? opendir(sd_root) : NULL;
+	if (!dir) {
+		return;
+	}
+	struct dirent *de;
+	while ((de = readdir(dir)) != NULL && pick_count < PICK_MAX) {
+		if (de->d_name[0] == '.' || playlist_is_junk_name(de->d_name) ||
+			strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0 || strlen(de->d_name) >= sizeof(pick_names[0])) {
+			continue;
+		}
+		char path[768];
+		snprintf(path, sizeof(path), "%s/%s", sd_root, de->d_name);
+		struct stat st;
+		if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+			continue;
+		}
+		snprintf(pick_names[pick_count], sizeof(pick_names[0]), "%s", de->d_name);
+		pick_count++;
+	}
+	closedir(dir);
+	qsort(pick_names, (size_t)pick_count, sizeof(pick_names[0]), name_cmp);
+}
+
+// Ticked: the folders saved last time, or every folder when nothing was saved.
+static void pick_load_selection(void) {
+	const char *saved = library_scan_folders();
+	for (int i = 0; i < pick_count; i++) {
+		pick_on[i] = !saved[0];
+	}
+	const char *p = saved;
+	while (*p) {
+		const char *end = strchr(p, '/');
+		size_t len = end ? (size_t)(end - p) : strlen(p);
+		for (int i = 0; i < pick_count; i++) {
+			if (strlen(pick_names[i]) == len && strncasecmp(pick_names[i], p, len) == 0) {
+				pick_on[i] = true;
+			}
+		}
+		if (!end) {
+			break;
+		}
+		p = end + 1;
+	}
+}
+
+static void pick_paint(void) {
+	int on = 0;
+	for (int i = 0; i < pick_count; i++) {
+		if (pick_marks[i]) {
+			lv_obj_set_style_image_opa(pick_marks[i], pick_on[i] ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+		}
+		on += pick_on[i];
+	}
+	lv_obj_set_style_opa(pick_scan_btn, (pick_count == 0 || on > 0) ? LV_OPA_COVER : LV_OPA_40, 0);
+}
+
+static void pick_row_cb(lv_event_t *e) {
+	int i = (int)(intptr_t)lv_event_get_user_data(e);
+	if (i >= 0 && i < pick_count) {
+		pick_on[i] = !pick_on[i];
+		pick_paint();
+	}
+}
+
+static void pick_close(void) { lv_obj_add_flag(pick_veil, LV_OBJ_FLAG_HIDDEN); }
+
+static void pick_veil_cb(lv_event_t *e) {
+	if (lv_event_get_target(e) == pick_veil) {
+		pick_close();
+	}
+}
+
+static void pick_cancel_cb(lv_event_t *e) {
+	(void)e;
+	pick_close();
+}
+
+// Every folder ticked is the whole card, the files at its root included.
+static void pick_scan_cb(lv_event_t *e) {
+	(void)e;
+	const char *chosen[PICK_MAX];
+	int count = 0;
+	for (int i = 0; i < pick_count; i++) {
+		if (pick_on[i]) {
+			chosen[count++] = pick_names[i];
+		}
+	}
+	if (pick_count > 0 && count == 0) {
+		toast_error(tr("libraryscan_choose_a_folder"));
+		return;
+	}
+	library_scan_folders_set(chosen, count == pick_count ? 0 : count);
+	pick_close();
+	switch_screen(libraryscan_screen);
+}
+
+static lv_obj_t *pick_button(lv_obj_t *parent, const char *text, bool accent, lv_event_cb_t cb) {
+	lv_obj_t *btn = lv_btn_create(parent);
+	lv_obj_set_height(btn, 56);
+	lv_obj_set_flex_grow(btn, 1);
+	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_shadow_width(btn, 0, 0);
+	lv_obj_set_style_border_width(btn, 0, 0);
+	lv_obj_set_style_bg_color(btn, accent ? theme()->accent : theme()->surface_pressed, 0);
+	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *label = lv_label_create(btn);
+	lv_label_set_text(label, tr(text));
+	lv_obj_set_style_text_font(label, &font_ui_22, 0);
+	lv_obj_set_style_text_color(label, accent ? lv_color_white() : theme()->text_primary, 0);
+	lv_obj_center(label);
+	return btn;
+}
+
+static void pick_build(void) {
+	gui_config_t *cfg = pick_cfg;
+	pick_veil = lv_obj_create(lv_layer_top());
+	lv_obj_set_size(pick_veil, lv_pct(100), lv_pct(100));
+	lv_obj_set_style_bg_color(pick_veil, lv_color_black(), 0);
+	lv_obj_set_style_bg_opa(pick_veil, LV_OPA_60, 0);
+	lv_obj_set_style_border_width(pick_veil, 0, 0);
+	lv_obj_set_style_radius(pick_veil, 0, 0);
+	lv_obj_set_style_pad_all(pick_veil, 0, 0);
+	lv_obj_remove_flag(pick_veil, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_add_flag(pick_veil, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+	lv_obj_add_event_cb(pick_veil, pick_veil_cb, LV_EVENT_CLICKED, NULL);
+
+	lv_obj_t *card = lv_obj_create(pick_veil);
+	lv_obj_set_size(card, cfg->screen_width - 2 * cfg->padding, LV_SIZE_CONTENT);
+	lv_obj_set_style_max_height(card, cfg->screen_height - cfg->top_bar_height - 2 * cfg->padding, 0);
+	lv_obj_add_style(card, &theme_style_card, 0);
+	lv_obj_set_style_radius(card, 16, 0);
+	lv_obj_set_style_border_width(card, 0, 0);
+	lv_obj_set_style_shadow_width(card, 0, 0);
+	lv_obj_set_style_pad_all(card, 20, 0);
+	lv_obj_set_style_pad_row(card, 12, 0);
+	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_remove_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+	lv_obj_align(card, LV_ALIGN_CENTER, 0, cfg->top_bar_height / 2);
+
+	lv_obj_t *title = lv_label_create(card);
+	lv_label_set_text(title, tr("musicsettings_scan_the_music_library"));
+	lv_label_set_long_mode(title, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(title, lv_pct(100));
+	lv_obj_add_style(title, &theme_style_text, 0);
+	lv_obj_set_style_text_font(title, &font_ui_24, 0);
+
+	lv_obj_t *note = lv_label_create(card);
+	lv_label_set_text(note, tr("libraryscan_choose_folders_note"));
+	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(note, lv_pct(100));
+	lv_obj_add_style(note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(note, &font_ui_18, 0);
+
+	// The folders scroll; the title and the buttons stay put.
+	pick_list = lv_obj_create(card);
+	lv_obj_remove_style_all(pick_list);
+	lv_obj_set_width(pick_list, lv_pct(100));
+	lv_obj_set_height(pick_list, LV_SIZE_CONTENT);
+	// What the panel leaves once the title, the note and the buttons are in.
+	lv_obj_set_style_max_height(pick_list, cfg->screen_height - cfg->top_bar_height - 2 * cfg->padding - PICK_CHROME_H,
+								0);
+	lv_obj_set_style_pad_row(pick_list, 6, 0);
+	lv_obj_set_flex_flow(pick_list, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_scroll_dir(pick_list, LV_DIR_VER);
+	lv_obj_set_scrollbar_mode(pick_list, LV_SCROLLBAR_MODE_AUTO);
+
+	lv_obj_t *buttons = lv_obj_create(card);
+	lv_obj_remove_style_all(buttons);
+	lv_obj_set_size(buttons, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_set_style_pad_column(buttons, 12, 0);
+	lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
+	pick_button(buttons, "cancel", false, pick_cancel_cb);
+	pick_scan_btn = pick_button(buttons, "scan", true, pick_scan_cb);
+}
+
+static void pick_fill(void) {
+	lv_obj_clean(pick_list);
+	memset(pick_marks, 0, sizeof(pick_marks));
+	for (int i = 0; i < pick_count; i++) {
+		lv_obj_t *row = lv_btn_create(pick_list);
+		lv_obj_set_size(row, lv_pct(100), 60);
+		lv_obj_set_style_bg_color(row, theme()->surface_pressed, 0);
+		lv_obj_set_style_radius(row, 10, 0);
+		lv_obj_set_style_shadow_width(row, 0, 0);
+		lv_obj_set_style_border_width(row, 0, 0);
+		lv_obj_set_style_pad_hor(row, 16, 0);
+		lv_obj_set_style_pad_column(row, 10, 0);
+		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+		lv_obj_add_flag(row, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+		lv_obj_add_event_cb(row, pick_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+		lv_obj_t *folder = lv_image_create(row);
+		lv_image_set_src(folder, &icon_folder);
+		lv_obj_add_style(folder, &theme_style_icon, 0);
+
+		lv_obj_t *label = lv_label_create(row);
+		lv_label_set_text(label, pick_names[i]);
+		lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+		lv_obj_set_flex_grow(label, 1);
+		lv_obj_set_height(label, lv_font_get_line_height(&font_ui_22));
+		lv_obj_add_style(label, &theme_style_text, 0);
+		lv_obj_set_style_text_font(label, &font_ui_22, 0);
+
+		pick_marks[i] = lv_image_create(row);
+		lv_image_set_src(pick_marks[i], &icon_check);
+		lv_obj_add_style(pick_marks[i], &theme_style_icon, 0);
+		lv_obj_set_style_image_recolor(pick_marks[i], theme()->accent, 0);
+		lv_obj_set_style_image_recolor_opa(pick_marks[i], LV_OPA_COVER, 0);
+	}
+}
+
+void libraryscan_choose_folders(void) {
+	if (!pick_veil) {
+		pick_build();
+	}
+	pick_read_folders();
+	pick_load_selection();
+	pick_fill();
+	lv_obj_scroll_to_y(pick_list, 0, LV_ANIM_OFF);
+	pick_paint();
+	lv_obj_remove_flag(pick_veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_move_foreground(pick_veil);
+}
+
 // Both buttons sit at the same place at the bottom of the screen; only one is
 // ever visible.
 static lv_obj_t *make_button(lv_obj_t *parent, const char *text, lv_color_t colour, lv_event_cb_t cb,
@@ -116,6 +374,7 @@ static lv_obj_t *make_button(lv_obj_t *parent, const char *text, lv_color_t colo
 
 void libraryscan_init(gui_config_t *cfg) {
 	sd_root = cfg->sd_root_path;
+	pick_cfg = cfg;
 
 	lv_obj_add_style(libraryscan_screen, &theme_style_screen, 0);
 

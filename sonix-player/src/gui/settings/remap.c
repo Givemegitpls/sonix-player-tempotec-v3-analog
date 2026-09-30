@@ -59,6 +59,7 @@ lv_obj_t *remap_screen;
 #define LEADER_W 18
 #define ROW_H 44
 #define R1_ROW_H 56
+#define DOUBLE_ROW_GAP 40 // between the last button's row and the double-click row
 
 // The buttons, as rectangles inside the photo. They are generous in width --
 // the pictured button is thirty pixels wide, which is not a touch target -- but
@@ -115,6 +116,15 @@ static side_t vol_side = {.dark = PHOTO_VOL_DARK, .light = PHOTO_VOL_LIGHT};
 
 static lv_obj_t *value_labels[KEYMAP_BTN_COUNT];
 static lv_obj_t *rows[KEYMAP_BTN_COUNT];
+
+// The double click (keymap.h), on the R1 only: a row under the last button's,
+// and the dialog it opens.
+static lv_obj_t *double_value;
+static lv_obj_t *double_veil;
+static lv_obj_t *double_button_pills[KEYMAP_BTN_COUNT];
+static lv_obj_t *double_action_pills[KEYMAP_ACTION_COUNT];
+static keymap_button_t double_pick_button = KEYMAP_BTN_COUNT;
+static lv_obj_t *double_done;
 
 static int row_h;
 static const lv_font_t *row_font;
@@ -270,6 +280,207 @@ static void refresh_values(void) {
 	}
 }
 
+// The buttons by the names they carry on the case.
+static const char *const BUTTON_NAMES[KEYMAP_BTN_COUNT] = {
+	"remap_button_prev", "remap_button_play", "remap_button_next", "remap_button_vol_up", "remap_button_vol_down",
+};
+
+static void refresh_double(void) {
+	if (!double_value) {
+		return;
+	}
+	if (!keymap_double_enabled()) {
+		lv_label_set_text(double_value, tr("keymap_nothing"));
+	} else {
+		lv_label_set_text_fmt(double_value, "%s \xE2\x86\x92 %s", tr(BUTTON_NAMES[keymap_double_button()]),
+							  tr(keymap_action_name(keymap_double_action())));
+	}
+
+	if (double_done) {
+		lv_obj_set_style_bg_color(double_done, theme()->surface_pressed, 0);
+	}
+	for (int i = 0; i < KEYMAP_BTN_COUNT; i++) {
+		settingsrow_pill_active(double_button_pills[i], (keymap_button_t)i == double_pick_button);
+	}
+	keymap_action_t action = keymap_double_enabled() ? keymap_double_action() : KEYMAP_ACTION_NONE;
+	for (int i = 0; i < KEYMAP_ACTION_COUNT; i++) {
+		settingsrow_pill_active(double_action_pills[i], (keymap_action_t)i == action);
+	}
+}
+
+static void double_button_cb(lv_event_t *e) {
+	double_pick_button = (keymap_button_t)(intptr_t)lv_event_get_user_data(e);
+	keymap_set_double(double_pick_button,
+					  keymap_double_enabled() ? keymap_double_action() : KEYMAP_ACTION_NONE);
+	refresh_double();
+}
+
+static void double_action_cb(lv_event_t *e) {
+	keymap_set_double(double_pick_button, (keymap_action_t)(intptr_t)lv_event_get_user_data(e));
+	refresh_double();
+}
+
+static void double_close_cb(lv_event_t *e) {
+	// Taps on the card land here too, through bubbling: only the veil itself,
+	// and the button that closes it, close it.
+	lv_obj_t *target = lv_event_get_target(e);
+	if (target == double_veil || lv_event_get_user_data(e)) {
+		lv_obj_add_flag(double_veil, LV_OBJ_FLAG_HIDDEN);
+	}
+}
+
+static void double_open_cb(lv_event_t *e) {
+	(void)e;
+	if (switcher_back_drag_active() || !double_veil) {
+		return;
+	}
+	// With nothing set yet the first of the buttons is chosen, so that picking
+	// an action is all it takes.
+	double_pick_button = keymap_double_button();
+	if (double_pick_button >= KEYMAP_BTN_COUNT || !double_button_pills[double_pick_button]) {
+		for (int i = 0; i < KEYMAP_BTN_COUNT; i++) {
+			if (double_button_pills[i]) {
+				double_pick_button = (keymap_button_t)i;
+				break;
+			}
+		}
+	}
+	refresh_double();
+	lv_obj_remove_flag(double_veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_move_foreground(double_veil);
+}
+
+static lv_obj_t *dialog_heading(lv_obj_t *parent, const char *text) {
+	lv_obj_t *label = lv_label_create(parent);
+	lv_label_set_text(label, tr(text));
+	lv_obj_add_style(label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(label, &font_ui_20, 0);
+	return label;
+}
+
+// Pills a size down from the settings pages' own: the dialog holds ten of them.
+static lv_obj_t *dialog_pill(lv_obj_t *parent, const char *text, int value, lv_event_cb_t cb) {
+	lv_obj_t *pill = settingsrow_pill(parent, text, value, cb);
+	lv_obj_set_height(pill, 46);
+	lv_obj_set_style_pad_hor(pill, 18, 0);
+	lv_obj_set_style_text_font(lv_obj_get_child(pill, 0), &font_ui_20, 0);
+	return pill;
+}
+
+static lv_obj_t *dialog_pills(lv_obj_t *parent) {
+	lv_obj_t *pills = lv_obj_create(parent);
+	lv_obj_remove_style_all(pills);
+	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_set_style_pad_gap(pills, 8, 0);
+	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
+	return pills;
+}
+
+// The dialog: the buttons this model has, the actions, and a close button.
+// Every tap is saved at once.
+static void build_double_dialog(gui_config_t *cfg, const hit_t *hits, int hit_count) {
+	double_veil = lv_obj_create(lv_layer_top());
+	lv_obj_set_size(double_veil, lv_pct(100), lv_pct(100));
+	lv_obj_set_style_bg_color(double_veil, lv_color_black(), 0);
+	lv_obj_set_style_bg_opa(double_veil, LV_OPA_60, 0);
+	lv_obj_set_style_border_width(double_veil, 0, 0);
+	lv_obj_set_style_radius(double_veil, 0, 0);
+	lv_obj_set_style_pad_all(double_veil, 0, 0);
+	lv_obj_remove_flag(double_veil, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_add_flag(double_veil, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+	lv_obj_add_event_cb(double_veil, double_close_cb, LV_EVENT_CLICKED, NULL);
+
+	lv_obj_t *card = lv_obj_create(double_veil);
+	lv_obj_set_size(card, cfg->screen_width - 2 * cfg->padding, LV_SIZE_CONTENT);
+	lv_obj_add_style(card, &theme_style_card, 0);
+	lv_obj_set_style_radius(card, 16, 0);
+	lv_obj_set_style_border_width(card, 0, 0);
+	lv_obj_set_style_shadow_width(card, 0, 0);
+	lv_obj_set_style_pad_all(card, 20, 0);
+	lv_obj_set_style_pad_row(card, 10, 0);
+	// Scrolls rather than running off the panel with large text or a long
+	// language.
+	lv_obj_set_style_max_height(card, cfg->screen_height - 2 * cfg->padding, 0);
+	lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_remove_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+	lv_obj_center(card);
+
+	lv_obj_t *title = lv_label_create(card);
+	lv_label_set_text(title, tr("remap_double_click"));
+	lv_obj_add_style(title, &theme_style_text, 0);
+	lv_obj_set_style_text_font(title, &font_ui_24, 0);
+
+	lv_obj_t *note = lv_label_create(card);
+	lv_label_set_text(note, tr("remap_double_click_note"));
+	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(note, lv_pct(100));
+	lv_obj_add_style(note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(note, &font_ui_18, 0);
+
+	dialog_heading(card, "remap_double_click_button");
+	lv_obj_t *buttons = dialog_pills(card);
+	for (int i = 0; i < hit_count; i++) {
+		keymap_button_t button = hits[i].button;
+		double_button_pills[button] =
+			dialog_pill(buttons, BUTTON_NAMES[button], (int)button, double_button_cb);
+	}
+
+	dialog_heading(card, "remap_double_click_action");
+	lv_obj_t *actions = dialog_pills(card);
+	for (int i = 0; i < KEYMAP_ACTION_COUNT; i++) {
+		double_action_pills[i] = dialog_pill(actions, keymap_action_name((keymap_action_t)i), i, double_action_cb);
+	}
+
+	lv_obj_t *done = lv_btn_create(card);
+	double_done = done;
+	lv_obj_set_size(done, lv_pct(100), 50);
+	lv_obj_set_style_radius(done, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_shadow_width(done, 0, 0);
+	lv_obj_set_style_border_width(done, 0, 0);
+	lv_obj_set_style_bg_color(done, theme()->surface_pressed, 0);
+	lv_obj_add_event_cb(done, double_close_cb, LV_EVENT_CLICKED, (void *)1);
+	lv_obj_t *done_label = lv_label_create(done);
+	lv_label_set_text(done_label, tr("done"));
+	lv_obj_add_style(done_label, &theme_style_text, 0);
+	lv_obj_set_style_text_font(done_label, &font_ui_22, 0);
+	lv_obj_center(done_label);
+}
+
+// The row, in the free space under the last button's row.
+static void build_double_row(gui_config_t *cfg, int x, int y, int w) {
+	lv_obj_t *row = lv_btn_create(remap_screen);
+	lv_obj_set_pos(row, x, y);
+	lv_obj_set_size(row, w, LV_SIZE_CONTENT);
+	lv_obj_add_style(row, &theme_style_card, 0);
+	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_style_radius(row, 10, 0);
+	lv_obj_set_style_border_width(row, 0, 0);
+	lv_obj_set_style_shadow_width(row, 0, 0);
+	lv_obj_set_style_pad_hor(row, 14, 0);
+	lv_obj_set_style_pad_ver(row, 10, 0);
+	lv_obj_set_style_pad_row(row, 2, 0);
+	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+	lv_obj_add_event_cb(row, double_open_cb, LV_EVENT_CLICKED, NULL);
+
+	lv_obj_t *name = lv_label_create(row);
+	lv_label_set_text(name, tr("remap_double_click"));
+	lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+	lv_obj_set_width(name, lv_pct(100));
+	lv_obj_add_style(name, &theme_style_text, 0);
+	lv_obj_set_style_text_font(name, &font_ui_22, 0);
+
+	double_value = lv_label_create(row);
+	lv_label_set_long_mode(double_value, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(double_value, lv_pct(100));
+	lv_obj_add_style(double_value, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(double_value, &font_ui_18, 0);
+	(void)cfg;
+}
+
 static void picked(void *user) {
 	keymap_action_t action = (keymap_action_t)(intptr_t)user;
 	if (choosing >= KEYMAP_BTN_COUNT) {
@@ -398,6 +609,7 @@ static void screen_loaded_cb(lv_event_t *e) {
 	// which photo is needed and the colour it is blended against.
 	photos_show();
 	refresh_values();
+	refresh_double();
 }
 
 static void screen_unloaded_cb(lv_event_t *e) {
@@ -463,6 +675,14 @@ void remap_init(gui_config_t *cfg) {
 		vol_side.x = cfg->screen_width - vol_side.w;
 		vol_side.y = cfg->screen_height - vol_side.h + 4;
 		build_side(&vol_side, cfg);
+	} else {
+		// Under the last row, in the column the rows use.
+		const hit_t *last = &R1_HITS[sizeof(R1_HITS) / sizeof(R1_HITS[0]) - 1];
+		int col_x = play_side.x + play_side.w + LEADER_W;
+		int y = play_side.y + last->y + last->h / 2 + row_h / 2 + DOUBLE_ROW_GAP;
+		build_double_row(cfg, col_x, y, cfg->screen_width - col_x - cfg->padding);
+		build_double_dialog(cfg, R1_HITS, (int)(sizeof(R1_HITS) / sizeof(R1_HITS[0])));
+		refresh_double();
 	}
 
 	refresh_values();

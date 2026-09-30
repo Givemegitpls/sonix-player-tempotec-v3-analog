@@ -1098,19 +1098,11 @@ static void screen_loaded_cb(lv_event_t *e) {
 	refresh_active_chevrons();
 }
 
-// Rescanning the card takes minutes and cannot be undone halfway, so the row
-// asks first. It opens no page of its own until the answer is yes, which is
-// why it carries no chevron.
-static void start_library_scan(void *user) {
-	(void)user;
-	switch_screen(libraryscan_screen);
-}
-
+// The row asks which folders first; the scan page opens only from there,
+// which is why it carries no chevron.
 static void scan_row_cb(lv_event_t *e) {
 	(void)e;
-	confirm_show("musicsettings_scan_the_music_library",
-				 "musicsettings_rescan_confirm_note",
-				 "scan", start_library_scan, NULL);
+	libraryscan_choose_folders();
 }
 
 static void album_chain_cb(lv_event_t *e) {

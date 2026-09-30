@@ -15,4 +15,8 @@ void libraryscan_init(gui_config_t *cfg);
 // loaded, so nothing else has to remember to kick it off.
 void libraryscan_begin(void);
 
+// Asks which of the card's top-level folders to scan, saves the choice
+// (library_scan_folders_set) and opens the page, which starts the scan.
+void libraryscan_choose_folders(void);
+
 #endif /* LIBRARYSCAN_H */

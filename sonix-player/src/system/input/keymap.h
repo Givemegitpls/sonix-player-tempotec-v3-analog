@@ -1,6 +1,8 @@
 #ifndef KEYMAP_H
 #define KEYMAP_H
 
+#include <stdbool.h>
+
 // What the buttons on the side of the device do.
 //
 // On the R3 Pro II's right side, below the power button, there are three: one
@@ -54,6 +56,18 @@ keymap_action_t keymap_get(keymap_button_t button);
 // Applies and saves. The change takes effect from the next press: the threads
 // read the table on every press rather than caching it.
 void keymap_set(keymap_button_t button, keymap_action_t action);
+
+// The double click: one button whose second press, coming quickly after the
+// first, does another action -- and held, holds that action (a seek for next
+// or previous, a repeat for the volume). KEYMAP_BTN_COUNT or
+// KEYMAP_ACTION_NONE switch it off. The button's own action then waits for
+// the double-click window to close before it runs.
+keymap_button_t keymap_double_button(void);
+keymap_action_t keymap_double_action(void);
+void keymap_set_double(keymap_button_t button, keymap_action_t action);
+
+// Whether the double click is on: a button and an action other than none.
+bool keymap_double_enabled(void);
 
 // The action's name, in the source's Italian like every other string here; it
 // passes through tr() where it is drawn.

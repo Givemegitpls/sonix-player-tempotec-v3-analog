@@ -1,4 +1,6 @@
 #include "library.h"
+
+#include "src/system/library/audiobookdb.h"
 #include "src/system/playback/playlist.h"
 
 #include <ctype.h>
@@ -3201,6 +3203,56 @@ static void scan_one_file(const char *child, const char *name, const struct stat
 // as they come, which costs no memory) keeping only the names of the
 // subdirectories, close it, and only then descend. One directory is open at any
 // depth, and what is carried down is names, a few dozen bytes each.
+// The folder filter, read from the config when a scan starts.
+#define SCAN_FOLDERS_MAX 64
+#define SCAN_FOLDERS_KEY_MAX (SCAN_FOLDERS_MAX * 64)
+static char scan_folder_names[SCAN_FOLDERS_MAX][256];
+static int scan_folder_count;
+
+const char *library_scan_folders(void) { return config_get("library", "scan_folders", ""); }
+
+void library_scan_folders_set(const char *const *names, int count) {
+	static char joined[SCAN_FOLDERS_KEY_MAX];
+	size_t used = 0;
+	joined[0] = '\0';
+	for (int i = 0; names && i < count && used < sizeof(joined); i++) {
+		if (!names[i] || !names[i][0]) {
+			continue;
+		}
+		used += (size_t)snprintf(joined + used, sizeof(joined) - used, "%s%s", used ? "/" : "", names[i]);
+	}
+	if (used >= sizeof(joined)) {
+		joined[0] = '\0'; // too many to store: the whole card rather than a cut list
+	}
+	config_set("library", "scan_folders", joined);
+	config_save();
+}
+
+static void scan_folders_load(void) {
+	scan_folder_count = 0;
+	const char *p = library_scan_folders();
+	while (p && *p && scan_folder_count < SCAN_FOLDERS_MAX) {
+		const char *end = strchr(p, '/');
+		size_t len = end ? (size_t)(end - p) : strlen(p);
+		if (len > 0 && len < sizeof(scan_folder_names[0])) {
+			memcpy(scan_folder_names[scan_folder_count], p, len);
+			scan_folder_names[scan_folder_count][len] = '\0';
+			scan_folder_count++;
+		}
+		p = end ? end + 1 : NULL;
+	}
+}
+
+// With a filter, only the chosen folders at the root of the card are read.
+static bool scan_folder_chosen(const char *name) {
+	for (int i = 0; i < scan_folder_count; i++) {
+		if (strcasecmp(name, scan_folder_names[i]) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static void scan_directory(const char *path, int depth) {
 	if (scan_cancel || depth > SCAN_MAX_DEPTH) {
 		return;
@@ -3255,6 +3307,13 @@ static void scan_directory(const char *path, int depth) {
 		}
 
 		if (S_ISDIR(st.st_mode)) {
+			// The audiobooks have an index of their own (audiobookdb.h).
+			if (depth == 0 && strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0) {
+				continue;
+			}
+			if (depth == 0 && scan_folder_count > 0 && !scan_folder_chosen(de->d_name)) {
+				continue;
+			}
 			if (!namelist_add(&subdirs, de->d_name) && subdirs.count == SCAN_MAX_SUBDIRS) {
 				fprintf(stderr, "library: %s has more than %d subfolders; the rest are skipped\n", path,
 						SCAN_MAX_SUBDIRS);
@@ -3264,6 +3323,9 @@ static void scan_directory(const char *path, int depth) {
 
 		if (!S_ISREG(st.st_mode) || !is_playable(de->d_name)) {
 			continue;
+		}
+		if (depth == 0 && scan_folder_count > 0) {
+			continue; // loose files at the root belong to no chosen folder
 		}
 
 		if (is_video_file(child, de->d_name)) {
@@ -3316,7 +3378,11 @@ static void *scan_thread_func(void *arg) {
 	// would starve the interface for its whole duration.
 	thread_be_background("library scan");
 
-	printf("library: scanning %s\n", scan_root);
+	if (scan_folder_count > 0) {
+		printf("library: scanning %s, %d chosen folder(s)\n", scan_root, scan_folder_count);
+	} else {
+		printf("library: scanning %s\n", scan_root);
+	}
 
 	pthread_mutex_lock(&db_lock);
 	exec("DELETE FROM MEDIA_TABLE");
@@ -3389,6 +3455,7 @@ bool library_scan_start(const char *root) {
 	}
 
 	snprintf(scan_root, sizeof(scan_root), "%s", root);
+	scan_folders_load();
 	scan_found = 0;
 	scan_cancel = false;
 	scan_db_failed = false;

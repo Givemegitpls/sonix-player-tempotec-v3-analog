@@ -819,7 +819,7 @@ static void build_pages(gui_config_t *config) {
 	lv_obj_add_style(update_icon, &theme_style_icon, 0);
 	lv_obj_center(update_icon);
 
-	search_keyboard = keyboard_create(search_screen, config->screen_width, 316, search_field, NULL, "peq_autoeq_search_button", search_accept, NULL);
+	search_keyboard = keyboard_create(search_screen, config->screen_width, 316, search_field, &icon_search, NULL, search_accept, NULL);
 
 	results_screen = lv_obj_create(NULL);
 	search_list = settingsrow_page(results_screen, config, "peq_autoeq_results");

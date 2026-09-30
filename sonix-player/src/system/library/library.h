@@ -36,6 +36,12 @@ int library_track_count(void);
 
 // Starts a scan of `root`, wiping whatever was indexed before. Returns false
 // if a scan is already running or the database is not open.
+// The folders at the root of the card the scan reads, as saved in [library]
+// scan_folders: names separated by '/', empty for the whole card. A scan limited
+// to some folders leaves out the files at the root of the card too.
+const char *library_scan_folders(void);
+void library_scan_folders_set(const char *const *names, int count);
+
 bool library_scan_start(const char *root);
 
 // Whether there is an index to ask. False while the card is handed to a
