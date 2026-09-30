@@ -139,8 +139,10 @@ static int polls_since_stop = POLLS_FAST_AFTER_STOP;
 #define PLAYER_MENU_GAP 12
 
 // Studio keeps only the bar, the clocks and the transport in the controls
-// block, pushed to the bottom; the panel with the sleeve takes the rest of the
-// screen above them.
+// block, pushed to the bottom, with the gaps between them the standard
+// arrangement has; the panel with the sleeve takes the rest of the screen
+// above them. This is their height at PLAYER_MENU_GAP; a taller panel adds
+// what its wider gaps take.
 #define STUDIO_CONTROLS_H 172
 
 // Album art: an image on top of a placeholder panel. The panel is always
@@ -1493,7 +1495,7 @@ static void studio_put(void) {
 	if (player_menu) {
 		lv_obj_set_flex_align(player_menu, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 		lv_obj_set_style_pad_ver(player_menu, PLAYER_MENU_PAD_VER, 0);
-		lv_obj_set_style_pad_gap(player_menu, PLAYER_MENU_GAP, 0);
+		lv_obj_set_style_pad_gap(player_menu, menu_gap, 0);
 		lv_obj_set_style_bg_opa(player_menu, LV_OPA_TRANSP, 0);
 		// Its own blurred copy too: it is the same picture at a different crop,
 		// and two of them meeting at the controls is a seam across the screen.
@@ -3928,7 +3930,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_move_background(studio_bg);
 
 	studio_box_w = cover_size;
-	studio_box_h = (int)cfg->screen_height - STUDIO_CONTROLS_H;
+	studio_box_h = (int)cfg->screen_height - STUDIO_CONTROLS_H - 2 * (menu_gap - PLAYER_MENU_GAP);
 	if (studio_box_h < cover_size) {
 		studio_box_h = cover_size;
 	}

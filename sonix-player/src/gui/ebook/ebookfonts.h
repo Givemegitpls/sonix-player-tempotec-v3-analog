@@ -8,11 +8,10 @@
 // ---------------------------------------------------------------------------
 // The four faces a book is set in, loaded from the card and only while reading
 //
-// Bookerly, from `.local/fonts/` on the card, in the four real styles rather
-// than one face slanted and emboldened by the renderer. The files are not
-// compiled into the player: they belong to whoever put them on the card, they
-// are a megabyte each, and the player has no business carrying them in .rodata
-// for the sake of a page nobody may ever open.
+// Bookerly, in the four real styles rather than one face slanted and
+// emboldened by the renderer. The firmware ships them in
+// usr/resource/sonix/fonts/ebook; a set in `.local/fonts/` on the card is used
+// when that folder has none.
 //
 // So: nothing is loaded until the reader opens, the regular face is loaded
 // then, and the other three only when a book actually uses them -- a novel
@@ -24,8 +23,8 @@
 // after the reader's objects are deleted, never before.
 // ---------------------------------------------------------------------------
 
-// Opens the regular face at `size` pixels. False when `.local/fonts` has no
-// Bookerly at all -- the reader then falls back to the interface font, which is
+// Opens the regular face at `size` pixels. False when neither folder has
+// Bookerly -- the reader then falls back to the interface font, which is
 // a worse book but still a book.
 bool ebookfonts_open(const char *sd_root, int size);
 

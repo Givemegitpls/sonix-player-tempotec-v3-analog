@@ -66,6 +66,11 @@ typedef struct {
 // deepest of the common letters ends where the line does.
 #define ARABIC_RAISE 105
 
+// Rodin, for Japanese. Chained right behind the main face and silent unless
+// the interface is in Japanese; see japanese_ui below.
+static script_face_t japanese = {"Japanese", FACE_FILES("japanese"), FACE_FILES("japanese-bold"), 0, NULL, NULL,
+								 false};
+
 static script_face_t scripts[] = {
 	{"Korean", FACE_FILES("korean"), FACE_FILES("korean-bold"), 0, NULL, NULL, false},
 	{"Thai", FACE_FILES("thai"), FACE_FILES("thai-bold"), 0, NULL, NULL, false},
@@ -185,6 +190,37 @@ static bool raised_glyph_dsc(const lv_font_t *font, lv_font_glyph_dsc_t *dsc, ui
 	return true;
 }
 
+// With the interface in Japanese, kana, kanji and the CJK punctuation and
+// full-width forms are drawn from Rodin rather than MiSans, whose kanji are
+// the Chinese shapes. The main face then passes on those letters, Rodin
+// answers them, and a copy of the main face at the end of the chain covers the
+// kanji Rodin does not have. In any other language Rodin passes on everything
+// and the chain behaves as if it were not there.
+static bool japanese_ui;
+
+static bool is_cjk(uint32_t letter) {
+	return (letter >= 0x3000 && letter <= 0x33FF) || // punctuation, kana, enclosed and compatibility forms
+		   (letter >= 0x3400 && letter <= 0x4DBF) || // extension A
+		   (letter >= 0x4E00 && letter <= 0x9FFF) || // unified ideographs
+		   (letter >= 0xF900 && letter <= 0xFAFF) || // compatibility ideographs
+		   (letter >= 0xFF00 && letter <= 0xFFEF);	 // full-width and half-width forms
+}
+
+static bool main_glyph_dsc(const lv_font_t *font, lv_font_glyph_dsc_t *dsc, uint32_t letter, uint32_t letter_next) {
+	if (japanese_ui && is_cjk(letter)) {
+		return false;
+	}
+	return freetype_glyph_dsc(font, dsc, letter, letter_next);
+}
+
+static bool japanese_glyph_dsc(const lv_font_t *font, lv_font_glyph_dsc_t *dsc, uint32_t letter,
+							   uint32_t letter_next) {
+	if (!japanese_ui) {
+		return false;
+	}
+	return freetype_glyph_dsc(font, dsc, letter, letter_next);
+}
+
 static void raise_face(lv_font_t *face, int size, int per_mille) {
 	int pixels = (size * per_mille + 500) / 1000;
 	if (pixels <= 0) {
@@ -213,7 +249,24 @@ static lv_font_t *open_chain(const ui_font_t *ui, int size) {
 		return NULL;
 	}
 
+	freetype_glyph_dsc = head->get_glyph_dsc;
 	lv_font_t *tail = head;
+
+	lv_font_t *rodin = NULL;
+	if (ui->bold && japanese.bold) {
+		rodin = open_face(japanese.bold, size);
+	}
+	if (!rodin && japanese.regular) {
+		rodin = open_face(japanese.regular, size);
+	}
+	if (rodin) {
+		head->get_glyph_dsc = main_glyph_dsc;
+		rodin->get_glyph_dsc = japanese_glyph_dsc;
+		tail->fallback = rodin;
+		tail = rodin;
+		japanese.used = true;
+	}
+
 	for (size_t i = 0; i < SCRIPT_COUNT; i++) {
 		script_face_t *script = &scripts[i];
 		lv_font_t *face = NULL;
@@ -230,6 +283,20 @@ static lv_font_t *open_chain(const ui_font_t *ui, int size) {
 			tail->fallback = face;
 			tail = face;
 			script->used = true;
+		}
+	}
+
+	// The main face again, answering everything: the kanji Rodin lacks.
+	if (rodin) {
+		lv_font_t *again = NULL;
+		if (ui->bold && bold_file) {
+			again = open_face(bold_file, size);
+		}
+		if (!again) {
+			again = open_face(regular_file, size);
+		}
+		if (again) {
+			tail->fallback = again;
 		}
 	}
 	return head;
@@ -265,6 +332,9 @@ bool fonts_init(void) {
 		scripts[i].regular = first_present(scripts[i].regular_files);
 		scripts[i].bold = first_present(scripts[i].bold_files);
 	}
+	japanese.regular = first_present(japanese.regular_files);
+	japanese.bold = first_present(japanese.bold_files);
+	japanese_ui = strcmp(lang_current(), FONTS_JAPANESE_LANGUAGE) == 0;
 
 	if (!regular_file) {
 		fprintf(stderr, "fonts: no default.ttf or default.otf in %s or %s\n", FONT_DIR, FONT_DIR_FALLBACK);
@@ -285,6 +355,10 @@ bool fonts_init(void) {
 	int len = snprintf(summary, sizeof(summary), "%s%s%s", basename_of(regular_file), bold_file ? ", " : "",
 					   bold_file ? basename_of(bold_file) : "");
 	const char *sep = ", ";
+	if (japanese.used && len > 0 && (size_t)len < sizeof(summary)) {
+		len += snprintf(summary + len, sizeof(summary) - (size_t)len, "%s%s", sep, japanese.name);
+		sep = " + ";
+	}
 	for (size_t i = 0; i < SCRIPT_COUNT && len > 0 && (size_t)len < sizeof(summary); i++) {
 		if (scripts[i].used) {
 			len += snprintf(summary + len, sizeof(summary) - (size_t)len, "%s%s", sep, scripts[i].name);
@@ -398,6 +472,22 @@ bool fonts_set_large_text(bool large) {
 	}
 	fprintf(stderr, "fonts: %s text\n", large ? "large" : "normal");
 	return true;
+}
+
+void fonts_set_language(const char *name) {
+	bool japanese_now = name && strcmp(name, FONTS_JAPANESE_LANGUAGE) == 0;
+	if (japanese_now == japanese_ui) {
+		return;
+	}
+	japanese_ui = japanese_now;
+
+	// The kanji and kana already on screen change face: every label is
+	// measured again.
+	for (lv_display_t *disp = lv_display_get_next(NULL); disp; disp = lv_display_get_next(disp)) {
+		for (uint32_t i = 0; i < disp->screen_cnt; i++) {
+			lv_obj_refresh_style(disp->screens[i], LV_PART_ANY, LV_STYLE_PROP_ANY);
+		}
+	}
 }
 
 // Empty until the faces have been opened, which is before any page is built.

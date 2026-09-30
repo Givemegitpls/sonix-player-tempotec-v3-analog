@@ -113,7 +113,10 @@ static void pick_cb(lv_event_t *e) {
 	// lang_set() re-labels every page that is already built, so the change
 	// shows immediately -- including on this page, whose own heading is a
 	// label like any other.
-	lang_set(entries[index].name);
+	fonts_set_language(entries[index].name);
+	if (!lang_set(entries[index].name)) {
+		fonts_set_language(lang_current());
+	}
 	paint_checks();
 	refresh_titles();
 }

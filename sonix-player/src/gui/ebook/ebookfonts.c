@@ -5,6 +5,10 @@
 #include <unistd.h>
 
 #include "src/gui/fonts/fonts.h"
+#include "src/system/core/respath.h"
+
+// The firmware's own copy, then the card's.
+#define EBOOK_FONT_DIR SONIX_RESOURCE_DIR "/fonts/ebook"
 
 // The four files, in the order ebookfonts_face() falls back through.
 typedef enum {
@@ -60,13 +64,18 @@ static void close_faces(void) {
 bool ebookfonts_open(const char *sd_root, int size) {
 	ebookfonts_close();
 
-	snprintf(font_dir, sizeof(font_dir), "%s/.local/fonts", sd_root ? sd_root : "");
 	current_size = size > 0 ? size : 20;
 
+	snprintf(font_dir, sizeof(font_dir), "%s", EBOOK_FONT_DIR);
 	faces[FACE_REGULAR] = open_face(FACE_REGULAR, current_size);
+	if (!faces[FACE_REGULAR]) {
+		snprintf(font_dir, sizeof(font_dir), "%s/.local/fonts", sd_root ? sd_root : "");
+		faces[FACE_REGULAR] = open_face(FACE_REGULAR, current_size);
+	}
 	have_regular = faces[FACE_REGULAR] != NULL;
 	if (!have_regular) {
-		fprintf(stderr, "ebook: no Bookerly in %s; reading with the interface font\n", font_dir);
+		fprintf(stderr, "ebook: no Bookerly in %s or %s; reading with the interface font\n", EBOOK_FONT_DIR,
+				font_dir);
 	}
 	return have_regular;
 }
