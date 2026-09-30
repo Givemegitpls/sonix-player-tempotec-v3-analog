@@ -48,4 +48,10 @@ typedef struct {
 // into two shelves.
 void metadata_read(const char *filepath, song_metadata_t *out);
 
+// The lyrics the file carries, as text: a Vorbis or APE LYRICS or
+// UNSYNCEDLYRICS field, an ID3v2 USLT frame, an SYLT frame turned into LRC, or
+// an MP4 ©lyr atom. Timed text wins over plain when a file has both. malloc'd,
+// NULL when there are none.
+char *metadata_read_lyrics(const char *filepath);
+
 #endif // METADATA_H

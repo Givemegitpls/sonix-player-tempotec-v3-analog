@@ -710,6 +710,11 @@ void trackmenu_details_open(const char *path) {
 	switcher_set_player_return(NULL);
 }
 
+static void lyrics_cb(void *user) {
+	(void)user;
+	player_lyrics_toggle();
+}
+
 void trackmenu_open(lv_obj_t *anchor) {
 	// Two tables rather than one with the label patched at runtime, because of
 	// the string-extraction tool: it reads popover_item_t initialisers (see
@@ -735,6 +740,30 @@ void trackmenu_open(lv_obj_t *anchor) {
 		{"details", open_details_cb, NULL},
 		{"settings", open_settings_cb, NULL},
 	};
+
+	// A file on the card can show its words: the entry goes after the album,
+	// and says "hide" while they are up.
+	static const popover_item_t ITEMS_LYRICS[] = {
+		{"trackmenu_queue", open_queue_cb, NULL},
+		{"add_to_playlist", add_to_playlist_cb, NULL},
+		{"show_album", open_album_cb, NULL},
+		{"trackmenu_lyrics", lyrics_cb, NULL},
+		{"details", open_details_cb, NULL},
+		{"settings", open_settings_cb, NULL},
+	};
+	static const popover_item_t ITEMS_LYRICS_SHOWN[] = {
+		{"trackmenu_queue", open_queue_cb, NULL},
+		{"add_to_playlist", add_to_playlist_cb, NULL},
+		{"show_album", open_album_cb, NULL},
+		{"trackmenu_hide_lyrics", lyrics_cb, NULL},
+		{"details", open_details_cb, NULL},
+		{"settings", open_settings_cb, NULL},
+	};
+
+	if (player_lyrics_available()) {
+		popover_show(anchor, player_lyrics_shown() ? ITEMS_LYRICS_SHOWN : ITEMS_LYRICS, 6);
+		return;
+	}
 
 	device_state_t state;
 	device_state_get(&state);

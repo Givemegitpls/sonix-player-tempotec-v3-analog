@@ -86,6 +86,57 @@ static bool replaygain_field(song_metadata_t *out, const char *key, const char *
 
 // Applies a single "KEY=VALUE" Vorbis comment string (not null-terminated) to
 // the relevant metadata field.
+// ---------------------------------------------------------------------------
+// Lyrics
+//
+// Read only by metadata_read_lyrics(), which switches these on for one call on
+// its own thread: an ordinary read -- the library scan, the player -- never
+// allocates for them.
+// ---------------------------------------------------------------------------
+
+#define LYRICS_MAX_BYTES (256u * 1024u)
+
+static __thread bool lyrics_wanted;
+static __thread char *lyrics_found;
+
+// Whether the text carries LRC time tags: "[mm:ss" at the start of a line.
+static bool lyrics_have_times(const char *text, size_t len) {
+	for (size_t i = 0; i + 5 < len; i++) {
+		if ((i == 0 || text[i - 1] == '\n') && text[i] == '[' && isdigit((unsigned char)text[i + 1])) {
+			size_t j = i + 1;
+			while (j < len && isdigit((unsigned char)text[j])) {
+				j++;
+			}
+			if (j + 2 < len && text[j] == ':' && isdigit((unsigned char)text[j + 1])) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// The first lyrics found are kept, except that timed ones replace untimed.
+static void lyrics_offer(const char *text, size_t len) {
+	if (!lyrics_wanted || !text || len == 0) {
+		return;
+	}
+	if (len > LYRICS_MAX_BYTES) {
+		len = LYRICS_MAX_BYTES;
+	}
+	if (lyrics_found) {
+		if (lyrics_have_times(lyrics_found, strlen(lyrics_found)) || !lyrics_have_times(text, len)) {
+			return;
+		}
+		free(lyrics_found);
+		lyrics_found = NULL;
+	}
+	lyrics_found = malloc(len + 1);
+	if (lyrics_found) {
+		memcpy(lyrics_found, text, len);
+		lyrics_found[len] = '\0';
+	}
+}
+
 static void apply_vorbis_comment(song_metadata_t *out, const char *comment, size_t len) {
 	const char *eq = memchr(comment, '=', len);
 	if (!eq)
@@ -102,6 +153,12 @@ static void apply_vorbis_comment(song_metadata_t *out, const char *comment, size
 		key[i] = (char)toupper((unsigned char)comment[i]);
 	}
 	key[key_len] = '\0';
+
+	if (strcmp(key, "LYRICS") == 0 || strcmp(key, "UNSYNCEDLYRICS") == 0 || strcmp(key, "UNSYNCED LYRICS") == 0 ||
+		strcmp(key, "SYNCEDLYRICS") == 0) {
+		lyrics_offer(value, value_len);
+		return;
+	}
 
 	char *dst = NULL;
 	size_t dst_size = 0;
@@ -505,6 +562,84 @@ static void txxx_series(song_metadata_t *out, uint8_t encoding, const uint8_t *d
 // Positions are off_t: in a .dsf, a WAV and an AIFF the tag sits after the
 // audio, which in a long hi-res recording is past two gigabytes, where a
 // 32-bit ftell() has nothing to return.
+// Past the encoded, terminated string at the start of `data`: one zero byte in
+// the single-byte encodings, two on an even offset in the UTF-16 ones.
+static size_t id3_skip_string(uint8_t encoding, const uint8_t *data, size_t len) {
+	if (encoding == 1 || encoding == 2) {
+		for (size_t i = 0; i + 1 < len; i += 2) {
+			if (data[i] == 0 && data[i + 1] == 0) {
+				return i + 2;
+			}
+		}
+		return len;
+	}
+	const uint8_t *zero = memchr(data, 0, len);
+	return zero ? (size_t)(zero - data) + 1 : len;
+}
+
+// USLT: encoding, language, a description, then the text.
+static void id3_lyrics_uslt(const uint8_t *buf, size_t len) {
+	if (len < 5) {
+		return;
+	}
+	uint8_t encoding = buf[0];
+	size_t pos = 4 + id3_skip_string(encoding, buf + 4, len - 4);
+	if (pos >= len) {
+		return;
+	}
+	size_t out_size = (len - pos) * 2 + 16;
+	char *text = malloc(out_size);
+	if (!text) {
+		return;
+	}
+	id3_decode_text(encoding, buf + pos, len - pos, text, out_size);
+	lyrics_offer(text, strlen(text));
+	free(text);
+}
+
+// SYLT with millisecond stamps, written out as LRC so there is one timed form
+// to read: encoding, language, stamp format, content type, a description,
+// then pairs of text and a 32-bit time.
+static void id3_lyrics_sylt(const uint8_t *buf, size_t len) {
+	if (len < 7 || buf[4] != 2) {
+		return; // stamps in MPEG frames are not supported
+	}
+	uint8_t encoding = buf[0];
+	size_t pos = 6 + id3_skip_string(encoding, buf + 6, len - 6);
+	size_t cap = len * 2 + 64;
+	char *lrc = malloc(cap);
+	char *line = malloc(len * 2 + 16);
+	if (!lrc || !line) {
+		free(lrc);
+		free(line);
+		return;
+	}
+	size_t used = 0;
+	lrc[0] = '\0';
+	while (pos < len) {
+		size_t text_len = id3_skip_string(encoding, buf + pos, len - pos);
+		if (pos + text_len + 4 > len) {
+			break;
+		}
+		id3_decode_text(encoding, buf + pos, text_len, line, len * 2 + 16);
+		const uint8_t *t = buf + pos + text_len;
+		uint32_t ms = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) | ((uint32_t)t[2] << 8) | t[3];
+		pos += text_len + 4;
+		char *nl = line;
+		while (*nl == '\n' || *nl == '\r') {
+			nl++; // some taggers start each entry with its line break
+		}
+		int n = snprintf(lrc + used, cap - used, "[%02u:%02u.%02u]%s\n", ms / 60000, (ms / 1000) % 60, (ms % 1000) / 10, nl);
+		if (n < 0 || (size_t)n >= cap - used) {
+			break;
+		}
+		used += (size_t)n;
+	}
+	lyrics_offer(lrc, used);
+	free(lrc);
+	free(line);
+}
+
 static bool read_id3v2(FILE *f, song_metadata_t *out) {
 	uint8_t header[10];
 	if (fread(header, 1, 10, f) != 10)
@@ -583,7 +718,8 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 		if (v22) {
 			static const char *const V22_MAP[][2] = {{"TT2", "TIT2"}, {"TP1", "TPE1"}, {"TP2", "TPE2"},
 													 {"TAL", "TALB"}, {"TCO", "TCON"}, {"TRK", "TRCK"},
-													 {"TPA", "TPOS"}, {"TYE", "TYER"}, {"TXX", "TXXX"}};
+													 {"TPA", "TPOS"}, {"TYE", "TYER"}, {"TXX", "TXXX"},
+													 {"ULT", "USLT"}, {"SLT", "SYLT"}};
 			for (size_t i = 0; i < sizeof(V22_MAP) / sizeof(V22_MAP[0]); i++) {
 				if (strcmp(frame_id, V22_MAP[i][0]) == 0) {
 					snprintf(frame_id, sizeof(frame_id), "%s", V22_MAP[i][1]);
@@ -594,7 +730,9 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 
 		bool wanted = strcmp(frame_id, "MVNM") == 0 || strcmp(frame_id, "MVIN") == 0 || strcmp(frame_id, "TIT2") == 0 || strcmp(frame_id, "TPE1") == 0 || strcmp(frame_id, "TPE2") == 0 || strcmp(frame_id, "TALB") == 0 || strcmp(frame_id, "TCON") == 0 || strcmp(frame_id, "TRCK") == 0 || strcmp(frame_id, "TPOS") == 0 || strcmp(frame_id, "TYER") == 0 || strcmp(frame_id, "TDRC") == 0 || strcmp(frame_id, "TXXX") == 0;
 
-		if (!wanted) {
+		bool lyrics_frame = lyrics_wanted && (strcmp(frame_id, "USLT") == 0 || strcmp(frame_id, "SYLT") == 0);
+
+		if (!wanted && !lyrics_frame) {
 			fseeko(f, next_frame, SEEK_SET);
 			continue;
 		}
@@ -605,6 +743,16 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 		if (fread(buf, 1, frame_size, f) != frame_size) {
 			free(buf);
 			break;
+		}
+
+		if (lyrics_frame) {
+			if (strcmp(frame_id, "USLT") == 0) {
+				id3_lyrics_uslt(buf, frame_size);
+			} else {
+				id3_lyrics_sylt(buf, frame_size);
+			}
+			free(buf);
+			continue;
 		}
 
 		uint8_t encoding = buf[0];
@@ -1101,6 +1249,10 @@ static void read_mp4_metadata(const char *filepath, song_metadata_t *out) {
 	out->year = mp4_tag_year(m);
 	snprintf(out->series, sizeof(out->series), "%s", mp4_tag_series(m));
 	snprintf(out->series_part, sizeof(out->series_part), "%s", mp4_tag_series_part(m));
+	const char *lyrics = mp4_tag_lyrics(m);
+	if (lyrics) {
+		lyrics_offer(lyrics, strlen(lyrics));
+	}
 	out->track_number = mp4_tag_track_number(m);
 	out->disc_number = mp4_tag_disc_number(m);
 
@@ -1154,6 +1306,11 @@ static void read_opus_metadata(const char *filepath, song_metadata_t *out) {
 // The ReplayGain entries already share their names.
 static void wavpack_tag_cb(void *user, const char *key, const char *value) {
 	song_metadata_t *out = (song_metadata_t *)user;
+
+	if (strcasecmp(key, "Lyrics") == 0 || strcasecmp(key, "UnsyncedLyrics") == 0) {
+		lyrics_offer(value, strlen(value));
+		return;
+	}
 
 	const char *vorbis = key;
 	if (strcasecmp(key, "Track") == 0) {
@@ -1341,4 +1498,20 @@ void metadata_read(const char *filepath, song_metadata_t *out) {
 	read_sidecar_tags(filepath, out);
 
 	out->has_tags = out->title[0] != '\0' || out->artist[0] != '\0' || out->album[0] != '\0' || out->genre[0] != '\0';
+}
+
+char *metadata_read_lyrics(const char *filepath) {
+	song_metadata_t *scratch = malloc(sizeof(*scratch));
+	if (!scratch) {
+		return NULL;
+	}
+	lyrics_wanted = true;
+	lyrics_found = NULL;
+	metadata_read(filepath, scratch);
+	lyrics_wanted = false;
+	free(scratch);
+
+	char *found = lyrics_found;
+	lyrics_found = NULL;
+	return found;
 }

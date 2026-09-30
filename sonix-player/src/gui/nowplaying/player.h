@@ -126,4 +126,11 @@ const lv_image_dsc_t *player_backdrop_image(void);
 // clears it.
 void player_set_cover_release_cb(void (*cb)(void));
 
+// The lyrics view (see player.c): whether the playing track can have one (a
+// file on the card), whether it is up, and the menu entry that puts it up or
+// takes it down.
+bool player_lyrics_available(void);
+bool player_lyrics_shown(void);
+void player_lyrics_toggle(void);
+
 #endif

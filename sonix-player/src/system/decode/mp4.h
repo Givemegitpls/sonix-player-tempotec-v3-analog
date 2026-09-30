@@ -109,6 +109,8 @@ const char *mp4_tag_freeform(const mp4_file_t *m, const char *name);
 // ----:SERIES-PART, else the movement name and number. Empty when absent.
 const char *mp4_tag_series(const mp4_file_t *m);
 const char *mp4_tag_series_part(const mp4_file_t *m);
+// The lyrics in the ©lyr atom, as the file holds them. NULL when absent.
+const char *mp4_tag_lyrics(const mp4_file_t *m);
 int mp4_tag_track_number(const mp4_file_t *m);
 
 // The `disk` atom's first half. 0 when the file carries no disc tag.

@@ -98,6 +98,7 @@ struct mp4_file {
 	int disc_number;
 	char series[256];	  // ----:SERIES, else the movement name
 	char series_part[32]; // ----:SERIES-PART, else the movement number
+	char *lyrics;		  // the ©lyr atom, malloc'd; NULL when absent
 
 	uint64_t cover_off;
 	uint32_t cover_size;
@@ -624,6 +625,15 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 			break;
 		case FOURCC(0xA9, 'g', 'e', 'n'):
 			copy_text(m->genre, sizeof(m->genre), value, value_len);
+			break;
+		case FOURCC(0xA9, 'l', 'y', 'r'):
+			if (!m->lyrics && value_len > 0) {
+				m->lyrics = malloc(value_len + 1);
+				if (m->lyrics) {
+					memcpy(m->lyrics, value, value_len);
+					m->lyrics[value_len] = '\0';
+				}
+			}
 			break;
 		// The movement pair, which audiobook taggers use for the series: a name,
 		// and a 16-bit number.
@@ -1274,6 +1284,7 @@ void mp4_close(mp4_file_t *m) {
 		free(m->tracks[i].stts);
 	}
 	free(m->chapters);
+	free(m->lyrics);
 	free(m->size_cache);
 	if (m->fd >= 0) {
 		close(m->fd);
@@ -1479,6 +1490,7 @@ int mp4_tag_year(const mp4_file_t *m) { return m ? m->year : 0; }
 const char *mp4_tag_series(const mp4_file_t *m) { return m ? m->series : ""; }
 
 const char *mp4_tag_series_part(const mp4_file_t *m) { return m ? m->series_part : ""; }
+const char *mp4_tag_lyrics(const mp4_file_t *m) { return m ? m->lyrics : NULL; }
 
 const char *mp4_tag_freeform(const mp4_file_t *m, const char *name) {
 	if (!m || !name) {

@@ -1,5 +1,7 @@
 #define _GNU_SOURCE 1 // strcasestr
 #include "audiobookdb.h"
+
+#include "src/system/decode/mp4.h"
 #include "src/system/library/id3chap.h"
 #include "src/system/library/vorbischap.h"
 #include "src/system/library/metadata.h"
@@ -617,8 +619,8 @@ void audiobookdb_touch(const char *path) {
 // its subfolders are walked, so one directory is open at a time whatever the
 // depth. In each folder:
 //
-//   an .m4b, or an .mp3, .opus, .ogg or .flac with chapter marks, is a book
-//   of its own;
+//   an .m4b, or an .m4a, .mp3, .opus, .ogg or .flac with chapter marks, is a
+//   book of its own;
 //
 //   the other audio files, together with those of its "CD 1" / "Disc 2"
 //   subfolders, are grouped by album tag: a group of two or more is a folder
@@ -755,11 +757,25 @@ static bool is_audio(const char *name) {
 	return false;
 }
 
-// A book in one file whatever its neighbours: an .m4b, or an .mp3, .opus, .ogg
-// or .flac whose chapters are marked inside it.
+// Whether an .m4a or .mp4 carries chapter marks.
+static bool mp4_has_chapters(const char *path) {
+	mp4_file_t *m = mp4_open(path);
+	if (!m) {
+		return false;
+	}
+	bool marked = mp4_chapter_count(m) > 0;
+	mp4_close(m);
+	return marked;
+}
+
+// A book in one file whatever its neighbours: an .m4b, or an .m4a, .mp3,
+// .opus, .ogg or .flac whose chapters are marked inside it.
 static bool is_book_file(const char *path, const char *name) {
 	if (has_extension(name, ".m4b")) {
 		return true;
+	}
+	if (has_extension(name, ".m4a") || has_extension(name, ".mp4")) {
+		return mp4_has_chapters(path);
 	}
 	if (has_extension(name, ".mp3")) {
 		return id3chap_present(path);
