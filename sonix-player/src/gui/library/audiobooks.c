@@ -1006,8 +1006,18 @@ static void finished_cb(lv_event_t *e) {
 // usual scan page.
 static bool upgrade_offered;
 
+// With no books indexed the page says a scan is needed instead of its tiles.
+static lv_obj_t *section_grid;
+static lv_obj_t *section_empty;
+
+static void section_scan_cb(lv_event_t *e) {
+	(void)e;
+	start_scan(NULL);
+}
+
 static void section_loaded_cb(lv_event_t *e) {
 	(void)e;
+	gridpage_show_empty(section_grid, section_empty, !audiobookdb_scan_running() && audiobookdb_count() == 0);
 	if (!upgrade_offered && audiobookdb_needs_rescan()) {
 		upgrade_offered = true;
 		// After this page's own load has finished, not inside it.
@@ -1023,7 +1033,10 @@ static void build_section_page(gui_config_t *cfg) {
 		{"audiobook_continue", &icon_menu_audiobook_continue, NULL, open_continue},
 	};
 	// The Music page's grid of two by three, so the tiles are the same size.
-	gridpage_build(audiobooks_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
+	section_grid =
+		gridpage_build(audiobooks_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
+	section_empty =
+		gridpage_empty_panel(audiobooks_screen, cfg, &icon_book_headphones, "audiobook_no_database", section_scan_cb);
 
 	// The options, and to their left the finished books.
 	settingsrow_title_corner_slots(settingsrow_title(audiobooks_screen, cfg, "audiobooks"), cfg, 2);

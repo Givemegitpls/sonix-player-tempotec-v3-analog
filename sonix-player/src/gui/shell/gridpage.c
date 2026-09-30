@@ -144,3 +144,69 @@ lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t
 	// bubbles any further.
 	return grid;
 }
+
+lv_obj_t *gridpage_empty_panel(lv_obj_t *screen, gui_config_t *cfg, const lv_image_dsc_t *icon, const char *text,
+							   lv_event_cb_t scan_cb) {
+	int top = settingsrow_content_top(cfg);
+
+	lv_obj_t *panel = lv_obj_create(screen);
+	lv_obj_remove_style_all(panel);
+	lv_obj_set_size(panel, lv_pct(100), cfg->screen_height - top);
+	lv_obj_align(panel, LV_ALIGN_TOP_LEFT, 0, top);
+	lv_obj_set_style_pad_hor(panel, cfg->padding * 2, 0);
+	lv_obj_set_style_pad_bottom(panel, cfg->padding * 2, 0);
+	lv_obj_set_style_pad_row(panel, 22, 0);
+	lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+
+	lv_obj_t *picture = lv_image_create(panel);
+	lv_image_set_src(picture, icon);
+	lv_obj_add_style(picture, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor_opa(picture, LV_OPA_COVER, 0);
+
+	lv_obj_t *label = lv_label_create(panel);
+	lv_label_set_text(label, tr(text));
+	lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(label, lv_pct(100));
+	lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_add_style(label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(label, &font_ui_24, 0);
+
+	lv_obj_t *button = lv_btn_create(panel);
+	lv_obj_set_size(button, 240, 68);
+	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_style_bg_color(button, theme()->accent, 0);
+	lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+	lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_shadow_width(button, 0, 0);
+	lv_obj_add_event_cb(button, scan_cb, LV_EVENT_CLICKED, NULL);
+
+	lv_obj_t *button_label = lv_label_create(button);
+	lv_label_set_text(button_label, tr("scan"));
+	lv_obj_set_style_text_font(button_label, &font_ui_24, 0);
+	lv_obj_set_style_text_color(button_label, lv_color_white(), 0);
+	lv_obj_center(button_label);
+
+	return panel;
+}
+
+void gridpage_show_empty(lv_obj_t *grid, lv_obj_t *panel, bool empty) {
+	if (grid) {
+		if (empty) {
+			lv_obj_add_flag(grid, LV_OBJ_FLAG_HIDDEN);
+		} else {
+			lv_obj_remove_flag(grid, LV_OBJ_FLAG_HIDDEN);
+		}
+	}
+	if (panel) {
+		if (empty) {
+			// The accent may have changed since the panel was built.
+			lv_obj_set_style_bg_color(lv_obj_get_child(panel, 2), theme()->accent, 0);
+			lv_obj_remove_flag(panel, LV_OBJ_FLAG_HIDDEN);
+		} else {
+			lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+		}
+	}
+}

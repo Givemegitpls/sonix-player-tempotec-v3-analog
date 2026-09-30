@@ -2076,6 +2076,25 @@ static void handle_bt_remote_key(const char *node, int code, bool usb) {
 	}
 }
 
+// What the clicks counted on a remote's play key add up to, carried out as the
+// key the remote would have sent. Nothing when nothing was counted.
+static void run_remote_clicks(const char *node, hook_clicks_t *clicks, bool usb) {
+	switch (hook_clicks_take(clicks)) {
+	case HOOK_GESTURE_PLAY_PAUSE:
+		handle_bt_remote_key(node, KEY_PLAYPAUSE, usb);
+		break;
+	case HOOK_GESTURE_NEXT:
+		handle_bt_remote_key(node, KEY_NEXTSONG, usb);
+		break;
+	case HOOK_GESTURE_PREV:
+		handle_bt_remote_key(node, KEY_PREVIOUSSONG, usb);
+		break;
+	case HOOK_GESTURE_NONE:
+	default:
+		break;
+	}
+}
+
 typedef struct {
 	char node[32];
 	bool usb;
@@ -2124,21 +2143,83 @@ static void *bt_input_thread_func(void *arg) {
 	printf("input: %s is a %s remote (%s), declared keys: %s\n", node, usb ? "USB" : "Bluetooth", name,
 		   keys[0] ? keys : "none");
 
+	// A volume key held on a USB remote repeats, at the pace of the device's
+	// own volume keys. The repeat is made here, from the press and the
+	// release, whether or not the remote sends the kernel's autorepeat (value
+	// 2): many report neither, and one that does would otherwise step twice.
+	// Bluetooth remotes keep one step per press.
+	int held = -1;
+	uint32_t next_repeat = 0;
+	// The play key of a USB remote is counted like the centre button of a
+	// cable remote (hookclicks.h): one click plays or pauses, two skip to the
+	// next track, three go back. A remote with only volume and play keys has no
+	// other way to change track.
+	hook_clicks_t clicks = {0};
 	for (;;) {
+		uint32_t now = now_ms();
+		int timeout = -1;
+		if (held >= 0) {
+			timeout = (int)(next_repeat > now ? next_repeat - now : 0);
+		}
+		int clicks_wait = hook_clicks_timeout(&clicks, now);
+		if (clicks_wait >= 0 && (timeout < 0 || clicks_wait < timeout)) {
+			timeout = clicks_wait;
+		}
+		struct pollfd pfd = {.fd = fd, .events = POLLIN};
+		int ready = poll(&pfd, 1, timeout);
+		if (ready < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			break;
+		}
+		if (ready == 0) {
+			now = now_ms();
+			if (hook_clicks_expired(&clicks, now)) {
+				run_remote_clicks(node, &clicks, usb);
+			}
+			if (held >= 0 && (int32_t)(now - next_repeat) >= 0) {
+				handle_bt_remote_key(node, held, usb);
+				next_repeat = now + VOLUME_REPEAT_PERIOD_MS;
+			}
+			continue;
+		}
+
 		struct input_event ev;
 		if (read(fd, &ev, sizeof(ev)) != (ssize_t)sizeof(ev)) {
 			break; // the node dies with the disconnection: ENODEV, so exit
 		}
-		// Presses only. usbhid also sends the kernel's autorepeat (value 2)
-		// for a held key, which steps the volume and nothing else.
-		bool repeat = usb && ev.value == 2 && (ev.code == KEY_VOLUMEUP || ev.code == KEY_VOLUMEDOWN);
-		if (ev.type != EV_KEY || (ev.value != 1 && !repeat)) {
+		if (ev.type != EV_KEY) {
 			continue;
 		}
-		if (!repeat) {
-			log_key_event(node, &ev);
+		if (ev.value == 0) {
+			if (ev.code == held) {
+				held = -1;
+			}
+			continue;
+		}
+		if (ev.value != 1) {
+			continue; // the kernel's autorepeat: the repeat is made above
+		}
+		log_key_event(node, &ev);
+		if (usb && (ev.code == KEY_PLAYPAUSE || ev.code == KEY_PLAY || ev.code == KEY_PLAYCD)) {
+			hook_clicks_press(&clicks, now_ms());
+			held = -1;
+			continue;
+		}
+		// A remote that sends its own next or previous has counted the clicks
+		// itself; any other key ends the gesture being counted.
+		if (ev.code == KEY_NEXTSONG || ev.code == KEY_PREVIOUSSONG) {
+			hook_clicks_cancel(&clicks);
+		} else {
+			run_remote_clicks(node, &clicks, usb);
 		}
 		handle_bt_remote_key(node, ev.code, usb);
+		held = -1;
+		if (usb && (ev.code == KEY_VOLUMEUP || ev.code == KEY_VOLUMEDOWN)) {
+			held = ev.code;
+			next_repeat = now_ms() + VOLUME_REPEAT_DELAY_MS;
+		}
 	}
 
 	close(fd);

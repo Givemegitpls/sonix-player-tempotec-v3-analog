@@ -3,6 +3,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/library/browser.h"
+#include "src/gui/library/libraryscan.h"
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/shell/gridpage.h"
 #include "src/gui/shell/gui.h"
@@ -15,6 +16,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
+#include "src/system/library/library.h"
 
 lv_obj_t *music_screen;
 
@@ -63,6 +65,20 @@ static void search_cb(lv_event_t *e) {
 static void favourites_cb(lv_event_t *e) {
 	(void)e;
 	medialist_open(tr("favourites"), LIBRARY_LIST_FAVOURITES, LIBRARY_FILTER_NONE, NULL);
+}
+
+// With no tracks indexed the tiles would all open empty lists: the page says
+// a scan is needed instead, and the button asks which folders to scan.
+static lv_obj_t *empty_panel;
+
+static void scan_cb(lv_event_t *e) {
+	(void)e;
+	libraryscan_choose_folders();
+}
+
+static void screen_loaded_cb(lv_event_t *e) {
+	(void)e;
+	gridpage_show_empty(tile_grid, empty_panel, !library_scan_running() && library_track_count() == 0);
 }
 
 // The corner buttons share everything but icon and action.
@@ -117,6 +133,9 @@ void music_init(gui_config_t *cfg) {
 
 	lv_obj_t *search_btn = corner_button(cfg, 3, &icon_search);
 	lv_obj_add_event_cb(search_btn, search_cb, LV_EVENT_CLICKED, NULL);
+
+	empty_panel = gridpage_empty_panel(music_screen, cfg, &icon_music_note, "music_no_database", scan_cb);
+	lv_obj_add_event_cb(music_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 
 	music_refresh_layout();
 }

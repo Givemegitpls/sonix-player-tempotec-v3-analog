@@ -39,4 +39,13 @@ void gridpage_set_tile(lv_obj_t *grid, int index, const lv_image_dsc_t *icon, co
 lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t *entries, int count, int columns, int rows,
 					bool clear_corner_buttons);
 
+// What a section page shows instead of its tiles while its index is empty: a
+// picture, a line saying a scan is needed and a Scan button calling `scan_cb`.
+// Hidden until gridpage_show_empty() is told otherwise.
+lv_obj_t *gridpage_empty_panel(lv_obj_t *screen, gui_config_t *cfg, const lv_image_dsc_t *icon, const char *text,
+							   lv_event_cb_t scan_cb);
+
+// Either the tiles or the panel.
+void gridpage_show_empty(lv_obj_t *grid, lv_obj_t *panel, bool empty);
+
 #endif /* GRIDPAGE_H */

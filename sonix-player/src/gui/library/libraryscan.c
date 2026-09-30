@@ -10,6 +10,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/library/music.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/main_menu.h"
 #include "src/gui/shell/settingsrow.h"
@@ -59,9 +60,16 @@ static void poll_cb(lv_timer_t *timer) {
 	show_finished(found);
 }
 
+// Back to the Music page, which now shows the library, with the menu as the
+// only page behind it: walking back through a finished scan makes no sense.
+static void back_to_music(void) {
+	screen_history_reset();
+	switch_screen_no_history(music_screen);
+}
+
 static void ok_cb(lv_event_t *e) {
 	(void)e;
-	switch_screen(main_menu_screen);
+	back_to_music();
 }
 
 // Stopping is not throwing away: the scan thread winds up at the next file and
@@ -74,7 +82,7 @@ static void cancel_cb(lv_event_t *e) {
 	lv_timer_pause(poll_timer);
 	power_hold_screen_on(false);
 
-	switch_screen(main_menu_screen);
+	back_to_music();
 }
 
 void libraryscan_begin(void) {
