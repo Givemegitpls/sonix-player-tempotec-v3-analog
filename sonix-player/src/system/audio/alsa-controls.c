@@ -543,6 +543,34 @@ static void write_dac_attenuation(void) {
 	alsa_set_control("Left Playback Volume", current_volume);
 }
 
+// The DAC silent through a suspend: see alsa_suspend_mute() in the header.
+static bool suspend_muted;
+
+void alsa_suspend_mute(void) {
+	if (alsa_board_is_cs43131() || suspend_muted) {
+		return;
+	}
+#ifndef HOST_BUILD
+	alsa_set_control("Right Playback Volume", 255);
+	alsa_set_control("Left Playback Volume", 255);
+	usleep(30 * 1000); // the codec's own volume ramp
+#endif
+	suspend_muted = true;
+	fprintf(stderr, "alsa: DAC muted for suspend\n");
+}
+
+void alsa_suspend_restore(void) {
+	if (!suspend_muted) {
+		return;
+	}
+	suspend_muted = false;
+#ifndef HOST_BUILD
+	write_dac_attenuation();
+	usleep(30 * 1000);
+#endif
+	fprintf(stderr, "alsa: DAC level restored after suspend\n");
+}
+
 int alsa_dsd_gain_index(void) { return dsd_gain_index; }
 
 void alsa_set_dsd_gain_index(int index) {

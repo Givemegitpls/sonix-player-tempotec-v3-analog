@@ -34,6 +34,7 @@
 #include "src/system/gearboy/gbdb.h"
 #include "src/system/input/hookclicks.h"
 #include "src/system/input/keymap.h"
+#include "src/system/core/panel.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
@@ -1802,6 +1803,70 @@ void input_host_button(int code, bool down) {
 }
 #endif
 
+// One thread per built-in button device, and one on the touch panel.
+//
+// The buttons are found by the names their drivers register -- the power key
+// on "md-gpio-keys", the volume and transport keys on "jz adc keyboard" -- and
+// not by number: the numbers are the order the drivers probed in, and a touch
+// controller probing late moves them. event0 and event2, the numbers they
+// usually have, only when neither name is found.
+//
+// The touch panel is watched too, as the node main.c found for it: with
+// double-tap wake on, its controller reports the wake tap as a power-key
+// press while the panel is blanked. Its coordinates are ABS events, which
+// these threads ignore.
+#ifndef HOST_BUILD
+static void start_builtin_input_threads(void) {
+	static const char *const NAMES[] = {"md-gpio-keys", "jz adc keyboard"};
+	const char *touch = panel_touch_device();
+	int found = 0;
+
+	DIR *d = opendir("/dev/input");
+	struct dirent *e;
+	while (d && (e = readdir(d)) != NULL) {
+		if (strncmp(e->d_name, "event", 5) != 0) {
+			continue;
+		}
+		char node[32];
+		if ((size_t)snprintf(node, sizeof(node), "/dev/input/%s", e->d_name) >= sizeof(node)) {
+			continue;
+		}
+		int fd = open(node, O_RDONLY | O_CLOEXEC);
+		if (fd < 0) {
+			continue;
+		}
+		char name[128] = {0};
+		bool named = ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name) >= 0;
+		close(fd);
+		if (!named || (touch && strcmp(node, touch) == 0)) {
+			continue;
+		}
+		for (size_t i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
+			if (strcmp(name, NAMES[i]) == 0) {
+				printf("input: %s is a built-in button device (%s)\n", node, name);
+				start_input_thread(node, false);
+				found++;
+				break;
+			}
+		}
+	}
+	if (d) {
+		closedir(d);
+	}
+
+	if (found == 0) {
+		static const char *const USUAL[] = {"/dev/input/event0", "/dev/input/event2"};
+		fprintf(stderr, "input: no button device by name; watching event0 and event2\n");
+		for (size_t i = 0; i < sizeof(USUAL) / sizeof(USUAL[0]); i++) {
+			if (!touch || strcmp(USUAL[i], touch) != 0) {
+				start_input_thread(USUAL[i], false);
+			}
+		}
+	}
+	start_input_thread(touch ? touch : "/dev/input/event1", false);
+}
+#endif
+
 // The keys on the headphone cable come from a separate device -- the
 // sa_earpods_adc module, which registers under the name "earpods_adc" -- and
 // its /dev/input/eventN is not fixed: it depends on the order the modules
@@ -2337,16 +2402,7 @@ void system_start_services(system_config_t *cfg, system_notification_cb_t notifi
 #ifdef HOST_BUILD
 	start_host_input_thread();
 #else
-	// One thread per button node. event1 is the touchscreen and is LVGL's for
-	// touches -- but it is watched here too, because with double-tap wake on,
-	// the touch controller reports the wake tap as a power-key press on its
-	// own node while the panel is blanked. Touch coordinates are ABS events
-	// this thread simply ignores; only key events are acted on.
-	static const char *const button_nodes[] = {"/dev/input/event0", "/dev/input/event2", "/dev/input/event1"};
-	for (size_t i = 0; i < sizeof(button_nodes) / sizeof(button_nodes[0]); i++) {
-		start_input_thread(button_nodes[i], false);
-	}
-
+	start_builtin_input_threads();
 	start_headset_input_thread();
 #endif
 	start_bt_input_scanner();

@@ -986,6 +986,8 @@ static void suspend_to_ram(void) {
 		rtc_alarm_disarm(); // armed a moment ago for a sleep that never began
 		headset_suspend_finish();
 		headset_keys_wake();
+		// The route was parked and the DAC muted for a sleep that never began.
+		audio_force_output_reinit_after_resume();
 		return;
 	}
 	fputs("mem", f);
@@ -1019,8 +1021,12 @@ static void suspend_to_ram(void) {
 	// (suspend_volage == work_voltage on all four DCDCs) and the codec driver's
 	// PM callbacks are empty, so the CS43198 keeps its registers. See the note
 	// on alsa_controls_reapply() in alsa-controls.c.
+	//
+	// After a refused suspend too: the route was parked and the DAC muted all
+	// the same, and left that way the next play goes to the parked socket in
+	// silence.
+	audio_force_output_reinit_after_resume();
 	if (rc == 0) {
-		audio_force_output_reinit_after_resume();
 
 		// And the same courtesy to the radio. The daemons came through the
 		// suspend -- they are processes, nothing suspended them -- but the

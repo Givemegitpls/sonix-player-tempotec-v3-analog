@@ -256,6 +256,7 @@ static double restart_fresh_pos;
 void audio_force_output_reinit_after_resume(void) {
 	// No HBC3000 on the CS43131 board: nothing went down, nothing to re-init.
 	if (alsa_board_is_cs43131()) {
+		alsa_suspend_restore();
 		return;
 	}
 	// 1 = 3.5 mm line out, 2 = 3.5 mm headphone, 3 = 4.4 mm balanced.
@@ -273,6 +274,8 @@ void audio_force_output_reinit_after_resume(void) {
 	// again with a stream already coming.
 	alsa_controls_note_output(x);
 #endif
+	// The DAC back once the real route is live again.
+	alsa_suspend_restore();
 }
 
 // The pop into the headphones as the R3 Pro II goes into mem.
@@ -301,6 +304,10 @@ void audio_park_output_before_suspend(void) {
 		return; // not one of the analogue sockets
 	}
 	int y = output_reinit_partner(x);
+	// The DAC first: the route change mutes the old port, but the DAC feeding
+	// it would still be live when its supply goes. Silent until the wake has
+	// put the real route back (audio_force_output_reinit_after_resume()).
+	alsa_suspend_mute();
 	// The balanced line-out flag with it: on the 4.4 mm socket headphone and
 	// line out are the same route, and a report of a pop has to say which.
 	fprintf(stderr, "audio: output parked on %d before mem (was %d, balanced line out %d)\n", y, x, alsa_output_key() & 1);

@@ -1682,6 +1682,64 @@ void display_set_rotated(bool rotated) {
 	printf("fb: rotation %s\n", fb_rotated ? "on (180 degrees)" : "off");
 }
 
+// The touch panel among /dev/input/event*.
+//
+// Its number is not fixed: it is the order the drivers probed in, and a touch
+// controller that comes up late -- the R1's after a firmware update, with its
+// loader script broken -- lands on a later one, while event1 goes to a key
+// device. Opened as the pointer, that leaves a screen that looks frozen. So
+// the panel is recognised by what it reports: absolute coordinates, and
+// preferably the "direct" property a touchscreen sets (a touchpad does not).
+// The cable remote, which also lives here, is never it.
+//
+// Waits up to TOUCH_PROBE_WAIT_MS for one to appear, in case it is still
+// probing; false when none does.
+#define TOUCH_PROBE_WAIT_MS 2000
+
+static bool input_bit(const unsigned long *bits, int bit) {
+	return (bits[bit / (8 * (int)sizeof(long))] >> (bit % (8 * (int)sizeof(long)))) & 1UL;
+}
+
+static bool find_touch_node(char *out, size_t out_size) {
+	for (int waited = 0; waited <= TOUCH_PROBE_WAIT_MS; waited += 100) {
+		int fallback = -1;
+		for (int n = 0; n < 16; n++) {
+			char node[32];
+			snprintf(node, sizeof(node), "/dev/input/event%d", n);
+			int fd = open(node, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+			if (fd < 0) {
+				continue;
+			}
+			unsigned long types[(EV_MAX + 8 * sizeof(long)) / (8 * sizeof(long))] = {0};
+			unsigned long props[(INPUT_PROP_MAX + 8 * sizeof(long)) / (8 * sizeof(long))] = {0};
+			char name[64] = {0};
+			bool abs = ioctl(fd, EVIOCGBIT(0, sizeof(types)), types) >= 0 && input_bit(types, EV_ABS);
+			bool direct = ioctl(fd, EVIOCGPROP(sizeof(props)), props) >= 0 && input_bit(props, INPUT_PROP_DIRECT);
+			ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name);
+			close(fd);
+			if (!abs || strncmp(name, "earpods_", 8) == 0) {
+				continue;
+			}
+			if (direct) {
+				snprintf(out, out_size, "%s", node);
+				printf("input: %s is the touch panel (%s)\n", node, name);
+				return true;
+			}
+			if (fallback < 0) {
+				fallback = n;
+			}
+		}
+		if (fallback >= 0) {
+			snprintf(out, out_size, "/dev/input/event%d", fallback);
+			printf("input: %s is the touch panel (absolute axes, no direct property)\n", out);
+			return true;
+		}
+		usleep(100 * 1000);
+	}
+	fprintf(stderr, "input: no touch panel among the event devices\n");
+	return false;
+}
+
 static lv_display_t *init_target_display(void) {
 	// Tear-free page flipping when the framebuffer supports it...
 	lv_display_t *disp = try_panned_display();
@@ -1697,10 +1755,23 @@ static lv_display_t *init_target_display(void) {
 		lv_linux_fbdev_set_file(disp, "/dev/fb0");
 	}
 
-	lv_indev_t *touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, "/dev/input/event1");
-	if (touch) {
-		snprintf(fb_touch_node, sizeof(fb_touch_node), "%s", "/dev/input/event1");
-	} else {
+	// The panel as the kernel describes it, not by its number; event1 and then
+	// event0, as before, only when nothing answers to that description.
+	char found[sizeof(fb_touch_node)];
+	lv_indev_t *touch = NULL;
+	if (find_touch_node(found, sizeof(found))) {
+		touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, found);
+		if (touch) {
+			snprintf(fb_touch_node, sizeof(fb_touch_node), "%s", found);
+		}
+	}
+	if (!touch) {
+		touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, "/dev/input/event1");
+		if (touch) {
+			snprintf(fb_touch_node, sizeof(fb_touch_node), "%s", "/dev/input/event1");
+		}
+	}
+	if (!touch) {
 		fprintf(stderr, "Warning: Failed to open /dev/input/event1. Trying event0...\n");
 		touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, "/dev/input/event0");
 		if (touch) {

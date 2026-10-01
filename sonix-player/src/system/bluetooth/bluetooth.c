@@ -1731,6 +1731,20 @@ static bool connect_device(const char *mac) {
 	return ok;
 }
 
+// How long a bond reported as failed is looked for in bluez all the same.
+#define PAIR_LATE_MS 2000
+
+static bool device_is_paired(const char *mac) {
+	btstack_device_t devices[BT_MAX_DEVICES];
+	int count = btstack_devices(devices, BT_MAX_DEVICES);
+	for (int i = 0; i < count; i++) {
+		if (devices[i].paired && strcasecmp(devices[i].address, mac) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static bool pair_and_connect(const char *mac) {
 	// bluez must currently know this address. It ages a merely-seen device out
 	// after thirty seconds, and between the sweep finishing, the list being
@@ -1756,8 +1770,23 @@ static bool pair_and_connect(const char *mac) {
 
 	fprintf(stderr, "bluetooth: pairing %s\n", mac);
 	if (!btstack_pair(mac, PAIR_TIMEOUT_MS)) {
-		fprintf(stderr, "bluetooth: %s would not pair\n", mac);
-		return false;
+		// Some earbuds complete the bond and close the link before bluez has
+		// the answer to Pair, which then reports a failure or a timeout while
+		// the bond is saved -- and after the next Bluetooth restart the device
+		// shows up as paired after all. bluez's own Paired property is asked
+		// for a moment before calling it a failure.
+		bool paired = false;
+		for (int waited = 0; waited <= PAIR_LATE_MS && !paired; waited += 100) {
+			paired = device_is_paired(mac);
+			if (!paired && waited < PAIR_LATE_MS) {
+				sleep_ms(100);
+			}
+		}
+		if (!paired) {
+			fprintf(stderr, "bluetooth: %s would not pair\n", mac);
+			return false;
+		}
+		fprintf(stderr, "bluetooth: %s kept the bond although Pair failed; going on\n", mac);
 	}
 
 	// Trusted only for a device the user chose explicitly, which is exactly what

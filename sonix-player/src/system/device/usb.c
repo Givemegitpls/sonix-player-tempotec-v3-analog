@@ -635,7 +635,8 @@ static void composite_restore(void) {
 // firmware reaches the card through symlinks and /proc/mounts lists the
 // canonical one).
 static bool mount_still_up(void) {
-	char wanted[512];
+	// realpath() takes a buffer of PATH_MAX: given less it may write past it.
+	char wanted[PATH_MAX];
 	if (!realpath(sd_mount, wanted)) {
 		return false;
 	}
