@@ -233,6 +233,7 @@ static const char *const TAG_ITEMS[] = {
 	"replaygain_track_peak",
 	"replaygain_album_gain",
 	"replaygain_album_peak",
+	"Compilation",
 };
 
 void wavpackdec_tags(const char *filepath, void (*fn)(void *user, const char *key, const char *value), void *user) {

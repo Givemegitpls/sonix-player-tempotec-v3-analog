@@ -102,6 +102,7 @@ int mp4_chapter_at_time(const mp4_file_t *m, double secs);
 const char *mp4_tag_title(const mp4_file_t *m);
 const char *mp4_tag_artist(const mp4_file_t *m);
 const char *mp4_tag_album_artist(const mp4_file_t *m);
+bool mp4_tag_compilation(const mp4_file_t *m);
 const char *mp4_tag_album(const mp4_file_t *m);
 const char *mp4_tag_genre(const mp4_file_t *m);
 int mp4_tag_year(const mp4_file_t *m);

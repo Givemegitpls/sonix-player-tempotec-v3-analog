@@ -99,6 +99,7 @@ struct mp4_file {
 	char title[256];
 	char artist[256];
 	char album_artist[256];
+	bool compilation; // the cpil atom
 	char album[256];
 	char genre[128];
 	int year;
@@ -629,6 +630,10 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 			break;
 		case FOURCC('a', 'A', 'R', 'T'):
 			copy_text(m->album_artist, sizeof(m->album_artist), value, value_len);
+			break;
+		// A one-byte integer, 1 on a compilation.
+		case FOURCC('c', 'p', 'i', 'l'):
+			m->compilation = value_len >= 1 && value[value_len - 1] != 0;
 			break;
 		case FOURCC(0xA9, 'a', 'l', 'b'):
 			copy_text(m->album, sizeof(m->album), value, value_len);
@@ -1556,6 +1561,7 @@ int mp4_chapter_at_time(const mp4_file_t *m, double secs) {
 const char *mp4_tag_title(const mp4_file_t *m) { return m ? m->title : ""; }
 const char *mp4_tag_artist(const mp4_file_t *m) { return m ? m->artist : ""; }
 const char *mp4_tag_album_artist(const mp4_file_t *m) { return m ? m->album_artist : ""; }
+bool mp4_tag_compilation(const mp4_file_t *m) { return m && m->compilation; }
 const char *mp4_tag_album(const mp4_file_t *m) { return m ? m->album : ""; }
 const char *mp4_tag_genre(const mp4_file_t *m) { return m ? m->genre : ""; }
 int mp4_tag_year(const mp4_file_t *m) { return m ? m->year : 0; }

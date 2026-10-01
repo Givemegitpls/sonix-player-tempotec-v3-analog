@@ -9,15 +9,18 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/reboot.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "src/system/core/config.h"
+#include "src/system/core/utils.h"
 #include "src/system/core/lang.h"
 
 // Where the log goes when it is on: beside everything else the player writes.
@@ -779,6 +782,93 @@ static void sync_card(void) {
 	pthread_mutex_unlock(&log_lock);
 }
 
+// ---------------------------------------------------------------------------
+// When the kernel dies under the player
+//
+// An oops leaves the kernel running but no longer sound. The thread it struck
+// is gone, perhaps holding a lock of the process's memory map or of a driver,
+// and what follows is a device that stops answering one part at a time: in
+// the report this was written for, the card stopped being readable three
+// seconds later and the device sat frozen until it was reset by hand.
+//
+// The kernel cannot be mended from here, but the device can be restarted.
+// The whole report goes into the log -- normally capped at
+// KMSG_LINES_PER_CALL, which cut off the call trace that says where it
+// happened -- then the log is written out, the card synced and the machine
+// rebooted; playback picks up where it was remembered, as after any restart.
+//
+// Each of those steps can itself hang on a kernel in that state, and in a
+// process whose memory map may be locked a new thread may never start. So the
+// guard thread is made at startup and waits: once told, it gives the orderly
+// way OOPS_DEADLINE_S, then restarts the machine through /proc/sysrq-trigger,
+// which asks nothing of this process or of the card.
+// ---------------------------------------------------------------------------
+
+#define OOPS_DEADLINE_S 15
+
+static sem_t oops_go;
+static bool oops_guard_running;
+static bool oops_seen;
+
+static void *oops_guard(void *arg) {
+	(void)arg;
+	thread_be_realtime("oops guard", 20);
+	while (sem_wait(&oops_go) != 0) {
+	}
+	sleep(OOPS_DEADLINE_S);
+	int fd = open("/proc/sysrq-trigger", O_WRONLY | O_CLOEXEC);
+	if (fd >= 0) {
+		// An emergency sync first, done by the kernel's own threads, then the
+		// reset itself.
+		ssize_t done = write(fd, "s", 1);
+		sleep(2);
+		done = write(fd, "b", 1);
+		(void)done;
+		close(fd);
+	}
+	reboot(RB_AUTOBOOT);
+	return NULL;
+}
+
+static void oops_guard_start(void) {
+#ifdef HOST_BUILD
+	// The simulator's kernel is the desk's own: nothing here restarts it.
+	return;
+#endif
+	if (sem_init(&oops_go, 0, 0) != 0) {
+		return;
+	}
+	pthread_t thread;
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	oops_guard_running = pthread_create(&thread, &attr, oops_guard, NULL) == 0;
+	pthread_attr_destroy(&attr);
+}
+
+// The first line of a die() report on MIPS: the reason, then "[#n]:" --
+// "Oops[#1]:", "Unhandled kernel unaligned access[#1]:", "Kernel bug
+// detected[#1]:".
+static bool kernel_died_line(const char *text) {
+	size_t len = strlen(text);
+	return len > 2 && strcmp(text + len - 2, "]:") == 0 && strstr(text, "[#") != NULL;
+}
+
+static void restart_after_oops(void) {
+	fprintf(stderr, "kernel: the kernel failed under the player; restarting the device\n");
+#ifdef HOST_BUILD
+	logging_flush();
+	return;
+#endif
+	if (oops_guard_running) {
+		sem_post(&oops_go);
+	}
+	logging_flush();
+	sync_card();
+	sync();
+	reboot(RB_AUTOBOOT);
+}
+
 // /dev/kmsg, opened on the first call and read from its end: what the ring
 // already held at that point is logging_report_previous_run()'s.
 static int kmsg_fd = -1;
@@ -788,23 +878,14 @@ static bool kmsg_tried;
 // interface that comes and goes.
 #define KMSG_LEVEL_MAX 4
 
-// Lines copied per call; the rest are counted, not printed.
+// Lines copied per call; the rest are counted, not printed. No cap once the
+// kernel has died: the whole report is wanted.
 #define KMSG_LINES_PER_CALL 20
 
-void logging_follow_kernel(void) {
-	if (!kmsg_tried) {
-		kmsg_tried = true;
-		kmsg_fd = open("/dev/kmsg", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-		if (kmsg_fd < 0) {
-			fprintf(stderr, "kernel: /dev/kmsg: %s; kernel messages stay out of the log\n", strerror(errno));
-			return;
-		}
-		lseek(kmsg_fd, 0, SEEK_END);
-	}
-	if (kmsg_fd < 0) {
-		return;
-	}
-
+// Copies what the kernel has said since the last call. True when a die()
+// report began in it.
+static bool kmsg_copy(void) {
+	bool died = false;
 	int printed = 0;
 	int skipped = 0;
 	char record[1024];
@@ -835,7 +916,11 @@ void logging_follow_kernel(void) {
 		if (sscanf(record, "%d,%*u,%llu", &level, &usec) < 1 || (level & 7) > KMSG_LEVEL_MAX) {
 			continue;
 		}
-		if (printed >= KMSG_LINES_PER_CALL) {
+		if (!oops_seen && kernel_died_line(text)) {
+			oops_seen = true;
+			died = true;
+		}
+		if (!oops_seen && printed >= KMSG_LINES_PER_CALL) {
 			skipped++;
 			continue;
 		}
@@ -844,6 +929,30 @@ void logging_follow_kernel(void) {
 	}
 	if (skipped > 0) {
 		fprintf(stderr, "kernel: %d more lines not copied\n", skipped);
+	}
+	return died;
+}
+
+void logging_follow_kernel(void) {
+	if (!kmsg_tried) {
+		kmsg_tried = true;
+		kmsg_fd = open("/dev/kmsg", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+		if (kmsg_fd < 0) {
+			fprintf(stderr, "kernel: /dev/kmsg: %s; kernel messages stay out of the log\n", strerror(errno));
+			return;
+		}
+		lseek(kmsg_fd, 0, SEEK_END);
+		oops_guard_start();
+	}
+	if (kmsg_fd < 0) {
+		return;
+	}
+
+	if (kmsg_copy()) {
+		// The report can still be coming out: a moment more for its tail.
+		usleep(300 * 1000);
+		kmsg_copy();
+		restart_after_oops();
 	}
 }
 

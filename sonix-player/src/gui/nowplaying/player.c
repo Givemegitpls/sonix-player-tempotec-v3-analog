@@ -2488,10 +2488,9 @@ static void refresh_now_playing(void) {
 	const char *slash = strrchr(file, '/');
 	scrolltext_set(song_title_label, state.metadata.title[0] ? state.metadata.title : (slash ? slash + 1 : file));
 
-	// The album's artist, not this track's: on a compilation every track has
-	// its own performer, but the album is credited to one name. Fall back to
-	// the track artist when the file has no album artist tag.
-	const char *artist = state.metadata.album_artist[0] ? state.metadata.album_artist : state.metadata.artist;
+	// The album's artist, not this track's, unless the record is a
+	// compilation: see metadata_shown_artist().
+	const char *artist = metadata_shown_artist(&state.metadata);
 	scrolltext_set(song_artist_label, artist);
 	alt_pills_sync();
 

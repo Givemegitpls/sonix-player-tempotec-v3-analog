@@ -137,6 +137,40 @@ static void lyrics_offer(const char *text, size_t len) {
 	}
 }
 
+// A compilation flag's value: "1", as every tagger writes it, or a word some
+// write instead.
+static bool flag_is_set(const char *value, size_t len) {
+	while (len > 0 && (*value == ' ' || *value == '\0')) {
+		value++;
+		len--;
+	}
+	if (len == 0) {
+		return false;
+	}
+	if (*value == '1') {
+		return true;
+	}
+	return (len >= 4 && strncasecmp(value, "true", 4) == 0) || (len >= 3 && strncasecmp(value, "yes", 3) == 0);
+}
+
+// The album artists a compilation is credited to when its tracks carry no
+// flag: still a compilation, and still a name that says nothing about who is
+// singing.
+static bool various_artists(const char *name) {
+	return strcasecmp(name, "Various Artists") == 0 || strcasecmp(name, "Various") == 0 ||
+		   strcasecmp(name, "VA") == 0 || strcasecmp(name, "V.A.") == 0;
+}
+
+const char *metadata_shown_artist(const song_metadata_t *m) {
+	if (!m) {
+		return "";
+	}
+	if (!m->album_artist[0] || (m->artist[0] && (m->compilation || various_artists(m->album_artist)))) {
+		return m->artist;
+	}
+	return m->album_artist;
+}
+
 static void apply_vorbis_comment(song_metadata_t *out, const char *comment, size_t len) {
 	const char *eq = memchr(comment, '=', len);
 	if (!eq)
@@ -157,6 +191,11 @@ static void apply_vorbis_comment(song_metadata_t *out, const char *comment, size
 	if (strcmp(key, "LYRICS") == 0 || strcmp(key, "UNSYNCEDLYRICS") == 0 || strcmp(key, "UNSYNCED LYRICS") == 0 ||
 		strcmp(key, "SYNCEDLYRICS") == 0) {
 		lyrics_offer(value, value_len);
+		return;
+	}
+
+	if (strcmp(key, "COMPILATION") == 0 || strcmp(key, "ITUNESCOMPILATION") == 0) {
+		out->compilation = flag_is_set(value, value_len);
 		return;
 	}
 
@@ -719,7 +758,7 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 			static const char *const V22_MAP[][2] = {{"TT2", "TIT2"}, {"TP1", "TPE1"}, {"TP2", "TPE2"},
 													 {"TAL", "TALB"}, {"TCO", "TCON"}, {"TRK", "TRCK"},
 													 {"TPA", "TPOS"}, {"TYE", "TYER"}, {"TXX", "TXXX"},
-													 {"ULT", "USLT"}, {"SLT", "SYLT"}};
+													 {"ULT", "USLT"}, {"SLT", "SYLT"}, {"TCP", "TCMP"}};
 			for (size_t i = 0; i < sizeof(V22_MAP) / sizeof(V22_MAP[0]); i++) {
 				if (strcmp(frame_id, V22_MAP[i][0]) == 0) {
 					snprintf(frame_id, sizeof(frame_id), "%s", V22_MAP[i][1]);
@@ -728,7 +767,7 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 			}
 		}
 
-		bool wanted = strcmp(frame_id, "MVNM") == 0 || strcmp(frame_id, "MVIN") == 0 || strcmp(frame_id, "TIT2") == 0 || strcmp(frame_id, "TPE1") == 0 || strcmp(frame_id, "TPE2") == 0 || strcmp(frame_id, "TALB") == 0 || strcmp(frame_id, "TCON") == 0 || strcmp(frame_id, "TRCK") == 0 || strcmp(frame_id, "TPOS") == 0 || strcmp(frame_id, "TYER") == 0 || strcmp(frame_id, "TDRC") == 0 || strcmp(frame_id, "TXXX") == 0;
+		bool wanted = strcmp(frame_id, "MVNM") == 0 || strcmp(frame_id, "MVIN") == 0 || strcmp(frame_id, "TIT2") == 0 || strcmp(frame_id, "TPE1") == 0 || strcmp(frame_id, "TPE2") == 0 || strcmp(frame_id, "TALB") == 0 || strcmp(frame_id, "TCON") == 0 || strcmp(frame_id, "TRCK") == 0 || strcmp(frame_id, "TPOS") == 0 || strcmp(frame_id, "TYER") == 0 || strcmp(frame_id, "TDRC") == 0 || strcmp(frame_id, "TXXX") == 0 || strcmp(frame_id, "TCMP") == 0;
 
 		bool lyrics_frame = lyrics_wanted && (strcmp(frame_id, "USLT") == 0 || strcmp(frame_id, "SYLT") == 0);
 
@@ -762,7 +801,8 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 		// and where Mp3tag and its kin write an audiobook's series.
 		if (strcmp(frame_id, "TXXX") == 0) {
 			txxx_series(out, encoding, buf + 1, frame_size - 1);
-			// ReplayGain in the single-byte encodings only.
+			// ReplayGain, and a compilation flag, in the single-byte encodings
+			// only.
 			if (encoding == 0 || encoding == 3) {
 				const char *text = (const char *)buf + 1;
 				size_t left = frame_size - 1;
@@ -775,6 +815,10 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 					}
 					key[k] = '\0';
 					replaygain_field(out, key, text + desc_len + 1, left - desc_len - 1);
+					// Where ffmpeg puts the compilation flag in an MP3.
+					if (strcmp(key, "COMPILATION") == 0) {
+						out->compilation = flag_is_set(text + desc_len + 1, left - desc_len - 1);
+					}
 				}
 			}
 			free(buf);
@@ -791,6 +835,8 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 			copy_bounded(out->artist, sizeof(out->artist), decoded);
 		} else if (strcmp(frame_id, "TPE2") == 0) {
 			copy_bounded(out->album_artist, sizeof(out->album_artist), decoded);
+		} else if (strcmp(frame_id, "TCMP") == 0) {
+			out->compilation = flag_is_set(decoded, strlen(decoded));
 		} else if (strcmp(frame_id, "TALB") == 0) {
 			copy_bounded(out->album, sizeof(out->album), decoded);
 		} else if (strcmp(frame_id, "TCON") == 0) {
@@ -1244,6 +1290,7 @@ static void read_mp4_metadata(const char *filepath, song_metadata_t *out) {
 	snprintf(out->title, sizeof(out->title), "%s", mp4_tag_title(m));
 	snprintf(out->artist, sizeof(out->artist), "%s", mp4_tag_artist(m));
 	snprintf(out->album_artist, sizeof(out->album_artist), "%s", mp4_tag_album_artist(m));
+	out->compilation = mp4_tag_compilation(m);
 	snprintf(out->album, sizeof(out->album), "%s", mp4_tag_album(m));
 	snprintf(out->genre, sizeof(out->genre), "%s", mp4_tag_genre(m));
 	out->year = mp4_tag_year(m);

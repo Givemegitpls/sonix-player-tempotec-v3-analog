@@ -345,8 +345,7 @@ static void refresh_content(void) {
 		const char *slash = strrchr(state.current_file, '/');
 		scrolltext_set(title_label, state.metadata.title[0] ? state.metadata.title
 															: (slash ? slash + 1 : state.current_file));
-		const char *artist =
-			state.metadata.album_artist[0] ? state.metadata.album_artist : state.metadata.artist;
+		const char *artist = metadata_shown_artist(&state.metadata);
 		scrolltext_set(artist_label, artist);
 	} else {
 		scrolltext_set(title_label, "");
