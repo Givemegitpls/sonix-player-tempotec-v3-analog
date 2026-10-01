@@ -47,6 +47,17 @@ bool medialist_show_artist(void);
 int medialist_artist_lists(void);
 void medialist_set_show_artist(bool on, int lists);
 
+// How the player's own list of `kind` narrowed by `filter` is ordered right now:
+// by name or by date, which way round, and an artist's tracks grouped by
+// record or not. What SonixLink follows, so a list on the phone reads in the
+// same order and a track tapped there gets the same queue as here.
+void medialist_list_order(library_list_t kind, library_filter_t filter, library_order_t *order, bool *desc);
+
+// The same choices as bits, for the phone to order its own lists by: bit
+// `kind` of `desc_mask` set is that list reversed, of `added_mask` that list by
+// date added.
+void medialist_sort_prefs(unsigned *desc_mask, unsigned *added_mask, bool *artist_by_album, bool *favourites_reversed);
+
 // Loads the list and switches to the right screen. For LIBRARY_LIST_TRACKS
 // the filter narrows to one album/artist/genre (LIBRARY_FILTER_NONE = all);
 // for the name kinds both filter arguments are ignored.

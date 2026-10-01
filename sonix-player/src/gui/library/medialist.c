@@ -3613,3 +3613,42 @@ void medialist_init(gui_config_t *cfg) {
 	power_pause_in_standby(index_timer);
 	theme_register_refresh(index_theme_refresh);
 }
+
+// ---------------------------------------------------------------------------
+// The order, for SonixLink
+// ---------------------------------------------------------------------------
+
+// The same decisions the corner buttons make in the list itself: which lists
+// can be reversed or put by date, and an artist's tracks by record.
+void medialist_list_order(library_list_t kind, library_filter_t filter, library_order_t *order, bool *desc) {
+	bool artist_tracks =
+		kind == LIBRARY_LIST_TRACKS && (filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST);
+	bool sortable = (kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_NONE) ||
+					(kind == LIBRARY_LIST_ALBUMS && filter == LIBRARY_FILTER_NONE) || kind == LIBRARY_LIST_ARTISTS ||
+					kind == LIBRARY_LIST_ALBUM_ARTISTS;
+	bool by_date = sort_can_date(kind, filter) && sort_is_added(kind);
+	if (order) {
+		*order = (artist_tracks && artist_album_order) ? LIBRARY_ORDER_ALBUM
+				 : by_date							   ? LIBRARY_ORDER_ADDED
+													   : LIBRARY_ORDER_DEFAULT;
+	}
+	if (desc) {
+		*desc = (sortable && !(artist_tracks && artist_album_order) && sort_is_desc(kind)) ||
+				(kind == LIBRARY_LIST_FAVOURITES && fav_reversed);
+	}
+}
+
+void medialist_sort_prefs(unsigned *desc_mask, unsigned *added_mask, bool *artist_by_album, bool *favourites_reversed) {
+	if (desc_mask) {
+		*desc_mask = sort_desc_mask;
+	}
+	if (added_mask) {
+		*added_mask = sort_added_mask;
+	}
+	if (artist_by_album) {
+		*artist_by_album = artist_album_order;
+	}
+	if (favourites_reversed) {
+		*favourites_reversed = fav_reversed;
+	}
+}

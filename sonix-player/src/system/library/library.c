@@ -148,6 +148,11 @@ static const char *const SCHEMA_COLUMNS[] = {
 	// before the column existed therefore carries NULL until the card is
 	// scanned again. See TRACK_ORDER_IN_ALBUM.
 	"ALTER TABLE MEDIA_TABLE ADD COLUMN disc INT",
+	// Whose album the track is on (album_key()), written down with the track.
+	// The player works it out in SQL when it needs it, through albumkey(); the
+	// SonixLink app reads this same file on the phone, where that function does
+	// not exist, and finds an album's tracks by this column instead.
+	"ALTER TABLE MEDIA_TABLE ADD COLUMN album_key TEXT",
 	"ALTER TABLE ALBUM_TABLE ADD COLUMN sortkey TEXT",
 	"ALTER TABLE ARTIST_TABLE ADD COLUMN sortkey TEXT",
 	"ALTER TABLE ALBUM_ARTIST_TABLE ADD COLUMN sortkey TEXT",
@@ -1164,6 +1169,18 @@ static void album_groups_fill(void) {
 		   now_ms() - started_ms);
 }
 
+// The album_key column on an index written before it existed: one statement
+// over the tracks, once, the same as album_groups_fill() above. A scan writes
+// it with every row from then on.
+static void album_keys_fill(void) {
+	if (count_rows("SELECT 1 FROM MEDIA_TABLE WHERE album_key IS NULL LIMIT 1") == 0) {
+		return;
+	}
+	uint32_t started_ms = now_ms();
+	exec("UPDATE MEDIA_TABLE SET album_key = albumkey(album_artist, path) WHERE album_key IS NULL");
+	printf("library: album keys written down for %d tracks in %u ms\n", sqlite3_changes(db), now_ms() - started_ms);
+}
+
 bool library_open(const char *db_path) {
 	if (db) {
 		return true;
@@ -1236,6 +1253,7 @@ bool library_open(const char *db_path) {
 	}
 
 	album_groups_fill();
+	album_keys_fill();
 
 	pthread_mutex_lock(&db_lock);
 	bump_all_generations(); // a different card is a different set of row ids
@@ -2881,8 +2899,8 @@ static bool prepare_statements(void) {
 						   "INSERT OR REPLACE INTO MEDIA_TABLE"
 						   "(id,path,name,album,artist,genre,year,dis_id,ck_id,has_child_file,begin_time,end_time,"
 						   "cue_id,character,size,sample_rate,bit_rate,bit,channel,format,quality,album_pic_path,"
-						   "lrc_path,track_gain,track_peak,album_artist,ctime,mtime,sortkey,disc)"
-						   " VALUES(?,?,?,?,?,?,?,?,0,0,0,0,0,?,?,?,0,?,0,?,\'\',NULL,NULL,0,0,?,?,?,?,?)",
+						   "lrc_path,track_gain,track_peak,album_artist,ctime,mtime,sortkey,disc,album_key)"
+						   " VALUES(?,?,?,?,?,?,?,?,0,0,0,0,0,?,?,?,0,?,0,?,\'\',NULL,NULL,0,0,?,?,?,?,?,?)",
 						   -1, &stmt_track, NULL) != SQLITE_OK) {
 		fprintf(stderr, "library: prepare failed: %s\n", sqlite3_errmsg(db));
 		return false;
@@ -2976,6 +2994,10 @@ static void insert_track(const char *path, const char *filename, const song_meta
 	// for those would put them on a shelf of their own, ahead of the disc they
 	// belong to.
 	sqlite3_bind_int(stmt_track, column++, tags->disc_number > 0 ? tags->disc_number : 1); // disc
+
+	char track_album_key[ALBUM_KEY_MAX];
+	album_key(album_artist, path, track_album_key, sizeof(track_album_key));
+	sqlite3_bind_text(stmt_track, column++, track_album_key, -1, SQLITE_TRANSIENT); // album_key
 
 	if (sqlite3_step(stmt_track) != SQLITE_DONE) {
 		fprintf(stderr, "library: insert failed: %s\n", sqlite3_errmsg(db));

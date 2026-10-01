@@ -16,7 +16,8 @@
 // protocol needed here is small enough that writing it is the smaller job.
 //
 // What it is NOT: a general D-Bus library. There is one pending call at a time,
-// no file-descriptor passing, no match rules beyond what is asked for, and the
+// file descriptors are only received (and only on a connection opened with
+// dbus_connect_system_fds), no match rules beyond what is asked for, and the
 // type writers cover only what the media player interface uses. Anything else
 // belongs in libdbus.
 //
@@ -50,6 +51,7 @@ typedef struct {
 	const uint8_t *body; // into the connection's read buffer, valid for the call
 	size_t body_len;
 	bool big_endian; // how the body is encoded, for the readers below
+	uint32_t unix_fds; // descriptors that came with it; see dbus_take_fd()
 } dbus_msg_t;
 
 // ---------------------------------------------------------------------------
@@ -159,6 +161,17 @@ typedef void (*dbus_signal_cb)(dbus_conn_t *c, const dbus_msg_t *m, void *user);
 // socket is not there or the daemon refuses. `address` may be NULL for the
 // usual system bus locations.
 dbus_conn_t *dbus_connect_system(const char *address, dbus_method_cb on_call, void *user);
+
+// The same, asking the daemon to pass file descriptors: an 'h' in a call that
+// arrives is then an index into the descriptors that came with it, to be taken
+// with dbus_take_fd(). NULL as above, and also when the daemon will not pass
+// descriptors on this socket.
+dbus_conn_t *dbus_connect_system_fds(const char *address, dbus_method_cb on_call, void *user);
+
+// Inside a method handler: takes descriptor `index` of the call being handled,
+// which is then the caller's to close. -1 when there is no such descriptor.
+// The ones not taken are closed when the handler returns.
+int dbus_take_fd(dbus_conn_t *c, uint32_t index);
 
 // Signals are dropped until a handler is installed. Set it before the first
 // dbus_add_match(), or the answer to the match could arrive with nowhere to go.

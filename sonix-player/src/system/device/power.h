@@ -204,6 +204,10 @@ void power_set_standby_enabled(bool enabled);
 // Called once at startup, and only when the config says Bluetooth is off.
 void power_bluetooth_off(void);
 
+// Whether this module has switched a radio off for idleness (it switches it
+// back on itself): a radio off for that reason is not the user's choice.
+bool power_radios_parked(void);
+
 // Snapshot the live configuration (reflects any runtime changes).
 void power_get_config(power_config_t *out);
 

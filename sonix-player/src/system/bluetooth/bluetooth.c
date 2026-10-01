@@ -30,6 +30,7 @@
 #include "src/system/core/config.h"
 #include "src/system/device/power.h"
 #include "src/system/device/sysserver.h" // only for the notification socket now
+#include "src/system/remote/sonixlink_bt.h"
 #include "src/system/core/utils.h"
 
 // The pieces of the firmware this player uses, and nothing else. The bluez-tools
@@ -1649,7 +1650,8 @@ static bool wait_for_a2dp(const char *mac, int timeout_ms) {
 //
 // A device streaming to this one is not a sink: a computer or a phone sending
 // to the receiver holds the other direction, and pushing it off would cut the
-// music it is sending.
+// music it is sending. Nor is a phone holding a SonixLink link: it is the
+// remote control, and the headphones connect beside it.
 static bool other_connected_sink(const char *except, char *out, size_t size) {
 	char sender[BT_MAC_MAX];
 	bool has_sender = btstack_audio_source(sender, sizeof(sender));
@@ -1657,6 +1659,9 @@ static bool other_connected_sink(const char *except, char *out, size_t size) {
 	pthread_mutex_lock(&lock);
 	for (int i = 0; i < g_paired_count; i++) {
 		if (has_sender && strcasecmp(g_paired[i].mac, sender) == 0) {
+			continue;
+		}
+		if (sonixlink_bt_is_peer(g_paired[i].mac)) {
 			continue;
 		}
 		if (g_paired[i].connected && strcasecmp(g_paired[i].mac, except) != 0) {
@@ -1802,7 +1807,9 @@ static bool reconnect_should_stop(const char *mac) {
 	bool off = !g_enabled;
 	bool someone_else = false;
 	for (int i = 0; i < g_paired_count && !someone_else; i++) {
-		if (g_paired[i].connected && strcasecmp(g_paired[i].mac, mac) != 0) {
+		// A phone driving the player through SonixLink is not in the way of
+		// the headphones coming back.
+		if (g_paired[i].connected && strcasecmp(g_paired[i].mac, mac) != 0 && !sonixlink_bt_is_peer(g_paired[i].mac)) {
 			copy_field(other, sizeof(other), g_paired[i].mac, sizeof(g_paired[i].mac));
 			someone_else = true;
 		}
@@ -2146,7 +2153,7 @@ static bool connected_mac(char *out, size_t size) {
 	bool found = false;
 	pthread_mutex_lock(&lock);
 	for (int i = 0; i < g_paired_count; i++) {
-		if (g_paired[i].connected) {
+		if (g_paired[i].connected && !sonixlink_bt_is_peer(g_paired[i].mac)) {
 			copy_field(out, size, g_paired[i].mac, sizeof(g_paired[i].mac));
 			found = true;
 			break;
@@ -3097,11 +3104,13 @@ void bluetooth_connect(const char *mac) { post_device_job(JOB_CONNECT, mac); }
 void bluetooth_disconnect(const char *mac) { post_device_job(JOB_DISCONNECT, mac); }
 void bluetooth_forget(const char *mac) { post_device_job(JOB_FORGET, mac); }
 
+// The connected audio device. A phone that is only the SonixLink remote is
+// connected too, and is not it.
 bool bluetooth_connected_device(bt_device_t *out) {
 	bool found = false;
 	pthread_mutex_lock(&lock);
 	for (int i = 0; i < g_paired_count; i++) {
-		if (g_paired[i].connected) {
+		if (g_paired[i].connected && !sonixlink_bt_is_peer(g_paired[i].mac)) {
 			if (out) {
 				*out = g_paired[i];
 			}

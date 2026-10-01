@@ -726,6 +726,29 @@ static void apply_playback_status(audio_status_t status) {
 // Blank rather than "1/1" when there is nothing to be lost in: a single track,
 // a book (one long file), a stream (no queue at all), or playback that belongs
 // to a phone over DLNA.
+bool player_queue_position(int *position, int *count) {
+	*position = 0;
+	*count = 0;
+	if (live_mode) {
+		int index;
+		int total;
+		if (live_custom_nav && radio_list_position(&index, &total)) {
+			*position = index + 1;
+			*count = total;
+			return true;
+		}
+		return false;
+	}
+	int total = playlist_count();
+	int index = playlist_current_index();
+	if (total <= 1 || index < 0 || audiobook_mode || dlna_owns_playback()) {
+		return false;
+	}
+	*position = (int)playlist_current_entry() + 1;
+	*count = total;
+	return true;
+}
+
 static void update_queue_position(void) {
 	if (!queue_position_label) {
 		return;

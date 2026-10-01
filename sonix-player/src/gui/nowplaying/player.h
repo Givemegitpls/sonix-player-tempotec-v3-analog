@@ -20,6 +20,11 @@ void player_play_file(const char *filepath);
 // playback).
 void player_refresh_now_playing(void);
 
+// The "4/12" under the progress bar: the place in the queue as the screen shows
+// it (the deal's order under shuffle) and the length. False, with both zero,
+// where the screen shows nothing -- one track, a book, DLNA, a stream.
+bool player_queue_position(int *position, int *count);
+
 // ---------------------------------------------------------------------------
 // The three arrangements of the now-playing page
 //

@@ -10,16 +10,24 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/library/medialist.h"
+#include "src/gui/library/playlistpage.h"
+#include "src/gui/settings/musicsettings.h"
+#include "src/gui/shell/toast.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/wireless/wifisettings.h"
+#include "src/gui/bluetooth/btsettings.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/audio/audio.h"
+#include "src/system/bluetooth/bluetooth.h"
+#include "src/system/device/power.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
+#include "src/system/library/playlists.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/remote/sonixlink.h"
 #include "src/system/net/wifi.h"
@@ -41,7 +49,9 @@ static const char *sd_root;
 static lv_obj_t *toggle;
 static lv_obj_t *glyph;
 static lv_obj_t *status_label;
-static lv_obj_t *wifi_row;
+// Shown while neither link is up: Wi-Fi and Bluetooth side by side, each
+// leading to its own page.
+static lv_obj_t *links_row;
 static lv_timer_t *page_timer;
 static lv_timer_t *pump_timer;
 
@@ -57,6 +67,10 @@ static bool wifi_is_connected(void) {
 	wifi_get_status(&status);
 	return status.state == WIFI_STATE_CONNECTED && status.ip[0] != '\0';
 }
+
+// Something the phone can reach the player over: the Wi-Fi network, or
+// Bluetooth for a phone paired with it (sonixlink_bt.h).
+static bool link_available(void) { return wifi_is_connected() || bluetooth_get_enabled(); }
 
 // ---------------------------------------------------------------------------
 // the pump: the player's state out, the app's commands in
@@ -123,27 +137,37 @@ static void forget_favourite_memory(void) { current_is_favourite(NULL); }
 // The window of the queue the phone is shown, refreshed only when it moves.
 // Sending it on every pump would mean copying two hundred paths five times a
 // second for a page that is usually not even open.
+//
+// The window is the stretch the phone last asked for when it has asked for
+// one (its queue page pages through the whole queue that way), and otherwise
+// the stretch around the track playing now.
 static void publish_queue_window(void) {
 	static unsigned last_generation = (unsigned)-1;
 	static int last_position = -2;
 	static int last_count = -1;
+	static int last_wanted = -2;
 
 	int count = playlist_count();
 	int position = playlist_current_index();
 	unsigned generation = playlist_revision();
+	int wanted = sonixlink_queue_wanted();
+	if (wanted >= count) {
+		wanted = -1;
+	}
 
-	if (generation == last_generation && position == last_position && count == last_count) {
+	if (generation == last_generation && position == last_position && count == last_count && wanted == last_wanted) {
 		return;
 	}
 	last_generation = generation;
 	last_position = position;
 	last_count = count;
+	last_wanted = wanted;
 
-	int first = position > 0 ? position - 20 : 0;
+	int first = wanted >= 0 ? wanted : position > 0 ? position - 20 : 0;
 	if (first < 0) {
 		first = 0;
 	}
-	if (first + SONIXLINK_QUEUE_WINDOW > count) {
+	if (wanted < 0 && first + SONIXLINK_QUEUE_WINDOW > count) {
 		first = count - SONIXLINK_QUEUE_WINDOW;
 		if (first < 0) {
 			first = 0;
@@ -171,7 +195,7 @@ static void publish_queue_window(void) {
 		pointers[written] = slot;
 		written++;
 	}
-	sonixlink_publish_queue(count, position, first, pointers, written);
+	sonixlink_publish_queue(count, position, first, pointers, written, generation);
 	free(paths);
 	free(pointers);
 }
@@ -222,6 +246,10 @@ static void publish_state(void) {
 
 	s.queue_position = playlist_current_index();
 	s.queue_count = playlist_count();
+	s.queue_revision = playlist_revision();
+
+	medialist_sort_prefs(&s.sort_desc, &s.sort_added, &s.artist_by_album, &s.favourites_reversed);
+	player_queue_position(&s.display_position, &s.display_count);
 
 	// The app wears the player's own accent.
 	lv_color_t accent = theme()->accent;
@@ -229,6 +257,163 @@ static void publish_state(void) {
 
 	sonixlink_publish(&s);
 	publish_queue_window();
+}
+
+// The library list a SonixLink list names, narrowed and ordered as the player's
+// own list of it is right now.
+static library_index_t *open_list(int list, const char *value) {
+	library_list_t kind = LIBRARY_LIST_TRACKS;
+	library_filter_t filter = LIBRARY_FILTER_NONE;
+	library_order_t order = LIBRARY_ORDER_DEFAULT;
+	bool desc = false;
+	bool records = false;
+	switch (list) {
+	case SONIXLINK_LIST_ALBUM:
+		filter = LIBRARY_FILTER_ALBUM;
+		break;
+	case SONIXLINK_LIST_ARTIST:
+		filter = LIBRARY_FILTER_ARTIST;
+		break;
+	case SONIXLINK_LIST_ALBUM_ARTIST:
+		filter = LIBRARY_FILTER_ALBUM_ARTIST;
+		break;
+	case SONIXLINK_LIST_GENRE:
+		filter = LIBRARY_FILTER_GENRE;
+		break;
+	case SONIXLINK_LIST_FAVOURITES:
+		kind = LIBRARY_LIST_FAVOURITES;
+		value = NULL;
+		break;
+	case SONIXLINK_LIST_PLAYLIST:
+		kind = LIBRARY_LIST_PLAYLIST;
+		break;
+	case SONIXLINK_LIST_ALBUMS:
+		// Every record, gathered by record and each in its running order:
+		// what the menu on the player's Albums page queues.
+		records = true;
+		value = NULL;
+		break;
+	default:
+		break;
+	}
+	if (filter != LIBRARY_FILTER_NONE && !value) {
+		return NULL;
+	}
+	if (kind == LIBRARY_LIST_PLAYLIST && !value) {
+		return NULL;
+	}
+	if (records) {
+		order = LIBRARY_ORDER_ALBUM;
+	} else {
+		medialist_list_order(kind, filter, &order, &desc);
+	}
+	return library_index_open(kind, filter, value, order, desc);
+}
+
+static bool take_first_path_cb(const char *name, const char *path, const char *artist, void *user) {
+	(void)name;
+	(void)artist;
+	if (path && path[0]) {
+		snprintf((char *)user, 512, "%s", path);
+	}
+	return false;
+}
+
+// The circle-play menu: the whole list in order, shuffled, or one of its tracks
+// at random after the one playing -- play_artist() and the random-track row of
+// medialist.c, for a list the phone names.
+static void play_all(const sonixlink_command_t *cmd) {
+	library_index_t *ix = open_list(cmd->list, cmd->value[0] ? cmd->value : NULL);
+	int count = ix ? library_index_count(ix) : 0;
+	if (count <= 0) {
+		library_index_close(ix);
+		return;
+	}
+
+	if (cmd->arg == SONIXLINK_PLAY_RANDOM_TO_QUEUE) {
+		char path[512] = "";
+		int pick = count > 1 ? (int)lv_rand(0, (uint32_t)(count - 1)) : 0;
+		library_index_window(ix, pick, 1, take_first_path_cb, path);
+		library_index_close(ix);
+		if (path[0] && playlist_insert_next(path)) {
+			device_state_queue_changed();
+			toast_success("added_to_the_queue");
+		}
+		return;
+	}
+
+	bool shuffled = cmd->arg == SONIXLINK_PLAY_SHUFFLE;
+	// Mode first, as on the player: with shuffle on, the queue deals its random
+	// order as it is loaded.
+	playback_mode_t shuffle_mode =
+		musicsettings_endless_shuffle() ? PLAYBACK_MODE_SHUFFLE_REPEAT : PLAYBACK_MODE_SHUFFLE;
+	playlist_set_mode(shuffled ? shuffle_mode : PLAYBACK_MODE_NORMAL);
+	playlist_set_album("");
+	int start = shuffled && count > 1 ? (int)lv_rand(0, (uint32_t)(count - 1)) : 0;
+	if (device_state_play_index(ix, start)) {
+		player_refresh_now_playing();
+	}
+}
+
+// What the player's selection mode does with a selection, for one the phone
+// made.
+static void apply_selection(const sonixlink_command_t *cmd) {
+	if (!cmd->paths || cmd->path_count <= 0) {
+		return;
+	}
+	const char **paths = malloc((size_t)cmd->path_count * sizeof(*paths));
+	if (!paths) {
+		return;
+	}
+	const char *at = cmd->paths;
+	for (int i = 0; i < cmd->path_count; i++) {
+		paths[i] = at;
+		at += strlen(at) + 1;
+	}
+
+	switch (cmd->kind) {
+	case SONIXLINK_CMD_QUEUE_NEXT: {
+		// Each right after the one playing, the first chosen first, as
+		// sel_queue_cb() in medialist.c does it.
+		int queued = 0;
+		for (int i = 0; i < cmd->path_count; i++) {
+			queued += playlist_insert_next(paths[i]) ? 1 : 0;
+		}
+		if (queued > 0) {
+			device_state_queue_changed();
+			toast_success(queued == 1 ? "added_to_the_queue" : "queue_tracks_added");
+		}
+		break;
+	}
+	case SONIXLINK_CMD_FAVOURITES_ADD:
+		playlistpage_add_favourites(paths, cmd->path_count);
+		forget_favourite_memory();
+		break;
+	case SONIXLINK_CMD_FAVOURITES_REMOVE: {
+		int removed = library_fav_remove_many(paths, cmd->path_count);
+		forget_favourite_memory();
+		if (removed > 0) {
+			toast_success(removed == 1 ? "medialist_track_removed" : "medialist_tracks_removed");
+		}
+		break;
+	}
+	case SONIXLINK_CMD_PLAYLIST_ADD:
+		playlistpage_add_tracks_to(cmd->value, paths, cmd->path_count);
+		break;
+	case SONIXLINK_CMD_PLAYLIST_REMOVE: {
+		int removed = 0;
+		for (int i = 0; i < cmd->path_count; i++) {
+			removed += playlists_remove_track(cmd->value, paths[i]) ? 1 : 0;
+		}
+		if (removed > 0) {
+			toast_success(removed == 1 ? "medialist_track_removed" : "medialist_tracks_removed");
+		}
+		break;
+	}
+	default:
+		break;
+	}
+	free(paths);
 }
 
 static void apply_command(const sonixlink_command_t *cmd) {
@@ -284,21 +469,21 @@ static void apply_command(const sonixlink_command_t *cmd) {
 		library_list_t kind = LIBRARY_LIST_TRACKS;
 		library_filter_t filter = LIBRARY_FILTER_NONE;
 		library_order_t order = LIBRARY_ORDER_DEFAULT;
+		bool desc = false;
 		const char *value = cmd->value[0] ? cmd->value : NULL;
 
 		switch (cmd->list) {
 		case SONIXLINK_LIST_ALBUM:
+			// The value is the album as the app's list gives it: the name and,
+			// after a 0x1f, whose it is -- the same value the player's own album
+			// rows carry, so a record shares its name with no other here.
 			filter = LIBRARY_FILTER_ALBUM;
 			break;
 		case SONIXLINK_LIST_ARTIST:
 			filter = LIBRARY_FILTER_ARTIST;
-			// An artist's tracks read as their records, one after another, the
-			// same as on the player's own artist page.
-			order = LIBRARY_ORDER_ALBUM;
 			break;
 		case SONIXLINK_LIST_ALBUM_ARTIST:
 			filter = LIBRARY_FILTER_ALBUM_ARTIST;
-			order = LIBRARY_ORDER_ALBUM;
 			break;
 		case SONIXLINK_LIST_GENRE:
 			filter = LIBRARY_FILTER_GENRE;
@@ -323,6 +508,11 @@ static void apply_command(const sonixlink_command_t *cmd) {
 				}
 			}
 			break;
+		case SONIXLINK_LIST_FOLDER:
+			// What the file browser does with a tap: the folder becomes the
+			// queue, the tapped file its current track.
+			player_play_file(path);
+			goto play_path_done;
 		case SONIXLINK_LIST_ALL:
 		default:
 			break;
@@ -337,7 +527,12 @@ static void apply_command(const sonixlink_command_t *cmd) {
 			kind = LIBRARY_LIST_TRACKS;
 		}
 
-		library_index_t *ix = library_index_open(kind, filter, value, order, false);
+		// In the order the player's own list is in right now (by name or by
+		// date, which way round, an artist by record or not), which is the
+		// order the app shows it in too.
+		medialist_list_order(kind, filter, &order, &desc);
+
+		library_index_t *ix = library_index_open(kind, filter, value, order, desc);
 		int at = ix ? library_index_find_path(ix, path) : -1;
 
 		// The handle is given away by device_state_play_index() whether it
@@ -395,10 +590,21 @@ static void apply_command(const sonixlink_command_t *cmd) {
 			player_refresh_now_playing();
 		}
 		break;
+	case SONIXLINK_CMD_PLAY_ALL:
+		play_all(cmd);
+		break;
+	case SONIXLINK_CMD_QUEUE_NEXT:
+	case SONIXLINK_CMD_FAVOURITES_ADD:
+	case SONIXLINK_CMD_FAVOURITES_REMOVE:
+	case SONIXLINK_CMD_PLAYLIST_ADD:
+	case SONIXLINK_CMD_PLAYLIST_REMOVE:
+		apply_selection(cmd);
+		break;
 	case SONIXLINK_CMD_NONE:
 	default:
 		break;
 	}
+	sonixlink_command_free((sonixlink_command_t *)cmd);
 }
 
 // The rate the current state calls for: fast enough that the app sees a
@@ -411,9 +617,44 @@ static int pump_period(void) {
 	return sonixlink_is_connected() ? PUMP_MS : PUMP_WAITING_MS;
 }
 
+// SonixLink goes off by itself when both radios have been switched off: with
+// neither there is nothing a phone could reach it over. The switches and not
+// the connections are what counts -- Wi-Fi on but between networks will be
+// back -- and a radio the power code parked for idleness is not switched off.
+// Not in the first minute after boot, while the radios are still coming up.
+#define AUTO_OFF_AFTER_MS 3000
+#define AUTO_OFF_BOOT_GRACE_MS 60000
+
+static void auto_off_check(void) {
+	static uint32_t radios_off_since;
+	bool radios = wifi_get_enabled() || bluetooth_get_enabled() || power_radios_parked();
+	uint32_t now = lv_tick_get();
+	if (radios || now < AUTO_OFF_BOOT_GRACE_MS) {
+		radios_off_since = 0;
+		return;
+	}
+	if (radios_off_since == 0) {
+		radios_off_since = now;
+		return;
+	}
+	if (now - radios_off_since >= AUTO_OFF_AFTER_MS) {
+		radios_off_since = 0;
+		printf("sonixlink: Wi-Fi and Bluetooth are both off; switching SonixLink off\n");
+		sonixlink_set_enabled(false);
+		if (toggle) {
+			lv_obj_remove_state(toggle, LV_STATE_CHECKED);
+		}
+	}
+}
+
 static void pump_cb(lv_timer_t *timer) {
 	lv_timer_set_period(timer, pump_period());
 	if (!sonixlink_get_enabled()) {
+		return;
+	}
+	auto_off_check();
+	if (!sonixlink_get_enabled()) {
+		lv_timer_set_period(timer, pump_period());
 		return;
 	}
 
@@ -437,16 +678,16 @@ static void pump_pace(void) {
 // Two states and nothing else, the way the DAC page reads: the picture says
 // what this is, the line under it says whether a phone is there.
 static void refresh(void) {
-	if (!wifi_is_connected()) {
-		lv_label_set_text(status_label, tr("enable_wi_fi_first"));
+	if (!link_available()) {
+		lv_label_set_text(status_label, tr("sonixlink_needs_wifi_or_bluetooth"));
 		lv_obj_set_style_text_color(status_label, theme()->text_primary, 0);
 		lv_obj_add_state(toggle, LV_STATE_DISABLED);
-		show(wifi_row);
+		show(links_row);
 		return;
 	}
 	lv_obj_remove_local_style_prop(status_label, LV_STYLE_TEXT_COLOR, 0);
 	lv_obj_remove_state(toggle, LV_STATE_DISABLED);
-	hide(wifi_row);
+	hide(links_row);
 
 	if (!switch_is_on()) {
 		lv_label_set_text(status_label, tr(SL_OFF_HELP));
@@ -465,9 +706,9 @@ static void page_poll_cb(lv_timer_t *timer) {
 		return;
 	}
 
-	// The network went away under a running service: there is nothing left to
-	// be found on.
-	if (!wifi_is_connected()) {
+	// The network and Bluetooth both went away under a running service: there
+	// is nothing left to be found on.
+	if (!link_available()) {
 		lv_obj_remove_state(toggle, LV_STATE_CHECKED);
 		sonixlink_set_enabled(false);
 		pump_pace();
@@ -480,9 +721,9 @@ static void toggle_changed_cb(lv_event_t *e) {
 
 	bool on = switch_is_on();
 
-	if (on && !wifi_is_connected()) {
+	if (on && !link_available()) {
 		lv_obj_remove_state(toggle, LV_STATE_CHECKED);
-		gui_notify_popup("enable_wi_fi_first");
+		gui_notify_popup("sonixlink_needs_wifi_or_bluetooth");
 		return;
 	}
 
@@ -522,10 +763,16 @@ static void wifi_row_cb(lv_event_t *e) {
 	switch_screen(wifisettings_screen);
 }
 
+static void bluetooth_row_cb(lv_event_t *e) {
+	(void)e;
+	switch_screen(btsettings_screen);
+}
+
 // ---------------------------------------------------------------------------
 
 void sonixlink_page_init(gui_config_t *cfg) {
 	sd_root = cfg->sd_root_path;
+	sonixlink_set_card_root(sd_root);
 
 	lv_obj_t *container = settingsrow_page(sonixlink_screen, cfg, "sonixlink");
 
@@ -544,11 +791,23 @@ void sonixlink_page_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_hor(status_label, 4, 0);
 	lv_obj_set_style_margin_top(status_label, 20, 0);
 
-	// The same row as the other network pages: the notice says what is
-	// missing, this leads to where it is fixed.
-	wifi_row = settingsrow_add(container, "wi_fi_settings", NULL, wifi_row_cb, NULL);
-	lv_obj_set_style_margin_top(wifi_row, 16, 0);
-	hide(wifi_row);
+	// The notice says what is missing; these lead to where it is fixed. Two
+	// halves of one row, since either link will do.
+	links_row = lv_obj_create(container);
+	lv_obj_remove_style_all(links_row);
+	lv_obj_set_size(links_row, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_set_flex_flow(links_row, LV_FLEX_FLOW_ROW);
+	lv_obj_set_style_pad_column(links_row, 12, 0);
+	lv_obj_set_style_margin_top(links_row, 16, 0);
+	lv_obj_remove_flag(links_row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_add_flag(links_row, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_t *wifi_half = settingsrow_add(links_row, "wi_fi", NULL, wifi_row_cb, NULL);
+	lv_obj_t *bluetooth_half = settingsrow_add(links_row, "bluetooth", NULL, bluetooth_row_cb, NULL);
+	lv_obj_set_width(wifi_half, 1);
+	lv_obj_set_flex_grow(wifi_half, 1);
+	lv_obj_set_width(bluetooth_half, 1);
+	lv_obj_set_flex_grow(bluetooth_half, 1);
+	hide(links_row);
 
 	page_timer = lv_timer_create(page_poll_cb, PAGE_POLL_MS, NULL);
 	lv_timer_pause(page_timer);

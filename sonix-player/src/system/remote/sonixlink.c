@@ -1,8 +1,11 @@
 #include "sonixlink.h"
+#include "sonixlink_bt.h"
 
 #include "src/system/core/respath.h"
 
 #include <arpa/inet.h>
+#include <dirent.h>
+#include <limits.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
@@ -15,13 +18,17 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "src/system/library/albumart.h"
+#include "src/system/image/art_shrink.h"
 #include "src/system/core/config.h"
+#include "src/system/library/cue.h"
+#include "src/system/playback/playlist.h"
 // SQLite is vendored: this header, not the system's.
 #include "src/system/db/sqlite3.h"
 #include "src/system/device/sysinfo.h"
@@ -36,9 +43,15 @@
 #define BEACON_MS 2000
 #define TICK_MS 200
 
-// A phone counts as present for this long after its last request. It polls the
-// state a few times a second while its screen is on, so this is generous.
-#define PEER_ALIVE_MS 8000
+// A phone counts as present for this long after its last request. The app
+// polls every few seconds for as long as it is connected (its heartbeat), so
+// this outlasts several missed polls on a busy network or a phone that has
+// briefly held its network back. An app that leaves on purpose says so with
+// /api/bye and is forgotten at once.
+#define PEER_ALIVE_MS 20000
+
+// The most rows one /api/browse answer carries: the file browser's own ceiling.
+#define BROWSE_MAX 5000
 
 #define MDNS_ADDR "224.0.0.251"
 #define MDNS_PORT 5353
@@ -51,7 +64,14 @@
 #define DEFAULT_NAME "Sonix Player"
 
 #define CMD_QUEUE_LEN 16
-#define MAX_CLIENTS 4
+// One more than a phone polling over Wi-Fi needs at once, plus the Bluetooth
+// link, which keeps its slot for as long as it stays up.
+#define MAX_CLIENTS 6
+
+// A Bluetooth link with no request for this long is closed: the app sends one
+// every few seconds for as long as it is connected.
+#define PERSISTENT_IDLE_MS 30000
+#define PENDING_LINKS 2
 
 // How much of a request is read before it is judged nonsense. These are short.
 #define REQUEST_MAX 2048
@@ -72,6 +92,7 @@ static uint32_t last_seen_ms;
 
 static char db_path[600];
 static char thumbs_path[600];
+static char card_root[600];
 static char device_name_text[128];
 
 static sonixlink_state_t g_state;
@@ -85,6 +106,11 @@ static char pending_path[SONIXLINK_PATH_MAX];
 // The queue window the interface last handed over. One arena of packed strings
 // plus an index: two hundred paths cost about sixteen kilobytes rather than the
 // hundred a fixed-width array of the same length would take.
+// Bluetooth links handed over by sonixlink_bt.c, waiting for the worker to give
+// them a client slot.
+static int pending_links[PENDING_LINKS];
+static int pending_link_count;
+
 static char *queue_arena;
 static size_t queue_arena_len;
 static int queue_offsets[SONIXLINK_QUEUE_WINDOW];
@@ -92,6 +118,8 @@ static int queue_window_count;
 static int queue_window_first;
 static int queue_total;
 static int queue_position;
+static unsigned queue_revision;
+static int queue_wanted = -1;
 
 static uint32_t now_ms(void) {
 	struct timespec ts;
@@ -126,6 +154,37 @@ static void push_command_list(sonixlink_command_kind_t kind, int arg, const char
 	pthread_mutex_unlock(&lock);
 }
 
+// A command carrying a selection: `paths` (owned from here on, freed when the
+// command cannot be queued) and the list or playlist it is about.
+static void push_command_paths(sonixlink_command_kind_t kind, int arg, char *paths, int path_count,
+							   const char *value) {
+	pthread_mutex_lock(&lock);
+	if (queue_count < CMD_QUEUE_LEN) {
+		sonixlink_command_t *slot = &queue[(queue_head + queue_count) % CMD_QUEUE_LEN];
+		memset(slot, 0, sizeof(*slot));
+		slot->kind = kind;
+		slot->arg = arg;
+		if (value && value[0]) {
+			snprintf(slot->value, sizeof(slot->value), "%s", value);
+		}
+		slot->paths = paths;
+		slot->path_count = path_count;
+		paths = NULL;
+		queue_count++;
+	}
+	pthread_mutex_unlock(&lock);
+	free(paths);
+}
+
+void sonixlink_command_free(sonixlink_command_t *cmd) {
+	if (!cmd) {
+		return;
+	}
+	free(cmd->paths);
+	cmd->paths = NULL;
+	cmd->path_count = 0;
+}
+
 static void push_command_path(sonixlink_command_kind_t kind, int arg, const char *path) {
 	push_command_list(kind, arg, path, SONIXLINK_LIST_ALL, NULL);
 }
@@ -154,7 +213,8 @@ void sonixlink_take_path(char *out, size_t out_size) {
 	pthread_mutex_unlock(&lock);
 }
 
-void sonixlink_publish_queue(int total, int position, int first, const char *const *paths, int count) {
+void sonixlink_publish_queue(int total, int position, int first, const char *const *paths, int count,
+							 unsigned revision) {
 	if (count < 0) {
 		count = 0;
 	}
@@ -190,17 +250,46 @@ void sonixlink_publish_queue(int total, int position, int first, const char *con
 	queue_window_first = first < 0 ? 0 : first;
 	queue_total = total < 0 ? 0 : total;
 	queue_position = position;
+	queue_revision = revision;
 	pthread_mutex_unlock(&lock);
 }
+
+int sonixlink_queue_wanted(void) {
+	pthread_mutex_lock(&lock);
+	int wanted = queue_wanted;
+	pthread_mutex_unlock(&lock);
+	return wanted;
+}
+
+static void art_prepare_for(const char *path);
 
 void sonixlink_publish(const sonixlink_state_t *state) {
 	if (!state) {
 		return;
 	}
 	pthread_mutex_lock(&lock);
+	bool new_track = strcmp(g_state.path, state->path) != 0;
 	g_state = *state;
 	have_state = true;
 	pthread_mutex_unlock(&lock);
+	if (new_track) {
+		art_prepare_for(state->path);
+	}
+}
+
+void sonixlink_adopt_link(int fd) {
+	if (fd < 0) {
+		return;
+	}
+	pthread_mutex_lock(&lock);
+	bool kept = enabled && pending_link_count < PENDING_LINKS;
+	if (kept) {
+		pending_links[pending_link_count++] = fd;
+	}
+	pthread_mutex_unlock(&lock);
+	if (!kept) {
+		close(fd);
+	}
 }
 
 bool sonixlink_is_connected(void) {
@@ -231,6 +320,17 @@ void sonixlink_address(char *out, size_t out_size) {
 void sonixlink_set_db_path(const char *path) {
 	pthread_mutex_lock(&lock);
 	snprintf(db_path, sizeof(db_path), "%s", path ? path : "");
+	pthread_mutex_unlock(&lock);
+}
+
+void sonixlink_set_card_root(const char *path) {
+	pthread_mutex_lock(&lock);
+	snprintf(card_root, sizeof(card_root), "%s", path ? path : "");
+	// Without the trailing slash, so "<root>/" and "<root>" compare the same.
+	size_t n = strlen(card_root);
+	while (n > 1 && card_root[n - 1] == '/') {
+		card_root[--n] = '\0';
+	}
 	pthread_mutex_unlock(&lock);
 }
 
@@ -428,10 +528,27 @@ typedef struct {
 
 	FILE *file;			// the index file, while one is being sent
 	long file_left;		// how much of it is left
-	uint32_t opened_ms; // when this client arrived, so a stalled one can go
+	uint32_t opened_ms; // when this client arrived (or last asked), so a stalled one can go
+
+	// A Bluetooth link: one connection carries every request, so a finished
+	// reply readies it for the next one instead of closing it.
+	bool persistent;
+
+	// A request with a body (a selection of tracks): how long the body is,
+	// and as much of it as has arrived.
+	size_t body_want;
+	buf_t body;
 } client_t;
 
 static client_t clients[MAX_CLIENTS];
+
+static const char *connection_header(const client_t *c) {
+	return c->persistent ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n";
+}
+
+// A reply has gone out whole: a persistent link waits for its next request, any
+// other connection is closed.
+static void client_done(client_t *c);
 
 static void client_close(client_t *c) {
 	if (c->fd >= 0) {
@@ -441,8 +558,28 @@ static void client_close(client_t *c) {
 		fclose(c->file);
 	}
 	buf_free(&c->out);
+	buf_free(&c->body);
 	memset(c, 0, sizeof(*c));
 	c->fd = -1;
+}
+
+static void client_done(client_t *c) {
+	if (!c->persistent) {
+		client_close(c);
+		return;
+	}
+	if (c->file) {
+		fclose(c->file);
+		c->file = NULL;
+	}
+	c->file_left = 0;
+	buf_free(&c->out);
+	buf_free(&c->body);
+	c->body_want = 0;
+	c->sent = 0;
+	c->request_len = 0;
+	c->request[0] = '\0';
+	c->opened_ms = now_ms();
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +593,7 @@ static void reply_raw(client_t *c, const char *status, const char *type, const c
 	// The phone is on the same network and nothing here is a secret, but a
 	// browser opening this from a page still has to be told it may.
 	buf_str(&c->out, "Access-Control-Allow-Origin: *\r\n");
-	buf_str(&c->out, "Connection: close\r\n\r\n");
+	buf_str(&c->out, connection_header(c));
 	if (body && body_len) {
 		buf_add(&c->out, body, body_len);
 	}
@@ -469,7 +606,7 @@ static void reply_json(client_t *c, buf_t *json) {
 	buf_str(&head, "Content-Type: application/json; charset=utf-8\r\n");
 	buf_fmt(&head, "Content-Length: %zu\r\n", json->len);
 	buf_str(&head, "Access-Control-Allow-Origin: *\r\n");
-	buf_str(&head, "Connection: close\r\n\r\n");
+	buf_str(&head, connection_header(c));
 	buf_add(&head, json->data ? json->data : "", json->len);
 
 	buf_free(&c->out);
@@ -546,6 +683,186 @@ static bool db_stat(long *size_out, long *mtime_out) {
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// Content fingerprints
+//
+// The phone keeps its copy of the index and of the thumbnails between one
+// connection and the next, and has to tell whether they are still current. The
+// files' mtimes cannot say: the index is also where the player keeps where
+// playback was left, the saved queue and the playlist counts, so it is written
+// on every change of track, and the thumbnails file every time a list draws a
+// cover it had not drawn before. Asking by mtime meant a full download at
+// nearly every connection.
+//
+// So what is compared is a hash of what the phone actually reads: the library
+// tables and the playlists for the index (the favourites travel live, through
+// /api/favourites), the thumbnail keys for the thumbnails (a key names the
+// track, its mtime, its size and the box, so the pixels behind a key never
+// change without the key changing). Each row is hashed on its own and the row
+// hashes are summed, so the order the rows sit in -- which a rescan reshuffles
+// -- does not count.
+//
+// Computing it reads the whole table, about half a second for a large library
+// on this processor, so the result is kept against the file's size and mtime
+// and computed again only when those move.
+// ---------------------------------------------------------------------------
+
+#define FNV_OFFSET 0xcbf29ce484222325ULL
+#define FNV_PRIME 0x100000001b3ULL
+
+static uint64_t fnv_bytes(uint64_t h, const void *data, size_t len) {
+	const uint8_t *p = data;
+	for (size_t i = 0; i < len; i++) {
+		h ^= p[i];
+		h *= FNV_PRIME;
+	}
+	return h;
+}
+
+// Every row of one query folded into the running sum. False when the query
+// could not run -- a table that does not exist on this card, for one.
+static bool hash_rows(sqlite3 *db, const char *sql, uint64_t *sum, uint64_t *rows) {
+	sqlite3_stmt *st = NULL;
+	if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+		sqlite3_finalize(st);
+		return false;
+	}
+	int columns = sqlite3_column_count(st);
+	int rc;
+	while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+		uint64_t h = FNV_OFFSET;
+		for (int i = 0; i < columns; i++) {
+			int type = sqlite3_column_type(st, i);
+			uint8_t tag = (uint8_t)type;
+			h = fnv_bytes(h, &tag, 1);
+			if (type == SQLITE_INTEGER) {
+				int64_t v = sqlite3_column_int64(st, i);
+				h = fnv_bytes(h, &v, sizeof(v));
+			} else if (type == SQLITE_FLOAT) {
+				double v = sqlite3_column_double(st, i);
+				h = fnv_bytes(h, &v, sizeof(v));
+			} else if (type == SQLITE_TEXT || type == SQLITE_BLOB) {
+				const void *v = sqlite3_column_blob(st, i);
+				int n = sqlite3_column_bytes(st, i);
+				if (v && n > 0) {
+					h = fnv_bytes(h, v, (size_t)n);
+				}
+			}
+		}
+		*sum += h;
+		(*rows)++;
+	}
+	sqlite3_finalize(st);
+	return rc == SQLITE_DONE;
+}
+
+static bool hash_index(const char *path, uint64_t *out) {
+	sqlite3 *db = NULL;
+	if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+		sqlite3_close(db);
+		return false;
+	}
+	sqlite3_busy_timeout(db, 1000);
+
+	static const char *const TABLES[] = {
+		"MEDIA_TABLE", "ALBUM_TABLE", "ALBUM_GROUP_TABLE", "ARTIST_TABLE", "ALBUM_ARTIST_TABLE", "GENRE_TABLE",
+	};
+	uint64_t total = FNV_OFFSET;
+	bool ok = true;
+	for (size_t t = 0; t < sizeof(TABLES) / sizeof(TABLES[0]) && ok; t++) {
+		char sql[96];
+		snprintf(sql, sizeof(sql), "SELECT * FROM %s", TABLES[t]);
+		uint64_t sum = 0, rows = 0;
+		// A table missing from an older card is not an error: it is empty.
+		hash_rows(db, sql, &sum, &rows);
+		total = fnv_bytes(total, &sum, sizeof(sum));
+		total = fnv_bytes(total, &rows, sizeof(rows));
+	}
+
+	// The playlists: one table each, found by name. The name goes into the
+	// hash too, so renaming a playlist counts.
+	sqlite3_stmt *names = NULL;
+	if (sqlite3_prepare_v2(db,
+						   "SELECT name FROM sqlite_master WHERE type='table' AND substr(name,1,4)='M3U_' ORDER BY name",
+						   -1, &names, NULL) == SQLITE_OK) {
+		while (sqlite3_step(names) == SQLITE_ROW) {
+			const char *name = (const char *)sqlite3_column_text(names, 0);
+			if (!name || strchr(name, '"')) {
+				continue;
+			}
+			char sql[400];
+			snprintf(sql, sizeof(sql), "SELECT * FROM \"%.300s\"", name);
+			uint64_t sum = 0, rows = 0;
+			hash_rows(db, sql, &sum, &rows);
+			total = fnv_bytes(total, name, strlen(name));
+			total = fnv_bytes(total, &sum, sizeof(sum));
+			total = fnv_bytes(total, &rows, sizeof(rows));
+		}
+	} else {
+		ok = false;
+	}
+	sqlite3_finalize(names);
+	sqlite3_close(db);
+	*out = total;
+	return ok;
+}
+
+static bool hash_thumbs(const char *path, uint64_t *out) {
+	sqlite3 *db = NULL;
+	if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+		sqlite3_close(db);
+		return false;
+	}
+	sqlite3_busy_timeout(db, 1000);
+	uint64_t sum = 0, rows = 0;
+	bool ok = hash_rows(db, "SELECT key FROM thumbs", &sum, &rows);
+	sqlite3_close(db);
+	uint64_t total = FNV_OFFSET;
+	total = fnv_bytes(total, &sum, sizeof(sum));
+	total = fnv_bytes(total, &rows, sizeof(rows));
+	*out = total;
+	return ok;
+}
+
+typedef struct {
+	char path[600];
+	long size;
+	long mtime;
+	char text[20];
+} fingerprint_t;
+
+// Worker thread only: the cache needs no lock.
+static fingerprint_t index_print, thumbs_print;
+
+// The fingerprint of a file, as 16 hex digits, or "" when it cannot be had.
+static const char *fingerprint(fingerprint_t *cache, const char *path, long size, long mtime,
+							   bool (*hash)(const char *, uint64_t *)) {
+	if (strcmp(cache->path, path) == 0 && cache->size == size && cache->mtime == mtime && cache->text[0]) {
+		return cache->text;
+	}
+	uint64_t h = 0;
+	uint32_t began = now_ms();
+	if (!hash(path, &h)) {
+		cache->text[0] = '\0';
+		return cache->text;
+	}
+	snprintf(cache->path, sizeof(cache->path), "%s", path);
+	cache->size = size;
+	cache->mtime = mtime;
+	snprintf(cache->text, sizeof(cache->text), "%016llx", (unsigned long long)h);
+	if (verbose) {
+		printf("sonixlink: fingerprint of %s is %s (%u ms)\n", path, cache->text, now_ms() - began);
+	}
+	return cache->text;
+}
+
+// How the player orders its lists, as a JSON field (with its trailing comma).
+static void buf_sort_field(buf_t *j, const sonixlink_state_t *s) {
+	buf_fmt(j, "\"sort\":{\"desc\":%u,\"added\":%u,\"artist_by_album\":%s,\"favourites_reversed\":%s},",
+			s->sort_desc, s->sort_added, s->artist_by_album ? "true" : "false",
+			s->favourites_reversed ? "true" : "false");
+}
+
 static void route_info(client_t *c) {
 	sonixlink_state_t s;
 	state_copy(&s);
@@ -563,8 +880,16 @@ static void route_info(client_t *c) {
 	buf_fmt(&j, "\"api\":1,\"port\":%d,", SONIXLINK_PORT);
 	buf_fmt(&j, "\"tracks\":%u,", s.track_count);
 	buf_fmt(&j, "\"scanning\":%s,", s.scanning ? "true" : "false");
+	buf_sort_field(&j, &s);
 	buf_fmt(&j, "\"db_available\":%s,", have_db ? "true" : "false");
 	buf_fmt(&j, "\"db_size\":%ld,\"db_mtime\":%ld,", size, mtime);
+	if (have_db && !s.scanning) {
+		char path[sizeof(db_path)];
+		pthread_mutex_lock(&lock);
+		snprintf(path, sizeof(path), "%s", db_path);
+		pthread_mutex_unlock(&lock);
+		buf_json_field(&j, "db_hash", fingerprint(&index_print, path, size, mtime, hash_index), true);
+	}
 
 	char thumbs[sizeof(thumbs_path)];
 	pthread_mutex_lock(&lock);
@@ -577,6 +902,10 @@ static void route_info(client_t *c) {
 	if (have_covers) {
 		covers_size = (long)cst.st_size;
 		covers_mtime = (long)cst.st_mtime;
+	}
+	if (have_covers) {
+		buf_json_field(&j, "covers_hash", fingerprint(&thumbs_print, thumbs, covers_size, covers_mtime, hash_thumbs),
+					   true);
 	}
 	buf_json_field(&j, "accent", s.accent[0] ? s.accent : "#3584e4", true);
 	buf_fmt(&j, "\"covers_available\":%s,", have_covers ? "true" : "false");
@@ -604,7 +933,10 @@ static void route_state(client_t *c) {
 	buf_fmt(&j, "\"battery\":%d,\"charging\":%s,", s.battery_percent, s.charging ? "true" : "false");
 	buf_fmt(&j, "\"favourite\":%s,", s.favourite ? "true" : "false");
 	buf_json_field(&j, "accent", s.accent[0] ? s.accent : "#3584e4", true);
-	buf_fmt(&j, "\"queue_position\":%d,\"queue_count\":%d,", s.queue_position, s.queue_count);
+	buf_sort_field(&j, &s);
+	buf_fmt(&j, "\"queue_position\":%d,\"queue_count\":%d,\"queue_revision\":%u,", s.queue_position, s.queue_count,
+			s.queue_revision);
+	buf_fmt(&j, "\"display_position\":%d,\"display_count\":%d,", s.display_position, s.display_count);
 	buf_fmt(&j, "\"scanning\":%s,\"scan_count\":%u,\"tracks\":%u}", s.scanning ? "true" : "false", s.scan_count,
 			s.track_count);
 	reply_json(c, &j);
@@ -642,7 +974,7 @@ static void route_db(client_t *c) {
 	buf_fmt(&c->out, "Content-Length: %ld\r\n", size);
 	buf_fmt(&c->out, "X-Sonix-Db-Mtime: %ld\r\n", mtime);
 	buf_str(&c->out, "Access-Control-Allow-Origin: *\r\n");
-	buf_str(&c->out, "Connection: close\r\n\r\n");
+	buf_str(&c->out, connection_header(c));
 
 	c->file = f;
 	c->file_left = size;
@@ -732,7 +1064,52 @@ static int list_from_name(const char *name) {
 	if (strcmp(name, "queue") == 0) {
 		return SONIXLINK_LIST_QUEUE;
 	}
+	if (strcmp(name, "albums") == 0) {
+		return SONIXLINK_LIST_ALBUMS;
+	}
+	if (strcmp(name, "folder") == 0) {
+		return SONIXLINK_LIST_FOLDER;
+	}
 	return -1;
+}
+
+// The paths in a request's body, one a line, copied into one block of
+// NUL-ended strings (the shape sonixlink_command_t carries). Returns how many.
+#define BODY_PATHS_MAX 5000
+
+static int body_paths(client_t *c, char **out) {
+	*out = NULL;
+	if (!c->body.data || c->body.len == 0) {
+		return 0;
+	}
+	char *block = malloc(c->body.len + 1);
+	if (!block) {
+		return 0;
+	}
+	int count = 0;
+	size_t at = 0;
+	const char *line = c->body.data;
+	const char *end = c->body.data + c->body.len;
+	while (line < end && count < BODY_PATHS_MAX) {
+		const char *eol = memchr(line, '\n', (size_t)(end - line));
+		size_t len = eol ? (size_t)(eol - line) : (size_t)(end - line);
+		if (len > 0 && line[len - 1] == '\r') {
+			len--;
+		}
+		if (len > 0 && len < SONIXLINK_PATH_MAX) {
+			memcpy(block + at, line, len);
+			at += len;
+			block[at++] = '\0';
+			count++;
+		}
+		line = eol ? eol + 1 : end;
+	}
+	if (count == 0) {
+		free(block);
+		return 0;
+	}
+	*out = block;
+	return count;
 }
 
 static void route_command(client_t *c, const char *query) {
@@ -803,6 +1180,40 @@ static void route_command(client_t *c, const char *query) {
 		push_command_path(SONIXLINK_CMD_FAVOURITE, want, path);
 	} else if (strcmp(what, "queue_index") == 0) {
 		push_command(SONIXLINK_CMD_QUEUE_INDEX, number);
+	} else if (strcmp(what, "play_all") == 0) {
+		char list_name[32] = "";
+		char how[16] = "";
+		query_value(query, "list", list_name, sizeof(list_name));
+		query_value(query, "how", how, sizeof(how));
+		int list = list_from_name(list_name);
+		if (list < 0 || list == SONIXLINK_LIST_QUEUE || list == SONIXLINK_LIST_FOLDER) {
+			reply_status(c, "400 Bad Request", "unknown list");
+			return;
+		}
+		int arg = strcmp(how, "shuffle") == 0  ? SONIXLINK_PLAY_SHUFFLE
+				  : strcmp(how, "random") == 0 ? SONIXLINK_PLAY_RANDOM_TO_QUEUE
+											   : SONIXLINK_PLAY_SEQUENCE;
+		push_command_list(SONIXLINK_CMD_PLAY_ALL, arg, NULL, list, value);
+	} else if (strcmp(what, "queue_next") == 0 || strcmp(what, "favourites_add") == 0 ||
+			   strcmp(what, "favourites_remove") == 0 || strcmp(what, "playlist_add") == 0 ||
+			   strcmp(what, "playlist_remove") == 0) {
+		bool to_playlist = strncmp(what, "playlist_", 9) == 0;
+		if (to_playlist && !value[0]) {
+			reply_status(c, "400 Bad Request", "no playlist");
+			return;
+		}
+		char *paths = NULL;
+		int count = body_paths(c, &paths);
+		if (count == 0) {
+			reply_status(c, "400 Bad Request", "no paths");
+			return;
+		}
+		sonixlink_command_kind_t kind = strcmp(what, "queue_next") == 0		  ? SONIXLINK_CMD_QUEUE_NEXT
+										: strcmp(what, "favourites_add") == 0	  ? SONIXLINK_CMD_FAVOURITES_ADD
+										: strcmp(what, "favourites_remove") == 0 ? SONIXLINK_CMD_FAVOURITES_REMOVE
+										: strcmp(what, "playlist_add") == 0	  ? SONIXLINK_CMD_PLAYLIST_ADD
+																				  : SONIXLINK_CMD_PLAYLIST_REMOVE;
+		push_command_paths(kind, 0, paths, count, value);
 	} else if (strcmp(what, "scan") == 0) {
 		push_command(SONIXLINK_CMD_SCAN, 0);
 	} else {
@@ -849,16 +1260,30 @@ static void route_cover(client_t *c, const char *query) {
 	buf_fmt(&c->out, "Content-Type: %s\r\n", type);
 	buf_fmt(&c->out, "Content-Length: %ld\r\n", (long)st.st_size);
 	buf_str(&c->out, "Access-Control-Allow-Origin: *\r\n");
-	buf_str(&c->out, "Connection: close\r\n\r\n");
+	buf_str(&c->out, connection_header(c));
 	c->file = f;
 	c->file_left = (long)st.st_size;
 }
 
 
-// The queue as the interface last handed it over: a window around the track
-// playing now, with the paths only. The phone already has the index, so it
-// looks up title and artist there instead of being sent them again.
-static void route_queue(client_t *c) {
+// The queue as the interface last handed it over, with the paths only. The
+// phone already has the index, so it looks up title and artist there instead of
+// being sent them again.
+//
+// Without `from` the answer is the window as it stands, around the track
+// playing now. With it, the phone wants the stretch starting there: the
+// interface is asked for it, and until its next pump has published it the
+// answer says "pending" with no paths, and the phone asks again.
+static void route_queue(client_t *c, const char *query) {
+	char from_text[16] = "";
+	int from = -1;
+	if (query_value(query, "from", from_text, sizeof(from_text)) && from_text[0]) {
+		from = atoi(from_text);
+		if (from < 0) {
+			from = 0;
+		}
+	}
+
 	buf_t j;
 	memset(&j, 0, sizeof(j));
 
@@ -867,9 +1292,21 @@ static void route_queue(client_t *c) {
 	int position = queue_position;
 	int first = queue_window_first;
 	int count = queue_window_count;
+	unsigned revision = queue_revision;
+	bool pending = false;
+	if (from >= 0) {
+		queue_wanted = from;
+		pending = from < total && first != from;
+	}
 
 	buf_str(&j, "{");
-	buf_fmt(&j, "\"count\":%d,\"position\":%d,\"first\":%d,\"paths\":[", total, position, first);
+	buf_fmt(&j, "\"count\":%d,\"position\":%d,\"revision\":%u,\"pending\":%s,", total, position, revision,
+			pending ? "true" : "false");
+	if (pending) {
+		count = 0;
+		first = from;
+	}
+	buf_fmt(&j, "\"first\":%d,\"paths\":[", first);
 	for (int i = 0; i < count; i++) {
 		size_t at = (size_t)queue_offsets[i];
 		const char *path = (queue_arena && at < queue_arena_len) ? queue_arena + at : "";
@@ -956,19 +1393,440 @@ static void route_covers(client_t *c) {
 	buf_fmt(&c->out, "Content-Length: %ld\r\n", (long)st.st_size);
 	buf_fmt(&c->out, "X-Sonix-Covers-Mtime: %ld\r\n", (long)st.st_mtime);
 	buf_str(&c->out, "Access-Control-Allow-Origin: *\r\n");
-	buf_str(&c->out, "Connection: close\r\n\r\n");
+	buf_str(&c->out, connection_header(c));
 	c->file = f;
 	c->file_left = (long)st.st_size;
 	printf("sonixlink: sending the thumbnails, %ld bytes\n", (long)st.st_size);
 }
 
+// ---------------------------------------------------------------------------
+// Thumbnails one at a time
+//
+// The whole thumbnails file can be a hundred megabytes: every cover the player
+// has drawn at every size it draws. Over Bluetooth that is most of an hour. So
+// the phone asks for the thumbnails it is about to show, a screenful at a time,
+// and keeps what it receives: the pixels behind a key never change (the key
+// names the track's path, mtime, size and the box), so nothing is asked twice.
+//
+//   /api/thumbkeys          every key the file holds, 8 bytes each (the key's
+//                           64 bits, little-endian): how the phone knows which
+//                           tracks it can ask about without asking for every
+//                           one. All of them, those without a picture too: the
+//                           keys alone come out of the primary key's index,
+//                           while telling which have a picture means reading
+//                           every row, which in a file this size is most of it.
+//   /api/thumbs?keys=k,k,.. up to THUMBS_PER_ASK keys of 16 hex digits. For
+//                           each one the file holds: the 16 digits, width and
+//                           height (u16 LE), the pixel bytes' length (u32 LE)
+//                           and the RGB565 pixels. Width and height at zero
+//                           is "looked, no artwork". A key the file does not
+//                           hold is left out.
+//
+// The connection to the file stays open between requests: a screenful of rows
+// scrolled past is several requests a second.
+// ---------------------------------------------------------------------------
+
+#define THUMBS_PER_ASK 64
+
+// Worker thread only.
+static sqlite3 *thumbs_db;
+static char thumbs_db_path[600];
+
+static sqlite3 *thumbs_open(void) {
+	char path[sizeof(thumbs_path)];
+	pthread_mutex_lock(&lock);
+	snprintf(path, sizeof(path), "%s", thumbs_path);
+	pthread_mutex_unlock(&lock);
+	if (!path[0]) {
+		return NULL;
+	}
+	if (thumbs_db && strcmp(thumbs_db_path, path) == 0) {
+		return thumbs_db;
+	}
+	if (thumbs_db) {
+		sqlite3_close(thumbs_db);
+		thumbs_db = NULL;
+	}
+	if (sqlite3_open_v2(path, &thumbs_db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+		sqlite3_close(thumbs_db);
+		thumbs_db = NULL;
+		return NULL;
+	}
+	// The interface writes this file while lists draw; a read waits its turn.
+	sqlite3_busy_timeout(thumbs_db, 1000);
+	// Only what one request reads: the pages are not worth keeping.
+	sqlite3_exec(thumbs_db, "PRAGMA cache_size=-64", NULL, NULL, NULL);
+	snprintf(thumbs_db_path, sizeof(thumbs_db_path), "%s", path);
+	return thumbs_db;
+}
+
+// A statement failed: the file may have been replaced under the connection.
+static void thumbs_forget(void) {
+	if (thumbs_db) {
+		sqlite3_close(thumbs_db);
+		thumbs_db = NULL;
+	}
+}
+
+static int hex_digit(char ch) {
+	if (ch >= '0' && ch <= '9') {
+		return ch - '0';
+	}
+	if (ch >= 'a' && ch <= 'f') {
+		return ch - 'a' + 10;
+	}
+	if (ch >= 'A' && ch <= 'F') {
+		return ch - 'A' + 10;
+	}
+	return -1;
+}
+
+static void buf_u16(buf_t *b, unsigned v) {
+	char bytes[2] = {(char)(v & 0xff), (char)((v >> 8) & 0xff)};
+	buf_add(b, bytes, 2);
+}
+
+static void buf_u32(buf_t *b, uint32_t v) {
+	char bytes[4] = {(char)(v & 0xff), (char)((v >> 8) & 0xff), (char)((v >> 16) & 0xff), (char)((v >> 24) & 0xff)};
+	buf_add(b, bytes, 4);
+}
+
+static void route_thumbkeys(client_t *c) {
+	sqlite3 *db = thumbs_open();
+	if (!db) {
+		reply_status(c, "404 Not Found", "no thumbnails yet");
+		return;
+	}
+	sqlite3_stmt *st = NULL;
+	if (sqlite3_prepare_v2(db, "SELECT key FROM thumbs", -1, &st, NULL) != SQLITE_OK) {
+		sqlite3_finalize(st);
+		thumbs_forget();
+		reply_status(c, "500 Internal Server Error", "cannot read the thumbnails");
+		return;
+	}
+	buf_t body;
+	memset(&body, 0, sizeof(body));
+	while (sqlite3_step(st) == SQLITE_ROW) {
+		const char *key = (const char *)sqlite3_column_text(st, 0);
+		if (!key || strlen(key) != 16) {
+			continue;
+		}
+		uint64_t v = 0;
+		bool ok = true;
+		for (int i = 0; i < 16 && ok; i++) {
+			int d = hex_digit(key[i]);
+			ok = d >= 0;
+			v = (v << 4) | (uint64_t)(d < 0 ? 0 : d);
+		}
+		if (!ok) {
+			continue;
+		}
+		char bytes[8];
+		for (int i = 0; i < 8; i++) {
+			bytes[i] = (char)((v >> (8 * i)) & 0xff);
+		}
+		buf_add(&body, bytes, 8);
+	}
+	sqlite3_finalize(st);
+	if (body.failed) {
+		buf_free(&body);
+		reply_status(c, "500 Internal Server Error", "out of memory");
+		return;
+	}
+	reply_raw(c, "200 OK", "application/octet-stream", body.data, body.len);
+	buf_free(&body);
+}
+
+static void route_thumbs(client_t *c, const char *query) {
+	char list[THUMBS_PER_ASK * 17 + 1] = "";
+	if (!query_value(query, "keys", list, sizeof(list)) || !list[0]) {
+		reply_status(c, "400 Bad Request", "no keys");
+		return;
+	}
+	sqlite3 *db = thumbs_open();
+	if (!db) {
+		reply_status(c, "404 Not Found", "no thumbnails yet");
+		return;
+	}
+	sqlite3_stmt *st = NULL;
+	if (sqlite3_prepare_v2(db, "SELECT w,h,pixels FROM thumbs WHERE key=?", -1, &st, NULL) != SQLITE_OK) {
+		sqlite3_finalize(st);
+		thumbs_forget();
+		reply_status(c, "500 Internal Server Error", "cannot read the thumbnails");
+		return;
+	}
+
+	buf_t body;
+	memset(&body, 0, sizeof(body));
+	int asked = 0;
+	for (char *key = strtok(list, ","); key && asked < THUMBS_PER_ASK; key = strtok(NULL, ",")) {
+		if (strlen(key) != 16) {
+			continue;
+		}
+		asked++;
+		sqlite3_reset(st);
+		sqlite3_bind_text(st, 1, key, 16, SQLITE_TRANSIENT);
+		if (sqlite3_step(st) != SQLITE_ROW) {
+			continue;
+		}
+		int w = sqlite3_column_int(st, 0);
+		int h = sqlite3_column_int(st, 1);
+		const void *pixels = sqlite3_column_blob(st, 2);
+		int n = sqlite3_column_bytes(st, 2);
+		bool picture = w > 0 && h > 0 && w <= 1024 && h <= 1024 && pixels && n >= w * h * 2;
+		buf_add(&body, key, 16);
+		buf_u16(&body, picture ? (unsigned)w : 0);
+		buf_u16(&body, picture ? (unsigned)h : 0);
+		uint32_t len = picture ? (uint32_t)(w * h * 2) : 0;
+		buf_u32(&body, len);
+		if (len) {
+			buf_add(&body, pixels, len);
+		}
+	}
+	sqlite3_finalize(st);
+	if (body.failed) {
+		buf_free(&body);
+		reply_status(c, "500 Internal Server Error", "out of memory");
+		return;
+	}
+	reply_raw(c, "200 OK", "application/octet-stream", body.data ? body.data : "", body.len);
+	buf_free(&body);
+}
+
 // The artwork of a track, whole and undecoded: the picture inside the tags, or
 // the cover file beside it. The thumbnails file answers the lists; this answers
 // the one screen that wants the real thing, and the phone decodes it.
+//
+// With `max=<pixels>` the picture is made to fit that size and sent as a JPEG
+// of a few tens of kilobytes (art_shrink.h). Making it is a decode of a cover
+// that can be several megabytes, a second or more on this processor, and it is
+// not done here: this thread serves every phone and every request, and over
+// Bluetooth one request at a time -- a state read waiting a second behind a
+// cover is the progress bar standing still at 0:00. So the picture is made on
+// a thread of its own (art_worker), and until it is ready the answer is
+// "202 Accepted" at once; the phone asks again a moment later, and the link is
+// free in between. The thread also starts on its own when the track changes,
+// at the size a phone last asked for, so the cover is usually ready before
+// anyone asks.
+// ---------------------------------------------------------------------------
+
+#define ART_MAX_SIDE_LIMIT 1280
+#define ART_JPEG_QUALITY 85
+#define ART_KEPT 3
+
+// A phone that asked for a fitted cover this recently gets the next track's
+// made ahead of time.
+#define ART_PREPARE_FOR_MS (10 * 60 * 1000)
+
+typedef struct {
+	char path[SONIXLINK_PATH_MAX];
+	int side;
+	bool missing;  // the track has no artwork
+	uint8_t *data; // what to send: the fitted JPEG, or the original when it is small
+	size_t len;
+	const char *type;
+	uint32_t used_ms;
+} art_entry_t;
+
+// Under art_lock.
+static pthread_mutex_t art_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t art_wake = PTHREAD_COND_INITIALIZER;
+static art_entry_t art_kept[ART_KEPT];
+static char art_job_path[SONIXLINK_PATH_MAX];
+static int art_job_side;
+static bool art_job_queued;
+static char art_busy_path[SONIXLINK_PATH_MAX];
+static int art_busy_side;
+static int art_last_side;
+static uint32_t art_last_asked_ms;
+static bool art_thread_started;
+static pthread_t art_thread;
+
+static const char *art_type_of(const uint8_t *data, size_t size) {
+	if (size > 3 && data[0] == 0xFF && data[1] == 0xD8) {
+		return "image/jpeg";
+	}
+	if (size > 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') {
+		return "image/png";
+	}
+	return "application/octet-stream";
+}
+
+// Under art_lock.
+static art_entry_t *art_find(const char *path, int side) {
+	for (int i = 0; i < ART_KEPT; i++) {
+		if ((art_kept[i].data || art_kept[i].missing) && art_kept[i].side == side &&
+			strcmp(art_kept[i].path, path) == 0) {
+			return &art_kept[i];
+		}
+	}
+	return NULL;
+}
+
+// Under art_lock: the entry that has gone longest unused, emptied.
+static art_entry_t *art_slot(void) {
+	art_entry_t *oldest = &art_kept[0];
+	for (int i = 0; i < ART_KEPT; i++) {
+		if (!art_kept[i].data && !art_kept[i].missing) {
+			oldest = &art_kept[i];
+			break;
+		}
+		if (art_kept[i].used_ms < oldest->used_ms) {
+			oldest = &art_kept[i];
+		}
+	}
+	free(oldest->data);
+	memset(oldest, 0, sizeof(*oldest));
+	return oldest;
+}
+
+static void *art_worker(void *unused) {
+	(void)unused;
+	thread_be_background("sonixlink art");
+	for (;;) {
+		char path[SONIXLINK_PATH_MAX];
+		int side;
+		pthread_mutex_lock(&art_lock);
+		while (!art_job_queued) {
+			pthread_cond_wait(&art_wake, &art_lock);
+		}
+		snprintf(path, sizeof(path), "%s", art_job_path);
+		side = art_job_side;
+		art_job_queued = false;
+		snprintf(art_busy_path, sizeof(art_busy_path), "%s", path);
+		art_busy_side = side;
+		bool done_already = art_find(path, side) != NULL;
+		pthread_mutex_unlock(&art_lock);
+
+		uint8_t *data = NULL;
+		size_t len = 0;
+		const char *type = "image/jpeg";
+		bool missing = false;
+		if (!done_already) {
+			uint32_t began = now_ms();
+			albumart_t art;
+			memset(&art, 0, sizeof(art));
+			if (!albumart_load_for_file(path, &art) || !art.data || art.size == 0) {
+				missing = true;
+			} else {
+				data = art_shrink_to_jpeg(art.data, art.size, side, ART_JPEG_QUALITY, &len);
+				if (data) {
+					if (verbose) {
+						printf("sonixlink: artwork %zu -> %zu bytes at %d px in %u ms\n", art.size, len, side,
+							   now_ms() - began);
+					}
+				} else {
+					// Already small, or not a picture the shrink can read: sent
+					// as it is, so it is kept as it is.
+					data = malloc(art.size);
+					if (data) {
+						memcpy(data, art.data, art.size);
+						len = art.size;
+						type = art_type_of(art.data, art.size);
+					} else {
+						missing = true;
+					}
+				}
+			}
+			albumart_free(&art);
+		}
+
+		pthread_mutex_lock(&art_lock);
+		if (!done_already) {
+			art_entry_t *e = art_slot();
+			snprintf(e->path, sizeof(e->path), "%s", path);
+			e->side = side;
+			e->missing = missing || !data;
+			e->data = data;
+			e->len = len;
+			e->type = type;
+			e->used_ms = now_ms();
+		}
+		art_busy_path[0] = '\0';
+		pthread_mutex_unlock(&art_lock);
+	}
+	return NULL;
+}
+
+// Under art_lock: makes `path` at `side` the next job (replacing one not yet
+// started: only the newest track matters).
+static void art_queue_locked(const char *path, int side) {
+	if (art_find(path, side)) {
+		return;
+	}
+	if (art_busy_path[0] && art_busy_side == side && strcmp(art_busy_path, path) == 0) {
+		return;
+	}
+	snprintf(art_job_path, sizeof(art_job_path), "%s", path);
+	art_job_side = side;
+	art_job_queued = true;
+	if (!art_thread_started) {
+		if (pthread_create(&art_thread, NULL, art_worker, NULL) == 0) {
+			pthread_detach(art_thread);
+			art_thread_started = true;
+		}
+	}
+	pthread_cond_signal(&art_wake);
+}
+
+// The track has changed: its cover is made now, at the size the phone last
+// asked for, if a phone is asking for fitted covers at all.
+static void art_prepare_for(const char *path) {
+	if (!path || !path[0]) {
+		return;
+	}
+	pthread_mutex_lock(&art_lock);
+	if (art_last_side > 0 && (uint32_t)(now_ms() - art_last_asked_ms) < ART_PREPARE_FOR_MS) {
+		art_queue_locked(path, art_last_side);
+	}
+	pthread_mutex_unlock(&art_lock);
+}
+
+static void reply_art_bytes(client_t *c, const char *type, const uint8_t *data, size_t len) {
+	buf_fmt(&c->out, "HTTP/1.1 200 OK\r\n");
+	buf_fmt(&c->out, "Content-Type: %s\r\n", type);
+	buf_fmt(&c->out, "Content-Length: %zu\r\n", len);
+	buf_str(&c->out, "Access-Control-Allow-Origin: *\r\n");
+	buf_str(&c->out, connection_header(c));
+	buf_add(&c->out, (const char *)data, len);
+}
+
 static void route_art(client_t *c, const char *query) {
 	char path[SONIXLINK_PATH_MAX] = "";
 	if (!query_value(query, "path", path, sizeof(path)) || !path[0]) {
 		reply_status(c, "400 Bad Request", "no path");
+		return;
+	}
+	char max_text[16] = "";
+	int max_side = 0;
+	if (query_value(query, "max", max_text, sizeof(max_text)) && max_text[0]) {
+		max_side = atoi(max_text);
+		if (max_side < 64 || max_side > ART_MAX_SIDE_LIMIT) {
+			max_side = 0;
+		}
+	}
+
+	if (max_side) {
+		pthread_mutex_lock(&art_lock);
+		art_last_side = max_side;
+		art_last_asked_ms = now_ms();
+		art_entry_t *e = art_find(path, max_side);
+		if (e) {
+			e->used_ms = now_ms();
+			if (e->missing) {
+				pthread_mutex_unlock(&art_lock);
+				reply_status(c, "404 Not Found", "no artwork");
+				return;
+			}
+			reply_art_bytes(c, e->type, e->data, e->len);
+			pthread_mutex_unlock(&art_lock);
+			return;
+		}
+		art_queue_locked(path, max_side);
+		pthread_mutex_unlock(&art_lock);
+		// Not ready: asked again shortly. Retry-After in milliseconds is not
+		// HTTP, so the app's own pace decides.
+		reply_status(c, "202 Accepted", "preparing");
 		return;
 	}
 
@@ -979,23 +1837,247 @@ static void route_art(client_t *c, const char *query) {
 		reply_status(c, "404 Not Found", "no artwork");
 		return;
 	}
-
 	// What it is, from the bytes rather than from a file name: an embedded
 	// picture has no name to read an extension off.
-	const char *type = "application/octet-stream";
-	if (art.size > 3 && art.data[0] == 0xFF && art.data[1] == 0xD8) {
-		type = "image/jpeg";
-	} else if (art.size > 8 && art.data[0] == 0x89 && art.data[1] == 'P' && art.data[2] == 'N' && art.data[3] == 'G') {
-		type = "image/png";
+	reply_art_bytes(c, art_type_of(art.data, art.size), art.data, art.size);
+	albumart_free(&art);
+}
+
+// The app has let go of the player: the status bar stops showing it now rather
+// than when PEER_ALIVE_MS runs out.
+static void route_bye(client_t *c) {
+	pthread_mutex_lock(&lock);
+	last_seen_ms = 0;
+	peer_text[0] = '\0';
+	pthread_mutex_unlock(&lock);
+	reply_status(c, "200 OK", "bye");
+}
+
+// ---------------------------------------------------------------------------
+// /api/browse: one folder of the card, as the file browser lists it
+//
+// Folders first, then what can be played, each alphabetically without regard
+// to case; hidden entries and what a desktop leaves behind are skipped. A cue
+// sheet is listed track by track ("3. Title", played through the virtual path
+// "album.cue?track=3") and the file it cuts up is left out, as in browser.c.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	char *label; // what the row says
+	char *file;	 // the name inside the folder: the real one, or the sheet's virtual one
+	bool dir;
+} browse_entry_t;
+
+typedef struct {
+	browse_entry_t *items;
+	int count;
+	int cap;
+} browse_list_t;
+
+static bool browse_playable(const char *name) {
+	static const char *const exts[] = {".wav", ".mp3", ".flac", ".ogg", ".m4b", ".m4a", ".alac", ".aac", ".dsf",
+									   ".dff", ".aif", ".aiff", ".aifc", ".caf", ".opus", ".wv",	".ape"};
+	if (playlist_is_junk_name(name)) {
+		return false;
+	}
+	for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++) {
+		if (has_extension(name, exts[i])) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool browse_add(browse_list_t *l, const char *label, const char *file, bool dir) {
+	if (l->count >= BROWSE_MAX) {
+		return false;
+	}
+	if (l->count == l->cap) {
+		int cap = l->cap ? l->cap * 2 : 64;
+		browse_entry_t *grown = realloc(l->items, sizeof(*grown) * (size_t)cap);
+		if (!grown) {
+			return false;
+		}
+		l->items = grown;
+		l->cap = cap;
+	}
+	browse_entry_t *e = &l->items[l->count];
+	e->label = strdup(label);
+	e->file = strdup(file);
+	e->dir = dir;
+	if (!e->label || !e->file) {
+		free(e->label);
+		free(e->file);
+		return false;
+	}
+	l->count++;
+	return true;
+}
+
+static void browse_free(browse_list_t *l) {
+	for (int i = 0; i < l->count; i++) {
+		free(l->items[i].label);
+		free(l->items[i].file);
+	}
+	free(l->items);
+	memset(l, 0, sizeof(*l));
+}
+
+static int browse_cmp(const void *a, const void *b) {
+	const browse_entry_t *ea = a;
+	const browse_entry_t *eb = b;
+	if (ea->dir != eb->dir) {
+		return ea->dir ? -1 : 1;
+	}
+	int by_track = 0;
+	if (cue_order_tracks(ea->file, eb->file, &by_track)) {
+		return by_track;
+	}
+	return strcasecmp(ea->file, eb->file);
+}
+
+#define BROWSE_CLAIMS 32
+
+static void browse_read(const char *path, browse_list_t *out) {
+	DIR *dir = opendir(path);
+	if (!dir) {
+		return;
 	}
 
-	buf_fmt(&c->out, "HTTP/1.1 200 OK\r\n");
-	buf_fmt(&c->out, "Content-Type: %s\r\n", type);
-	buf_fmt(&c->out, "Content-Length: %zu\r\n", art.size);
-	buf_str(&c->out, "Access-Control-Allow-Origin: *\r\n");
-	buf_str(&c->out, "Connection: close\r\n\r\n");
-	buf_add(&c->out, (const char *)art.data, art.size);
-	albumart_free(&art);
+	// The sheets first: what they cut up is not listed a second time.
+	char (*claims)[256] = calloc(BROWSE_CLAIMS, 256);
+	int claim_count = 0;
+	cue_sheet_t *sheet = malloc(sizeof(*sheet));
+	struct dirent *de;
+	while (sheet && claims && (de = readdir(dir)) != NULL) {
+		if (de->d_name[0] == '.' || !cue_is_sheet(de->d_name)) {
+			continue;
+		}
+		char sheet_path[PATH_MAX + 260];
+		snprintf(sheet_path, sizeof(sheet_path), "%s/%s", path, de->d_name);
+		if (!cue_parse(sheet_path, sheet)) {
+			continue;
+		}
+		for (int t = 0; t < sheet->track_count; t++) {
+			char file[320];
+			char label[220];
+			cue_virtual_path(de->d_name, sheet->tracks[t].number, file, sizeof(file));
+			if (sheet->tracks[t].title[0]) {
+				snprintf(label, sizeof(label), "%d. %s", sheet->tracks[t].number, sheet->tracks[t].title);
+			} else {
+				snprintf(label, sizeof(label), "%d", sheet->tracks[t].number);
+			}
+			browse_add(out, label, file, false);
+		}
+		const char *slash = strrchr(sheet->audio_path, '/');
+		if (claim_count < BROWSE_CLAIMS) {
+			snprintf(claims[claim_count++], 256, "%.255s", slash ? slash + 1 : sheet->audio_path);
+		}
+	}
+	free(sheet);
+	rewinddir(dir);
+
+	while ((de = readdir(dir)) != NULL) {
+		if (de->d_name[0] == '.' || playlist_is_junk_name(de->d_name)) {
+			continue;
+		}
+		bool is_dir;
+		if (de->d_type == DT_DIR) {
+			is_dir = true;
+		} else if (de->d_type == DT_REG || de->d_type == DT_LNK || browse_playable(de->d_name)) {
+			is_dir = false;
+		} else {
+			char entry[PATH_MAX + 260];
+			snprintf(entry, sizeof(entry), "%s/%s", path, de->d_name);
+			struct stat st;
+			if (stat(entry, &st) != 0) {
+				continue;
+			}
+			is_dir = S_ISDIR(st.st_mode);
+		}
+		if (!is_dir && !browse_playable(de->d_name)) {
+			continue;
+		}
+		bool claimed = false;
+		for (int i = 0; !is_dir && claims && i < claim_count && !claimed; i++) {
+			claimed = strcmp(claims[i], de->d_name) == 0;
+		}
+		if (!claimed && !browse_add(out, de->d_name, de->d_name, is_dir)) {
+			break;
+		}
+	}
+	free(claims);
+	closedir(dir);
+	qsort(out->items, (size_t)out->count, sizeof(*out->items), browse_cmp);
+}
+
+static void route_browse(client_t *c, const char *query) {
+	char root[sizeof(card_root)];
+	pthread_mutex_lock(&lock);
+	snprintf(root, sizeof(root), "%s", card_root);
+	pthread_mutex_unlock(&lock);
+
+	char asked[SONIXLINK_PATH_MAX] = "";
+	query_value(query, "path", asked, sizeof(asked));
+
+	// Only inside the card: the path is resolved first, so neither ".." nor a
+	// link leads out of it.
+	char real_root[PATH_MAX];
+	char real[PATH_MAX];
+	if (!root[0] || !realpath(root, real_root)) {
+		reply_status(c, "404 Not Found", "no card");
+		return;
+	}
+	if (!realpath(asked[0] ? asked : root, real)) {
+		reply_status(c, "404 Not Found", "no such folder");
+		return;
+	}
+	size_t root_len = strlen(real_root);
+	if (strncmp(real, real_root, root_len) != 0 || (real[root_len] != '\0' && real[root_len] != '/')) {
+		reply_status(c, "403 Forbidden", "outside the card");
+		return;
+	}
+	struct stat st;
+	if (stat(real, &st) != 0 || !S_ISDIR(st.st_mode)) {
+		reply_status(c, "404 Not Found", "not a folder");
+		return;
+	}
+
+	// The paths go out under the root as the player spells it, which is how the
+	// index spells them too, so the app can match them against it.
+	char shown[PATH_MAX + sizeof(root)];
+	snprintf(shown, sizeof(shown), "%s%s", root, real + root_len);
+	char parent[sizeof(shown)] = "";
+	if (real[root_len] != '\0') {
+		snprintf(parent, sizeof(parent), "%s", shown);
+		char *slash = strrchr(parent, '/');
+		if (slash) {
+			*slash = '\0';
+		}
+	}
+
+	browse_list_t list;
+	memset(&list, 0, sizeof(list));
+	browse_read(real, &list);
+
+	buf_t j;
+	memset(&j, 0, sizeof(j));
+	buf_str(&j, "{");
+	buf_json_field(&j, "path", shown, true);
+	buf_json_field(&j, "root", root, true);
+	buf_json_field(&j, "parent", parent, true);
+	buf_str(&j, "\"entries\":[");
+	for (int i = 0; i < list.count; i++) {
+		char full[sizeof(shown) + 330];
+		snprintf(full, sizeof(full), "%s/%s", shown, list.items[i].file);
+		buf_str(&j, i ? ",{" : "{");
+		buf_json_field(&j, "name", list.items[i].label, true);
+		buf_json_field(&j, "path", full, true);
+		buf_fmt(&j, "\"dir\":%s}", list.items[i].dir ? "true" : "false");
+	}
+	buf_str(&j, "]}");
+	browse_free(&list);
+	reply_json(c, &j);
 }
 
 // A page for a browser, so the player can be checked without the app at all.
@@ -1071,8 +2153,18 @@ static void serve_request(client_t *c) {
 		route_art(c, query);
 	} else if (strcmp(target, "/api/covers") == 0) {
 		route_covers(c);
+	} else if (strcmp(target, "/api/thumbs") == 0) {
+		route_thumbs(c, query);
+	} else if (strcmp(target, "/api/thumbkeys") == 0) {
+		route_thumbkeys(c);
 	} else if (strcmp(target, "/api/queue") == 0) {
-		route_queue(c);
+		route_queue(c, query);
+	} else if (strcmp(target, "/api/browse") == 0) {
+		route_browse(c, query);
+	} else if (strcmp(target, "/api/ping") == 0) {
+		reply_status(c, "200 OK", "ok");
+	} else if (strcmp(target, "/api/bye") == 0) {
+		route_bye(c);
 	} else if (strcmp(target, "/api/favourites") == 0) {
 		route_favourites(c);
 	} else if (strcmp(target, "/") == 0 || strcmp(target, "/index.html") == 0) {
@@ -1147,7 +2239,50 @@ static void accept_client(int listener) {
 
 // Reads until the blank line that ends the headers, then answers. A request
 // bigger than the buffer is refused rather than grown into.
+// The Content-Length a request's headers declare, 0 when they declare none.
+static long request_content_length(const char *request, size_t head_len) {
+	const char *at = request;
+	const char *end = request + head_len;
+	while (at < end) {
+		const char *eol = memchr(at, '\n', (size_t)(end - at));
+		if (!eol) {
+			break;
+		}
+		if ((size_t)(eol - at) > 15 && strncasecmp(at, "Content-Length:", 15) == 0) {
+			return strtol(at + 15, NULL, 10);
+		}
+		at = eol + 1;
+	}
+	return 0;
+}
+
+// The most a body may be: a selection of a few thousand tracks.
+#define BODY_MAX (1024 * 1024)
+
 static void read_client(client_t *c) {
+	if (c->body_want) {
+		char chunk[4096];
+		ssize_t n = recv(c->fd, chunk, sizeof(chunk), 0);
+		if (n <= 0) {
+			if (n < 0 && (errno == EINTR || errno == EAGAIN)) {
+				return;
+			}
+			client_close(c);
+			return;
+		}
+		buf_add(&c->body, chunk, (size_t)n);
+		if (c->body.failed) {
+			c->body_want = 0;
+			reply_status(c, "500 Internal Server Error", "out of memory");
+			return;
+		}
+		if (c->body.len >= c->body_want) {
+			c->body_want = 0;
+			serve_request(c);
+		}
+		return;
+	}
+
 	ssize_t n = recv(c->fd, c->request + c->request_len, sizeof(c->request) - c->request_len - 1, 0);
 	if (n <= 0) {
 		if (n < 0 && (errno == EINTR || errno == EAGAIN)) {
@@ -1159,11 +2294,39 @@ static void read_client(client_t *c) {
 	c->request_len += (size_t)n;
 	c->request[c->request_len] = '\0';
 
-	if (!strstr(c->request, "\r\n\r\n") && !strstr(c->request, "\n\n")) {
+	char *end = strstr(c->request, "\r\n\r\n");
+	size_t head_len = end ? (size_t)(end - c->request) + 4 : 0;
+	if (!end) {
+		end = strstr(c->request, "\n\n");
+		head_len = end ? (size_t)(end - c->request) + 2 : 0;
+	}
+	if (!end) {
 		if (c->request_len + 1 >= sizeof(c->request)) {
 			reply_status(c, "431 Request Header Fields Too Large", "too long");
 		}
 		return;
+	}
+
+	// A body, when the request has one: what arrived with the headers first,
+	// the rest as it comes.
+	long length = request_content_length(c->request, head_len);
+	if (length > 0) {
+		if (length > BODY_MAX) {
+			reply_status(c, "413 Payload Too Large", "too long");
+			return;
+		}
+		buf_free(&c->body);
+		size_t already = c->request_len - head_len;
+		if (already > (size_t)length) {
+			already = (size_t)length;
+		}
+		buf_add(&c->body, c->request + head_len, already);
+		c->request[head_len] = '\0';
+		c->request_len = head_len;
+		if (c->body.len < (size_t)length) {
+			c->body_want = (size_t)length;
+			return;
+		}
 	}
 
 	serve_request(c);
@@ -1189,7 +2352,7 @@ static void write_client(client_t *c) {
 	}
 
 	if (!c->file) {
-		client_close(c); // Connection: close, and everything has gone
+		client_done(c); // everything has gone
 		return;
 	}
 
@@ -1200,6 +2363,7 @@ static void write_client(client_t *c) {
 	}
 	size_t got = want ? fread(chunk, 1, want, c->file) : 0;
 	if (got == 0) {
+		// A file shorter than it said: the reply is broken, so is the link.
 		client_close(c);
 		return;
 	}
@@ -1219,7 +2383,7 @@ static void write_client(client_t *c) {
 	}
 	c->file_left -= (long)got;
 	if (c->file_left <= 0) {
-		client_close(c);
+		client_done(c);
 	}
 }
 
@@ -1479,6 +2643,38 @@ static void *sonixlink_worker(void *unused) {
 	}
 
 	for (;;) {
+		// Bluetooth links handed over since the last pass get a slot of their
+		// own, kept until the link goes quiet.
+		int links[PENDING_LINKS];
+		int link_count = 0;
+		pthread_mutex_lock(&lock);
+		link_count = pending_link_count;
+		memcpy(links, pending_links, sizeof(int) * (size_t)link_count);
+		pending_link_count = 0;
+		pthread_mutex_unlock(&lock);
+		for (int l = 0; l < link_count; l++) {
+			client_t *slot = NULL;
+			for (int i = 0; i < MAX_CLIENTS && !slot; i++) {
+				if (clients[i].fd < 0) {
+					slot = &clients[i];
+				}
+			}
+			if (!slot) {
+				close(links[l]);
+				continue;
+			}
+			struct timeval timeout = {.tv_sec = 5, .tv_usec = 0};
+			setsockopt(links[l], SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+			slot->fd = links[l];
+			slot->persistent = true;
+			slot->opened_ms = now_ms();
+			pthread_mutex_lock(&lock);
+			snprintf(peer_text, sizeof(peer_text), "Bluetooth");
+			last_seen_ms = now_ms();
+			pthread_mutex_unlock(&lock);
+			printf("sonixlink: a phone connected over Bluetooth\n");
+		}
+
 		if (!sonixlink_get_enabled()) {
 			if (listener >= 0) {
 				for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -1620,6 +2816,9 @@ static void *sonixlink_worker(void *unused) {
 					pthread_mutex_lock(&lock);
 					last_seen_ms = now_ms();
 					pthread_mutex_unlock(&lock);
+					if (c->persistent) {
+						c->opened_ms = now_ms();
+					}
 					read_client(c);
 				} else if (revents & POLLOUT) {
 					write_client(c);
@@ -1628,9 +2827,15 @@ static void *sonixlink_worker(void *unused) {
 		}
 
 		// A connection that arrived and then said nothing holds a slot. Ten
-		// seconds is longer than any request of this protocol takes to arrive.
+		// seconds is longer than any request of this protocol takes to arrive;
+		// a Bluetooth link is given longer, between one request and the next.
 		for (int i = 0; i < MAX_CLIENTS; i++) {
-			if (clients[i].fd >= 0 && (uint32_t)(now_ms() - clients[i].opened_ms) > 10000) {
+			if (clients[i].fd < 0) {
+				continue;
+			}
+			uint32_t idle = now_ms() - clients[i].opened_ms;
+			bool busy = clients[i].out.len > clients[i].sent || clients[i].file;
+			if (clients[i].persistent ? (!busy && idle > PERSISTENT_IDLE_MS) : idle > 10000) {
 				client_close(&clients[i]);
 			}
 		}
@@ -1658,4 +2863,6 @@ void sonixlink_init(void) {
 	}
 	pthread_detach(worker);
 	worker_running = true;
+
+	sonixlink_bt_init();
 }

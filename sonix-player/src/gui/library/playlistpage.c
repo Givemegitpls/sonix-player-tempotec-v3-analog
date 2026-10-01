@@ -121,6 +121,40 @@ static void *batch_worker(void *arg) {
 	return NULL;
 }
 
+bool playlistpage_add_tracks_to(const char *name, const char *const *paths, int count) {
+	if (!name || !name[0] || !paths || count <= 0) {
+		return false;
+	}
+	if (!playlists_exists(name) && !playlists_create(name)) {
+		return false;
+	}
+	batch_t *b = calloc(1, sizeof(*b));
+	if (!b) {
+		return false;
+	}
+	b->paths = malloc((size_t)count * sizeof(*b->paths));
+	if (!b->paths) {
+		free(b);
+		return false;
+	}
+	snprintf(b->name, sizeof(b->name), "%s", name);
+	for (int i = 0; i < count; i++) {
+		b->paths[b->count] = strdup(paths[i] ? paths[i] : "");
+		if (!b->paths[b->count]) {
+			break;
+		}
+		b->count++;
+	}
+	toast_busy("playlist_adding_tracks");
+	pthread_t thread;
+	if (pthread_create(&thread, NULL, batch_worker, b) != 0) {
+		batch_done_cb(b);
+		return false;
+	}
+	pthread_detach(thread);
+	return true;
+}
+
 // Hands the pending set to a worker that adds it to `name`. False when nothing
 // could be started; the set is gone either way.
 static bool batch_start(const char *name) {

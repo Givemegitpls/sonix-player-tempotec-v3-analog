@@ -22,6 +22,11 @@
 //     GET  /api/cover?path=...     the artwork beside a track, when there is one
 //     GET  /api/art?path=...       the same track's artwork whole, tag or file,
 //                                  undecoded: the phone decodes it
+//     GET  /api/browse?path=...    one folder of the card, as the file browser
+//                                  lists it
+//     GET  /api/ping               the app's heartbeat: nothing but "still here"
+//     GET  /api/bye                the app has let go: the status bar forgets it
+//                                  at once rather than after PEER_ALIVE_MS
 //     POST /api/command?do=...     play, pause, next, prev, seek, volume, mode,
 //                                  favourite, scan
 //
@@ -72,10 +77,27 @@ typedef struct {
 	// twenty kilobytes a second for a label.
 	int queue_position; // -1 when there is no queue
 	int queue_count;
+	// Changes whenever the entries or their order do, so the app knows its copy
+	// of the queue is stale without asking for it.
+	unsigned queue_revision;
 
 	bool scanning;
 	unsigned scan_count;
 	unsigned track_count;
+
+	// How the player orders its lists (medialist_sort_prefs()): bit n of
+	// sort_desc reverses list kind n, of sort_added puts it by date added. The
+	// app orders its own copies the same way.
+	unsigned sort_desc;
+	unsigned sort_added;
+	bool artist_by_album;
+	bool favourites_reversed;
+
+	// The "4/12" the player's own now-playing screen shows, as it shows it:
+	// the place in the deal under shuffle, nothing (0) for a single track, a
+	// book, a phone's DLNA stream, a radio outside a list.
+	int display_position;
+	int display_count;
 } sonixlink_state_t;
 
 // The five orders the player understands, in the order the phone cycles them.
@@ -102,7 +124,28 @@ typedef enum {
 	SONIXLINK_CMD_SCAN,
 	SONIXLINK_CMD_FAVOURITE, // arg: 1 star, 0 unstar, -1 toggle; `path` says which
 	SONIXLINK_CMD_QUEUE_INDEX, // arg: entry of the current queue to jump to
+
+	// The circle-play menu on a list: `list` and `value` say which, `arg` how
+	// (SONIXLINK_PLAY_*), exactly as the player's own menu on that list.
+	SONIXLINK_CMD_PLAY_ALL,
+
+	// A selection of tracks, in the command's `paths`, as the player's own
+	// selection mode does with one: after the track playing, into the
+	// favourites or out of them, into the playlist named by `value` (made
+	// when there is none) or out of it.
+	SONIXLINK_CMD_QUEUE_NEXT,
+	SONIXLINK_CMD_FAVOURITES_ADD,
+	SONIXLINK_CMD_FAVOURITES_REMOVE,
+	SONIXLINK_CMD_PLAYLIST_ADD,
+	SONIXLINK_CMD_PLAYLIST_REMOVE,
 } sonixlink_command_kind_t;
+
+// The three rows of the circle-play menu.
+typedef enum {
+	SONIXLINK_PLAY_SEQUENCE = 0,
+	SONIXLINK_PLAY_SHUFFLE,
+	SONIXLINK_PLAY_RANDOM_TO_QUEUE, // one track of the list, at random, after the one playing
+} sonixlink_play_how_t;
 
 // Which list a track was started from, so the queue becomes that list and not
 // the whole library: starting a track inside a playlist must not queue every
@@ -116,6 +159,8 @@ typedef enum {
 	SONIXLINK_LIST_FAVOURITES,
 	SONIXLINK_LIST_PLAYLIST, // `value` is the playlist's name, without M3U_
 	SONIXLINK_LIST_QUEUE,	 // the queue as it stands: do not rebuild it
+	SONIXLINK_LIST_FOLDER,	 // the track's folder, as the file browser queues it
+	SONIXLINK_LIST_ALBUMS,	 // every record, each in its running order (circle-play on Albums)
 } sonixlink_list_t;
 
 typedef struct {
@@ -130,7 +175,15 @@ typedef struct {
 	// narrows it (the album's name, the artist's, the playlist's).
 	int list;
 	char value[SONIXLINK_TEXT_MAX];
+
+	// For the selection commands: `path_count` paths, one after another in
+	// one block, each ended by its NUL. Owned by the command: whoever takes it
+	// lets go of it with sonixlink_command_free().
+	char *paths;
+	int path_count;
 } sonixlink_command_t;
+
+void sonixlink_command_free(sonixlink_command_t *cmd);
 
 // Starts the worker. It sits idle until the switch is on.
 void sonixlink_init(void);
@@ -148,6 +201,9 @@ void sonixlink_address(char *out, size_t out_size);
 // Where the index file lives, so it can be served. Called once at startup.
 void sonixlink_set_db_path(const char *path);
 
+// The card's root: the only tree /api/browse may list. Called once at startup.
+void sonixlink_set_card_root(const char *path);
+
 // Where the thumbnail cache lives -- the same file the player fills while its
 // own lists are drawn (see src/gui/cover.c). It is sent to the phone as it
 // stands: the pictures are already decoded and scaled, and the key is worked
@@ -158,16 +214,28 @@ void sonixlink_set_thumbs_path(const char *path);
 //
 // The whole queue is not published: it can be the entire library, and holding a
 // second copy of seven thousand paths to answer a page nobody may open is not
-// worth the memory. What goes across is a window around the track playing now,
-// refreshed when the queue or the position changes.
+// worth the memory. What goes across is one window of it: around the track
+// playing now, or the stretch the phone last asked for (/api/queue?from=N),
+// which is how the app pages through all of it.
 #define SONIXLINK_QUEUE_WINDOW 200
 
 // `paths` holds `count` entries starting at queue position `first`. `total` is
-// how long the queue really is and `position` where playback sits in it.
-void sonixlink_publish_queue(int total, int position, int first, const char *const *paths, int count);
+// how long the queue really is, `position` where playback sits in it and
+// `revision` playlist_revision() when the window was read.
+void sonixlink_publish_queue(int total, int position, int first, const char *const *paths, int count,
+							 unsigned revision);
+
+// The start of the stretch the phone asked for last, or -1 when it has asked
+// for none since the queue last changed.
+int sonixlink_queue_wanted(void);
 
 // Hands the worker a fresh picture of the player. Call it on a timer.
 void sonixlink_publish(const sonixlink_state_t *state);
+
+// A connected Bluetooth link (an RFCOMM socket, see sonixlink_bt.h), served
+// like a network client but kept open between requests. The descriptor is
+// taken over either way: closed at once when the service is off.
+void sonixlink_adopt_link(int fd);
 
 // Takes one queued command, oldest first. False when there is nothing.
 bool sonixlink_take_command(sonixlink_command_t *out);

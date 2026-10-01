@@ -29,4 +29,10 @@ void playlistpage_add_tracks(const char *const *paths, int count);
 // starred stays where it is. The page keeps its own copy of the paths.
 void playlistpage_add_favourites(const char *const *paths, int count);
 
+// A set of local tracks into the playlist called `name`, made first when there
+// is none: what the picker does once a playlist is chosen, for a caller that
+// already knows which (SonixLink). In the background, with the same cards.
+// False when the playlist could not be made or the work not started.
+bool playlistpage_add_tracks_to(const char *name, const char *const *paths, int count);
+
 #endif /* PLAYLISTPAGE_H */

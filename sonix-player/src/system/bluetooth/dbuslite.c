@@ -27,6 +27,10 @@ static const char *const SOCKET_PATHS[] = {
 // never asks a big question never pays for one.
 #define READ_BUF_START (4 * 1024)
 #define READ_BUF_MAX (512 * 1024) // beyond this the peer is not something to talk to
+
+// Descriptors held for the message being read. A Profile1.NewConnection
+// carries one; nothing this player receives carries more.
+#define FDS_MAX 4
 #define WRITE_BUF_MAX (16 * 1024) // a body of ours never approaches it
 
 // ---------------------------------------------------------------------------
@@ -529,6 +533,11 @@ struct dbus_conn {
 
 	uint8_t *read_buf;
 	size_t read_buf_size;
+
+	// Descriptors received with the message being read and dispatched. Only a
+	// connection opened with dbus_connect_system_fds() is ever sent any.
+	int fds[FDS_MAX];
+	int fd_count;
 };
 
 static void set_str(char *dst, size_t size, const char *src) { snprintf(dst, size, "%s", src ? src : ""); }
@@ -624,6 +633,68 @@ static bool read_all(int fd, void *data, size_t len) {
 	return true;
 }
 
+// read_all() for the reader thread: the same, but any descriptors riding on the
+// bytes are kept in `c->fds` (and closed past FDS_MAX).
+static bool read_all_fds(dbus_conn_t *c, void *data, size_t len) {
+	uint8_t *p = data;
+	while (len) {
+		struct iovec iov = {.iov_base = p, .iov_len = len};
+		union {
+			struct cmsghdr align;
+			char buf[CMSG_SPACE(sizeof(int) * FDS_MAX)];
+		} control;
+		struct msghdr msg;
+		memset(&msg, 0, sizeof(msg));
+		msg.msg_iov = &iov;
+		msg.msg_iovlen = 1;
+		msg.msg_control = control.buf;
+		msg.msg_controllen = sizeof(control.buf);
+		ssize_t n = recvmsg(c->fd, &msg, 0);
+		if (n <= 0) {
+			if (n < 0 && errno == EINTR) {
+				continue;
+			}
+			return false;
+		}
+		for (struct cmsghdr *cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+			if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) {
+				continue;
+			}
+			int count = (int)((cm->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+			int *received = (int *)CMSG_DATA(cm);
+			for (int i = 0; i < count; i++) {
+				if (c->fd_count < FDS_MAX) {
+					(void)fcntl(received[i], F_SETFD, FD_CLOEXEC);
+					c->fds[c->fd_count++] = received[i];
+				} else {
+					close(received[i]);
+				}
+			}
+		}
+		p += n;
+		len -= (size_t)n;
+	}
+	return true;
+}
+
+static void drop_fds(dbus_conn_t *c) {
+	for (int i = 0; i < c->fd_count; i++) {
+		if (c->fds[i] >= 0) {
+			close(c->fds[i]);
+		}
+	}
+	c->fd_count = 0;
+}
+
+int dbus_take_fd(dbus_conn_t *c, uint32_t index) {
+	if (!c || index >= (uint32_t)c->fd_count) {
+		return -1;
+	}
+	int fd = c->fds[index];
+	c->fds[index] = -1;
+	return fd;
+}
+
 // One line of the authentication conversation, which is plain text and ends in
 // CRLF -- the only part of D-Bus that is not binary.
 static bool read_line(int fd, char *out, size_t out_size) {
@@ -649,7 +720,7 @@ static bool read_line(int fd, char *out, size_t out_size) {
 // EXTERNAL: the credentials are the ones the kernel attaches to the socket, so
 // the only thing to send is the uid being claimed -- as decimal digits, hex
 // encoded, because the auth conversation carries no raw bytes.
-static bool authenticate(int fd) {
+static bool authenticate(int fd, bool want_fds) {
 	// The leading NUL is not part of any command: it is the byte that has to
 	// precede the conversation on a unix socket.
 	if (!write_all(fd, "\0", 1)) {
@@ -672,6 +743,14 @@ static bool authenticate(int fd) {
 	if (!read_line(fd, line, sizeof(line)) || strncmp(line, "OK", 2) != 0) {
 		fprintf(stderr, "dbus: authentication refused (%s)\n", line);
 		return false;
+	}
+	if (want_fds) {
+		const char *ask = "NEGOTIATE_UNIX_FD\r\n";
+		if (!write_all(fd, ask, strlen(ask)) || !read_line(fd, line, sizeof(line)) ||
+			strncmp(line, "AGREE_UNIX_FD", 13) != 0) {
+			fprintf(stderr, "dbus: the daemon will not pass descriptors (%s)\n", line);
+			return false;
+		}
 	}
 	return write_all(fd, "BEGIN\r\n", 7);
 }
@@ -949,6 +1028,8 @@ static void parse_fields(dbus_msg_t *m, const uint8_t *data, size_t len, bool bi
 			uint32_t value = r_u32(&r);
 			if (code == 5) {
 				m->reply_serial = value;
+			} else if (code == 9) {
+				m->unix_fds = value;
 			}
 			break;
 		}
@@ -963,7 +1044,7 @@ static void *reader_thread(void *arg) {
 
 	while (!c->stopping) {
 		uint8_t head[16];
-		if (!read_all(c->fd, head, sizeof(head))) {
+		if (!read_all_fds(c, head, sizeof(head))) {
 			break;
 		}
 
@@ -997,7 +1078,7 @@ static void *reader_thread(void *arg) {
 			break;
 		}
 		uint8_t *buf = c->read_buf;
-		if (total && !read_all(c->fd, buf, total)) {
+		if (total && !read_all_fds(c, buf, total)) {
 			break;
 		}
 
@@ -1027,6 +1108,7 @@ static void *reader_thread(void *arg) {
 				pthread_cond_broadcast(&c->reply_cond);
 			}
 			pthread_mutex_unlock(&c->reply_lock);
+			drop_fds(c);
 			continue;
 		}
 
@@ -1035,7 +1117,11 @@ static void *reader_thread(void *arg) {
 		} else if (m.type == DBUS_TYPE_SIGNAL && c->on_signal) {
 			c->on_signal(c, &m, c->signal_user);
 		}
+		// What the handler did not take goes now: every descriptor that came
+		// with a message belongs to that message.
+		drop_fds(c);
 	}
+	drop_fds(c);
 
 	// Whoever is waiting for a reply is never going to get one.
 	pthread_mutex_lock(&c->reply_lock);
@@ -1047,7 +1133,17 @@ static void *reader_thread(void *arg) {
 
 // --- opening and closing ---
 
+static dbus_conn_t *connect_system(const char *address, dbus_method_cb on_call, void *user, bool want_fds);
+
 dbus_conn_t *dbus_connect_system(const char *address, dbus_method_cb on_call, void *user) {
+	return connect_system(address, on_call, user, false);
+}
+
+dbus_conn_t *dbus_connect_system_fds(const char *address, dbus_method_cb on_call, void *user) {
+	return connect_system(address, on_call, user, true);
+}
+
+static dbus_conn_t *connect_system(const char *address, dbus_method_cb on_call, void *user, bool want_fds) {
 	int fd = -1;
 
 	// "unix:path=/..." is the only address shape this client understands, and
@@ -1080,7 +1176,7 @@ dbus_conn_t *dbus_connect_system(const char *address, dbus_method_cb on_call, vo
 		return NULL;
 	}
 
-	if (!authenticate(fd)) {
+	if (!authenticate(fd, want_fds)) {
 		close(fd);
 		return NULL;
 	}

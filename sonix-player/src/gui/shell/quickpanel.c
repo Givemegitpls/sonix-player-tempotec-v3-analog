@@ -1429,7 +1429,9 @@ static void sonixlink_clicked_cb(lv_event_t *e) {
 	}
 
 	bool want = !sonixlink_get_enabled();
-	if (want && network_needed("quickpanel_sonixlink_only_works_over_wi_fi")) {
+	// Bluetooth carries it too, for a paired phone: Wi-Fi is needed only when
+	// Bluetooth is off.
+	if (want && !bluetooth_get_enabled() && network_needed("sonixlink_needs_wifi_or_bluetooth")) {
 		return;
 	}
 
