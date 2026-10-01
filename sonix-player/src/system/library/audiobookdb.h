@@ -152,7 +152,16 @@ bool audiobookdb_is_finished(const char *path);
 // A book is not a song. Coming back to one means coming back to the second it
 // was left at, in the file it was left in: the chapter file of a folder book,
 // or the book's own file.
+//
+// Two ways to write it. The save is synchronous, for the moments a position
+// must be on the card before anything else happens: a pause, a seek, a stop,
+// the power going off, the card going away. The queue is for the checkpoints
+// taken while a book plays: a background writer takes them, so a slow card
+// never holds up the interface, and the newest replaces one still waiting. A
+// queued checkpoint is dropped if the card has changed by the time it would be
+// written, and closing the database writes the one still waiting first.
 void audiobookdb_save_position(const char *book_path, const char *file, double seconds);
+void audiobookdb_queue_position(const char *book_path, const char *file, double seconds);
 bool audiobookdb_get_position(const char *book_path, char *file_out, size_t file_size, double *seconds_out);
 
 // Which book a file belongs to, copying the book's path into `book_out`: the
@@ -163,5 +172,38 @@ bool audiobookdb_get_position(const char *book_path, char *file_out, size_t file
 // to survive every way a track can change and the first one missed puts
 // audiobook controls over a song. The path is still true after a reboot.
 bool audiobookdb_book_for_file(const char *file_path, char *book_out, size_t book_size);
+
+// ---------------------------------------------------------------------------
+// A book's title, author and summary
+// ---------------------------------------------------------------------------
+//
+// The summary is the description in the book's tags, read at the scan: a
+// malloc'd copy, NULL when the tags carry none. False for a book not indexed.
+bool audiobookdb_book_info(const char *book, char *title_out, size_t title_size, char *author_out, size_t author_size, char **summary_out);
+
+// ---------------------------------------------------------------------------
+// Bookmarks
+// ---------------------------------------------------------------------------
+//
+// Marks the listener sets by hand: a file of the book, a second in it, and
+// the chapter or part it falls in as a label. Kept in the database on the card,
+// beside the books, at most 64 a book; a mark within two seconds of another in
+// the same file moves that one instead of adding a second.
+typedef enum {
+	AUDIOBOOK_BOOKMARK_FAILED,
+	AUDIOBOOK_BOOKMARK_SAVED,
+	AUDIOBOOK_BOOKMARK_FULL, // the book already has as many as it may
+} audiobook_bookmark_result_t;
+
+audiobook_bookmark_result_t audiobookdb_bookmark_add(const char *book, const char *file, double seconds, const char *label);
+bool audiobookdb_bookmark_remove(long long id);
+
+// One book's marks in the order they come in it.
+typedef bool (*audiobook_bookmark_cb)(long long id, const char *file, double seconds, const char *label, void *user);
+int audiobookdb_bookmarks_for_each(const char *book, audiobook_bookmark_cb cb, void *user);
+
+// The books on the card that have marks, by title, with how many each.
+typedef bool (*audiobook_bookmarked_book_cb)(const char *title, const char *book, int count, void *user);
+int audiobookdb_bookmarked_books_for_each(audiobook_bookmarked_book_cb cb, void *user);
 
 #endif /* AUDIOBOOKDB_H */

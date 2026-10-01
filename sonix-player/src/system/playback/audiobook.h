@@ -122,12 +122,20 @@ double audiobook_saved_position(const char *filepath);
 
 // Notes how far into the book playback has got. Throttled: a write every ten
 // seconds while playing is enough to lose no more than that, and an SD card
-// does not want a database write every half second. `force` writes now --
-// used when playback pauses, when the track changes, and on the way out.
+// does not want a database write every half second. Those checkpoints go to a
+// background writer; `force` writes now, before returning -- used when
+// playback pauses or seeks, when the track changes, and on the way out.
 //
 // `total` is the book's length, and it is what makes a finished book start
 // over instead of resuming into its own last seconds; pass 0 when it is not
 // known yet.
 void audiobook_note_position(double seconds, double total, bool force);
+
+// The book loaded now and the file of it playing. False when no book is.
+bool audiobook_current_book(char *book_out, size_t book_size, char *file_out, size_t file_size);
+
+// Where `seconds` falls in the loaded book, as a bookmark's label: the
+// chapter's title, else the part's, else "".
+void audiobook_place_label(double seconds, char *out, size_t size);
 
 #endif /* AUDIOBOOK_H */

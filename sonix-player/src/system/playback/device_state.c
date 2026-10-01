@@ -164,12 +164,24 @@ void device_state_remember_note(void) {
 	}
 }
 
+// Where a book got to, written through on the way out: the power going off or
+// the card going away. Not subject to "remember track", as the player's own
+// saves are not. Nothing under a second, which is a book whose resume seek
+// the engine has not reached yet rather than a place anyone stopped at.
+static void flush_book_position(const device_state_t *state) {
+	if (state->live || !audiobook_is_playing() || state->progress_current_secs <= 1.0) {
+		return;
+	}
+	audiobook_note_position(state->progress_current_secs, state->progress_total_secs, true);
+}
+
 void device_state_remember_flush(void) {
+	device_state_t state;
+	device_state_get(&state);
+	flush_book_position(&state);
 	if (!remember_enabled()) {
 		return;
 	}
-	device_state_t state;
-	device_state_get(&state);
 	if (!remember_worth_saving(&state)) {
 		return;
 	}
@@ -440,6 +452,8 @@ void device_state_note_storage_gone(void) {
 
 	device_state_t state;
 	device_state_get(&state);
+	// The databases on the card close right after this.
+	flush_book_position(&state);
 	// A second in is not a position worth coming back to, and a live stream has
 	// none at all.
 	if (state.live || !state.current_file[0] || state.progress_current_secs <= 1.0) {

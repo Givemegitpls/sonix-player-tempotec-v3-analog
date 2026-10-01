@@ -8,6 +8,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/library/audiobookextras.h"
 #include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/confirm.h"
@@ -645,42 +646,61 @@ static bool collect_part(const char *path, const char *title, void *user) {
 	return grown[n] != NULL;
 }
 
+// Starts `book` in `file` at `seconds`: a single-file book directly, a folder
+// book as a queue of its parts. A file that is no longer one of the book's
+// parts starts the book from its first, from the beginning.
+static void play_from(const char *book, const char *file, double seconds) {
+	if (!audiobookdb_is_folder_book(book)) {
+		if (seconds > 1.0) {
+			device_state_play_file_at(file, seconds);
+		} else {
+			device_state_play_file(file);
+		}
+		return;
+	}
+
+	char **list = NULL;
+	audiobookdb_parts_for_each(book, collect_part, &list);
+	int count = 0;
+	int start = -1;
+	while (list && list[count]) {
+		if (start < 0 && strcmp(list[count], file) == 0) {
+			start = count;
+		}
+		count++;
+	}
+	if (count > 0) {
+		double at = start >= 0 && seconds > 1.0 ? seconds : -1.0;
+		device_state_play_list_ordered_at((const char *const *)list, count, start >= 0 ? start : 0, at);
+	}
+	for (int i = 0; i < count; i++) {
+		free(list[i]);
+	}
+	free(list);
+}
+
 static void play_book(const char *book) {
 	char file[512];
 	double resume = 0;
 	if (!audiobook_resume_point(book, file, sizeof(file), &resume)) {
 		return;
 	}
-
-	if (!audiobookdb_is_folder_book(book)) {
-		if (resume > 1.0) {
-			device_state_play_file_at(file, resume);
-		} else {
-			device_state_play_file(file);
-		}
-	} else {
-		char **list = NULL;
-		audiobookdb_parts_for_each(book, collect_part, &list);
-		int count = 0;
-		int start = 0;
-		while (list && list[count]) {
-			if (strcmp(list[count], file) == 0) {
-				start = count;
-			}
-			count++;
-		}
-		if (count > 0) {
-			device_state_play_list_ordered_at((const char *const *)list, count, start, resume > 1.0 ? resume : -1.0);
-		}
-		for (int i = 0; i < count; i++) {
-			free(list[i]);
-		}
-		free(list);
-	}
+	play_from(book, file, resume);
 
 	audiobookdb_touch(book); // the order by last listened moves it to the top
 	player_refresh_now_playing();
 	player_sheet_open(true);
+}
+
+void audiobooks_play_at(const char *book, const char *file, double seconds) {
+	if (!book || !book[0] || !file || !file[0]) {
+		return;
+	}
+	play_from(book, file, seconds);
+	// Written through: this is where the book now stands, whatever comes next.
+	audiobookdb_save_position(book, file, seconds);
+	audiobookdb_touch(book);
+	player_refresh_now_playing();
 }
 
 static void book_clicked_cb(lv_event_t *e) {
@@ -988,7 +1008,8 @@ static void build_names_page(gui_config_t *cfg) {
 }
 
 // ---------------------------------------------------------------------------
-// the section page: four tiles, the finished books and the options
+// the section page: four tiles, the bookmarks, the finished books and the
+// options
 // ---------------------------------------------------------------------------
 
 static void open_library(void) { books_open(LIST_LIBRARY, NULL, tr("audiobook_library")); }
@@ -999,6 +1020,11 @@ static void open_continue(void) { books_open(LIST_CONTINUE, NULL, tr("audiobook_
 static void finished_cb(lv_event_t *e) {
 	(void)e;
 	books_open(LIST_FINISHED, NULL, tr("audiobook_finished"));
+}
+
+static void bookmarks_cb(lv_event_t *e) {
+	(void)e;
+	audiobookextras_open_bookmarks();
 }
 
 // An index written by an older scan has no authors, series or folder books.
@@ -1038,11 +1064,13 @@ static void build_section_page(gui_config_t *cfg) {
 	section_empty =
 		gridpage_empty_panel(audiobooks_screen, cfg, &icon_book_headphones, "audiobook_no_database", section_scan_cb);
 
-	// The options, and to their left the finished books.
-	settingsrow_title_corner_slots(settingsrow_title(audiobooks_screen, cfg, "audiobooks"), cfg, 2);
+	// The options, to their left the finished books, and to the left of those
+	// the bookmarks -- the same glyph the ebook shelf opens its bookmarks with.
+	settingsrow_title_corner_slots(settingsrow_title(audiobooks_screen, cfg, "audiobooks"), cfg, 3);
 	lv_obj_t *options_btn = corner_button(audiobooks_screen, cfg, 0, &icon_music_settings, NULL);
 	lv_obj_add_event_cb(options_btn, switch_screen_cb, LV_EVENT_CLICKED, audiobooksettings_screen);
 	corner_button(audiobooks_screen, cfg, 1, &icon_book_finished, finished_cb);
+	corner_button(audiobooks_screen, cfg, 2, &icon_bookmark, bookmarks_cb);
 
 	lv_obj_add_event_cb(audiobooks_screen, section_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }

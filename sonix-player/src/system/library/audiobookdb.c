@@ -29,9 +29,14 @@
 // Entries read from one folder at most, files and subfolders together.
 #define SCAN_MAX_ENTRIES 4096
 
-// PRAGMA user_version of an index whose rows carry authors, series and folder
-// books. Anything lower was written by an older scan.
-#define SCHEMA_VERSION 2
+// PRAGMA user_version of an index whose rows carry authors, series, folder
+// books and summaries. Anything lower was written by an older scan.
+#define SCHEMA_VERSION 3
+
+// Bookmarks kept per book at most; a mark this close to another one in the
+// same file replaces it rather than standing beside it.
+#define BOOKMARKS_PER_BOOK 64
+#define BOOKMARK_MERGE_SECONDS 2.0
 
 static sqlite3 *db;
 static pthread_mutex_t db_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -43,6 +48,13 @@ static pthread_mutex_t db_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned generation = 1;
 
 static bool outdated;
+
+// Bumped each time a database is opened or closed: which card the handle is on.
+// Unlike `generation`, nothing else moves it, so a write queued against one
+// card can tell that it would now land on another.
+static unsigned card_epoch;
+
+static void position_queue_drain(void);
 
 // Call with db_lock held.
 static void bump_generation(void) { generation++; }
@@ -119,7 +131,7 @@ bool audiobookdb_open(const char *db_path) {
 		 "path TEXT PRIMARY KEY, name TEXT COLLATE NOCASE, size INT, mtime INT,"
 		 "last_played INT DEFAULT 0, resume_file TEXT, resume_pos REAL,"
 		 "author TEXT DEFAULT '', series TEXT DEFAULT '', series_part REAL, added INT DEFAULT 0,"
-		 "folder INT DEFAULT 0)");
+		 "folder INT DEFAULT 0, summary TEXT)");
 
 	// The columns a database written by an older scan does not have. They fail
 	// harmlessly once they are there, and must run after the CREATE, or on a
@@ -131,6 +143,7 @@ bool audiobookdb_open(const char *db_path) {
 	exec_quiet("ALTER TABLE AUDIOBOOK_TABLE ADD COLUMN series_part REAL");
 	exec_quiet("ALTER TABLE AUDIOBOOK_TABLE ADD COLUMN added INT DEFAULT 0");
 	exec_quiet("ALTER TABLE AUDIOBOOK_TABLE ADD COLUMN folder INT DEFAULT 0");
+	exec_quiet("ALTER TABLE AUDIOBOOK_TABLE ADD COLUMN summary TEXT");
 
 	// The files of the folder books, a row each, in the book's order.
 	exec("CREATE TABLE IF NOT EXISTS AUDIOBOOK_PARTS(path TEXT PRIMARY KEY, book TEXT, idx INT, title TEXT)");
@@ -141,6 +154,13 @@ bool audiobookdb_open(const char *db_path) {
 	// a rescan may forget.
 	exec("CREATE TABLE IF NOT EXISTS AUDIOBOOK_FINISHED("
 		 "path TEXT PRIMARY KEY, finished_at INT DEFAULT 0)");
+
+	// The bookmarks, for the same reason in a table of their own: a rescan
+	// leaves them alone. Here on the card with the books they point into, so
+	// they travel with the card and never point at another card's files.
+	exec("CREATE TABLE IF NOT EXISTS AUDIOBOOK_BOOKMARKS("
+		 "id INTEGER PRIMARY KEY, book TEXT, file TEXT, pos REAL, label TEXT DEFAULT '', created INT DEFAULT 0)");
+	exec("CREATE INDEX IF NOT EXISTS AUDIOBOOK_BOOKMARKS_BOOK ON AUDIOBOOK_BOOKMARKS(book)");
 
 	int books = 0;
 	sqlite3_stmt *stmt = NULL;
@@ -156,6 +176,7 @@ bool audiobookdb_open(const char *db_path) {
 	// the last one's are now this one's.
 	pthread_mutex_lock(&db_lock);
 	bump_generation();
+	__atomic_add_fetch(&card_epoch, 1, __ATOMIC_RELEASE);
 	pthread_mutex_unlock(&db_lock);
 
 	printf("audiobooks: %s open, %d books indexed%s\n", db_path, books, outdated ? " (an older scan)" : "");
@@ -170,8 +191,12 @@ void audiobookdb_close(void) {
 	for (int i = 0; i < 400 && audiobookdb_scan_running(); i++) {
 		usleep(10 * 1000);
 	}
+	// A position still waiting for the writer belongs to this card, and is
+	// written to it now rather than dropped.
+	position_queue_drain();
 
 	pthread_mutex_lock(&db_lock);
+	__atomic_add_fetch(&card_epoch, 1, __ATOMIC_RELEASE);
 	if (db) {
 		int rc = sqlite3_close(db);
 		if (rc != SQLITE_OK) {
@@ -462,14 +487,36 @@ int audiobookdb_parts_for_each(const char *book, audiobook_part_cb cb, void *use
 // Where the listener got to
 // ---------------------------------------------------------------------------
 
-void audiobookdb_save_position(const char *book_path, const char *file, double seconds) {
-	if (!book_path || !book_path[0] || !file || !file[0]) {
+// Every write of a position takes a number. A write is skipped when one with a
+// later number has already landed for the same book, so a periodic save that
+// waited behind the card cannot overwrite the forced save made after it.
+static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t queue_thread;
+static bool queue_started;
+static bool queue_busy; // the writer has taken an entry and not finished it
+static unsigned long long position_seq;
+static unsigned long long position_written; // under db_lock, with the book it was for
+static char position_written_book[512];
+
+typedef struct {
+	bool pending;
+	char book[512];
+	char file[512];
+	double seconds;
+	unsigned epoch;
+	unsigned long long seq;
+} queued_position_t;
+
+static queued_position_t queued;
+
+// Under db_lock.
+static void write_position_locked(const char *book_path, const char *file, double seconds, unsigned long long seq) {
+	if (!db || (seq <= position_written && strcmp(book_path, position_written_book) == 0)) {
 		return;
 	}
-
-	pthread_mutex_lock(&db_lock);
 	sqlite3_stmt *stmt = NULL;
-	if (db && sqlite3_prepare_v2(db, "UPDATE AUDIOBOOK_TABLE SET resume_file=?, resume_pos=?, last_played=? WHERE path=?", -1, &stmt, NULL) == SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, "UPDATE AUDIOBOOK_TABLE SET resume_file=?, resume_pos=?, last_played=? WHERE path=?", -1, &stmt, NULL) == SQLITE_OK) {
 		sqlite3_bind_text(stmt, 1, file, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_double(stmt, 2, seconds);
 		sqlite3_bind_int64(stmt, 3, (sqlite3_int64)time(NULL));
@@ -477,7 +524,114 @@ void audiobookdb_save_position(const char *book_path, const char *file, double s
 		sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 	}
+	position_written = seq;
+	snprintf(position_written_book, sizeof(position_written_book), "%s", book_path);
+}
+
+// Writes the entry that `queued` held, unless the card has changed since it
+// was queued: the same path on another card is another copy of the book.
+static void write_queued(const queued_position_t *entry) {
+	pthread_mutex_lock(&db_lock);
+	if (entry->epoch == __atomic_load_n(&card_epoch, __ATOMIC_ACQUIRE)) {
+		write_position_locked(entry->book, entry->file, entry->seconds, entry->seq);
+	}
 	pthread_mutex_unlock(&db_lock);
+}
+
+static void *queue_thread_func(void *arg) {
+	(void)arg;
+	thread_be_background("book positions");
+	queued_position_t *entry = malloc(sizeof(*entry));
+	if (!entry) {
+		return NULL;
+	}
+	for (;;) {
+		pthread_mutex_lock(&queue_lock);
+		while (!queued.pending) {
+			pthread_cond_wait(&queue_cond, &queue_lock);
+		}
+		*entry = queued;
+		queued.pending = false;
+		queue_busy = true;
+		pthread_mutex_unlock(&queue_lock);
+
+		write_queued(entry);
+
+		pthread_mutex_lock(&queue_lock);
+		queue_busy = false;
+		pthread_cond_broadcast(&queue_cond);
+		pthread_mutex_unlock(&queue_lock);
+	}
+	return NULL;
+}
+
+void audiobookdb_save_position(const char *book_path, const char *file, double seconds) {
+	if (!book_path || !book_path[0] || !file || !file[0]) {
+		return;
+	}
+
+	// A checkpoint of this book still queued is older than this, and is
+	// dropped; one of another book still has to be written.
+	pthread_mutex_lock(&queue_lock);
+	if (queued.pending && strcmp(queued.book, book_path) == 0) {
+		queued.pending = false;
+	}
+	unsigned long long seq = ++position_seq;
+	pthread_mutex_unlock(&queue_lock);
+
+	pthread_mutex_lock(&db_lock);
+	write_position_locked(book_path, file, seconds, seq);
+	pthread_mutex_unlock(&db_lock);
+}
+
+void audiobookdb_queue_position(const char *book_path, const char *file, double seconds) {
+	if (!book_path || !book_path[0] || !file || !file[0]) {
+		return;
+	}
+
+	pthread_mutex_lock(&queue_lock);
+	if (!queue_started) {
+		queue_started = pthread_create(&queue_thread, NULL, queue_thread_func, NULL) == 0;
+		if (queue_started) {
+			pthread_detach(queue_thread);
+		}
+	}
+	if (!queue_started) {
+		pthread_mutex_unlock(&queue_lock);
+		audiobookdb_save_position(book_path, file, seconds);
+		return;
+	}
+	// One slot: a newer position replaces one that has not been written yet.
+	snprintf(queued.book, sizeof(queued.book), "%s", book_path);
+	snprintf(queued.file, sizeof(queued.file), "%s", file);
+	queued.seconds = seconds;
+	// Read without db_lock: a checkpoint must not wait on a scan's insert.
+	queued.epoch = __atomic_load_n(&card_epoch, __ATOMIC_ACQUIRE);
+	queued.seq = ++position_seq;
+	queued.pending = true;
+	pthread_cond_signal(&queue_cond);
+	pthread_mutex_unlock(&queue_lock);
+}
+
+// Writes what is waiting and waits out what the writer has in hand, so that
+// nothing queued against the current card is left behind when it closes.
+static void position_queue_drain(void) {
+	pthread_mutex_lock(&queue_lock);
+	bool have = queued.pending;
+	queued_position_t *entry = have ? malloc(sizeof(*entry)) : NULL;
+	if (entry) {
+		*entry = queued;
+	}
+	queued.pending = false;
+	while (queue_busy) {
+		pthread_cond_wait(&queue_cond, &queue_lock);
+	}
+	pthread_mutex_unlock(&queue_lock);
+
+	if (entry) {
+		write_queued(entry);
+		free(entry);
+	}
 }
 
 bool audiobookdb_get_position(const char *book_path, char *file_out, size_t file_size, double *seconds_out) {
@@ -608,6 +762,244 @@ void audiobookdb_touch(const char *path) {
 	// the same column every ten seconds while a book plays.
 	bump_generation();
 	pthread_mutex_unlock(&db_lock);
+}
+
+// ---------------------------------------------------------------------------
+// What a book is, for its summary page
+// ---------------------------------------------------------------------------
+
+bool audiobookdb_book_info(const char *book, char *title_out, size_t title_size, char *author_out, size_t author_size, char **summary_out) {
+	if (title_out && title_size) {
+		title_out[0] = '\0';
+	}
+	if (author_out && author_size) {
+		author_out[0] = '\0';
+	}
+	if (summary_out) {
+		*summary_out = NULL;
+	}
+	if (!book || !book[0]) {
+		return false;
+	}
+
+	pthread_mutex_lock(&db_lock);
+	bool found = false;
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, "SELECT name, author, summary FROM AUDIOBOOK_TABLE WHERE path=?", -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, book, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			found = true;
+			const char *name = (const char *)sqlite3_column_text(stmt, 0);
+			const char *author = (const char *)sqlite3_column_text(stmt, 1);
+			const char *summary = (const char *)sqlite3_column_text(stmt, 2);
+			if (title_out && title_size) {
+				snprintf(title_out, title_size, "%s", name ? name : "");
+			}
+			if (author_out && author_size) {
+				snprintf(author_out, author_size, "%s", author ? author : "");
+			}
+			if (summary_out && summary && summary[0]) {
+				*summary_out = strdup(summary);
+			}
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return found;
+}
+
+// ---------------------------------------------------------------------------
+// Bookmarks
+// ---------------------------------------------------------------------------
+
+audiobook_bookmark_result_t audiobookdb_bookmark_add(const char *book, const char *file, double seconds, const char *label) {
+	if (!book || !book[0] || !file || !file[0] || seconds < 0) {
+		return AUDIOBOOK_BOOKMARK_FAILED;
+	}
+
+	pthread_mutex_lock(&db_lock);
+	audiobook_bookmark_result_t result = AUDIOBOOK_BOOKMARK_FAILED;
+	sqlite3_stmt *stmt = NULL;
+	if (!db) {
+		pthread_mutex_unlock(&db_lock);
+		return result;
+	}
+
+	// A second press on the same spot moves the mark there instead of adding
+	// a twin of it.
+	sqlite3_int64 near = 0;
+	if (sqlite3_prepare_v2(db, "SELECT id FROM AUDIOBOOK_BOOKMARKS WHERE book=? AND file=? AND ABS(pos - ?) < ? LIMIT 1", -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, book, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 2, file, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_double(stmt, 3, seconds);
+		sqlite3_bind_double(stmt, 4, BOOKMARK_MERGE_SECONDS);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			near = sqlite3_column_int64(stmt, 0);
+		}
+		sqlite3_finalize(stmt);
+	}
+
+	if (near > 0) {
+		if (sqlite3_prepare_v2(db, "UPDATE AUDIOBOOK_BOOKMARKS SET pos=?, label=?, created=? WHERE id=?", -1, &stmt, NULL) == SQLITE_OK) {
+			sqlite3_bind_double(stmt, 1, seconds);
+			sqlite3_bind_text(stmt, 2, label ? label : "", -1, SQLITE_TRANSIENT);
+			sqlite3_bind_int64(stmt, 3, (sqlite3_int64)time(NULL));
+			sqlite3_bind_int64(stmt, 4, near);
+			if (sqlite3_step(stmt) == SQLITE_DONE) {
+				result = AUDIOBOOK_BOOKMARK_SAVED;
+			}
+			sqlite3_finalize(stmt);
+		}
+		pthread_mutex_unlock(&db_lock);
+		return result;
+	}
+
+	int count = 0;
+	if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM AUDIOBOOK_BOOKMARKS WHERE book=?", -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, book, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			count = sqlite3_column_int(stmt, 0);
+		}
+		sqlite3_finalize(stmt);
+	}
+	if (count >= BOOKMARKS_PER_BOOK) {
+		pthread_mutex_unlock(&db_lock);
+		return AUDIOBOOK_BOOKMARK_FULL;
+	}
+
+	if (sqlite3_prepare_v2(db, "INSERT INTO AUDIOBOOK_BOOKMARKS(book, file, pos, label, created) VALUES(?,?,?,?,?)", -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, book, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 2, file, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_double(stmt, 3, seconds);
+		sqlite3_bind_text(stmt, 4, label ? label : "", -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int64(stmt, 5, (sqlite3_int64)time(NULL));
+		if (sqlite3_step(stmt) == SQLITE_DONE) {
+			result = AUDIOBOOK_BOOKMARK_SAVED;
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return result;
+}
+
+bool audiobookdb_bookmark_remove(long long id) {
+	pthread_mutex_lock(&db_lock);
+	bool ok = false;
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, "DELETE FROM AUDIOBOOK_BOOKMARKS WHERE id=?", -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, (sqlite3_int64)id);
+		ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db) > 0;
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return ok;
+}
+
+// The rows are copied out before the callbacks run: a callback is free to
+// call back in here, and db_lock is not recursive.
+typedef struct {
+	long long id;
+	char file[512];
+	double seconds;
+	char label[192];
+} bookmark_row_t;
+
+int audiobookdb_bookmarks_for_each(const char *book, audiobook_bookmark_cb cb, void *user) {
+	if (!book || !book[0] || !cb) {
+		return 0;
+	}
+
+	bookmark_row_t *rows = NULL;
+	int count = 0;
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	// In the order they come in the book: by part for a folder book, then by
+	// the second.
+	if (db && sqlite3_prepare_v2(db,
+								 "SELECT b.id, b.file, b.pos, b.label FROM AUDIOBOOK_BOOKMARKS b"
+								 " LEFT JOIN AUDIOBOOK_PARTS p ON p.path = b.file"
+								 " WHERE b.book=? ORDER BY COALESCE(p.idx, 0), b.pos LIMIT ?",
+								 -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, book, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 2, BOOKMARKS_PER_BOOK);
+		rows = calloc(BOOKMARKS_PER_BOOK, sizeof(*rows));
+		while (rows && count < BOOKMARKS_PER_BOOK && sqlite3_step(stmt) == SQLITE_ROW) {
+			bookmark_row_t *r = &rows[count++];
+			r->id = (long long)sqlite3_column_int64(stmt, 0);
+			const char *file = (const char *)sqlite3_column_text(stmt, 1);
+			snprintf(r->file, sizeof(r->file), "%s", file ? file : "");
+			r->seconds = sqlite3_column_double(stmt, 2);
+			const char *label = (const char *)sqlite3_column_text(stmt, 3);
+			snprintf(r->label, sizeof(r->label), "%s", label ? label : "");
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+
+	int delivered = 0;
+	for (int i = 0; i < count; i++) {
+		delivered++;
+		if (!cb(rows[i].id, rows[i].file, rows[i].seconds, rows[i].label, user)) {
+			break;
+		}
+	}
+	free(rows);
+	return delivered;
+}
+
+int audiobookdb_bookmarked_books_for_each(audiobook_bookmarked_book_cb cb, void *user) {
+	if (!cb) {
+		return 0;
+	}
+
+	typedef struct {
+		char title[256];
+		char book[512];
+		int count;
+	} marked_t;
+	marked_t *rows = NULL;
+	int count = 0;
+	int capacity = 0;
+
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	// The join leaves out the books no longer on the card, and keeps their
+	// marks for when they come back.
+	if (db && sqlite3_prepare_v2(db,
+								 "SELECT t.name, t.path, COUNT(*) FROM AUDIOBOOK_BOOKMARKS b"
+								 " JOIN AUDIOBOOK_TABLE t ON t.path = b.book"
+								 " GROUP BY t.path ORDER BY t.name COLLATE listorder",
+								 -1, &stmt, NULL) == SQLITE_OK) {
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			if (count == capacity) {
+				int grown = capacity ? capacity * 2 : 16;
+				marked_t *bigger = realloc(rows, (size_t)grown * sizeof(*bigger));
+				if (!bigger) {
+					break;
+				}
+				rows = bigger;
+				capacity = grown;
+			}
+			marked_t *r = &rows[count++];
+			const char *name = (const char *)sqlite3_column_text(stmt, 0);
+			const char *path = (const char *)sqlite3_column_text(stmt, 1);
+			snprintf(r->title, sizeof(r->title), "%s", name ? name : "");
+			snprintf(r->book, sizeof(r->book), "%s", path ? path : "");
+			r->count = sqlite3_column_int(stmt, 2);
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+
+	int delivered = 0;
+	for (int i = 0; i < count; i++) {
+		delivered++;
+		if (!cb(rows[i].title, rows[i].book, rows[i].count, user)) {
+			break;
+		}
+	}
+	free(rows);
+	return delivered;
 }
 
 // ---------------------------------------------------------------------------
@@ -876,6 +1268,7 @@ typedef struct {
 	long long size;
 	long long mtime;
 	bool folder;
+	char *summary; // malloc'd, NULL when the tags carry none
 } book_t;
 
 // Fills what the tags left empty from the folders the book sits in, read as
@@ -924,9 +1317,9 @@ static void insert_book(const char *path, const book_t *b) {
 	// table before wiping, and each insert copies its own back.
 	if (sqlite3_prepare_v2(db,
 						   "INSERT OR REPLACE INTO AUDIOBOOK_TABLE"
-						   "(path,name,size,mtime,author,series,series_part,added,folder,"
+						   "(path,name,size,mtime,author,series,series_part,added,folder,summary,"
 						   "last_played,resume_file,resume_pos)"
-						   " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,"
+						   " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,"
 						   "COALESCE((SELECT last_played FROM old_state WHERE path=?1),0),"
 						   "(SELECT resume_file FROM old_state WHERE path=?1),"
 						   "(SELECT resume_pos FROM old_state WHERE path=?1))",
@@ -946,6 +1339,11 @@ static void insert_book(const char *path, const book_t *b) {
 	}
 	sqlite3_bind_int64(stmt, 8, b->added);
 	sqlite3_bind_int(stmt, 9, b->folder ? 1 : 0);
+	if (b->summary) {
+		sqlite3_bind_text(stmt, 10, b->summary, -1, SQLITE_TRANSIENT);
+	} else {
+		sqlite3_bind_null(stmt, 10);
+	}
 	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 
@@ -1017,7 +1415,7 @@ static void index_single(const char *path, const char *name, const char *rel, bo
 		free(b);
 		return;
 	}
-	metadata_read(path, tags);
+	b->summary = metadata_read_with_description(path, tags);
 
 	book_from_tags(b, tags);
 	if (tags->title[0]) {
@@ -1055,6 +1453,7 @@ static void index_single(const char *path, const char *name, const char *rel, bo
 	}
 	pthread_mutex_unlock(&db_lock);
 
+	free(b->summary);
 	free(tags);
 	free(b);
 }
@@ -1084,8 +1483,13 @@ static void index_folder(const char *dir, const char *key, const namelist_t *par
 		if (stat(path, &st) != 0) {
 			continue;
 		}
-		memset(tags, 0, sizeof(*tags));
-		metadata_read(path, tags);
+		// The summary is the first part's, or the first one any part carries:
+		// a ripped CD set often tags only some of its files.
+		if (!b->summary) {
+			b->summary = metadata_read_with_description(path, tags);
+		} else {
+			metadata_read(path, tags);
+		}
 		if (i == 0) {
 			book_from_tags(b, tags);
 			snprintf(b->title, sizeof(b->title), "%s", tags->album[0] ? tags->album : folder_name);
@@ -1137,6 +1541,7 @@ static void index_folder(const char *dir, const char *key, const namelist_t *par
 	}
 	pthread_mutex_unlock(&db_lock);
 
+	free(b->summary);
 	free(tags);
 	free(b);
 }

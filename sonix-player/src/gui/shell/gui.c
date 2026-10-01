@@ -20,6 +20,7 @@
 #include "src/gui/shell/confirm.h"
 #include "src/gui/settings/kblayoutpage.h"
 #include "src/gui/settings/screensaver.h"
+#include "src/gui/library/audiobookextras.h"
 #include "src/gui/library/audiobooks.h"
 #include "src/gui/settings/devoptions.h"
 #include "src/gui/ebook/ebookmarkspage.h"
@@ -673,6 +674,7 @@ void gui_init(gui_config_t *cfg) {
 	search_init(cfg);
 	medialist_init(cfg);
 	playlistpage_init(cfg);
+	audiobookextras_init(cfg); // the bookmarks and summary pages
 	audiobooks_init(cfg);
 	chapters_init(cfg);
 	trackmenu_init(cfg);

@@ -13,13 +13,15 @@
 #include <string.h>
 #include <time.h>
 
-// How often the position is written back while a book is playing.
+// How often the position is written back while a book is playing. These
+// checkpoints go through the background writer; the saves that are forced --
+// pause, seek, stop -- are written before returning.
 #define SAVE_EVERY_SECONDS 10
 
 // Within this much of the end counts as finished: the last words of a book are
 // followed by credits nobody sits through, and a listener who stops there has
 // finished it.
-#define FINISHED_MARGIN 15.0
+#define FINISHED_MARGIN 45.0
 
 typedef struct {
 	double start;
@@ -504,5 +506,40 @@ void audiobook_note_position(double seconds, double total, bool force) {
 	last_saved_position = seconds;
 	pthread_mutex_unlock(&lock);
 
-	audiobookdb_save_position(book, resume_file, seconds);
+	if (force) {
+		audiobookdb_save_position(book, resume_file, seconds);
+	} else {
+		audiobookdb_queue_position(book, resume_file, seconds);
+	}
+}
+
+bool audiobook_current_book(char *book_out, size_t book_size, char *file_out, size_t file_size) {
+	pthread_mutex_lock(&lock);
+	bool ok = current_is_book;
+	if (ok) {
+		if (book_out && book_size) {
+			snprintf(book_out, book_size, "%s", current_book);
+		}
+		if (file_out && file_size) {
+			snprintf(file_out, file_size, "%s", current_path);
+		}
+	}
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+
+void audiobook_place_label(double seconds, char *out, size_t size) {
+	if (!out || !size) {
+		return;
+	}
+	out[0] = '\0';
+	int chapter = audiobook_chapter_at(seconds);
+	if (chapter >= 0 && audiobook_chapter(chapter, out, size, NULL)) {
+		return;
+	}
+	pthread_mutex_lock(&lock);
+	if (part_index >= 0 && part_index < part_count) {
+		snprintf(out, size, "%s", parts[part_index].title);
+	}
+	pthread_mutex_unlock(&lock);
 }

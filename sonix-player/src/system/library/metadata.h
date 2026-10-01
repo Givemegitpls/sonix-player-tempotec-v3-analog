@@ -65,4 +65,11 @@ const char *metadata_shown_artist(const song_metadata_t *m);
 // NULL when there are none.
 char *metadata_read_lyrics(const char *filepath);
 
+// metadata_read(), and the description the file carries as plain text, for
+// an audiobook's summary: a Vorbis or APE DESCRIPTION, SUMMARY or COMMENT, an
+// ID3v2 COMM frame or TXXX:DESCRIPTION, an MP4 ldes, desc or comment atom.
+// HTML is reduced to text and the length capped at 8 KB. malloc'd, NULL when
+// the file has none.
+char *metadata_read_with_description(const char *filepath, song_metadata_t *out);
+
 #endif // METADATA_H

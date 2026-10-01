@@ -118,6 +118,10 @@ const char *mp4_tag_series(const mp4_file_t *m);
 const char *mp4_tag_series_part(const mp4_file_t *m);
 // The lyrics in the ©lyr atom, as the file holds them. NULL when absent.
 const char *mp4_tag_lyrics(const mp4_file_t *m);
+// An audiobook's summary: the ldes atom, else desc, else the ©cmt comment, as
+// the file holds it. NULL when absent. The rank says which: 3, 2 or 1.
+const char *mp4_tag_description(const mp4_file_t *m);
+int mp4_tag_description_rank(const mp4_file_t *m);
 int mp4_tag_track_number(const mp4_file_t *m);
 
 // The `disk` atom's first half. 0 when the file carries no disc tag.

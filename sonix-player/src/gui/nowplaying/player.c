@@ -10,6 +10,7 @@
 #include "src/core/lv_obj.h"
 #include "src/core/lv_obj_pos.h"
 #include "src/gui/library/browser.h"
+#include "src/gui/library/audiobookextras.h"
 #include "src/gui/nowplaying/chapters.h"
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/nowplaying/coverloader.h"
@@ -490,17 +491,12 @@ static void apply_audiobook_mode(bool book, bool podcast) {
 									: forward == AUDIOBOOK_SKIP_LONG ? &icon_next_30
 																	 : &icon_next_10);
 	}
-	// The chapter glyph goes on for every book, marked up or not: one that has
-	// no chapters says so when the button is pressed, which is a plainer
-	// answer than a button that quietly means something else on some books.
-	//
-	// On a podcast the same button goes straight to the episodes, the only
-	// thing wanted from it, rather than to a menu whose one useful entry would
-	// always be picked.
+	// A book has a menu of its own behind the usual glyph: chapters,
+	// bookmarks, summary. On a podcast the same button goes straight to the
+	// episodes, the only thing wanted from it, rather than to a menu whose one
+	// useful entry would always be picked.
 	if (more_btn_icon) {
-		lv_image_set_src(more_btn_icon, book			 ? &icon_chapter
-										: podcast ? &icon_podcast_episodes
-												  : &icon_ellipsis_vertical);
+		lv_image_set_src(more_btn_icon, podcast && !book ? &icon_podcast_episodes : &icon_ellipsis_vertical);
 	}
 
 	// The star and the repeat mode are about the music library and its queue.
@@ -3898,15 +3894,43 @@ void player_key_prev(void) {
 	update_progress();
 }
 
-// The overflow button: the chapter list on a book, the episode queue on a
+// The book's menu. A book with no chapters still lists them, and says so when
+// asked: a plainer answer than an entry that comes and goes between books.
+static void book_chapters_action(void *user) {
+	(void)user;
+	if (audiobook_has_chapters) {
+		chapters_open();
+	} else {
+		gui_notify_popup("player_this_audiobook_has_no_chapters_2");
+	}
+}
+
+static void book_add_bookmark_action(void *user) {
+	(void)user;
+	audiobookextras_add_bookmark();
+}
+
+static void book_bookmarks_action(void *user) {
+	(void)user;
+	audiobookextras_open_current_bookmarks();
+}
+
+static void book_summary_action(void *user) {
+	(void)user;
+	audiobookextras_open_current_summary();
+}
+
+// The overflow button: the book's menu on a book, the episode queue on a
 // podcast, the track menu on anything else.
 static void more_btn_event_cb(lv_event_t *e) {
 	if (audiobook_mode) {
-		if (audiobook_has_chapters) {
-			chapters_open();
-		} else {
-			gui_notify_popup("player_this_audiobook_has_no_chapters_2");
-		}
+		static const popover_item_t BOOK_ITEMS[] = {
+			{"chapters", book_chapters_action, NULL},
+			{"audiobook_add_bookmark", book_add_bookmark_action, NULL},
+			{"bookmarks", book_bookmarks_action, NULL},
+			{"audiobook_summary", book_summary_action, NULL},
+		};
+		popover_show(lv_event_get_current_target(e), BOOK_ITEMS, (int)(sizeof(BOOK_ITEMS) / sizeof(BOOK_ITEMS[0])));
 		return;
 	}
 	// A podcast has no chapters: it has episodes, and the episodes are already
