@@ -927,6 +927,7 @@ static void route_state(client_t *c) {
 	buf_json_field(&j, "title", s.title, true);
 	buf_json_field(&j, "artist", s.artist, true);
 	buf_json_field(&j, "album", s.album, true);
+	buf_json_field(&j, "album_artist", s.album_artist, true);
 	buf_json_field(&j, "path", s.path, true);
 	buf_fmt(&j, "\"sample_rate\":%u,\"bitrate\":%u,\"bits\":%u,", s.sample_rate, s.bitrate, s.bits);
 	buf_fmt(&j, "\"lossless\":%s,", s.lossless ? "true" : "false");
@@ -937,6 +938,8 @@ static void route_state(client_t *c) {
 	buf_fmt(&j, "\"queue_position\":%d,\"queue_count\":%d,\"queue_revision\":%u,", s.queue_position, s.queue_count,
 			s.queue_revision);
 	buf_fmt(&j, "\"display_position\":%d,\"display_count\":%d,", s.display_position, s.display_count);
+	buf_fmt(&j, "\"favourites_revision\":%u,\"playlists_revision\":%u,", s.favourites_revision,
+			s.playlists_revision);
 	buf_fmt(&j, "\"scanning\":%s,\"scan_count\":%u,\"tracks\":%u}", s.scanning ? "true" : "false", s.scan_count,
 			s.track_count);
 	reply_json(c, &j);
@@ -1352,6 +1355,111 @@ static void route_favourites(client_t *c) {
 				first = false;
 				buf_json_field(&j, "path", p, true);
 				buf_json_field(&j, "name", name ? name : "", true);
+				buf_json_field(&j, "artist", artist ? artist : "", false);
+				buf_str(&j, "}");
+			}
+		}
+		sqlite3_finalize(st);
+	}
+	sqlite3_close(db);
+
+	buf_str(&j, "]}");
+	reply_json(c, &j);
+}
+
+// The index's path, or false when there is none yet.
+static bool index_path(char *out, size_t out_size) {
+	pthread_mutex_lock(&lock);
+	snprintf(out, out_size, "%s", db_path);
+	pthread_mutex_unlock(&lock);
+	return out[0] != '\0';
+}
+
+// The playlists, read live like the favourites: the copy of the index on the
+// phone is only as fresh as its last download, and a playlist made a moment ago
+// on the player or from the phone belongs in the list now. Names with their
+// track counts; the order is the app's to apply.
+static void route_playlists(client_t *c) {
+	char path[sizeof(db_path)];
+	sonixlink_state_t s;
+	state_copy(&s);
+
+	buf_t j;
+	memset(&j, 0, sizeof(j));
+	buf_fmt(&j, "{\"revision\":%u,\"playlists\":[", s.playlists_revision);
+
+	sqlite3 *db = NULL;
+	if (index_path(path, sizeof(path)) && sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+		sqlite3_busy_timeout(db, 1000);
+		sqlite3_stmt *names = NULL;
+		if (sqlite3_prepare_v2(db,
+							   "SELECT name FROM sqlite_master WHERE type='table'"
+							   " AND name LIKE 'M3U\\_%' ESCAPE '\\' ORDER BY name",
+							   -1, &names, NULL) == SQLITE_OK) {
+			bool first = true;
+			while (sqlite3_step(names) == SQLITE_ROW) {
+				const char *table = (const char *)sqlite3_column_text(names, 0);
+				if (!table || strlen(table) <= 4 || strchr(table, '"')) {
+					continue;
+				}
+				char sql[400];
+				snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM \"%.300s\" WHERE present<>0", table);
+				int count = 0;
+				sqlite3_stmt *st = NULL;
+				if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW) {
+					count = sqlite3_column_int(st, 0);
+				}
+				sqlite3_finalize(st);
+				buf_str(&j, first ? "{" : ",{");
+				first = false;
+				buf_json_field(&j, "name", table + 4, true);
+				buf_fmt(&j, "\"count\":%d}", count);
+			}
+		}
+		sqlite3_finalize(names);
+	}
+	sqlite3_close(db);
+
+	buf_str(&j, "]}");
+	reply_json(c, &j);
+}
+
+// One playlist's tracks in the order it was built, as the player's playlist
+// page lists them (only those on the card): path, title and artist, which is
+// all a row needs; the rest the phone finds in its index by path.
+static void route_playlist(client_t *c, const char *query) {
+	char name[300];
+	char path[sizeof(db_path)];
+	if (!query_value(query, "name", name, sizeof(name)) || !name[0] || strchr(name, '"')) {
+		reply_status(c, "400 Bad Request", "which playlist?");
+		return;
+	}
+
+	buf_t j;
+	memset(&j, 0, sizeof(j));
+	buf_str(&j, "{");
+	buf_json_field(&j, "name", name, true);
+	buf_str(&j, "\"tracks\":[");
+
+	sqlite3 *db = NULL;
+	if (index_path(path, sizeof(path)) && sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+		sqlite3_busy_timeout(db, 1000);
+		char sql[420];
+		snprintf(sql, sizeof(sql), "SELECT path,title,artist FROM \"M3U_%s\" WHERE present<>0 ORDER BY idx", name);
+		sqlite3_stmt *st = NULL;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
+			bool first = true;
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				const char *p = (const char *)sqlite3_column_text(st, 0);
+				const char *title = (const char *)sqlite3_column_text(st, 1);
+				const char *artist = (const char *)sqlite3_column_text(st, 2);
+				if (!p || !p[0]) {
+					continue;
+				}
+				buf_str(&j, first ? "{" : ",{");
+				first = false;
+				buf_json_field(&j, "path", p, true);
+				buf_json_field(&j, "title", title ? title : "", true);
 				buf_json_field(&j, "artist", artist ? artist : "", false);
 				buf_str(&j, "}");
 			}
@@ -2167,6 +2275,10 @@ static void serve_request(client_t *c) {
 		route_bye(c);
 	} else if (strcmp(target, "/api/favourites") == 0) {
 		route_favourites(c);
+	} else if (strcmp(target, "/api/playlists") == 0) {
+		route_playlists(c);
+	} else if (strcmp(target, "/api/playlist") == 0) {
+		route_playlist(c, query);
 	} else if (strcmp(target, "/") == 0 || strcmp(target, "/index.html") == 0) {
 		route_root(c);
 	} else {

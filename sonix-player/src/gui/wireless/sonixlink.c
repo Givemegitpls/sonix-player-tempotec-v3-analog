@@ -227,6 +227,7 @@ static void publish_state(void) {
 	snprintf(s.title, sizeof(s.title), "%s", d.metadata.title);
 	snprintf(s.artist, sizeof(s.artist), "%s", d.metadata.artist);
 	snprintf(s.album, sizeof(s.album), "%s", d.metadata.album);
+	snprintf(s.album_artist, sizeof(s.album_artist), "%s", d.metadata.album_artist);
 	snprintf(s.path, sizeof(s.path), "%s", d.current_file);
 
 	s.sample_rate = (unsigned)(d.stream_sample_rate > 0 ? d.stream_sample_rate : 0);
@@ -242,6 +243,15 @@ static void publish_state(void) {
 	s.scanning = library_scan_running();
 	s.scan_count = (unsigned)library_scan_found();
 	s.track_count = (unsigned)(s.scanning ? 0 : library_track_count());
+	// A star set anywhere -- the player's own screens included -- moves the
+	// favourites revision, and the remembered answer goes with it.
+	static unsigned favourites_seen;
+	s.favourites_revision = library_revision(LIBRARY_LIST_FAVOURITES);
+	s.playlists_revision = library_revision(LIBRARY_LIST_PLAYLIST);
+	if (s.favourites_revision != favourites_seen) {
+		favourites_seen = s.favourites_revision;
+		forget_favourite_memory();
+	}
 	s.favourite = current_is_favourite(s.path);
 
 	s.queue_position = playlist_current_index();

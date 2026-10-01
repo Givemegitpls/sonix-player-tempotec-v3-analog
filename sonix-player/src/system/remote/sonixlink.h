@@ -19,6 +19,8 @@
 //     GET  /api/state              what is playing, volume, mode, battery
 //     GET  /api/queue              the playback queue around the current track
 //     GET  /api/favourites         the starred tracks, as they stand now
+//     GET  /api/playlists          the playlists' names and sizes, as they stand
+//     GET  /api/playlist?name=...  one playlist's tracks, in its order
 //     GET  /api/cover?path=...     the artwork beside a track, when there is one
 //     GET  /api/art?path=...       the same track's artwork whole, tag or file,
 //                                  undecoded: the phone decodes it
@@ -56,6 +58,7 @@ typedef struct {
 	char title[SONIXLINK_TEXT_MAX];
 	char artist[SONIXLINK_TEXT_MAX];
 	char album[SONIXLINK_TEXT_MAX];
+	char album_artist[SONIXLINK_TEXT_MAX]; // empty when the tags have none
 	char path[SONIXLINK_PATH_MAX];
 
 	unsigned sample_rate;
@@ -98,6 +101,12 @@ typedef struct {
 	// book, a phone's DLNA stream, a radio outside a list.
 	int display_position;
 	int display_count;
+
+	// Change whenever the favourites, or any playlist, do -- from the phone,
+	// from the player's own screens, from a scan -- so the app refreshes its
+	// copies only when they are stale.
+	unsigned favourites_revision;
+	unsigned playlists_revision;
 } sonixlink_state_t;
 
 // The five orders the player understands, in the order the phone cycles them.
