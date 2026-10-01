@@ -1,7 +1,6 @@
 #include "dsd.h"
 
 #include <fcntl.h>
-#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,8 +57,9 @@ struct dsd_file {
 	// PCM instead of DoP (dsd_to_pcm). Each channel's buffer then has the
 	// last `taps` bytes of the slab before it in front of `chan[c]`.
 	bool pcm_mode;
-	int step; // bytes of stream per channel per output frame
-	int taps; // filter length in bytes
+	int step;	  // bytes of stream per channel per output frame
+	int taps;	  // filter length in bytes
+	int sum_bits; // the filter's coefficients sum to 1 << sum_bits
 	const int32_t (*table)[256];
 };
 
@@ -331,65 +331,74 @@ static bool produce(dsd_file_t *d) {
 // multiplications. The table is built for the file's bit order, so the stream
 // is read where it lies, byte for byte.
 //
-// The span is 16 bytes (128 taps) at DSD64, 32 at DSD128 and 64 at DSD256: a
-// Blackman window whose transition runs from about 20 kHz to 141 kHz at every
-// rate, below the 156 kHz that would fold back under 20 kHz at 176.4 kHz. The
-// half-band decimator after it (decimate.h) takes the result down to the
-// headphones' rate. Per second of stereo that is 5.6, 11.3 or 22.6 million
-// lookups, into a table of 16, 32 or 64 KB.
+// The filter is a fourth-order CIC: four moving averages of one output period
+// (16, 32 or 64 bits) in a row. Its zeros sit exactly on the multiples of
+// 176.4 kHz, which are the only bands that fold back under 20 kHz here, so it
+// rejects them by 77 dB or more while spanning 8, 16 or 32 bytes, half of
+// what a windowed sinc needs for the same rejection. What it lets through
+// between those bands, and its droop of 1.6 dB at 20 kHz, are the half-band
+// decimator's to deal with (decimate.h), which takes the result down to the
+// headphones' rate anyway. The coefficients are integers summing to a power
+// of two, so the tables are exact.
+//
+// Per second of stereo that is 2.8, 5.6 or 11.3 million lookups, into a table
+// of 8, 16 or 32 KB.
 //
 // Gain +6 dB: a full-scale DSD signal is 50 % modulation, half of what the
 // stream can carry, so without it DSD plays 6 dB quieter than PCM. What goes
 // past full scale is clamped.
 // ---------------------------------------------------------------------------
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 #define PCM_RATE 176400
-#define PCM_CUTOFF_HZ 80000.0
-#define PCM_GAIN 2.0
-#define PCM_BITS 24 // the Q of the tables: 1.0 is 1 << 23
+#define CIC_ORDER 4
 
 // DSD64, 128, 256, each in the two bit orders.
 static const int32_t (*tables[3][2])[256];
 static pthread_mutex_t table_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static const int32_t (*table_for(int multiple, int taps, bool lsb_first))[256] {
+// `period` is the bits per output sample; `taps` the span in bytes, enough for
+// CIC_ORDER * (period - 1) + 1 coefficients.
+static const int32_t (*table_for(int multiple, int period, int taps, bool lsb_first))[256] {
 	int which = multiple == 64 ? 0 : multiple == 128 ? 1 : 2;
 	pthread_mutex_lock(&table_lock);
 	if (!tables[which][lsb_first]) {
 		int n = taps * 8;
-		double *h = malloc(sizeof(double) * (size_t)n);
+		int32_t *h = calloc((size_t)n, sizeof(int32_t));
+		int32_t *next = calloc((size_t)n, sizeof(int32_t));
 		int32_t (*t)[256] = malloc(sizeof(int32_t) * 256 * (size_t)taps);
-		if (h && t) {
-			double fc = PCM_CUTOFF_HZ / ((double)DSD64_RATE / 64.0 * multiple);
-			double sum = 0;
-			for (int i = 0; i < n; i++) {
-				double m = i - (n - 1) / 2.0;
-				double sinc = m == 0 ? 2.0 * fc : sin(2.0 * M_PI * fc * m) / (M_PI * m);
-				double w = 0.42 - 0.5 * cos(2.0 * M_PI * i / (n - 1)) + 0.08 * cos(4.0 * M_PI * i / (n - 1));
-				h[i] = sinc * w;
-				sum += h[i];
+		if (h && next && t) {
+			// One moving average, convolved with itself CIC_ORDER - 1 times.
+			for (int i = 0; i < period; i++) {
+				h[i] = 1;
 			}
-			double scale = PCM_GAIN * (double)(1 << (PCM_BITS - 1)) / sum;
+			int len = period;
+			for (int order = 1; order < CIC_ORDER; order++) {
+				memset(next, 0, sizeof(int32_t) * (size_t)n);
+				for (int i = 0; i < len; i++) {
+					for (int j = 0; j < period; j++) {
+						next[i + j] += h[i];
+					}
+				}
+				len += period - 1;
+				memcpy(h, next, sizeof(int32_t) * (size_t)n);
+			}
 			for (int k = 0; k < taps; k++) {
 				for (int v = 0; v < 256; v++) {
-					double acc = 0;
+					int32_t acc = 0;
 					for (int b = 0; b < 8; b++) {
 						// The earliest bit of the byte is bit 0 in a .dsf, bit 7
 						// in a .dff.
 						int bit = lsb_first ? (v >> b) & 1 : (v >> (7 - b)) & 1;
 						acc += bit ? h[k * 8 + b] : -h[k * 8 + b];
 					}
-					t[k][v] = (int32_t)lrint(acc * scale);
+					t[k][v] = acc;
 				}
 			}
 			tables[which][lsb_first] = (const int32_t (*)[256])t;
 			t = NULL;
 		}
 		free(t);
+		free(next);
 		free(h);
 	}
 	const int32_t (*t)[256] = tables[which][lsb_first];
@@ -408,7 +417,10 @@ static void history_clear(dsd_file_t *d) {
 static bool produce_pcm(dsd_file_t *d) {
 	d->pcm_frames = 0;
 	d->pcm_read = 0;
-	const int32_t top = (1 << (PCM_BITS - 1)) - 1;
+	// The coefficients sum to 1 << sum_bits, which is 100 % modulation; with
+	// the gain of two, full scale is half of that.
+	const int shift = 32 - d->sum_bits;
+	const int32_t top = (1 << (d->sum_bits - 1)) - 1;
 
 	while (d->pcm_frames == 0) {
 		if (d->chan_read >= d->chan_len) {
@@ -444,7 +456,7 @@ static bool produce_pcm(dsd_file_t *d) {
 				} else if (acc < -top) {
 					acc = -top;
 				}
-				*out = acc * (1 << (32 - PCM_BITS));
+				*out = (int32_t)((uint32_t)acc << shift);
 			}
 		}
 		d->chan_read += frames * d->step;
@@ -460,9 +472,10 @@ bool dsd_to_pcm(dsd_file_t *d) {
 	if (d->pcm_mode) {
 		return true;
 	}
-	int step = d->multiple / 32; // 2, 4 or 8 bytes: 176.4 kHz out
-	int taps = d->multiple / 4;	 // 16, 32 or 64
-	const int32_t (*table)[256] = table_for(d->multiple, taps, d->lsb_first);
+	int step = d->multiple / 32;					   // 2, 4 or 8 bytes: 176.4 kHz out
+	int period = step * 8;							   // 16, 32 or 64 bits
+	int taps = (CIC_ORDER * (period - 1) + 1 + 7) / 8; // 8, 16 or 32 bytes
+	const int32_t (*table)[256] = table_for(d->multiple, period, taps, d->lsb_first);
 	if (!table) {
 		return false;
 	}
@@ -483,6 +496,7 @@ bool dsd_to_pcm(dsd_file_t *d) {
 	}
 	d->step = step;
 	d->taps = taps;
+	d->sum_bits = CIC_ORDER * (period == 16 ? 4 : period == 32 ? 5 : 6);
 	d->table = table;
 	d->pcm_mode = true;
 	d->out_rate = PCM_RATE;
