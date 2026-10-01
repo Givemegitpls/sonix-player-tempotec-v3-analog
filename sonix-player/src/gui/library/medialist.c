@@ -284,10 +284,11 @@ static bool album_view = true;
 static bool quality_badges;
 
 // "Show artist": the artist under each row's title, on the lists picked out by
-// artist_lists (MEDIALIST_ARTIST_* bits). Off by default, with all three picked
-// so that switching it on shows something at once.
+// artist_lists (MEDIALIST_ARTIST_* bits). Off by default, with all of them
+// picked so that switching it on shows something at once.
 static bool show_artist;
-static int artist_lists = MEDIALIST_ARTIST_TRACKS | MEDIALIST_ARTIST_ALBUMS | MEDIALIST_ARTIST_GENRES;
+static int artist_lists =
+	MEDIALIST_ARTIST_TRACKS | MEDIALIST_ARTIST_ALBUMS | MEDIALIST_ARTIST_GENRES | MEDIALIST_ARTIST_FAVOURITES;
 
 // Both are read on first use rather than in medialist_init(): the music
 // settings page is built before it (see gui_init), so a switch built from these
@@ -774,7 +775,7 @@ static void row_update_quality(panel_t *p, row_t *row, const char *path) {
 }
 
 // Whether this list is one "Show artist" is on for: all the tracks, the albums
-// and the tracks inside one, or the tracks of a genre. Not an artist's own
+// and the tracks inside one, the tracks of a genre, or the favourites. Not an artist's own
 // lists, where the name is the page's title already, and not the name lists,
 // whose rows are artists or genres themselves.
 static bool panel_shows_artist(const panel_t *p) {
@@ -790,6 +791,9 @@ static bool panel_shows_artist(const panel_t *p) {
 	}
 	if (p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_GENRE) {
 		return (artist_lists & MEDIALIST_ARTIST_GENRES) != 0;
+	}
+	if (p->kind == LIBRARY_LIST_FAVOURITES) {
+		return (artist_lists & MEDIALIST_ARTIST_FAVOURITES) != 0;
 	}
 	return false;
 }

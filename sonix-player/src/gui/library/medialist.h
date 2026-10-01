@@ -38,11 +38,12 @@ bool medialist_quality_badges(void);
 void medialist_set_quality_badges(bool on);
 
 // "Show artist": the artist under the title of each row, on the lists `lists`
-// picks out -- all the tracks, the albums, the tracks of a genre. The tracks
-// show their own artist, the albums their album artist.
+// picks out -- all the tracks, the albums, the tracks of a genre, the
+// favourites. The tracks show their own artist, the albums their album artist.
 #define MEDIALIST_ARTIST_TRACKS 1
 #define MEDIALIST_ARTIST_ALBUMS 2
 #define MEDIALIST_ARTIST_GENRES 4
+#define MEDIALIST_ARTIST_FAVOURITES 8
 bool medialist_show_artist(void);
 int medialist_artist_lists(void);
 void medialist_set_show_artist(bool on, int lists);

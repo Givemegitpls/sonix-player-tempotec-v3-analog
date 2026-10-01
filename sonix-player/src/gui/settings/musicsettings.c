@@ -1217,8 +1217,10 @@ static void quality_badges_cb(lv_event_t *e) {
 // on: a switch that is on and shows nothing anywhere is one nobody can read.
 static lv_obj_t *artist_switch;
 static lv_obj_t *artist_pills;
-static lv_obj_t *artist_pill[3];
-static const int ARTIST_PILL_BITS[3] = {MEDIALIST_ARTIST_TRACKS, MEDIALIST_ARTIST_ALBUMS, MEDIALIST_ARTIST_GENRES};
+#define ARTIST_PILLS 4
+static lv_obj_t *artist_pill[ARTIST_PILLS];
+static const int ARTIST_PILL_BITS[ARTIST_PILLS] = {MEDIALIST_ARTIST_TRACKS, MEDIALIST_ARTIST_ALBUMS,
+												   MEDIALIST_ARTIST_GENRES, MEDIALIST_ARTIST_FAVOURITES};
 
 static void artist_refresh(void) {
 	if (!artist_switch) {
@@ -1233,7 +1235,7 @@ static void artist_refresh(void) {
 		lv_obj_remove_state(artist_switch, LV_STATE_CHECKED);
 		lv_obj_add_flag(artist_pills, LV_OBJ_FLAG_HIDDEN);
 	}
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < ARTIST_PILLS; i++) {
 		settingsrow_pill_active(artist_pill[i], (lists & ARTIST_PILL_BITS[i]) != 0);
 	}
 }
@@ -1249,7 +1251,8 @@ static void artist_pick_cb(lv_event_t *e) {
 		return;
 	}
 	int lists = medialist_artist_lists() ^ (int)(intptr_t)lv_event_get_user_data(e);
-	if ((lists & (MEDIALIST_ARTIST_TRACKS | MEDIALIST_ARTIST_ALBUMS | MEDIALIST_ARTIST_GENRES)) == 0) {
+	if ((lists & (MEDIALIST_ARTIST_TRACKS | MEDIALIST_ARTIST_ALBUMS | MEDIALIST_ARTIST_GENRES |
+				  MEDIALIST_ARTIST_FAVOURITES)) == 0) {
 		return; // the last one stays on
 	}
 	medialist_set_show_artist(medialist_show_artist(), lists);
@@ -1321,6 +1324,7 @@ static void build_display_page(gui_config_t *cfg) {
 	artist_pill[0] = settingsrow_pill(artist_pills, "music_all_tracks", MEDIALIST_ARTIST_TRACKS, artist_pick_cb);
 	artist_pill[1] = settingsrow_pill(artist_pills, "albums", MEDIALIST_ARTIST_ALBUMS, artist_pick_cb);
 	artist_pill[2] = settingsrow_pill(artist_pills, "music_genres", MEDIALIST_ARTIST_GENRES, artist_pick_cb);
+	artist_pill[3] = settingsrow_pill(artist_pills, "favourites", MEDIALIST_ARTIST_FAVOURITES, artist_pick_cb);
 	option_note(container, "musicsettings_show_artist_note");
 	artist_refresh();
 	theme_register_refresh(artist_refresh);

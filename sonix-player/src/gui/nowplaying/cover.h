@@ -91,6 +91,12 @@ bool cover_load_screensaver_images(const char *path, int w, int h, cover_image_t
 // as one surface. The caller owns `out` and must cover_free() it.
 bool cover_blur_copy(const cover_image_t *src, cover_image_t *out);
 
+// The same treatment at another size: the picture centre-cropped to the shape
+// of out_w x out_h, then blurred and dimmed at that size. What the lyrics put
+// behind the whole screen in the arrangements whose own blurred copy only
+// covers the controls. The caller owns `out` and must cover_free() it.
+bool cover_blur_fill(const cover_image_t *src, int out_w, int out_h, cover_image_t *out);
+
 // The one colour that stands for a sleeve, as 0xRRGGBB. Cover Flow throws it
 // under the record in the middle; the player's alternative layout tints the
 // title pill, the waveform and the star with it. A grey sleeve comes back a

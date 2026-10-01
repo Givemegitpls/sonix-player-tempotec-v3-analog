@@ -6,13 +6,29 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
 
+#include <string.h>
+
 #define TOAST_MS 1400
+// A longer sentence stays up longer, so it can be read to the end: this much
+// more per character past TOAST_QUICK_CHARS, up to TOAST_MAX_MS.
+#define TOAST_QUICK_CHARS 40
+#define TOAST_MS_PER_CHAR 35
+#define TOAST_MAX_MS 5000
 // Not TOAST_W / TOAST_H: the second of those collides with toast.h's own
 // include guard, which is defined by the time this line is read.
 #define TOAST_WIDTH 260
-// The height with a glyph above the text. Without one the card measures itself
-// instead: 200 px of card around a single line reads as an empty box with a
-// sentence lost in the middle of it.
+// Past this many characters the card widens to TOAST_WIDE_WIDTH (or the panel
+// less TOAST_SIDE_MARGIN on each side): four lines at the narrow width would
+// make a tall thin column of a sentence.
+#define TOAST_WIDE_CHARS 60
+#define TOAST_WIDE_WIDTH 380
+#define TOAST_SIDE_MARGIN 30
+// The least height with a glyph above the text, so a short message keeps the
+// usual square card. The card grows past it for a longer one -- the AutoEq
+// messages run to three sentences -- and never past the panel less
+// TOAST_SIDE_MARGIN above and below. Without a glyph there is no least height:
+// 200 px of card around a single line reads as an empty box with a sentence
+// lost in the middle of it.
 #define TOAST_HEIGHT 200
 
 // The Adwaita "success" green, the same one the active chevrons use, so a
@@ -73,7 +89,8 @@ void toast_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(veil, veil_cb, LV_EVENT_CLICKED, NULL);
 
 	card = lv_obj_create(veil);
-	lv_obj_set_size(card, TOAST_WIDTH, TOAST_HEIGHT);
+	lv_obj_set_size(card, TOAST_WIDTH, LV_SIZE_CONTENT);
+	lv_obj_set_style_max_height(card, lv_display_get_vertical_resolution(NULL) - 2 * TOAST_SIDE_MARGIN, 0);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_card, 0);
 	lv_obj_set_style_radius(card, 20, 0);
@@ -103,6 +120,32 @@ void toast_init(gui_config_t *cfg) {
 	lv_timer_pause(hide_timer);
 }
 
+// The card's width and least height for `text`, with or without something
+// above it.
+static void fit_card(const char *text, bool above) {
+	int32_t width = TOAST_WIDTH;
+	if (text && strlen(text) > TOAST_WIDE_CHARS) {
+		int32_t room = lv_display_get_horizontal_resolution(NULL) - 2 * TOAST_SIDE_MARGIN;
+		width = room < TOAST_WIDE_WIDTH ? room : TOAST_WIDE_WIDTH;
+		if (width < TOAST_WIDTH) {
+			width = TOAST_WIDTH;
+		}
+	}
+	lv_obj_set_width(card, width);
+	lv_obj_set_height(card, LV_SIZE_CONTENT);
+	lv_obj_set_style_min_height(card, above ? TOAST_HEIGHT : 0, 0);
+}
+
+// How long a message stays: longer for a longer one.
+static uint32_t shown_for(const char *text) {
+	size_t length = text ? strlen(text) : 0;
+	uint32_t ms = TOAST_MS;
+	if (length > TOAST_QUICK_CHARS) {
+		ms += (uint32_t)(length - TOAST_QUICK_CHARS) * TOAST_MS_PER_CHAR;
+	}
+	return ms < TOAST_MAX_MS ? ms : TOAST_MAX_MS;
+}
+
 // The one that does the work. `glyph` NULL leaves the card with the text alone,
 // which the flex layout centres by itself once the image is out of the flow --
 // hence the hidden flag rather than a zero size.
@@ -115,19 +158,20 @@ static void show(const lv_image_dsc_t *glyph, lv_color_t colour, const char *tex
 		busy_spinner = NULL;
 	}
 
+	const char *shown = text ? tr(text) : "";
 	if (glyph) {
 		lv_image_set_src(icon, glyph);
 		lv_obj_set_style_image_recolor(icon, colour, 0);
 		lv_obj_remove_flag(icon, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_set_height(card, TOAST_HEIGHT);
 	} else {
 		lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_set_height(card, LV_SIZE_CONTENT);
 	}
+	fit_card(shown, glyph != NULL);
 
-	lv_label_set_text(label, text ? tr(text) : "");
+	lv_label_set_text(label, shown);
 	lv_obj_remove_flag(veil, LV_OBJ_FLAG_HIDDEN);
 	lv_obj_move_foreground(veil);
+	lv_timer_set_period(hide_timer, shown_for(shown));
 	lv_timer_reset(hide_timer);
 	lv_timer_resume(hide_timer);
 }
@@ -150,8 +194,9 @@ void toast_busy(const char *text) {
 		busy_spinner = spinner_create(card, &icon_loader_big);
 		lv_obj_move_to_index(busy_spinner, 0);
 	}
-	lv_obj_set_height(card, TOAST_HEIGHT);
-	lv_label_set_text(label, text ? tr(text) : "");
+	const char *shown = text ? tr(text) : "";
+	fit_card(shown, true);
+	lv_label_set_text(label, shown);
 	lv_obj_remove_flag(veil, LV_OBJ_FLAG_HIDDEN);
 	lv_obj_move_foreground(veil);
 }

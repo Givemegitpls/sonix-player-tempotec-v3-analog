@@ -887,6 +887,16 @@ uint32_t cover_dominant_tone(const cover_image_t *cover) {
 }
 
 bool cover_blur_copy(const cover_image_t *src, cover_image_t *out) {
+	if (!src) {
+		if (out) {
+			memset(out, 0, sizeof(*out));
+		}
+		return false;
+	}
+	return cover_blur_fill(src, (int)src->dsc.header.w, (int)src->dsc.header.h, out);
+}
+
+bool cover_blur_fill(const cover_image_t *src, int out_w, int out_h, cover_image_t *out) {
 	if (!out) {
 		return false;
 	}
@@ -920,10 +930,14 @@ bool cover_blur_copy(const cover_image_t *src, cover_image_t *out) {
 		}
 	}
 
+	if (out_w < 2 || out_h < 2) {
+		free(rgb);
+		return false;
+	}
 	raw_image_t whole_img = {.pixels = rgb, .w = w, .h = h};
-	crop_t whole = {0, 0, w, h};
-	int small_w = w / BACKDROP_SCALE_DIVISOR;
-	int small_h = h / BACKDROP_SCALE_DIVISOR;
+	crop_t whole = crop_to_aspect(w, h, out_w, out_h);
+	int small_w = out_w / BACKDROP_SCALE_DIVISOR;
+	int small_h = out_h / BACKDROP_SCALE_DIVISOR;
 	if (small_w < 2) {
 		small_w = 2;
 	}
@@ -946,13 +960,13 @@ bool cover_blur_copy(const cover_image_t *src, cover_image_t *out) {
 
 	raw_image_t tiny = {.pixels = small, .w = small_w, .h = small_h};
 	crop_t tiny_whole = {0, 0, small_w, small_h};
-	uint8_t *big = resample_rgb(&tiny, &tiny_whole, w, h, false);
+	uint8_t *big = resample_rgb(&tiny, &tiny_whole, out_w, out_h, false);
 	free(small);
 	if (!big) {
 		return false;
 	}
 
-	for (int i = 0; i < w * h * 3; i++) {
+	for (int i = 0; i < out_w * out_h * 3; i++) {
 		if (backdrop_light) {
 			big[i] = (uint8_t)(255 - ((255 - big[i]) * BACKDROP_BRIGHTNESS_PCT) / 100);
 		} else {
@@ -960,7 +974,7 @@ bool cover_blur_copy(const cover_image_t *src, cover_image_t *out) {
 		}
 	}
 
-	bool ok = pack_rgb565_dithered(big, w, h, out);
+	bool ok = pack_rgb565_dithered(big, out_w, out_h, out);
 	free(big);
 	return ok;
 }

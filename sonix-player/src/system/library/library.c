@@ -269,6 +269,12 @@ static pthread_mutex_t db_lock = PTHREAD_MUTEX_INITIALIZER;
 // favourites are a table of their own precisely so that starring a track cannot
 // touch the index (see the FAVOURITES schema), and a single counter would let
 // the star button invalidate the handle the playback queue was built on.
+// A favourite's artist: the index's, where it has the track -- what the list
+// of all the tracks shows -- and the one stored with the star otherwise. A
+// track starred from a list is stored with no artist at all.
+#define FAV_ARTIST \
+	"COALESCE(NULLIF((SELECT m.artist FROM MEDIA_TABLE m WHERE m.path = FAVOURITES.path LIMIT 1), ''), artist)"
+
 typedef enum {
 	GEN_MEDIA = 0, // MEDIA_TABLE and the four lookup tables the scan fills
 	GEN_FAVOURITES,
@@ -1868,7 +1874,7 @@ int library_for_each_ordered(library_list_t kind, library_filter_t filter, const
 	const char *by_name = list_uses_sortkey(kind) ? "sortkey" : "name COLLATE listorder";
 
 	if (kind == LIBRARY_LIST_FAVOURITES) {
-		snprintf(sql, sizeof(sql), "SELECT name, path, artist FROM FAVOURITES ORDER BY added_at, rowid");
+		snprintf(sql, sizeof(sql), "SELECT name, path, %s FROM FAVOURITES ORDER BY added_at, rowid", FAV_ARTIST);
 	} else if (kind == LIBRARY_LIST_TRACKS) {
 		// Inside one album the disc order is the natural one; everywhere else
 		// the titles read best alphabetically.
@@ -2184,7 +2190,7 @@ static const char *row_by_id_sql(library_list_t kind, const char *value, char *o
 	case LIBRARY_LIST_GENRES:
 		return "SELECT genre, NULL, NULL FROM GENRE_TABLE WHERE rowid=?";
 	case LIBRARY_LIST_FAVOURITES:
-		return "SELECT name, path, artist FROM FAVOURITES WHERE rowid=?";
+		return "SELECT name, path, " FAV_ARTIST " FROM FAVOURITES WHERE rowid=?";
 	default:
 		return NULL;
 	}
