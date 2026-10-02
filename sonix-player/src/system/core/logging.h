@@ -2,6 +2,7 @@
 #define LOGGING_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 // Where the player's output goes.
 //
@@ -31,6 +32,13 @@ void logging_attach_sd(const char *sd_root);
 // Turns card logging on or off now, and remembers the choice.
 void logging_set_to_sd(bool enabled);
 bool logging_to_sd(void);
+
+// Hands every line printed through stdout or stderr to `tap` as well, without
+// its newline and before its stamp, whether or not the log is going anywhere.
+// Called on the printing thread with that stream's lock held: the tap must be
+// quick and must not print. Only one; set it once, at startup.
+typedef void (*logging_line_tap_t)(const char *line, size_t len);
+void logging_set_line_tap(logging_line_tap_t tap);
 
 // The file being written, for the settings page to show.
 const char *logging_path(void);

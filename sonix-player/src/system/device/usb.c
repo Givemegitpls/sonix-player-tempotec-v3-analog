@@ -17,6 +17,7 @@
 #include "src/system/library/audiobookdb.h"
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
+#include "src/system/bluetooth/btlog.h"
 #include "src/system/device/sysserver.h"
 #include "src/system/audio/usbaudio.h"
 #include "src/system/core/utils.h"
@@ -707,6 +708,7 @@ static void storage_export(void) {
 	library_close();
 	audiobookdb_close();
 	logging_suspend_for_usb();
+	btlog_card_release();
 
 	if (sysserver_available()) {
 		sysserver_umount(sd_mount);
@@ -848,6 +850,7 @@ static void storage_restore(void) {
 	snprintf(db_path, sizeof(db_path), "%s/.local/audiobooks.db", sd_mount);
 	audiobookdb_open(db_path);
 	logging_resume_after_usb();
+	btlog_card_attach(sd_mount);
 
 	storage_active = false;
 	if (!suppress_popups) {

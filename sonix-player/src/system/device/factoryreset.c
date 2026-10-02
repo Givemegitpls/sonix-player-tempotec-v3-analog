@@ -9,6 +9,7 @@
 #include "src/system/device/clock.h"
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
+#include "src/system/bluetooth/btlog.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/tidalcache.h"
@@ -167,6 +168,7 @@ void factoryreset_run(void) {
 	library_close();
 	audiobookdb_close();
 	logging_suspend_for_usb();
+	btlog_card_release();
 
 	// Streaming caches (tracks and covers) go before the card is unmounted:
 	// after unmount_card() those files are unreachable, and a factory reset

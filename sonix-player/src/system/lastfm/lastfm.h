@@ -59,7 +59,8 @@ bool lastfm_available(void);
 // Stored in the configuration. GUI thread.
 void lastfm_set_enabled(bool on);
 
-// Switched on, with keys and a session: plays are being counted.
+// Switched on, with keys and an account, signed in or with a session waiting
+// to be renewed: plays are being counted.
 bool lastfm_active(void);
 
 // Both return at once; the worker does the work. The password is wiped as soon

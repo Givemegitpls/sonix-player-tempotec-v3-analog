@@ -318,4 +318,9 @@ void bluetooth_set_volume_sync(bool on);
 // key down to one write.
 void bluetooth_notify_volume(int percent);
 
+// Turns on bluetoothd's debug lines if it is running, for the Bluetooth log
+// (btlog.h). They stay on until bluetoothd is next started; with the log off
+// by then it starts without them.
+void bluetooth_daemon_debug_on(void);
+
 #endif /* BLUETOOTH_H */

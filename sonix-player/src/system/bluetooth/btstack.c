@@ -669,8 +669,13 @@ static void on_call(dbus_conn_t *c, const dbus_msg_t *m, void *user) {
 // opening and closing
 // ---------------------------------------------------------------------------
 
-static bool call_ok(const char *destination, const char *path, const char *interface, const char *member,
-					int timeout_ms) {
+// A call with no arguments. The error, when there is one, is logged here and
+// also handed back in `err_out` (empty for a call that got no reply at all).
+static bool call_ok_why(const char *destination, const char *path, const char *interface, const char *member,
+						int timeout_ms, char *err_out, size_t err_size) {
+	if (err_out && err_size) {
+		err_out[0] = '\0';
+	}
 	pthread_mutex_lock(&lock);
 	dbus_conn_t *c = conn;
 	pthread_mutex_unlock(&lock);
@@ -682,8 +687,16 @@ static bool call_ok(const char *destination, const char *path, const char *inter
 	bool ok = dbus_call_send(c, timeout_ms, err, sizeof(err));
 	if (!ok) {
 		fprintf(stderr, "btstack: %s.%s -> %s\n", interface, member, err[0] ? err : "no reply");
+		if (err_out && err_size) {
+			snprintf(err_out, err_size, "%s", err);
+		}
 	}
 	return ok;
+}
+
+static bool call_ok(const char *destination, const char *path, const char *interface, const char *member,
+					int timeout_ms) {
+	return call_ok_why(destination, path, interface, member, timeout_ms, NULL, 0);
 }
 
 bool btstack_service_ready(const char *name) {
@@ -1028,18 +1041,28 @@ int btstack_devices(btstack_device_t *out, int max) {
 	return count;
 }
 
-static bool device_call(const char *address, const char *member, int timeout_ms) {
+static bool device_call_why(const char *address, const char *member, int timeout_ms, char *err_out,
+							size_t err_size) {
+	if (err_out && err_size) {
+		err_out[0] = '\0';
+	}
 	char path[OBJECT_PATH_MAX];
 	if (!device_path(address, path, sizeof(path))) {
 		fprintf(stderr, "btstack: '%s' is not an address\n", address ? address : "(null)");
 		return false;
 	}
-	return call_ok(BLUEZ_SERVICE, path, BLUEZ_DEVICE_IFACE, member, timeout_ms);
+	return call_ok_why(BLUEZ_SERVICE, path, BLUEZ_DEVICE_IFACE, member, timeout_ms, err_out, err_size);
+}
+
+static bool device_call(const char *address, const char *member, int timeout_ms) {
+	return device_call_why(address, member, timeout_ms, NULL, 0);
 }
 
 bool btstack_pair(const char *address, int timeout_ms) { return device_call(address, "Pair", timeout_ms); }
 
-bool btstack_connect(const char *address, int timeout_ms) { return device_call(address, "Connect", timeout_ms); }
+bool btstack_connect(const char *address, int timeout_ms, char *err_out, size_t err_size) {
+	return device_call_why(address, "Connect", timeout_ms, err_out, err_size);
+}
 
 bool btstack_disconnect(const char *address) { return device_call(address, "Disconnect", CALL_MS); }
 

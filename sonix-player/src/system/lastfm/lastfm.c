@@ -39,6 +39,11 @@
 // waiting on them.
 #define WAIT_POLL_SECS 10
 
+// Last.fm's "invalid session key" this many times in a row, with the usual
+// retry pauses between, before the session counts as lost. One refusal can
+// come from Last.fm having a bad moment rather than from the key.
+#define SESSION_REFUSALS_MAX 3
+
 // Last.fm's rule: a track of at least 30 seconds, listened to for half its
 // length or for four minutes.
 #define SCROBBLE_MIN_LENGTH 30.0
@@ -68,6 +73,7 @@ static bool enabled;
 static char session_key[64];
 static char user[128];
 static bool session_expired;
+static int session_refusals;
 static bool refused;
 static char detail[160];
 
@@ -124,6 +130,11 @@ static void wipe(void *p, size_t n) {
 }
 
 static void copy_field(char *dst, const char *src) { snprintf(dst, FIELD_MAX, "%s", src ? src : ""); }
+
+// Under `lock`. Plays are counted for an account that is signed in, and for
+// one whose session has to be renewed: they wait in the queue on the card and
+// go out once the same account signs in again.
+static bool counting_locked(void) { return enabled && user[0] && (session_key[0] || session_expired); }
 
 static bool online(void) {
 	wifi_status_t st;
@@ -713,6 +724,7 @@ static void do_login(const char *name, char *password) {
 		snprintf(session_key, sizeof(session_key), "%s", key);
 		snprintf(user, sizeof(user), "%s", name_out);
 		session_expired = false;
+		session_refusals = 0;
 		refused = false;
 		detail[0] = '\0';
 	} else {
@@ -746,10 +758,31 @@ static void session_lost(const char *why) {
 	pthread_mutex_lock(&lock);
 	session_key[0] = '\0';
 	session_expired = true;
+	session_refusals = 0;
 	char name[128];
 	snprintf(name, sizeof(name), "%s", user);
 	pthread_mutex_unlock(&lock);
 	save_session("", name);
+}
+
+// An "invalid session key" answer. True when the session is now lost; until
+// then the key stays and the caller tries again later.
+static bool session_refused(const char *why) {
+	pthread_mutex_lock(&lock);
+	int count = ++session_refusals;
+	pthread_mutex_unlock(&lock);
+	if (count >= SESSION_REFUSALS_MAX) {
+		session_lost(why);
+		return true;
+	}
+	fprintf(stderr, "lastfm: the session was refused (%s), %d of %d; keeping it for now\n", why, count, SESSION_REFUSALS_MAX);
+	return false;
+}
+
+static void session_accepted(void) {
+	pthread_mutex_lock(&lock);
+	session_refusals = 0;
+	pthread_mutex_unlock(&lock);
 }
 
 // Puts the plays whose time is known into the file on the card. A play that
@@ -834,9 +867,11 @@ static void send_now_playing(const play_t *track, const char *sk) {
 	}
 	char why[160];
 	result_t result = call(params, n, why, sizeof(why), NULL, NULL);
-	if (result == RESULT_SESSION) {
-		session_lost(why);
-	} else if (result != RESULT_OK) {
+	// A refused session is left to the scrobbles to count: they are retried,
+	// "now playing" is not.
+	if (result == RESULT_OK) {
+		session_accepted();
+	} else {
 		fprintf(stderr, "lastfm: now playing not sent: %s\n", why);
 	}
 }
@@ -911,6 +946,7 @@ static void send_queue(sender_t *s, const char *sk) {
 	switch (result) {
 	case RESULT_OK:
 		drop = true;
+		session_accepted();
 		s->backoff = RETRY_FIRST_SECS;
 		pthread_mutex_lock(&lock);
 		refused = false;
@@ -928,7 +964,10 @@ static void send_queue(sender_t *s, const char *sk) {
 		}
 		break;
 	case RESULT_SESSION:
-		session_lost(why);
+		if (!session_refused(why)) {
+			s->retry_at = boot_seconds() + s->backoff;
+			s->backoff = s->backoff * 2 > RETRY_MAX_SECS ? RETRY_MAX_SECS : s->backoff * 2;
+		}
 		break;
 	case RESULT_REFUSED:
 		fprintf(stderr, "lastfm: scrobbles refused: %s\n", why);
@@ -995,14 +1034,17 @@ static void *worker_main(void *arg) {
 
 		pthread_mutex_lock(&lock);
 		bool active = enabled && session_key[0];
+		bool counting = counting_locked();
 		char sk[64];
 		char account[128];
 		snprintf(sk, sizeof(sk), "%s", session_key);
 		snprintf(account, sizeof(account), "%s", user);
 		pthread_mutex_unlock(&lock);
 
+		// Plays go to the card while there is an account to keep them for;
+		// they go to Last.fm only with a session.
 		bool up = false;
-		if (active) {
+		if (counting) {
 			// The card comes and goes: pulled out, shared over USB, read-only.
 			if (!card_writable()) {
 				if (card_ready) {
@@ -1015,7 +1057,8 @@ static void *worker_main(void *arg) {
 				card_ready = queue_attach(account);
 			}
 			flush_pending(account);
-
+		}
+		if (active) {
 			up = online();
 			if (up && !sender.was_online) {
 				sender.retry_at = 0;
@@ -1053,8 +1096,9 @@ static void *worker_main(void *arg) {
 		// more to send and nothing in the way, straight on.
 		pthread_mutex_lock(&lock);
 		active = enabled && session_key[0];
+		counting = counting_locked();
 		bool more_now = active && up && file_count > 0 && boot_seconds() >= sender.retry_at;
-		bool waiting = active && (!card_ready || pending_count > 0 || file_count > 0 || now_playing_waiting);
+		bool waiting = (counting && (!card_ready || pending_count > 0)) || (active && (file_count > 0 || now_playing_waiting));
 		if (!logout_requested && !login_requested && !more_now) {
 			if (waiting) {
 				struct timespec ts;
@@ -1125,9 +1169,9 @@ bool lastfm_active(void) {
 		return false;
 	}
 	pthread_mutex_lock(&lock);
-	bool active = enabled && session_key[0];
+	bool counting = counting_locked();
 	pthread_mutex_unlock(&lock);
-	return active;
+	return counting;
 }
 
 void lastfm_login(const char *name, const char *password) {
@@ -1295,7 +1339,7 @@ void lastfm_note_playback(const lastfm_playback_t *now) {
 	pthread_mutex_lock(&lock);
 	current_generation = play.generation;
 	current_playing = now->playing;
-	if (announce && !play.skip && play.track.artist[0] && play.track.title[0]) {
+	if (announce && session_key[0] && !play.skip && play.track.artist[0] && play.track.title[0]) {
 		now_playing = play.track;
 		now_playing_generation = play.generation;
 		now_playing_waiting = true;

@@ -175,6 +175,11 @@ static stamp_stream_t stamp_err = {STDERR_FILENO, true};
 // Year and day of the year of the last date line; -1 before the first.
 static int stamp_day = -1;
 
+// Sees every whole line printed, before it is stamped. Set once, at startup.
+static logging_line_tap_t line_tap;
+
+void logging_set_line_tap(logging_line_tap_t tap) { line_tap = tap; }
+
 static void write_all(int fd, const char *data, size_t size);
 
 // ---------------------------------------------------------------------------
@@ -466,6 +471,11 @@ static ssize_t stamp_write(void *cookie, const char *data, size_t size) {
 		size_t len = newline ? (size_t)(newline - start) + 1 : size - done;
 		if (stream->line_start && *start != '\n') {
 			write_stamp(stream->fd);
+			// Only lines that arrive whole, which with line buffering is all
+			// but the rare one longer than the stream's buffer.
+			if (line_tap && newline) {
+				line_tap(start, len - 1);
+			}
 		}
 		emit(stream->fd, start, len);
 		stream->line_start = newline != NULL;

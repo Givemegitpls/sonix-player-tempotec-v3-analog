@@ -3232,44 +3232,120 @@ static void scan_one_file(const char *child, const char *name, const struct stat
 // as they come, which costs no memory) keeping only the names of the
 // subdirectories, close it, and only then descend. One directory is open at any
 // depth, and what is carried down is names, a few dozen bytes each.
-// The folder filter, read from the config when a scan starts.
-#define SCAN_FOLDERS_MAX 64
-#define SCAN_FOLDERS_KEY_MAX (SCAN_FOLDERS_MAX * 64)
-static char scan_folder_names[SCAN_FOLDERS_MAX][256];
+// The folder filter: the chosen folders at the root of the card, one name per
+// line in scan_folders.txt beside device_config.ini, read when a scan starts.
+// Without that file the '/'-separated [library] scan_folders key is read.
+#define SCAN_FOLDERS_FILE "scan_folders.txt"
+static char **scan_folder_names;
 static int scan_folder_count;
 
-const char *library_scan_folders(void) { return config_get("library", "scan_folders", ""); }
-
-void library_scan_folders_set(const char *const *names, int count) {
-	static char joined[SCAN_FOLDERS_KEY_MAX];
-	size_t used = 0;
-	joined[0] = '\0';
-	for (int i = 0; names && i < count && used < sizeof(joined); i++) {
-		if (!names[i] || !names[i][0]) {
-			continue;
-		}
-		used += (size_t)snprintf(joined + used, sizeof(joined) - used, "%s%s", used ? "/" : "", names[i]);
+static void scan_folders_path(char *out, size_t size) {
+	const char *cfg = config_path();
+	const char *slash = cfg ? strrchr(cfg, '/') : NULL;
+	if (slash) {
+		snprintf(out, size, "%.*s/%s", (int)(slash - cfg), cfg, SCAN_FOLDERS_FILE);
+	} else {
+		snprintf(out, size, "%s", SCAN_FOLDERS_FILE);
 	}
-	if (used >= sizeof(joined)) {
-		joined[0] = '\0'; // too many to store: the whole card rather than a cut list
-	}
-	config_set("library", "scan_folders", joined);
-	config_save();
 }
 
-static void scan_folders_load(void) {
-	scan_folder_count = 0;
-	const char *p = library_scan_folders();
-	while (p && *p && scan_folder_count < SCAN_FOLDERS_MAX) {
+// Appends `name` to a growing array. False when memory runs out.
+static bool names_add(char ***names, int *count, int *capacity, const char *name, size_t len) {
+	if (*count == *capacity) {
+		int grown = *capacity ? *capacity * 2 : 32;
+		char **bigger = realloc(*names, (size_t)grown * sizeof(*bigger));
+		if (!bigger) {
+			return false;
+		}
+		*names = bigger;
+		*capacity = grown;
+	}
+	char *copy = malloc(len + 1);
+	if (!copy) {
+		return false;
+	}
+	memcpy(copy, name, len);
+	copy[len] = '\0';
+	(*names)[(*count)++] = copy;
+	return true;
+}
+
+char **library_scan_folders(int *count) {
+	*count = 0;
+	char **names = NULL;
+	int capacity = 0;
+
+	char path[512];
+	scan_folders_path(path, sizeof(path));
+	FILE *f = fopen(path, "r");
+	if (f) {
+		char *line = NULL;
+		size_t cap = 0;
+		ssize_t got;
+		while ((got = getline(&line, &cap, f)) >= 0) {
+			size_t len = strcspn(line, "\r\n");
+			if (len > 0 && !names_add(&names, count, &capacity, line, len)) {
+				break;
+			}
+		}
+		free(line);
+		fclose(f);
+		return names;
+	}
+
+	const char *p = config_get("library", "scan_folders", "");
+	while (p && *p) {
 		const char *end = strchr(p, '/');
 		size_t len = end ? (size_t)(end - p) : strlen(p);
-		if (len > 0 && len < sizeof(scan_folder_names[0])) {
-			memcpy(scan_folder_names[scan_folder_count], p, len);
-			scan_folder_names[scan_folder_count][len] = '\0';
-			scan_folder_count++;
+		if (len > 0 && !names_add(&names, count, &capacity, p, len)) {
+			break;
 		}
 		p = end ? end + 1 : NULL;
 	}
+	return names;
+}
+
+void library_scan_folders_free(char **names, int count) {
+	for (int i = 0; i < count; i++) {
+		free(names[i]);
+	}
+	free(names);
+}
+
+void library_scan_folders_set(const char *const *names, int count) {
+	char path[512];
+	scan_folders_path(path, sizeof(path));
+	char tmp[520];
+	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+
+	// An empty file is the whole card, the same as no file, and keeps the
+	// config key from being read in its place.
+	FILE *f = fopen(tmp, "w");
+	if (!f) {
+		fprintf(stderr, "library: cannot write %s: %s\n", tmp, strerror(errno));
+		return;
+	}
+	for (int i = 0; names && i < count; i++) {
+		if (names[i] && names[i][0]) {
+			fprintf(f, "%s\n", names[i]);
+		}
+	}
+	bool ok = fflush(f) == 0 && fsync(fileno(f)) == 0;
+	ok = fclose(f) == 0 && ok;
+	if (!ok || rename(tmp, path) != 0) {
+		fprintf(stderr, "library: cannot write %s\n", path);
+		unlink(tmp);
+		return;
+	}
+	if (config_get("library", "scan_folders", "")[0]) {
+		config_set("library", "scan_folders", "");
+		config_save();
+	}
+}
+
+static void scan_folders_load(void) {
+	library_scan_folders_free(scan_folder_names, scan_folder_count);
+	scan_folder_names = library_scan_folders(&scan_folder_count);
 }
 
 // With a filter, only the chosen folders at the root of the card are read.

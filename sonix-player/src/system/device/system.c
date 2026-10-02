@@ -24,6 +24,7 @@
 #include "src/gui/shell/gui.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/bluetooth/bluetooth.h"
+#include "src/system/bluetooth/btlog.h"
 #include "src/system/bluetooth/btplayer.h"
 #include "src/system/audio/audio.h"
 #include "src/system/audio/alsa-controls.h"
@@ -794,6 +795,7 @@ static void card_databases_detach(void) {
 	audio_stop();
 
 	logging_suspend_for_usb(); // closes the on-card log file
+	btlog_card_release();
 	library_close();
 	audiobookdb_close();
 	printf("storage: card databases closed for removal\n");
@@ -838,6 +840,7 @@ static void card_databases_attach(const char *root) {
 	// not survive two remove events, and a failed reopen consumes it for good.
 	// logging_attach_sd() re-derives the path and honours the setting.
 	logging_attach_sd(root);
+	btlog_card_attach(root);
 
 	printf("storage: card databases reopened on %s\n", root);
 }

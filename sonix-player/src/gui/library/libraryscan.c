@@ -112,75 +112,110 @@ void libraryscan_begin(void) {
 // Which folders: the card's top-level folders, ticked, before the scan starts
 // ---------------------------------------------------------------------------
 
-#define PICK_MAX 64
 #define PICK_CHROME_H 250 // the card's title, note, buttons and padding
+// Rows are made this many at a time, more as the list nears its end.
+#define PICK_BATCH 30
 
 static gui_config_t *pick_cfg;
 static lv_obj_t *pick_veil;
 static lv_obj_t *pick_list;
 static lv_obj_t *pick_scan_btn;
-static char pick_names[PICK_MAX][256];
-static bool pick_on[PICK_MAX];
-static lv_obj_t *pick_marks[PICK_MAX];
+static char **pick_names;
+static bool *pick_on;
+static lv_obj_t **pick_marks;
 static int pick_count;
+static int pick_capacity;
+static int pick_built; // rows made so far, the first pick_built names
 
-static int name_cmp(const void *a, const void *b) { return strcasecmp((const char *)a, (const char *)b); }
+static int name_cmp(const void *a, const void *b) { return strcasecmp(*(const char *const *)a, *(const char *const *)b); }
+
+static void pick_clear(void) {
+	for (int i = 0; i < pick_count; i++) {
+		free(pick_names[i]);
+	}
+	pick_count = 0;
+	pick_built = 0;
+}
+
+static bool pick_add(const char *name) {
+	if (pick_count == pick_capacity) {
+		int grown = pick_capacity ? pick_capacity * 2 : 64;
+		char **names = realloc(pick_names, (size_t)grown * sizeof(*names));
+		if (names) {
+			pick_names = names;
+		}
+		bool *on = realloc(pick_on, (size_t)grown * sizeof(*on));
+		if (on) {
+			pick_on = on;
+		}
+		lv_obj_t **marks = realloc(pick_marks, (size_t)grown * sizeof(*marks));
+		if (marks) {
+			pick_marks = marks;
+		}
+		if (!names || !on || !marks) {
+			return false;
+		}
+		pick_capacity = grown;
+	}
+	pick_names[pick_count] = strdup(name);
+	if (!pick_names[pick_count]) {
+		return false;
+	}
+	pick_on[pick_count] = false;
+	pick_marks[pick_count] = NULL;
+	pick_count++;
+	return true;
+}
 
 // The folders at the root of the card, alphabetically: not the hidden ones,
 // not the ones a desktop leaves behind, and not Audiobooks or Podcast, which
 // the music scan never reads.
 static void pick_read_folders(void) {
-	pick_count = 0;
+	pick_clear();
 	DIR *dir = sd_root ? opendir(sd_root) : NULL;
 	if (!dir) {
 		return;
 	}
 	struct dirent *de;
-	while ((de = readdir(dir)) != NULL && pick_count < PICK_MAX) {
-		if (de->d_name[0] == '.' || playlist_is_junk_name(de->d_name) ||
-			strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0 ||
-			strcasecmp(de->d_name, PODCASTDL_FOLDER) == 0 || strlen(de->d_name) >= sizeof(pick_names[0])) {
+	while ((de = readdir(dir)) != NULL) {
+		if (de->d_name[0] == '.' || playlist_is_junk_name(de->d_name) || strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0 || strcasecmp(de->d_name, PODCASTDL_FOLDER) == 0) {
 			continue;
 		}
 		char path[768];
-		snprintf(path, sizeof(path), "%s/%s", sd_root, de->d_name);
+		if (snprintf(path, sizeof(path), "%s/%s", sd_root, de->d_name) >= (int)sizeof(path)) {
+			continue;
+		}
 		struct stat st;
 		if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
 			continue;
 		}
-		snprintf(pick_names[pick_count], sizeof(pick_names[0]), "%s", de->d_name);
-		pick_count++;
+		if (!pick_add(de->d_name)) {
+			break;
+		}
 	}
 	closedir(dir);
-	qsort(pick_names, (size_t)pick_count, sizeof(pick_names[0]), name_cmp);
+	if (pick_count > 1) {
+		qsort(pick_names, (size_t)pick_count, sizeof(pick_names[0]), name_cmp);
+	}
 }
 
 // Ticked: the folders saved last time, or every folder when nothing was saved.
 static void pick_load_selection(void) {
-	const char *saved = library_scan_folders();
+	int saved_count = 0;
+	char **saved = library_scan_folders(&saved_count);
 	for (int i = 0; i < pick_count; i++) {
-		pick_on[i] = !saved[0];
-	}
-	const char *p = saved;
-	while (*p) {
-		const char *end = strchr(p, '/');
-		size_t len = end ? (size_t)(end - p) : strlen(p);
-		for (int i = 0; i < pick_count; i++) {
-			if (strlen(pick_names[i]) == len && strncasecmp(pick_names[i], p, len) == 0) {
-				pick_on[i] = true;
-			}
+		pick_on[i] = saved_count == 0;
+		for (int j = 0; j < saved_count && !pick_on[i]; j++) {
+			pick_on[i] = strcasecmp(pick_names[i], saved[j]) == 0;
 		}
-		if (!end) {
-			break;
-		}
-		p = end + 1;
 	}
+	library_scan_folders_free(saved, saved_count);
 }
 
 static void pick_paint(void) {
 	int on = 0;
 	for (int i = 0; i < pick_count; i++) {
-		if (pick_marks[i]) {
+		if (i < pick_built && pick_marks[i]) {
 			lv_obj_set_style_image_opa(pick_marks[i], pick_on[i] ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
 		}
 		on += pick_on[i];
@@ -212,7 +247,10 @@ static void pick_cancel_cb(lv_event_t *e) {
 // Every folder ticked is the whole card, the files at its root included.
 static void pick_scan_cb(lv_event_t *e) {
 	(void)e;
-	const char *chosen[PICK_MAX];
+	const char **chosen = malloc((size_t)(pick_count ? pick_count : 1) * sizeof(*chosen));
+	if (!chosen) {
+		return;
+	}
 	int count = 0;
 	for (int i = 0; i < pick_count; i++) {
 		if (pick_on[i]) {
@@ -220,10 +258,12 @@ static void pick_scan_cb(lv_event_t *e) {
 		}
 	}
 	if (pick_count > 0 && count == 0) {
+		free(chosen);
 		toast_error(tr("libraryscan_choose_a_folder"));
 		return;
 	}
 	library_scan_folders_set(chosen, count == pick_count ? 0 : count);
+	free(chosen);
 	pick_close();
 	switch_screen(libraryscan_screen);
 }
@@ -244,6 +284,8 @@ static lv_obj_t *pick_button(lv_obj_t *parent, const char *text, bool accent, lv
 	lv_obj_center(label);
 	return btn;
 }
+
+static void pick_scroll_cb(lv_event_t *e);
 
 static void pick_build(void) {
 	gui_config_t *cfg = pick_cfg;
@@ -299,6 +341,7 @@ static void pick_build(void) {
 	lv_obj_set_flex_flow(pick_list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_scroll_dir(pick_list, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(pick_list, LV_SCROLLBAR_MODE_AUTO);
+	lv_obj_add_event_cb(pick_list, pick_scroll_cb, LV_EVENT_SCROLL, NULL);
 
 	lv_obj_t *buttons = lv_obj_create(card);
 	lv_obj_remove_style_all(buttons);
@@ -309,10 +352,10 @@ static void pick_build(void) {
 	pick_scan_btn = pick_button(buttons, "scan", true, pick_scan_cb);
 }
 
-static void pick_fill(void) {
-	lv_obj_clean(pick_list);
-	memset(pick_marks, 0, sizeof(pick_marks));
-	for (int i = 0; i < pick_count; i++) {
+// Makes up to `n` more rows, after the ones already there.
+static void pick_append(int n) {
+	int last = pick_built + n < pick_count ? pick_built + n : pick_count;
+	for (int i = pick_built; i < last; i++) {
 		lv_obj_t *row = lv_btn_create(pick_list);
 		lv_obj_set_size(row, lv_pct(100), 60);
 		lv_obj_set_style_bg_color(row, theme()->surface_pressed, 0);
@@ -343,7 +386,23 @@ static void pick_fill(void) {
 		lv_obj_add_style(pick_marks[i], &theme_style_icon, 0);
 		lv_obj_set_style_image_recolor(pick_marks[i], theme()->accent, 0);
 		lv_obj_set_style_image_recolor_opa(pick_marks[i], LV_OPA_COVER, 0);
+		lv_obj_set_style_image_opa(pick_marks[i], pick_on[i] ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
 	}
+	pick_built = last;
+}
+
+// Within a screenful of the last row made, the next batch.
+static void pick_scroll_cb(lv_event_t *e) {
+	(void)e;
+	if (pick_built < pick_count && lv_obj_get_scroll_bottom(pick_list) < lv_obj_get_height(pick_list)) {
+		pick_append(PICK_BATCH);
+	}
+}
+
+static void pick_fill(void) {
+	lv_obj_clean(pick_list);
+	pick_built = 0;
+	pick_append(PICK_BATCH);
 }
 
 void libraryscan_choose_folders(void) {

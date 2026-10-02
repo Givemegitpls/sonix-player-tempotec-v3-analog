@@ -1097,6 +1097,21 @@ static void *reader_thread(void *arg) {
 				c->reply_arrived = true;
 				c->reply_ok = m.type == DBUS_TYPE_METHOD_RETURN;
 				set_str(c->reply_error, sizeof(c->reply_error), m.type == DBUS_TYPE_ERROR ? m.member : "");
+				// The name alone says little: bluez answers almost every
+				// failed Connect with org.bluez.Error.Failed, and what tells
+				// a speaker that is switched off ("Host is down") from one
+				// that refused the link is the text that comes with it.
+				// Appended after the name, so a caller looking for the name
+				// with strstr() still finds it.
+				if (m.type == DBUS_TYPE_ERROR && m.signature[0] == 's') {
+					dbus_reader_t er;
+					dbus_reader_init(&er, &m);
+					char text[96];
+					if (dbus_r_string(&er, text, sizeof(text)) && text[0]) {
+						size_t used = strlen(c->reply_error);
+						snprintf(c->reply_error + used, sizeof(c->reply_error) - used, ": %s", text);
+					}
+				}
 				if (grow_buffer(&c->reply_body, &c->reply_body_size, m.body_len ? m.body_len : 1)) {
 					c->reply_body_len = m.body_len;
 					memcpy(c->reply_body, m.body, m.body_len);

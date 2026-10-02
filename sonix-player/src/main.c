@@ -30,6 +30,7 @@
 #include "src/system/audio/audio.h"
 #include "src/system/library/audiobookdb.h"
 #include "src/system/bluetooth/bluetooth.h"
+#include "src/system/bluetooth/btlog.h"
 #include "src/system/bluetooth/btplayer.h"
 #include "src/system/device/clock.h"
 #include "src/system/device/factoryreset.h"
@@ -2051,6 +2052,7 @@ int main(int argc, char **argv) {
 
 #ifndef HOST_BUILD
 	logging_attach_sd(storage_sd_root());
+	btlog_card_attach(storage_sd_root());
 	// Now that the log is on the card: whatever the kernel said about the
 	// previous run, which is the only place a SIGKILL leaves a trace.
 	logging_report_previous_run();
@@ -2199,6 +2201,9 @@ int main(int argc, char **argv) {
 	// and returns at once; if a switch was on, the bring-up happens on that
 	// worker while the interface carries on drawing.
 	wifi_init();
+	// Before the radio, so a bring-up that fails is in the Bluetooth log from
+	// its first line.
+	btlog_init();
 	bluetooth_init();
 	// Its worker starts here but stays idle: no socket is opened until the
 	// switch is on, which the same config read decides.

@@ -120,8 +120,10 @@ bool btstack_pair(const char *address, int timeout_ms);
 
 // Device1.Connect(): every profile the device offers. Returns when the ACL link
 // is up, which is NOT the same as the audio being ready -- see
-// btstack_audio_sink().
-bool btstack_connect(const char *address, int timeout_ms);
+// btstack_audio_sink(). A refusal is written to `err_out` as bluez gave it, the
+// name and then its text ("org.bluez.Error.Failed: Host is down"); empty when
+// no answer came at all. `err_out` may be NULL.
+bool btstack_connect(const char *address, int timeout_ms, char *err_out, size_t err_size);
 // Only the headphones' A2DP stream, on a device whose link is already up: what
 // is left to bring back after bluealsa has been restarted under it.
 bool btstack_connect_a2dp(const char *address, int timeout_ms);
