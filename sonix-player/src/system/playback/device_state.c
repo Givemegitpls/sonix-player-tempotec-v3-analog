@@ -8,6 +8,8 @@
 #include "src/system/library/library.h"
 #include "src/system/library/metadata.h"
 #include "src/system/playback/playlist.h"
+#include "src/system/streaming/podcast.h"
+#include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/streaming/radio.h"
@@ -464,6 +466,19 @@ void device_state_note_storage_gone(void) {
 	interrupted_pos = state.progress_current_secs;
 }
 
+// A book plays at the audiobook speed, an episode at the podcast speed, and
+// anything else at 1.0. Set at every track change and not only from the
+// pop-over, so a song that follows a book at 1.5x is not also played at 1.5x.
+static void apply_track_speed(void) {
+	if (audiobook_is_playing()) {
+		audio_set_speed(audiobook_speed());
+	} else if (podcastcache_is_episode(current_metadata_file)) {
+		audio_set_speed(podcast_speed());
+	} else {
+		audio_set_speed(1.0);
+	}
+}
+
 // Loads metadata for `filepath` and starts playback, without touching the
 // folder queue. Shared by fresh selections, queue advances, and replays.
 //
@@ -495,10 +510,7 @@ static void load_and_play_at(const char *filepath, double position) {
 	audiobook_track_changed(current_metadata_file);
 	// The ReplayGain the tags asked for, worked out once per track.
 	replaygain_load(&current_metadata);
-	// A book plays at its chosen speed; anything else at 1.0. Set here rather
-	// than at the pop-over alone, so a song started after a book at 1.5x is
-	// not also played at 1.5x.
-	audio_set_speed(audiobook_is_playing() ? audiobook_speed() : 1.0);
+	apply_track_speed();
 
 	// The file may not be there yet: with Qobuz and Tidal the queue holds the
 	// whole album and playback can reach a track before its download does. The
@@ -539,7 +551,7 @@ static void load_paused(const char *filepath) {
 	metadata_read(current_metadata_file, &current_metadata);
 	audiobook_track_changed(current_metadata_file);
 	replaygain_load(&current_metadata);
-	audio_set_speed(audiobook_is_playing() ? audiobook_speed() : 1.0);
+	apply_track_speed();
 
 	audio_play_paused(current_metadata_file, 0);
 	audiobook_suppress_rewind_once();
@@ -580,10 +592,7 @@ void device_state_restore_file(const char *filepath, double position) {
 	audiobook_track_changed(current_metadata_file);
 	// The ReplayGain the tags asked for, worked out once per track.
 	replaygain_load(&current_metadata);
-	// A book plays at its chosen speed; anything else at 1.0. Set here rather
-	// than at the pop-over alone, so a song started after a book at 1.5x is
-	// not also played at 1.5x.
-	audio_set_speed(audiobook_is_playing() ? audiobook_speed() : 1.0);
+	apply_track_speed();
 
 	audio_play_paused(current_metadata_file, position);
 	device_state_remember_restored(current_metadata_file, position);
@@ -660,7 +669,7 @@ void device_state_restore_index(library_index_t *ix, int start_index, const char
 	metadata_read(current_metadata_file, &current_metadata);
 	audiobook_track_changed(current_metadata_file);
 	replaygain_load(&current_metadata);
-	audio_set_speed(audiobook_is_playing() ? audiobook_speed() : 1.0);
+	apply_track_speed();
 
 	// The queue just loaded is the saved one: do not write it straight back.
 	saved_queue_revision = playlist_revision();
@@ -710,10 +719,7 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 	audiobook_track_changed(current_metadata_file);
 	// The ReplayGain the tags asked for, worked out once per track.
 	replaygain_load(&current_metadata);
-	// A book plays at its chosen speed; anything else at 1.0. Set here rather
-	// than at the pop-over alone, so a song started after a book at 1.5x is
-	// not also played at 1.5x.
-	audio_set_speed(audiobook_is_playing() ? audiobook_speed() : 1.0);
+	apply_track_speed();
 
 	// The queue just loaded is the saved one: do not write it straight back.
 	saved_queue_revision = playlist_revision();
@@ -754,10 +760,7 @@ void device_state_play_file_at(const char *filepath, double position) {
 	audiobook_track_changed(current_metadata_file);
 	// The ReplayGain the tags asked for, worked out once per track.
 	replaygain_load(&current_metadata);
-	// A book plays at its chosen speed; anything else at 1.0. Set here rather
-	// than at the pop-over alone, so a song started after a book at 1.5x is
-	// not also played at 1.5x.
-	audio_set_speed(audiobook_is_playing() ? audiobook_speed() : 1.0);
+	apply_track_speed();
 
 	audio_play_at(current_metadata_file, position);
 

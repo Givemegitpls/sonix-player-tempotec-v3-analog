@@ -62,11 +62,25 @@
 // ---------------------------------------------------------------------------
 
 #define PODCAST_LIMIT PODCAST_PAGE_LIMIT
-// How many entries are held at most: four pages, like the radio stations. The
-// catalogue has no offset, so "another page" here means asking for the same
-// list with a higher limit; past this maximum the list really does stop,
-// because every entry is static memory on a device with 64 MB in all.
-#define PODCAST_MAX_HELD (4 * PODCAST_LIMIT)
+// How many entries are held at most. The catalogue has no offset, so "another
+// page" here means asking for the same list with a higher limit.
+//
+// A podcast's episodes go up to the catalogue's own maximum per request, 1000.
+// Search results and the chart stop at four pages, like the radio stations.
+// The arrays are static and sized for the larger of the two; their pages only
+// take memory once entries are written into them.
+#define PODCAST_MAX_HELD 1000
+#define PODCAST_FEEDS_MAX (4 * PODCAST_LIMIT)
+
+// Episodes are asked for in steps of this many: the first step when a podcast
+// is opened, another each time the scroll nears the bottom. Each step repeats
+// the whole request with the higher limit.
+#define PODCAST_EPISODES_STEP 100
+
+// The longest queue a tapped episode builds: it and the ones after it in the
+// list. Each queued episode that is not on the card yet gets its sidecar
+// written at the tap.
+#define PODCAST_QUEUE_MAX (4 * PODCAST_LIMIT)
 
 lv_obj_t *podcast_screen;
 lv_obj_t *podcast_list_screen; // the same object: see podcastpage.h
@@ -1180,7 +1194,7 @@ static void maybe_load_more(void) {
 	// From the LIMIT asked for last time, not from the cleaned-up count: the
 	// discards (episodes with no audio) must not shift the step of the next
 	// request.
-	job.want = result_want + PODCAST_LIMIT;
+	job.want = result_want + (current_list_job.kind == JOB_EPISODES ? PODCAST_EPISODES_STEP : PODCAST_LIMIT);
 	job.more = true;
 	start_worker();
 	submit(&job);
@@ -1443,7 +1457,8 @@ static void job_done_cb(void *user) {
 	// Come back short, the list has ended and nothing more is asked for. "My
 	// podcasts" is entirely on the card and never pages.
 	page_loading = false;
-	page_more = result_kind != JOB_FOLLOWED && result_raw >= result_want && result_count < PODCAST_MAX_HELD;
+	page_more = result_kind != JOB_FOLLOWED && result_raw >= result_want &&
+				result_count < (result_kind == JOB_EPISODES ? PODCAST_MAX_HELD : PODCAST_FEEDS_MAX);
 	list_nav_commit();
 
 	// The page only changes if the viewer is still where it expects to be.
@@ -1514,8 +1529,9 @@ static void *worker_main(void *arg) {
 		if (want <= 0) {
 			want = PODCAST_LIMIT;
 		}
-		if (want > PODCAST_MAX_HELD) {
-			want = PODCAST_MAX_HELD;
+		int cap = job.kind == JOB_EPISODES || job.kind == JOB_PLAY ? PODCAST_MAX_HELD : PODCAST_FEEDS_MAX;
+		if (want > cap) {
+			want = cap;
 		}
 		bool grow = job.more;
 		int kept = result_count;
@@ -1564,9 +1580,9 @@ static void *worker_main(void *arg) {
 				// queue reaches one that is not there yet.
 				memcpy(queued_episodes, result_episodes, sizeof(result_episodes[0]) * (size_t)n);
 				queued_count = n;
-				// Everything the arrays hold was asked for, so what came back is
-				// the whole feed: there is nothing left to go and get.
-				queued_complete = want >= PODCAST_MAX_HELD;
+				// Short of the limit asked for, or at the most the arrays hold:
+				// what came back is the whole feed.
+				queued_complete = want >= PODCAST_MAX_HELD || result_raw < want;
 			}
 			break;
 		}
@@ -1585,8 +1601,8 @@ static void *worker_main(void *arg) {
 			}
 
 			// The queue is the rest of the podcast, and the list it is built
-			// from is already the whole feed: JOB_EPISODES asks for all of it
-			// when the podcast is opened.
+			// from already holds its first step: JOB_EPISODES asks for
+			// PODCAST_EPISODES_STEP episodes when the podcast is opened.
 			//
 			// This is the fallback for the one case where it is not -- a queue
 			// resumed after a restart, or an episode reached from somewhere
@@ -1597,10 +1613,10 @@ static void *worker_main(void *arg) {
 			// The tapped episode is found again by its id rather than kept at
 			// its index: the longer list is the same list with more of it, but
 			// the id is what makes that certain.
-			if (!queued_complete && queued_count < PODCAST_MAX_HELD && queued_episodes[index].feed_id > 0) {
+			if (!queued_complete && queued_count < PODCAST_EPISODES_STEP && queued_episodes[index].feed_id > 0) {
 				long long wanted_id = queued_episodes[index].id;
 				long long feed = queued_episodes[index].feed_id;
-				int n = podcast_episodes(feed, result_episodes, PODCAST_MAX_HELD);
+				int n = podcast_episodes(feed, result_episodes, PODCAST_EPISODES_STEP);
 				if (n > queued_count) {
 					memcpy(queued_episodes, result_episodes, sizeof(result_episodes[0]) * (size_t)n);
 					queued_count = n;
@@ -1608,7 +1624,7 @@ static void *worker_main(void *arg) {
 					// The list on screen has grown too: it is the same list.
 					result_count = n;
 					result_from = 0;
-					result_want = PODCAST_MAX_HELD;
+					result_want = PODCAST_EPISODES_STEP;
 
 					int found = -1;
 					for (int i = 0; i < n; i++) {
@@ -1639,10 +1655,10 @@ static void *worker_main(void *arg) {
 			// The queue: this episode and the ones AFTER it in the list, that is,
 			// going back in time. The others are not downloaded now -- they come
 			// down when their turn arrives (see podcastpage_prepare_track).
-			static char paths[PODCAST_MAX_HELD][512];
-			static const char *path_ptr[PODCAST_MAX_HELD];
+			static char paths[PODCAST_QUEUE_MAX][512];
+			static const char *path_ptr[PODCAST_QUEUE_MAX];
 			int count = 0;
-			for (int i = index; i < queued_count && count < PODCAST_MAX_HELD; i++) {
+			for (int i = index; i < queued_count && count < PODCAST_QUEUE_MAX; i++) {
 				if (i == index) {
 					snprintf(paths[count], sizeof(paths[0]), "%s", path);
 				} else if (!podcastcache_find(queued_episodes[i].id, paths[count], sizeof(paths[0]))) {
@@ -1733,15 +1749,8 @@ static void row_clicked_cb(lv_event_t *e) {
 
 	job.kind = JOB_EPISODES;
 	job.id = result_feeds[index].id;
-	// The whole feed at once, not the first page.
-	//
-	// The queue a tapped episode builds is "this one and the ones after it", so
-	// a page-sized list would stop the queue at the end of the page. Fetching
-	// the rest at play time instead would put a whole HTTPS round trip between
-	// the tap and the first sound, which is the wait the user is watching.
-	// Asked here, it is the same single request the veil is already up for, and
-	// by the time anything is tapped the queue is complete.
-	job.want = PODCAST_MAX_HELD;
+	// The first step; the rest comes as the list is scrolled.
+	job.want = PODCAST_EPISODES_STEP;
 	snprintf(job.text, sizeof(job.text), "%s", result_feeds[index].title);
 	run(&job);
 }
@@ -2702,6 +2711,7 @@ bool podcastpage_open_feed(long long feed_id, const char *title) {
 	job_t job = {0};
 	job.kind = JOB_EPISODES;
 	job.id = feed_id;
+	job.want = PODCAST_EPISODES_STEP;
 	snprintf(job.text, sizeof(job.text), "%s", title && title[0] ? title : tr("podcasts"));
 	run(&job);
 	return true;

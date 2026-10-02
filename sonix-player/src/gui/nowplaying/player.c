@@ -460,9 +460,9 @@ static void apply_audiobook_mode(bool book, bool podcast) {
 	// over a half-minute sponsor read. They are two separate settings on two
 	// separate pages (podcast settings, and Audiobooks -> change controls).
 	//
-	// Nothing else carries over: a podcast has no chapters, is not a single
-	// file, and sits in a real queue of episodes. Chapters, speed and the book
-	// icon stay with books.
+	// Speed carries over too, as a setting of its own. Nothing else does: a
+	// podcast has no chapters, is not a single file, and sits in a real queue
+	// of episodes. Chapters and the book icon stay with books.
 	bool skips = book || podcast;
 	int back = podcast && !book ? podcast_skip_back() : audiobook_skip_back();
 	int forward = podcast && !book ? podcast_skip_forward() : audiobook_skip_forward();
@@ -526,7 +526,7 @@ static void apply_audiobook_mode(bool book, bool podcast) {
 	}
 
 	if (speed_btn_obj) {
-		if (book) {
+		if (book || podcast) {
 			lv_obj_remove_flag(speed_btn_obj, LV_OBJ_FLAG_HIDDEN);
 			update_speed_button();
 		} else {
@@ -3467,32 +3467,46 @@ static void update_format_label(const device_state_t *state) {
 	lv_label_set_text_fmt(format_label, "%d/%g %s", bits > 0 ? bits : 16, state->stream_sample_rate / 1000.0, name);
 }
 
-// The gauge wears the accent colour whenever the book is not at normal speed,
-// the way the repeat glyph it stands in for marks a mode that is on. That is
-// the only question the button has to answer at a glance: is this playing at
-// the speed it was read at?
+// The speed setting of what is playing: an episode has its own, apart from the
+// books'.
+static bool speed_is_podcast(void) { return podcast_mode && !audiobook_mode; }
+
+static int speed_current_permille(void) {
+	return speed_is_podcast() ? podcast_speed_permille() : audiobook_speed_permille();
+}
+
+// The gauge wears the accent colour whenever the book or episode is not at
+// normal speed, the way the repeat glyph it stands in for marks a mode that is
+// on.
 static void update_speed_button(void) {
 	if (!speed_btn_icon) {
 		return;
 	}
-	bool normal = audiobook_speed_permille() == AUDIOBOOK_SPEED_NORMAL;
+	bool normal = speed_current_permille() == AUDIOBOOK_SPEED_NORMAL;
 	lv_obj_set_style_image_recolor(speed_btn_icon, normal ? lv_color_make(100, 100, 100) : theme()->accent, 0);
 	lv_obj_set_style_image_recolor_opa(speed_btn_icon, LV_OPA_COVER, 0);
 }
 
 static void speed_pick(void *user) {
 	int permille = (int)(intptr_t)user;
-	audiobook_set_speed_permille(permille);
+	if (speed_is_podcast()) {
+		podcast_set_speed_permille(permille);
+		permille = podcast_speed_permille();
+	} else {
+		audiobook_set_speed_permille(permille);
+		permille = audiobook_speed_permille();
+	}
 	// Straight through to the playback thread: it picks the factor up on the
 	// next block, so the change is heard within a period rather than at the
 	// next track.
-	audio_set_speed(audiobook_speed());
+	audio_set_speed((double)permille / 1000.0);
 	update_speed_button();
 }
 
 static void speed_btn_event_cb(lv_event_t *e) {
-	static const int CHOICES[] = {500, 1000, 1500, 2000};
-	static const char *const LABELS[] = {"0.5x", "1.0x", "1.5x", "2.0x"};
+	static const int CHOICES[] = {500, 750, 1000, 1250, 1500, 1750, 2000};
+	static const char *const LABELS[] = {"0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "1.75x", "2.0x"};
+	enum { CHOICE_COUNT = sizeof(CHOICES) / sizeof(CHOICES[0]) };
 
 	// Zeroed, not just filled field by field: popover_item_t also has
 	// `checked`, and stack garbage in it puts a tick on a random entry -- along
@@ -3501,15 +3515,15 @@ static void speed_btn_event_cb(lv_event_t *e) {
 	// The tick belongs here for the same reason it does in the Qobuz quality
 	// menu: this is a choice between alternatives, not a list of actions, so
 	// the current one has to be visible.
-	popover_item_t items[4] = {0};
-	int current = audiobook_speed_permille();
-	for (int i = 0; i < 4; i++) {
+	popover_item_t items[CHOICE_COUNT] = {0};
+	int current = speed_current_permille();
+	for (int i = 0; i < CHOICE_COUNT; i++) {
 		items[i].label = LABELS[i];
 		items[i].action = speed_pick;
 		items[i].user = (void *)(intptr_t)CHOICES[i];
 		items[i].checked = CHOICES[i] == current;
 	}
-	popover_show(lv_event_get_current_target(e), items, 4);
+	popover_show(lv_event_get_current_target(e), items, CHOICE_COUNT);
 }
 
 // Updates the repeat-mode button's icon and colour to reflect the active mode.

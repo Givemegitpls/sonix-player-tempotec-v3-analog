@@ -7,7 +7,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
 
-#define POPOVER_MAX_ITEMS 6
+#define POPOVER_MAX_ITEMS 7
 #define POPOVER_WIDTH 284
 #define POPOVER_ROW_HEIGHT 62
 #define POPOVER_RADIUS 16

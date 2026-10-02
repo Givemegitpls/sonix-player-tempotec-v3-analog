@@ -114,6 +114,12 @@ int podcast_skip_forward(void);
 void podcast_set_skip_back(int seconds);
 void podcast_set_skip_forward(int seconds);
 
+// Playback speed for episodes, in thousandths (1000 is normal), apart from the
+// audiobook one in audiobook.h. Same range, [podcast] speed in the config.
+int podcast_speed_permille(void);
+void podcast_set_speed_permille(int permille);
+double podcast_speed(void);
+
 // Stop at the end of the episode: when this one finishes, the queue stays where
 // it is instead of starting the next. The audiobook's chapter-end switch under
 // another name, and for the same listener -- somebody following one thing at a
