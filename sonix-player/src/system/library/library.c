@@ -2089,13 +2089,14 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 		return;
 	}
 
-	// One artist's records, rather than one artist's tracks: the album list
-	// narrowed to the albums that artist appears on. ALBUM_GROUP_TABLE holds the
-	// albums and their sort keys, and which of them belong to an artist is a
-	// question for MEDIA_TABLE -- answered off media_artist_idx, once, so the
-	// subquery is a lookup and not a scan.
+	// One artist's or one genre's records, rather than their tracks: the album
+	// list narrowed to the albums with at least one track of theirs.
+	// ALBUM_GROUP_TABLE holds the albums and their sort keys, and which of them
+	// qualify is a question for MEDIA_TABLE -- answered off media_artist_idx,
+	// media_album_artist_idx or media_genre_sort_idx, once, so the subquery is
+	// a lookup and not a scan.
 	if (kind == LIBRARY_LIST_ALBUMS && col && value &&
-		(filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST)) {
+		(filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST || filter == LIBRARY_FILTER_GENRE)) {
 		snprintf(sql, size,
 				 "SELECT %s FROM ALBUM_GROUP_TABLE WHERE album <> ''"
 				 " AND (album, album_key) IN (SELECT album, albumkey(album_artist, path) FROM MEDIA_TABLE WHERE %s)"
@@ -2228,11 +2229,11 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 
 	const char *col = filter_column(filter);
 	// The filtered lists take a bound value: a track list narrowed to one
-	// album/artist/genre, and an album list narrowed to one artist.
+	// album/artist/genre, and an album list narrowed to one artist or genre.
 	bool bound = col && value &&
 				 (kind == LIBRARY_LIST_TRACKS ||
-				  (kind == LIBRARY_LIST_ALBUMS &&
-				   (filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST)));
+				  (kind == LIBRARY_LIST_ALBUMS && (filter == LIBRARY_FILTER_ARTIST ||
+												   filter == LIBRARY_FILTER_ALBUM_ARTIST || filter == LIBRARY_FILTER_GENRE)));
 
 	char count_sql[512];
 	char rows_sql[512];
