@@ -123,6 +123,10 @@ int radio_last_raw_count(void);
 bool radio_store_open(const char *sd_root);
 void radio_store_close(void);
 
+// Closes and reopens the store when radio.db was deleted or replaced under the
+// open handle.
+void radio_store_reopen_if_replaced(void);
+
 int radio_fav_count(void);
 bool radio_fav_get(int index, radio_station_t *out);
 bool radio_fav_contains(const char *uuid);

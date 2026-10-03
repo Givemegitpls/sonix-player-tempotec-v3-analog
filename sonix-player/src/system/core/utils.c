@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -95,6 +96,19 @@ bool file_matches(const char *filename, const char *expected) {
 	buffer[strcspn(buffer, "\r\n")] = '\0';
 
 	return strcmp(buffer, expected) == 0;
+}
+
+void file_identity_read(const char *path, file_identity_t *out) {
+	struct stat st;
+	out->exists = path && path[0] && stat(path, &st) == 0;
+	out->dev = out->exists ? st.st_dev : 0;
+	out->ino = out->exists ? st.st_ino : 0;
+}
+
+bool file_identity_changed(const char *path, const file_identity_t *was) {
+	file_identity_t now;
+	file_identity_read(path, &now);
+	return now.exists != was->exists || now.dev != was->dev || now.ino != was->ino;
 }
 
 bool has_extension(const char *name, const char *ext) {

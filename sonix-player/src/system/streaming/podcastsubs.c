@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "src/system/core/utils.h"
 #include "src/system/db/sqlite3.h"
 
 // Followed podcasts, in an SQLite database: <card>/.local/podcast.db.
@@ -29,6 +30,8 @@ static char db_path[512];
 static char legacy_path[512];
 static podcast_feed_t subs[PODCASTSUBS_MAX];
 static int subs_count;
+// Which file the list in memory was last read from or written to.
+static file_identity_t db_identity;
 
 static bool exec(sqlite3 *db, const char *sql) {
 	char *error = NULL;
@@ -101,6 +104,7 @@ static void save(void) {
 	}
 	exec(db, "COMMIT");
 	sqlite3_close(db);
+	file_identity_read(db_path, &db_identity);
 }
 
 static void load(void) {
@@ -129,6 +133,7 @@ static void load(void) {
 		sqlite3_finalize(stmt);
 	}
 	sqlite3_close(db);
+	file_identity_read(db_path, &db_identity);
 }
 
 // The legacy podcast-subs.ini: id|title|author|cover, one line per podcast,
@@ -225,6 +230,22 @@ void podcastsubs_set_root(const char *sd_root) {
 	snprintf(legacy_path, sizeof(legacy_path), "%.480s/podcast-subs.ini", dir);
 	load();
 	import_legacy();
+}
+
+void podcastsubs_reload_if_replaced(void) {
+	if (!db_path[0] || !file_identity_changed(db_path, &db_identity)) {
+		return;
+	}
+	printf("podcastsubs: %s was deleted or replaced; reading it again\n", db_path);
+	// The folder may have gone with it.
+	char dir[sizeof(db_path)];
+	snprintf(dir, sizeof(dir), "%s", db_path);
+	char *slash = strrchr(dir, '/');
+	if (slash) {
+		*slash = '\0';
+		mkdir(dir, 0777);
+	}
+	load();
 }
 
 int podcastsubs_count(void) { return subs_count; }

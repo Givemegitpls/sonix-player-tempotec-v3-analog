@@ -42,6 +42,10 @@
 static sqlite3 *db;
 static pthread_mutex_t db_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// The file the index was opened from, and which file that was.
+static char db_file[512];
+static file_identity_t db_identity;
+
 // Bumped whenever the row ids of AUDIOBOOK_TABLE may have moved: a scan empties
 // and refills it, a different card is a different set of books, and marking one
 // finished changes which rows the finished list names. A handle built before
@@ -180,7 +184,30 @@ bool audiobookdb_open(const char *db_path) {
 	__atomic_add_fetch(&card_epoch, 1, __ATOMIC_RELEASE);
 	pthread_mutex_unlock(&db_lock);
 
+	snprintf(db_file, sizeof(db_file), "%s", db_path);
+	file_identity_read(db_path, &db_identity);
+
 	printf("audiobooks: %s open, %d books indexed%s\n", db_path, books, outdated ? " (an older scan)" : "");
+	return true;
+}
+
+bool audiobookdb_reopen_if_replaced(void) {
+	if (!db || !db_file[0] || !file_identity_changed(db_file, &db_identity)) {
+		return false;
+	}
+
+	char path[sizeof(db_file)];
+	snprintf(path, sizeof(path), "%s", db_file);
+	printf("audiobooks: %s was deleted or replaced; opening it again\n", path);
+
+	audiobookdb_close();
+	char *slash = strrchr(path, '/');
+	if (slash) {
+		*slash = '\0';
+		mkdir(path, 0777);
+		*slash = '/';
+	}
+	audiobookdb_open(path);
 	return true;
 }
 

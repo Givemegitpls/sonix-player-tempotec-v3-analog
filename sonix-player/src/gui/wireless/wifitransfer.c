@@ -17,8 +17,10 @@
 #include "src/gui/wireless/wifisettings.h"
 #include "src/system/audio/audio.h"
 #include "src/system/core/lang.h"
+#include "src/system/library/library.h"
 #include "src/system/net/wifi.h"
 #include "src/system/device/led.h"
+#include "src/system/device/system.h"
 #include "src/system/net/wifitransfer.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/streaming/streamturn.h"
@@ -250,6 +252,14 @@ static void stop_playback_and_warn(void) {
 	gui_notify_popup(WT_STOP_PLAY);
 }
 
+// The browser may have changed the card while the server was up: deleted a
+// database, added music, taken some away. What changed is looked at the same
+// way as a card back from a computer.
+static void transfer_finished(void) {
+	storage_card_files_recheck();
+	library_card_returned(storage_sd_root());
+}
+
 static void set_transfer(bool on) {
 	if (on) {
 		// The page is written out when the server starts, so the colour has to
@@ -261,6 +271,9 @@ static void set_transfer(bool on) {
 
 	wifitransfer_set_enabled(on);
 	watchdog_ticks = 0;
+	if (!on) {
+		transfer_finished();
+	}
 
 	// The light follows the switch straight away. Left to the status bar's own
 	// poll it would be up to five seconds behind, which on a toggle reads as the
@@ -420,6 +433,7 @@ static void screen_unloaded_cb(lv_event_t *e) {
 	if (wifitransfer_get_enabled()) {
 		wifitransfer_set_enabled(false);
 		led_set_wifi_transfer(false);
+		transfer_finished();
 	}
 	wifi_set_status_poll_slow(false);
 }

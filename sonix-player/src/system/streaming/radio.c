@@ -7,6 +7,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdint.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -793,6 +794,9 @@ const char *radio_station_problem(const radio_station_t *station) {
 
 static pthread_mutex_t store_lock = PTHREAD_MUTEX_INITIALIZER;
 static sqlite3 *store;
+// The file the store was opened from, and which file that was.
+static char store_path[512];
+static file_identity_t store_identity;
 
 static const char *const STORE_SCHEMA[] = {
 	"CREATE TABLE IF NOT EXISTS FAVOURITES ("
@@ -865,9 +869,30 @@ bool radio_store_open(const char *sd_root) {
 		store_exec(STORE_SCHEMA[i]);
 	}
 
+	snprintf(store_path, sizeof(store_path), "%s", path);
+	file_identity_read(path, &store_identity);
+
 	printf("radio: %s open\n", path);
 	pthread_mutex_unlock(&store_lock);
 	return true;
+}
+
+void radio_store_reopen_if_replaced(void) {
+	pthread_mutex_lock(&store_lock);
+	bool replaced = store && store_path[0] && file_identity_changed(store_path, &store_identity);
+	pthread_mutex_unlock(&store_lock);
+	if (!replaced || !store_root[0]) {
+		return;
+	}
+
+	printf("radio: %s was deleted or replaced; opening it again\n", store_path);
+	radio_store_close();
+	char dir[sizeof(store_root) + 16];
+	snprintf(dir, sizeof(dir), "%s/.local", store_root);
+	mkdir(dir, 0777);
+	char root[sizeof(store_root)];
+	snprintf(root, sizeof(root), "%s", store_root);
+	radio_store_open(root);
 }
 
 void radio_store_close(void) {

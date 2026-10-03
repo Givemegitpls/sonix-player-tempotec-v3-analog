@@ -2,6 +2,7 @@
 
 #include <dirent.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -441,9 +442,86 @@ static lv_obj_t *make_button(lv_obj_t *parent, const char *text, lv_color_t colo
 	return button;
 }
 
+// ---------------------------------------------------------------------------
+// Detect changes: what the user is told about a run (see library_card_returned)
+//
+// A card with a spinner for as long as the run lasts -- the walk takes a while
+// on a full card, and a notice that turned up minutes after the card came back
+// would be a surprise -- then the outcome. A tap off the card puts it away; the
+// run carries on and the outcome still comes.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	library_update_event_t event;
+	int added;
+	int removed;
+} update_note_t;
+
+static void update_note_cb(void *user) {
+	update_note_t *note = user;
+	char text[160];
+
+	switch (note->event) {
+	case LIBRARY_UPDATE_LOOKING:
+		toast_busy_dismissable("libraryscan_looking_for_changes");
+		break;
+
+	case LIBRARY_UPDATE_ADDING:
+		if (toast_busy_showing()) {
+			if (note->added == 1) {
+				toast_busy_dismissable("libraryscan_adding_one_track");
+			} else {
+				snprintf(text, sizeof(text), tr("libraryscan_adding_d_tracks"), note->added);
+				toast_busy_dismissable(text);
+			}
+		}
+		break;
+
+	case LIBRARY_UPDATE_STOPPED:
+		toast_busy_end();
+		break;
+
+	case LIBRARY_UPDATE_FINISHED:
+		toast_busy_end();
+		if (note->added > 0 && note->removed > 0) {
+			snprintf(text, sizeof(text), tr("libraryscan_d_added_d_removed"), note->added, note->removed);
+			toast_success(text);
+		} else if (note->added == 1) {
+			toast_success("libraryscan_one_track_added");
+		} else if (note->added > 1) {
+			snprintf(text, sizeof(text), tr("libraryscan_d_tracks_added"), note->added);
+			toast_success(text);
+		} else if (note->removed == 1) {
+			toast_success("libraryscan_one_track_removed");
+		} else if (note->removed > 1) {
+			snprintf(text, sizeof(text), tr("libraryscan_d_tracks_removed"), note->removed);
+			toast_success(text);
+		} else {
+			toast_success("libraryscan_no_changes");
+		}
+		break;
+	}
+	free(note);
+}
+
+// On the scan thread: everything it says goes over to the interface thread.
+static void update_listener(library_update_event_t event, int added, int removed) {
+	update_note_t *note = malloc(sizeof(*note));
+	if (!note) {
+		return;
+	}
+	note->event = event;
+	note->added = added;
+	note->removed = removed;
+	if (!gui_post(update_note_cb, note)) {
+		free(note);
+	}
+}
+
 void libraryscan_init(gui_config_t *cfg) {
 	sd_root = cfg->sd_root_path;
 	pick_cfg = cfg;
+	library_set_update_listener(update_listener);
 
 	lv_obj_add_style(libraryscan_screen, &theme_style_screen, 0);
 

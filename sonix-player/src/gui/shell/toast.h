@@ -1,6 +1,8 @@
 #ifndef TOAST_H
 #define TOAST_H
 
+#include <stdbool.h>
+
 #include "src/gui/shell/gui.h"
 
 #include "lvgl/lvgl.h"
@@ -35,5 +37,12 @@ void toast_glyph(const lv_image_dsc_t *glyph, const char *text);
 // toast replaces it.
 void toast_busy(const char *text);
 void toast_busy_end(void);
+
+// The same card for work that goes on in the background whether or not
+// anybody waits for it: a tap off the card puts it away, and the work carries
+// on. toast_busy_showing() says whether it is still up -- put away by a tap,
+// it is not brought back.
+void toast_busy_dismissable(const char *text);
+bool toast_busy_showing(void);
 
 #endif /* TOAST_H */

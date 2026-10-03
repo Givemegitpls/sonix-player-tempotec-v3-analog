@@ -24,6 +24,13 @@
 bool library_open(const char *db_path);
 void library_close(void);
 
+// Closes and reopens the index when its file is no longer the one that was
+// opened: deleted (from the file manager, the Wi-Fi transfer page) or replaced
+// by another under the same name. A deleted database stays readable through the
+// open handle, so without this the library would go on showing what it held.
+// Reopening a deleted one creates it empty. True when it reopened.
+bool library_reopen_if_replaced(void);
+
 // How many tracks the index currently holds.
 int library_track_count(void);
 
@@ -43,8 +50,40 @@ void library_scan_folders_free(char **names, int count);
 void library_scan_folders_set(const char *const *names, int count);
 
 // Starts a scan of `root`, wiping whatever was indexed before. Returns false
-// if a scan is already running or the database is not open.
+// if a scan is already running or the database is not open. A Detect changes
+// run in progress is stopped first: the scan does everything it would.
 bool library_scan_start(const char *root);
+
+// "Detect changes": when the card comes back -- put in again, returned by a
+// computer, or left by the Wi-Fi transfer -- the index is brought up to date
+// without emptying it. The folders chosen for the scan are walked once: the
+// tracks whose file the walk did not meet are taken out, and only the files
+// the index does not have are read and added.
+//
+// Off by default, remembered in [library] detect_changes. Nothing happens on a
+// library that was never scanned: building it is the scan's job.
+bool library_detect_changes(void);
+void library_set_detect_changes(bool on);
+
+// Called wherever the card is back and the index reopened. Starts the run above
+// on the scan thread when the setting is on and nothing is scanning, and says
+// whether it did: its notice is then about the card too, and the caller's own
+// "card is back" notice would only cover it.
+bool library_card_returned(const char *root);
+
+// Told about a Detect changes run: LOOKING as soon as it is asked for, on the
+// thread that asked; then, on the scan thread, ADDING with the number of new
+// files when there are some and they are about to be read, and at the end
+// either FINISHED with the tracks that went in and came out (both zero when
+// nothing changed) or STOPPED when it was cut short with nothing done.
+typedef enum {
+	LIBRARY_UPDATE_LOOKING,
+	LIBRARY_UPDATE_ADDING,
+	LIBRARY_UPDATE_FINISHED,
+	LIBRARY_UPDATE_STOPPED,
+} library_update_event_t;
+typedef void (*library_update_listener_t)(library_update_event_t event, int added, int removed);
+void library_set_update_listener(library_update_listener_t listener);
 
 // Whether there is an index to ask. False while the card is handed to a
 // computer over USB -- the export closes the database -- while the card is out,

@@ -26,6 +26,7 @@
 #include "src/gui/shell/toast.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
+#include "src/system/device/system.h"
 #include "src/system/playback/playlist.h"
 
 lv_obj_t *filespage_screen;
@@ -539,6 +540,7 @@ static void op_finished(void *user) {
 		gui_notify_popup(pending_op == OP_MOVE ? "files_could_not_move_it" : "files_could_not_copy_it");
 	}
 	pending_op = OP_NONE;
+	storage_card_files_recheck(); // a database may have been moved away
 	rebuild();
 }
 
@@ -619,6 +621,9 @@ static void delete_confirmed(void *user) {
 	} else {
 		gui_notify_popup("files_could_not_delete_it");
 	}
+	// Whatever was deleted, if it was one of the player's databases -- or the
+	// folder holding them -- the open copy has to let go of it.
+	storage_card_files_recheck();
 	rebuild();
 }
 
@@ -907,6 +912,7 @@ static void name_accept_cb(lv_event_t *e) {
 
 	name_layer_hide();
 	if (ok) {
+		storage_card_files_recheck(); // a renamed database is a missing one
 		rebuild();
 	}
 }

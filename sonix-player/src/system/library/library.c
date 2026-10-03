@@ -328,6 +328,22 @@ static pthread_mutex_t scan_folder_lock = PTHREAD_MUTEX_INITIALIZER;
 // the switch; see library_set_log_database.
 static bool scan_log_files;
 
+// What the scan thread is doing: building the index from nothing, or adding
+// the files it does not have yet (Detect changes, see library_card_returned).
+static volatile bool scan_update;
+
+// Added to the id column of every row written. Zero for a scan, which starts
+// from an empty table; past the highest id already there for an update, so the
+// new rows do not take numbers the old ones have.
+static int scan_id_base;
+
+static library_update_listener_t update_listener;
+
+// The file the index was opened from, and which file that was, so that a
+// delete or a replacement under the open handle can be noticed.
+static char db_file[512];
+static file_identity_t db_identity;
+
 // ---------------------------------------------------------------------------
 // collation
 // ---------------------------------------------------------------------------
@@ -1267,6 +1283,9 @@ bool library_open(const char *db_path) {
 
 	next_mount_serial();
 
+	snprintf(db_file, sizeof(db_file), "%s", db_path);
+	file_identity_read(db_path, &db_identity);
+
 	printf("library: %s open, %d tracks indexed\n", db_path, library_track_count());
 
 	sortkeys_start_backfill();
@@ -1275,6 +1294,7 @@ bool library_open(const char *db_path) {
 
 static void library_scan_stop_and_wait(void);
 static void finalize_statements(void);
+static void finalize_known(void);
 
 void library_close(void) {
 	// Waits, rather than just asking: a scan still in flight owns prepared
@@ -1290,6 +1310,7 @@ void library_close(void) {
 	pthread_mutex_lock(&db_lock);
 	if (db) {
 		finalize_statements();
+		finalize_known();
 		int rc = sqlite3_close(db);
 		if (rc != SQLITE_OK) {
 			fprintf(stderr, "library: sqlite3_close returned %d; the handle may be leaking\n", rc);
@@ -1298,6 +1319,28 @@ void library_close(void) {
 		bump_all_generations(); // every open list is now looking at nothing
 	}
 	pthread_mutex_unlock(&db_lock);
+}
+
+bool library_reopen_if_replaced(void) {
+	if (!library_is_open() || !db_file[0] || !file_identity_changed(db_file, &db_identity)) {
+		return false;
+	}
+
+	char path[sizeof(db_file)];
+	snprintf(path, sizeof(path), "%s", db_file);
+	printf("library: %s was deleted or replaced; opening it again\n", path);
+
+	library_close();
+	// The whole folder may have gone with it, and SQLite does not make the
+	// folders a path needs.
+	char *slash = strrchr(path, '/');
+	if (slash) {
+		*slash = '\0';
+		mkdir(path, 0777);
+		*slash = '/';
+	}
+	library_open(path);
+	return true;
 }
 
 static int count_rows(const char *sql) {
@@ -3026,7 +3069,7 @@ static void insert_track(const char *path, const char *filename, const song_meta
 	sqlite3_clear_bindings(stmt_track);
 
 	int column = 1;
-	sqlite3_bind_int(stmt_track, column++, scan_found + 1);						 // id
+	sqlite3_bind_int(stmt_track, column++, scan_id_base + scan_found + 1);		 // id
 	sqlite3_bind_text(stmt_track, column++, path, -1, SQLITE_TRANSIENT);		 // path
 	sqlite3_bind_text(stmt_track, column++, title, -1, SQLITE_TRANSIENT);		 // name
 	sqlite3_bind_text(stmt_track, column++, tags->album, -1, SQLITE_TRANSIENT);	 // album
@@ -3536,13 +3579,8 @@ static void scan_directory(const char *path, int depth) {
 	namelist_free(&subdirs);
 }
 
-static void *scan_thread_func(void *arg) {
-	(void)arg;
-
-	// One core: the scan reads thousands of files; at normal priority it
-	// would starve the interface for its whole duration.
-	thread_be_background("library scan");
-
+// A scan: the tables emptied, the card walked, every file read.
+static void full_scan_run(void) {
 	if (scan_folder_count > 0) {
 		printf("library: scanning %s, %d chosen folder(s)\n", scan_root, scan_folder_count);
 	} else {
@@ -3607,6 +3645,479 @@ static void *scan_thread_func(void *arg) {
 
 	printf("library: scan finished, %d tracks%s\n", scan_found,
 		   scan_db_failed ? " (database error)" : scan_cancel ? " (stopped early)" : "");
+}
+
+// ---------------------------------------------------------------------------
+// Detect changes: what came and what went
+//
+// One walk does both, over the same folders as a scan. Each file is looked up
+// in the index by its path -- an indexed lookup, no tag read, no stat() for a
+// name the directory already says is a file -- and either its rows are marked
+// seen or the file is collected as new. Then:
+//
+//   - what went: every track under the folders walked that was not seen;
+//   - what came: the collected files, read afterwards, which is also what lets
+//     the listener be told how many there are before the slow part starts.
+// ---------------------------------------------------------------------------
+
+static sqlite3_stmt *stmt_known_path;
+static sqlite3_stmt *stmt_known_sheet;
+
+// The row ids the walk found a file for.
+typedef struct {
+	int32_t *ids;
+	int count;
+	int capacity;
+} idlist_t;
+
+// Set when the walk could not read everything it should have: a folder that
+// would not open, or memory that ran out. Nothing is taken out after such a
+// walk -- a track it never reached would look exactly like one that is gone.
+static bool walk_incomplete;
+
+static void idlist_add(idlist_t *l, int32_t id) {
+	if (!l || walk_incomplete) {
+		return;
+	}
+	if (l->count == l->capacity) {
+		int grown = l->capacity ? l->capacity * 2 : 1024;
+		int32_t *bigger = realloc(l->ids, (size_t)grown * sizeof(*bigger));
+		if (!bigger) {
+			walk_incomplete = true;
+			return;
+		}
+		l->ids = bigger;
+		l->capacity = grown;
+	}
+	l->ids[l->count++] = id;
+}
+
+static int id_cmp(const void *a, const void *b) {
+	int32_t x = *(const int32_t *)a, y = *(const int32_t *)b;
+	return (x > y) - (x < y);
+}
+
+static void finalize_known(void) {
+	sqlite3_finalize(stmt_known_path);
+	sqlite3_finalize(stmt_known_sheet);
+	stmt_known_path = stmt_known_sheet = NULL;
+}
+
+static bool prepare_known(void) {
+	finalize_known();
+	// A sheet is indexed as its tracks, "<sheet>?track=N" (cue_virtual_path), so
+	// its rows are the ones between "<sheet>?track=" and the same prefix with
+	// '=' stepped up to '>': a range on media_path_idx, whatever number its
+	// first track has.
+	return sqlite3_prepare_v2(db, "SELECT rowid FROM MEDIA_TABLE WHERE path = ?1", -1, &stmt_known_path, NULL) ==
+			   SQLITE_OK &&
+		   sqlite3_prepare_v2(db, "SELECT rowid FROM MEDIA_TABLE WHERE path >= ?1 || '?track=' AND path < ?1 || '?track>'",
+							  -1, &stmt_known_sheet, NULL) == SQLITE_OK;
+}
+
+// Whether the index has rows for `path`, marking them seen in `seen` when it
+// is given.
+static bool known(sqlite3_stmt *stmt, const char *path, idlist_t *seen) {
+	pthread_mutex_lock(&db_lock);
+	bool found = false;
+	if (db && stmt) {
+		sqlite3_reset(stmt);
+		sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			found = true;
+			idlist_add(seen, (int32_t)sqlite3_column_int64(stmt, 0));
+		}
+		sqlite3_reset(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return found;
+}
+
+// Case-blind, as the card is: a sheet's FILE line need not spell the name the
+// way the folder does, and the index matches paths the same way.
+static bool namelist_has(const namelist_t *l, const char *name) {
+	for (int i = 0; i < l->count; i++) {
+		if (strcasecmp(l->names[i], name) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Walks `path` with a scan's rules. Files the index has get their rows marked
+// in `seen` (NULL: not wanted); the full path of every file it does not have
+// goes into `found`, until `found` is full -- the caller then reads what it
+// holds and walks again for the rest.
+//
+// Two rules more than a scan has, so that nothing is collected that a scan
+// would leave out, or it would be announced as new every time the card came
+// back: the audio a sheet claims is the sheet's tracks and never a file of its
+// own, and a sheet that cannot be read is not new music.
+static void update_directory(const char *path, int depth, namelist_t *found, idlist_t *seen) {
+	if (scan_cancel || depth > SCAN_MAX_DEPTH || found->count >= SCAN_MAX_SUBDIRS) {
+		return;
+	}
+
+	DIR *dir = opendir(path);
+	if (!dir) {
+		walk_incomplete = true;
+		return;
+	}
+	set_scan_folder(path);
+
+	namelist_t subdirs, candidates, claimed;
+	namelist_init(&subdirs);
+	namelist_init(&candidates);
+	namelist_init(&claimed);
+
+	struct dirent *de;
+	while (!scan_cancel && (de = readdir(dir)) != NULL) {
+		if (de->d_name[0] == '.' || playlist_is_junk_name(de->d_name)) {
+			continue;
+		}
+
+		char child[512];
+		if (snprintf(child, sizeof(child), "%s/%s", path, de->d_name) >= (int)sizeof(child)) {
+			continue;
+		}
+
+		// The directory says what the name is, on every filesystem a card
+		// comes with; asking the card again for each of thousands of names is
+		// most of what a walk would cost. Only the names it cannot vouch for
+		// -- a link, or no answer -- are looked at.
+		bool is_dir = de->d_type == DT_DIR;
+		bool is_file = de->d_type == DT_REG;
+		if (!is_dir && !is_file) {
+			struct stat st;
+			if (lstat(child, &st) != 0) {
+				continue;
+			}
+			if (S_ISLNK(st.st_mode) && (stat(child, &st) != 0 || !S_ISREG(st.st_mode))) {
+				continue; // broken, or points at a directory: a scan leaves it too
+			}
+			is_dir = S_ISDIR(st.st_mode);
+			is_file = S_ISREG(st.st_mode);
+		}
+
+		if (is_dir) {
+			if (depth == 0 && (strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0 ||
+							   strcasecmp(de->d_name, PODCASTDL_FOLDER) == 0)) {
+				continue;
+			}
+			if (depth == 0 && scan_folder_count > 0 && !scan_folder_chosen(de->d_name)) {
+				continue;
+			}
+			namelist_add(&subdirs, de->d_name);
+			continue;
+		}
+
+		if (!is_file || !is_playable(de->d_name)) {
+			continue;
+		}
+		if (depth == 0 && scan_folder_count > 0) {
+			continue;
+		}
+
+		if (cue_is_sheet(de->d_name)) {
+			// Parsed whether or not it is new: its claim has to hold for an
+			// audio file that is new while the sheet is not.
+			cue_sheet_t *cue = malloc(sizeof(*cue));
+			bool usable = cue && cue_parse(child, cue) && cue->track_count > 0;
+			if (usable) {
+				namelist_add(&claimed, cue->audio_path);
+			}
+			free(cue);
+			if (!known(stmt_known_sheet, child, seen) && usable) {
+				namelist_add(&candidates, de->d_name);
+			}
+			continue;
+		}
+
+		// A WAV with markers goes in as tracks, a WAV without them as itself.
+		bool have = known(stmt_known_path, child, seen);
+		if (cue_wav_has_markers(de->d_name) && known(stmt_known_sheet, child, seen)) {
+			have = true;
+		}
+		if (!have) {
+			namelist_add(&candidates, de->d_name);
+		}
+	}
+	closedir(dir);
+
+	for (int i = 0; i < candidates.count && !scan_cancel; i++) {
+		char child[512];
+		if (snprintf(child, sizeof(child), "%s/%s", path, candidates.names[i]) >= (int)sizeof(child)) {
+			continue;
+		}
+		if (!cue_is_sheet(child) && (namelist_has(&claimed, child) || is_video_file(child, candidates.names[i]))) {
+			continue;
+		}
+		if (!namelist_add(found, child)) {
+			break; // full: the next walk picks up from here
+		}
+	}
+	namelist_free(&candidates);
+	namelist_free(&claimed);
+
+	for (int i = 0; i < subdirs.count && !scan_cancel && found->count < SCAN_MAX_SUBDIRS; i++) {
+		char child[512];
+		if (snprintf(child, sizeof(child), "%s/%s", path, subdirs.names[i]) >= (int)sizeof(child)) {
+			continue;
+		}
+		update_directory(child, depth + 1, found, seen);
+	}
+	namelist_free(&subdirs);
+}
+
+// Reads the collected files into the index, through the same path as a scan:
+// a sheet becomes its tracks and takes the place of the audio it claims.
+static void update_index(const namelist_t *found) {
+	for (int i = 0; i < found->count && !scan_cancel; i++) {
+		const char *path = found->names[i];
+		struct stat st;
+		if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+			continue;
+		}
+		const char *slash = strrchr(path, '/');
+		cue_claimed_count = 0; // the claims were settled while collecting
+		scan_one_file(path, slash ? slash + 1 : path, &st);
+	}
+}
+
+// Whether a track's path lies in what the walk covered: the whole card, or the
+// chosen folders. Case-blind, as the card is.
+static bool in_walked_folders(const char *path) {
+	size_t root_len = strlen(scan_root);
+	if (strncmp(path, scan_root, root_len) != 0 || path[root_len] != '/') {
+		return false;
+	}
+	if (scan_folder_count == 0) {
+		return true;
+	}
+	const char *rest = path + root_len + 1;
+	for (int i = 0; i < scan_folder_count; i++) {
+		size_t n = strlen(scan_folder_names[i]);
+		if (strncasecmp(rest, scan_folder_names[i], n) == 0 && rest[n] == '/') {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Takes out the tracks under the walked folders that the walk did not see,
+// with the names nothing is filed under any more. Returns how many went.
+//
+// Not when the walk saw nothing at all while there were tracks to see: a
+// mount point that moved, or a card that died halfway, looks exactly like a
+// card emptied on purpose, and would empty the library with it.
+static int update_remove_unseen(idlist_t *seen) {
+	qsort(seen->ids, (size_t)seen->count, sizeof(seen->ids[0]), id_cmp);
+
+	int32_t *gone = NULL;
+	int gone_count = 0, gone_cap = 0, judged = 0;
+
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, "SELECT rowid, path FROM MEDIA_TABLE", -1, &stmt, NULL) == SQLITE_OK) {
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			int32_t id = (int32_t)sqlite3_column_int64(stmt, 0);
+			const char *path = (const char *)sqlite3_column_text(stmt, 1);
+			if (!path || !in_walked_folders(path)) {
+				continue;
+			}
+			judged++;
+			if (bsearch(&id, seen->ids, (size_t)seen->count, sizeof(id), id_cmp)) {
+				continue;
+			}
+			if (gone_count == gone_cap) {
+				int grown = gone_cap ? gone_cap * 2 : 64;
+				int32_t *bigger = realloc(gone, (size_t)grown * sizeof(*bigger));
+				if (!bigger) {
+					gone_count = 0;
+					judged = 0;
+					break;
+				}
+				gone = bigger;
+				gone_cap = grown;
+			}
+			gone[gone_count++] = id;
+		}
+		sqlite3_finalize(stmt);
+	}
+
+	if (gone_count == 0 || gone_count == judged) {
+		if (gone_count > 0) {
+			printf("library: none of the %d indexed files under %s was found; leaving the index alone\n", judged,
+				   scan_root);
+		}
+		pthread_mutex_unlock(&db_lock);
+		free(gone);
+		return 0;
+	}
+
+	sqlite3_stmt *del = NULL;
+	if (exec("BEGIN") && sqlite3_prepare_v2(db, "DELETE FROM MEDIA_TABLE WHERE rowid = ?1", -1, &del, NULL) == SQLITE_OK) {
+		for (int i = 0; i < gone_count; i++) {
+			sqlite3_bind_int64(del, 1, gone[i]);
+			sqlite3_step(del);
+			sqlite3_reset(del);
+		}
+		sqlite3_finalize(del);
+
+		// The names nothing is filed under any more. Each check is a lookup on
+		// the index of the column it names.
+		exec("DELETE FROM ARTIST_TABLE WHERE NOT EXISTS (SELECT 1 FROM MEDIA_TABLE m WHERE m.artist = ARTIST_TABLE.artist)");
+		exec("DELETE FROM ALBUM_ARTIST_TABLE WHERE NOT EXISTS"
+			 " (SELECT 1 FROM MEDIA_TABLE m WHERE m.album_artist = ALBUM_ARTIST_TABLE.album_artist)");
+		exec("DELETE FROM GENRE_TABLE WHERE NOT EXISTS (SELECT 1 FROM MEDIA_TABLE m WHERE m.genre = GENRE_TABLE.genre)");
+		exec("DELETE FROM ALBUM_TABLE WHERE NOT EXISTS (SELECT 1 FROM MEDIA_TABLE m WHERE m.album = ALBUM_TABLE.album)");
+		exec("DELETE FROM ALBUM_GROUP_TABLE WHERE NOT EXISTS (SELECT 1 FROM MEDIA_TABLE m WHERE m.album = "
+			 "ALBUM_GROUP_TABLE.album AND albumkey(m.album_artist, m.path) = ALBUM_GROUP_TABLE.album_key)");
+		if (!exec("COMMIT")) {
+			exec("ROLLBACK");
+			gone_count = 0;
+		}
+	} else {
+		sqlite3_finalize(del);
+		exec("ROLLBACK");
+		gone_count = 0;
+	}
+	pthread_mutex_unlock(&db_lock);
+
+	free(gone);
+	printf("library: %d track(s) whose file is gone taken out\n", gone_count);
+	return gone_count;
+}
+
+static void update_run(void) {
+	uint32_t started_ms = now_ms();
+	printf("library: looking for changes in %s%s\n", scan_root,
+		   scan_folder_count > 0 ? " (the chosen folders)" : "");
+	pthread_mutex_lock(&db_lock);
+	if (!prepare_statements() || !prepare_known()) {
+		fprintf(stderr, "library: cannot look for changes, the database is not answering\n");
+		scan_db_failed = true;
+		scan_cancel = true;
+	}
+	scan_id_base = count_rows("SELECT MAX(id) FROM MEDIA_TABLE");
+	// Room for the path index: the walk looks every file on the card up in
+	// it, and at the usual 256 KB the same pages would be read off the card
+	// over and over. Given back below.
+	exec("PRAGMA cache_size=-2048");
+	pthread_mutex_unlock(&db_lock);
+
+	int removed = 0;
+	int before = 0;
+	bool adding = false;
+	bool first = true;
+	while (!scan_cancel) {
+		namelist_t found;
+		namelist_init(&found);
+		idlist_t seen = {NULL, 0, 0};
+		walk_incomplete = false;
+		update_directory(scan_root, 0, &found, first ? &seen : NULL);
+
+		// What went is only known from a walk that reached everything: one
+		// stopped by a full list, a cancel or an unreadable folder did not.
+		if (first) {
+			if (!walk_incomplete && !scan_cancel && found.count < SCAN_MAX_SUBDIRS) {
+				removed = update_remove_unseen(&seen);
+			} else if (!scan_cancel) {
+				printf("library: the walk did not reach every folder; nothing taken out this time\n");
+			}
+			before = library_track_count();
+		}
+		free(seen.ids);
+		first = false;
+
+		if (found.count == 0 || scan_cancel) {
+			namelist_free(&found);
+			break;
+		}
+
+		printf("library: %d new file(s) to read\n", found.count);
+		if (!adding && update_listener) {
+			update_listener(LIBRARY_UPDATE_ADDING, found.count, 0);
+		}
+		adding = true;
+
+		pthread_mutex_lock(&db_lock);
+		if (!exec("BEGIN")) {
+			scan_db_failed = true;
+			scan_cancel = true;
+		}
+		pthread_mutex_unlock(&db_lock);
+
+		if (!scan_cancel) {
+			update_index(&found);
+		}
+
+		pthread_mutex_lock(&db_lock);
+		exec(scan_db_failed ? "ROLLBACK" : "COMMIT");
+		pthread_mutex_unlock(&db_lock);
+
+		// A full list means the walk stopped early; once more for the rest.
+		bool more = found.count >= SCAN_MAX_SUBDIRS;
+		namelist_free(&found);
+		if (!more) {
+			break;
+		}
+	}
+
+	bool changed = adding || removed > 0;
+	pthread_mutex_lock(&db_lock);
+	finalize_statements();
+	finalize_known();
+	scan_id_base = 0;
+	if (changed) {
+		exec("DELETE FROM COUNT_TABLE");
+		char sql[128];
+		snprintf(sql, sizeof(sql), "INSERT INTO COUNT_TABLE(cn) VALUES(%d)",
+				 count_rows("SELECT COUNT(*) FROM MEDIA_TABLE"));
+		exec(sql);
+		// The open lists hold the row ids they were built over: the new rows
+		// are not among them, and the removed ones still are.
+		bump_generation(GEN_MEDIA);
+	}
+	exec("PRAGMA cache_size=-256");
+	if (db) {
+		sqlite3_db_release_memory(db);
+	}
+	pthread_mutex_unlock(&db_lock);
+
+	int added = adding ? library_track_count() - before : 0;
+	if (added < 0) {
+		added = 0; // a new sheet over a file already indexed is one row for several
+	}
+	printf("library: %d new track(s) added, %d removed, in %u ms%s\n", added, removed, now_ms() - started_ms,
+		   scan_db_failed ? " (database error)" : scan_cancel ? " (stopped early)" : "");
+	if (update_listener) {
+		// Stopped with nothing done -- the card pulled again, a scan asked for
+		// -- is not "no changes": nothing was looked at to the end.
+		bool stopped = (scan_cancel || scan_db_failed) && !changed;
+		update_listener(stopped ? LIBRARY_UPDATE_STOPPED : LIBRARY_UPDATE_FINISHED, added, removed);
+	}
+}
+
+static void *scan_thread_func(void *arg) {
+	(void)arg;
+
+	// One core: the scan reads thousands of files; at normal priority it
+	// would starve the interface for its whole duration. Detect changes runs a
+	// level higher: somebody is looking at its notice, and the spinner on it
+	// keeps the interface busy enough that an idle-class thread would barely
+	// move until the notice went away.
+	if (scan_update) {
+		thread_be_low_priority("library update");
+	} else {
+		thread_be_background("library scan");
+	}
+
+	if (scan_update) {
+		update_run();
+	} else {
+		full_scan_run();
+	}
 
 	set_scan_folder("");
 	crumb_set(NULL); // the scan is over: a later crash must not blame its last file
@@ -3614,13 +4125,15 @@ static void *scan_thread_func(void *arg) {
 	return NULL;
 }
 
-bool library_scan_start(const char *root) {
+static bool scan_launch(const char *root, bool update) {
 	if (!db || scan_running || !root || !root[0]) {
 		return false;
 	}
 
 	snprintf(scan_root, sizeof(scan_root), "%s", root);
 	scan_folders_load();
+	scan_update = update;
+	scan_id_base = 0;
 	scan_found = 0;
 	scan_cancel = false;
 	scan_db_failed = false;
@@ -3644,6 +4157,45 @@ bool library_scan_start(const char *root) {
 	}
 
 	pthread_detach(scan_thread);
+	return true;
+}
+
+bool library_scan_start(const char *root) {
+	if (scan_running && scan_update) {
+		library_scan_stop_and_wait();
+	}
+	return scan_launch(root, false);
+}
+
+bool library_detect_changes(void) { return config_get_bool("library", "detect_changes", false); }
+
+void library_set_detect_changes(bool on) {
+	config_set_bool("library", "detect_changes", on);
+	config_save();
+}
+
+void library_set_update_listener(library_update_listener_t listener) { update_listener = listener; }
+
+bool library_card_returned(const char *root) {
+	if (!library_detect_changes() || !library_is_open() || scan_running) {
+		return false;
+	}
+	if (library_track_count() == 0) {
+		printf("library: detect changes: nothing indexed yet, a scan builds the library\n");
+		return false;
+	}
+	// Told from here, on the caller's thread, rather than from the run: the
+	// notice is up the moment the card is back, whatever the scan thread is
+	// waiting for.
+	if (update_listener) {
+		update_listener(LIBRARY_UPDATE_LOOKING, 0, 0);
+	}
+	if (!scan_launch(root, true)) {
+		if (update_listener) {
+			update_listener(LIBRARY_UPDATE_STOPPED, 0, 0);
+		}
+		return false;
+	}
 	return true;
 }
 

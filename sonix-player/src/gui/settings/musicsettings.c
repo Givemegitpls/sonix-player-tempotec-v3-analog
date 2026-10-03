@@ -1122,6 +1122,7 @@ static lv_obj_t *playback_screen;
 static lv_obj_t *folder_chain_switch;
 static lv_obj_t *scan_screen;
 static lv_obj_t *keep_articles_switch;
+static lv_obj_t *detect_changes_switch;
 static lv_obj_t *display_screen;
 static lv_obj_t *album_view_switch;
 static lv_obj_t *quality_badges_switch;
@@ -1160,6 +1161,10 @@ static void keep_articles_cb(lv_event_t *e) {
 	library_set_skip_articles(!keep);
 }
 
+static void detect_changes_cb(lv_event_t *e) {
+	library_set_detect_changes(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
 static void build_scan_page(gui_config_t *cfg) {
 	scan_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(scan_screen, cfg, "musicsettings_scan_options");
@@ -1170,6 +1175,14 @@ static void build_scan_page(gui_config_t *cfg) {
 	settingsrow_toggle(container, "musicsettings_do_not_ignore_articles", &keep_articles_switch, keep_articles_cb);
 	if (!library_skip_articles()) {
 		lv_obj_add_state(keep_articles_switch, LV_STATE_CHECKED);
+	}
+
+	// What happens when the card comes back from somewhere else: its new
+	// files go into the index without a scan.
+	settingsrow_toggle(container, "musicsettings_detect_changes", &detect_changes_switch, detect_changes_cb);
+	option_note(container, "musicsettings_detect_changes_note");
+	if (library_detect_changes()) {
+		lv_obj_add_state(detect_changes_switch, LV_STATE_CHECKED);
 	}
 
 	switcher_attach_back_gesture(scan_screen);

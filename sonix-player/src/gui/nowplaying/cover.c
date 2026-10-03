@@ -1405,6 +1405,12 @@ static sqlite3 *thumb_db;
 // this lock.
 static pthread_mutex_t thumb_db_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// Where the open cache came from, and which file it was, so that a cache
+// deleted from under it is noticed (see cover_cache_reopen_if_replaced).
+static char thumb_db_base[512];
+static char thumb_db_path[512];
+static file_identity_t thumb_db_identity;
+
 // Everything the player keeps beside the user's music lives under one hidden
 // directory, so a card ends up with a single .local folder rather than one dot
 // entry per feature.
@@ -1507,8 +1513,26 @@ static bool try_cache_db(const char *base) {
 	}
 
 	thumb_db = db;
+	snprintf(thumb_db_base, sizeof(thumb_db_base), "%s", base);
+	snprintf(thumb_db_path, sizeof(thumb_db_path), "%s", path);
+	file_identity_read(path, &thumb_db_identity);
 	printf("cover: thumbnail cache in %s\n", path);
 	return true;
+}
+
+void cover_cache_reopen_if_replaced(void) {
+	pthread_mutex_lock(&thumb_db_lock);
+	if (thumb_db && thumb_db_path[0] && file_identity_changed(thumb_db_path, &thumb_db_identity)) {
+		printf("cover: %s was deleted or replaced; opening it again\n", thumb_db_path);
+		sqlite3_close(thumb_db);
+		thumb_db = NULL;
+		char base[sizeof(thumb_db_base)];
+		snprintf(base, sizeof(base), "%s", thumb_db_base);
+		if (!try_cache_db(base) && !try_cache_db("/tmp")) {
+			printf("cover: thumbnail cache disabled\n");
+		}
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
 }
 
 void cover_set_cache_dir(const char *sd_root) {

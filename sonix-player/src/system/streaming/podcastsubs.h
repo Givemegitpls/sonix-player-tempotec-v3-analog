@@ -28,6 +28,11 @@
 // Sets the card root and reloads the list. NULL or empty clears it.
 void podcastsubs_set_root(const char *sd_root);
 
+// Reads the list again when podcast.db was deleted or replaced since it was
+// last read or written. The list lives in memory, so without this a deleted
+// database went on showing its podcasts until a restart.
+void podcastsubs_reload_if_replaced(void);
+
 // How many are followed, and the list itself: most recently followed first.
 int podcastsubs_count(void);
 int podcastsubs_list(podcast_feed_t *out, int max);

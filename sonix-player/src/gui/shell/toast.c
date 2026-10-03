@@ -45,10 +45,18 @@ static lv_timer_t *hide_timer;
 
 // The busy card's spinner, alive only while it shows.
 static lv_obj_t *busy_spinner;
+// The busy card is about work that carries on without anybody watching it, so
+// a tap off the card may put it away (toast_busy_dismissable).
+static bool busy_dismissable;
 
 static void toast_dismiss(void) {
 	if (busy_spinner) {
-		return; // only toast_busy_end() takes the busy card away
+		if (!busy_dismissable) {
+			return; // only toast_busy_end() takes the busy card away
+		}
+		lv_obj_delete(busy_spinner);
+		busy_spinner = NULL;
+		busy_dismissable = false;
 	}
 	if (veil) {
 		lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
@@ -157,6 +165,7 @@ static void show(const lv_image_dsc_t *glyph, lv_color_t colour, const char *tex
 		lv_obj_delete(busy_spinner);
 		busy_spinner = NULL;
 	}
+	busy_dismissable = false;
 
 	const char *shown = text ? tr(text) : "";
 	if (glyph) {
@@ -188,6 +197,7 @@ void toast_busy(const char *text) {
 	if (!card) {
 		return;
 	}
+	busy_dismissable = false;
 	lv_timer_pause(hide_timer);
 	lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
 	if (!busy_spinner) {
@@ -207,5 +217,13 @@ void toast_busy_end(void) {
 	}
 	lv_obj_delete(busy_spinner);
 	busy_spinner = NULL;
+	busy_dismissable = false;
 	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
 }
+
+void toast_busy_dismissable(const char *text) {
+	toast_busy(text);
+	busy_dismissable = true;
+}
+
+bool toast_busy_showing(void) { return busy_spinner != NULL; }

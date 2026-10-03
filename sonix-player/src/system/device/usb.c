@@ -131,6 +131,13 @@ static void popup_disconnected_cb(void *unused) {
 	browser_refresh(); // the PC may have changed the card content
 }
 
+// The same return without its notice, for when Detect changes has one up about
+// the card already.
+static void card_back_quietly_cb(void *unused) {
+	(void)unused;
+	browser_refresh();
+}
+
 static bool vbus_present(void) {
 	for (size_t i = 0; i < sizeof(VBUS_CANDIDATES) / sizeof(VBUS_CANDIDATES[0]); i++) {
 		char *content = read_file_content(VBUS_CANDIDATES[i]);
@@ -853,8 +860,13 @@ static void storage_restore(void) {
 	btlog_card_attach(sd_mount);
 
 	storage_active = false;
+
+	// What the computer changed is looked for now. When that runs, its notice
+	// is the one about the card, and "storage available again" is left out
+	// rather than drawn over it.
+	bool checking = library_card_returned(sd_mount);
 	if (!suppress_popups) {
-		gui_post(popup_disconnected_cb, NULL);
+		gui_post(checking ? card_back_quietly_cb : popup_disconnected_cb, NULL);
 	}
 }
 

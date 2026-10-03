@@ -20,6 +20,11 @@ typedef struct {
 // Passing NULL, or a directory that cannot be written to, falls back to /tmp.
 void cover_set_cache_dir(const char *sd_root);
 
+// Opens the cache again in the same place when its file was deleted or
+// replaced under the open handle; covers cached in memory stay until they are
+// recycled.
+void cover_cache_reopen_if_replaced(void);
+
 // How a picture is mapped onto its box.
 typedef enum {
 	COVER_FIT_CONTAIN, // whole picture visible, letterboxed, never upscaled

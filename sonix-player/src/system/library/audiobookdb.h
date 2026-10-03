@@ -32,6 +32,11 @@
 bool audiobookdb_open(const char *db_path);
 void audiobookdb_close(void);
 
+// Closes and reopens the index when its file was deleted or replaced under the
+// open handle, as library_reopen_if_replaced() does for the music. True when it
+// reopened.
+bool audiobookdb_reopen_if_replaced(void);
+
 // How many audiobooks the index holds.
 int audiobookdb_count(void);
 

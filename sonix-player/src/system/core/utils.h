@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 #include <time.h>
 
 // Square root, in integers, digit by digit. No libm and no FPU: these are
@@ -32,6 +33,20 @@ bool has_extension(const char *name, const char *ext);
 
 // Returns the size in bytes of the given file, or -1 on failure.
 long get_file_size(const char *filepath);
+
+// Which file a path names at one moment, to tell later whether it still names
+// the same one. A file deleted while it is held open lives on for whoever holds
+// it, so a database opened before the delete goes on answering from a file that
+// is no longer on the card; this is how its owner notices. Replaced counts as
+// changed: a new file under the old name is another inode.
+typedef struct {
+	bool exists;
+	dev_t dev;
+	ino_t ino;
+} file_identity_t;
+
+void file_identity_read(const char *path, file_identity_t *out);
+bool file_identity_changed(const char *path, const file_identity_t *was);
 
 int formatDoubleSeconds(double total_seconds, char *buffer, size_t max_len);
 void formatDoubleProgress(double current_secs, double total_secs, char *buffer, size_t max_len);
