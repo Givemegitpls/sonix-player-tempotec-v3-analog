@@ -22,4 +22,8 @@ extern lv_obj_t *podcast_list_screen;
 // cannot be done (section disabled, no network).
 bool podcastpage_open_feed(long long feed_id, const char *title);
 
+// The podcast settings page, which holds the podcast sleep timer: what the
+// control centre's sleep button for podcasts opens on a long press.
+lv_obj_t *podcastpage_settings_screen(void);
+
 #endif /* PODCASTPAGE_H */

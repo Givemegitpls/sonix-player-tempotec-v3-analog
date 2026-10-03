@@ -1221,6 +1221,9 @@ static void refresh_settings_page(void) {
 		lv_obj_remove_state(stop_chapter_switch, LV_STATE_CHECKED);
 	}
 
+	// The control centre switches this timer too, so the switch and the
+	// wheels are read again rather than trusted from the last visit.
+	settingsrow_duration_set_minutes(&sleep_row, sleeptimer_minutes(SLEEPTIMER_AUDIOBOOK));
 	settingsrow_duration_expanded(&sleep_row, sleeptimer_enabled(SLEEPTIMER_AUDIOBOOK));
 	settingsrow_duration_repaint(&sleep_row);
 

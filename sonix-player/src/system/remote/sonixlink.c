@@ -765,7 +765,8 @@ static bool hash_index(const char *path, uint64_t *out) {
 	sqlite3_busy_timeout(db, 1000);
 
 	static const char *const TABLES[] = {
-		"MEDIA_TABLE", "ALBUM_TABLE", "ALBUM_GROUP_TABLE", "ARTIST_TABLE", "ALBUM_ARTIST_TABLE", "GENRE_TABLE",
+		"MEDIA_TABLE", "ALBUM_TABLE", "ALBUM_GROUP_TABLE", "ARTIST_TABLE",
+		"ALBUM_ARTIST_TABLE", "GENRE_TABLE", "ARTIST_LINK", "GENRE_LINK",
 	};
 	uint64_t total = FNV_OFFSET;
 	bool ok = true;

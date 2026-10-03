@@ -2651,6 +2651,9 @@ static void refresh_settings_rows(void) {
 			lv_obj_remove_state(stop_episode_switch, LV_STATE_CHECKED);
 		}
 	}
+	// The control centre switches this timer too, so the switch and the
+	// wheels are read again rather than trusted from the last visit.
+	settingsrow_duration_set_minutes(&sleep_row, sleeptimer_minutes(SLEEPTIMER_PODCAST));
 	settingsrow_duration_expanded(&sleep_row, sleeptimer_enabled(SLEEPTIMER_PODCAST));
 	settingsrow_duration_repaint(&sleep_row);
 }
@@ -2697,6 +2700,8 @@ static void build_settings_page(gui_config_t *cfg) {
 // ---------------------------------------------------------------------------
 // from outside
 // ---------------------------------------------------------------------------
+
+lv_obj_t *podcastpage_settings_screen(void) { return settings_screen; }
 
 bool podcastpage_open_feed(long long feed_id, const char *title) {
 	if (feed_id <= 0 || !podcast_configured()) {

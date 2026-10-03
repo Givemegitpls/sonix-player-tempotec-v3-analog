@@ -49,6 +49,41 @@ static void copy_bounded(char *dst, size_t dst_size, const char *src) {
 	dst[copy_len] = '\0';
 }
 
+// One more value of a tag that can hold several -- a second ARTIST comment, the
+// next string of an ID3v2.4 TPE1 -- after the ones already in `dst`, joined
+// with "; ". A value already there, or one that does not fit whole, is left out.
+static void append_value(char *dst, size_t dst_size, const char *value, size_t len) {
+	while (len > 0 && (value[len - 1] == ' ' || value[len - 1] == '\0')) {
+		len--;
+	}
+	if (len == 0 || dst_size == 0) {
+		return;
+	}
+	size_t have = strlen(dst);
+	if (have == 0) {
+		size_t copy_len = len < dst_size - 1 ? len : dst_size - 1;
+		memcpy(dst, value, copy_len);
+		dst[copy_len] = '\0';
+		return;
+	}
+	// Already among the values: compared one by one, without regard to case.
+	const char *p = dst;
+	while (*p) {
+		const char *end = strstr(p, "; ");
+		size_t n = end ? (size_t)(end - p) : strlen(p);
+		if (n == len && strncasecmp(p, value, len) == 0) {
+			return;
+		}
+		p = end ? end + 2 : p + n;
+	}
+	if (have + 2 + len >= dst_size) {
+		return;
+	}
+	memcpy(dst + have, "; ", 2);
+	memcpy(dst + have + 2, value, len);
+	dst[have + 2 + len] = '\0';
+}
+
 // ---------------------------------------------------------------------------
 // Vorbis comment parsing, shared by FLAC and OGG Vorbis
 // ---------------------------------------------------------------------------
@@ -325,23 +360,27 @@ static void apply_vorbis_comment(song_metadata_t *out, const char *comment, size
 		return;
 	}
 
+	// A repeated ARTIST or GENRE comment is another value of the same tag.
+	if (strcmp(key, "ARTIST") == 0) {
+		append_value(out->artist, sizeof(out->artist), value, value_len);
+		return;
+	}
+	if (strcmp(key, "GENRE") == 0) {
+		append_value(out->genre, sizeof(out->genre), value, value_len);
+		return;
+	}
+
 	char *dst = NULL;
 	size_t dst_size = 0;
 	if (strcmp(key, "TITLE") == 0) {
 		dst = out->title;
 		dst_size = sizeof(out->title);
-	} else if (strcmp(key, "ARTIST") == 0) {
-		dst = out->artist;
-		dst_size = sizeof(out->artist);
 	} else if (strcmp(key, "ALBUMARTIST") == 0 || strcmp(key, "ALBUM ARTIST") == 0) {
 		dst = out->album_artist;
 		dst_size = sizeof(out->album_artist);
 	} else if (strcmp(key, "ALBUM") == 0) {
 		dst = out->album;
 		dst_size = sizeof(out->album);
-	} else if (strcmp(key, "GENRE") == 0) {
-		dst = out->genre;
-		dst_size = sizeof(out->genre);
 	} else if (strcmp(key, "TRACKNUMBER") == 0) {
 		char num_buf[16];
 		size_t n = value_len < sizeof(num_buf) - 1 ? value_len : sizeof(num_buf) - 1;
@@ -671,6 +710,41 @@ static void resolve_tcon_genre(const char *raw, char *out, size_t out_size) {
 	copy_bounded(out, out_size, raw);
 }
 
+// Every string of a text frame, joined with "; " (append_value). A string ends
+// at a NUL, which in UTF-16 is two zero bytes on an even offset. A genre may be
+// an ID3v1 number, resolved one string at a time.
+static void id3_values(uint8_t encoding, const uint8_t *data, size_t len, char *out, size_t out_size, bool genre) {
+	bool wide = encoding == 0x01 || encoding == 0x02;
+	size_t start = 0;
+	while (start < len) {
+		size_t end = start;
+		if (wide) {
+			while (end + 1 < len && (data[end] || data[end + 1])) {
+				end += 2;
+			}
+			if (end + 1 >= len) {
+				end = len;
+			}
+		} else {
+			while (end < len && data[end]) {
+				end++;
+			}
+		}
+		if (end > start) {
+			char value[512];
+			char resolved[256];
+			id3_decode_text(encoding, data + start, end - start, value, sizeof(value));
+			const char *v = value;
+			if (genre) {
+				resolve_tcon_genre(value, resolved, sizeof(resolved));
+				v = resolved;
+			}
+			append_value(out, out_size, v, strlen(v));
+		}
+		start = end + (wide ? 2 : 1);
+	}
+}
+
 // TXXX:SERIES and TXXX:SERIES-PART, in any of the four encodings. The
 // description ends at a NUL, which in UTF-16 is two zero bytes on an even
 // offset; the value follows it. These win over MVNM / MVIN.
@@ -985,6 +1059,17 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 					}
 				}
 			}
+			free(buf);
+			continue;
+		}
+
+		// In ID3v2.4 a text frame may hold several strings, each ended by a
+		// terminator: several artists, several genres.
+		if (major_version >= 4 && (strcmp(frame_id, "TPE1") == 0 || strcmp(frame_id, "TCON") == 0)) {
+			bool genre = frame_id[1] == 'C';
+			char *dst = genre ? out->genre : out->artist;
+			dst[0] = '\0';
+			id3_values(encoding, buf + 1, frame_size - 1, dst, genre ? sizeof(out->genre) : sizeof(out->artist), genre);
 			free(buf);
 			continue;
 		}

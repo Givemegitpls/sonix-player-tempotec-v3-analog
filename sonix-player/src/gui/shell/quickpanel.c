@@ -11,8 +11,10 @@
 #include "src/gui/shell/icons.h"
 #include "src/gui/settings/musicsettings.h"
 #include "src/gui/audio/peqpage.h"
+#include "src/gui/library/audiobooks.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/scrolltext.h"
+#include "src/gui/streaming/podcastpage.h"
 #include "src/gui/wireless/dlna.h"
 #include "src/gui/wireless/sonixlink.h"
 #include "src/gui/wireless/wifitransfer.h"
@@ -1485,6 +1487,20 @@ static void sleep_podcast_clicked_cb(lv_event_t *e) {
 	sleep_timer_clicked(SLEEPTIMER_PODCAST);
 }
 
+static void open_page(lv_obj_t *screen);
+
+// A hold opens the page that sets the length: the playback options for music,
+// the audiobook options, the podcast settings. Looked up at the press rather
+// than when the buttons are made, since not every one of those pages exists
+// by then.
+static void sleep_page_cb(lv_event_t *e) {
+	sleeptimer_kind_t kind = (sleeptimer_kind_t)(intptr_t)lv_event_get_user_data(e);
+	lv_obj_t *screen = kind == SLEEPTIMER_MUSIC		 ? musicsettings_playback_screen()
+					   : kind == SLEEPTIMER_AUDIOBOOK ? audiobooksettings_screen
+													  : podcastpage_settings_screen();
+	open_page(screen);
+}
+
 // DLNA, the third of the same family: a phone pushes music at the player over
 // the network, so without one there is nothing to push it from.
 static void dlna_clicked_cb(lv_event_t *e) {
@@ -1567,10 +1583,9 @@ static void gain_clicked_cb(lv_event_t *e) {
 	refresh_audio_buttons();
 }
 
-static void open_page_cb(lv_event_t *e) {
+static void open_page(lv_obj_t *screen) {
 	long_press_consumed = true;
 	quickpanel_close();
-	lv_obj_t *screen = lv_event_get_user_data(e);
 	if (!screen) {
 		return;
 	}
@@ -1592,6 +1607,8 @@ static void open_page_cb(lv_event_t *e) {
 		switcher_set_player_return(screen);
 	}
 }
+
+static void open_page_cb(lv_event_t *e) { open_page(lv_event_get_user_data(e)); }
 
 // A bare glyph button for the transport row.
 static lv_obj_t *make_flat_button(lv_obj_t *parent, int size, lv_event_cb_t cb) {
@@ -1756,17 +1773,21 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(dlna_btn, dlna_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(dlna_btn, open_page_cb, LV_EVENT_LONG_PRESSED, dlna_screen);
 
-	// No page on a long press for these three: the length is chosen on the page
-	// that belongs to the kind of listening -- playback options, the audiobook
-	// options, the podcast options -- and there is no one page to open.
+	// Each of the three opens, on a long press, the page of its own kind of
+	// listening, where its length is chosen.
 	sleep_music_btn = make_circle_button(row, &icon_sleep_music_quick);
 	lv_obj_add_event_cb(sleep_music_btn, sleep_music_clicked_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(sleep_music_btn, sleep_page_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)SLEEPTIMER_MUSIC);
 
 	sleep_audiobook_btn = make_circle_button(row, &icon_sleep_audiobook_quick);
 	lv_obj_add_event_cb(sleep_audiobook_btn, sleep_audiobook_clicked_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(sleep_audiobook_btn, sleep_page_cb, LV_EVENT_LONG_PRESSED,
+						(void *)(intptr_t)SLEEPTIMER_AUDIOBOOK);
 
 	sleep_podcast_btn = make_circle_button(row, &icon_sleep_podcast_quick);
 	lv_obj_add_event_cb(sleep_podcast_btn, sleep_podcast_clicked_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(sleep_podcast_btn, sleep_page_cb, LV_EVENT_LONG_PRESSED,
+						(void *)(intptr_t)SLEEPTIMER_PODCAST);
 
 	// A tap opens the page with the server starting; a hold opens it as it is.
 	wifi_transfer_btn = make_circle_button(row, &icon_wifi_transfer_quick);

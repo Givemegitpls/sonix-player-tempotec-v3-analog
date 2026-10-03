@@ -56,33 +56,116 @@ bool library_scan_start(const char *root);
 
 // "Detect changes": when the card comes back -- put in again, returned by a
 // computer, or left by the Wi-Fi transfer -- the index is brought up to date
-// without emptying it. The folders chosen for the scan are walked once: the
-// tracks whose file the walk did not meet are taken out, and only the files
-// the index does not have are read and added.
+// without emptying it. The folders chosen for the scan are walked, and only a
+// folder whose names differ from what the index noted of it is looked into:
+// the tracks whose file is gone are taken out, and the files the index does not
+// have are read and added.
 //
 // Off by default, remembered in [library] detect_changes. Nothing happens on a
 // library that was never scanned: building it is the scan's job.
 bool library_detect_changes(void);
 void library_set_detect_changes(bool on);
 
+// Whether Detect changes also reads again every indexed file whose
+// modification time differs from the one the index holds: a file retagged,
+// or replaced by another copy under the same name. One stat per indexed file,
+// so the run takes longer. On by default, [library] detect_retagged.
+bool library_detect_retagged(void);
+void library_set_detect_retagged(bool on);
+
+// ---------------------------------------------------------------------------
+// How the index files tracks
+//
+// A tag naming several artists or genres -- "A & B", "A feat. B", "Rock; Pop"
+// -- can be split at the separators chosen below, and the track is then filed
+// under each name: in the Artists or Genres list, on each one's page, in the
+// search. The tag itself is not touched, and is what a track shows.
+//
+// And an album can be joined: tracks with the same album name in the same
+// folder are one record, whoever the artists on them, so a disc where only
+// some tracks carry an album artist is not dealt out as several.
+//
+// All of it is worked out from what the index already holds, so a change is
+// applied with library_reorganize() rather than a scan.
+// ---------------------------------------------------------------------------
+
+typedef enum {
+	LIBRARY_SPLIT_SEMICOLON = 1 << 0, // ;
+	LIBRARY_SPLIT_SLASH = 1 << 1,	  // /
+	LIBRARY_SPLIT_AMPERSAND = 1 << 2, // &
+	LIBRARY_SPLIT_COMMA = 1 << 3,	  // ,
+	LIBRARY_SPLIT_FEAT = 1 << 4,	  // feat., ft., featuring, as a word
+	LIBRARY_SPLIT_VS = 1 << 5,		  // vs., versus, as a word
+} library_split_t;
+
+// [library] split_artists (off) and artist_separators (; / & feat.).
+bool library_split_artists(void);
+void library_set_split_artists(bool on);
+unsigned library_artist_separators(void);
+void library_set_artist_separators(unsigned separators);
+
+// [library] split_genres (off) and genre_separators (; / ,).
+bool library_split_genres(void);
+void library_set_split_genres(bool on);
+unsigned library_genre_separators(void);
+void library_set_genre_separators(unsigned separators);
+
+// The artists never split, wherever they appear in a tag ("AC/DC"), matched
+// without regard to case. Kept in artist_exceptions.txt beside
+// device_config.ini, one per line; "AC/DC" alone until the list is first
+// saved. The array is the caller's, freed with library_artist_exceptions_free().
+char **library_artist_exceptions(int *count);
+void library_artist_exceptions_free(char **names, int count);
+void library_set_artist_exceptions(const char *const *names, int count);
+
+// [library] join_albums, off by default.
+bool library_join_albums(void);
+void library_set_join_albums(bool on);
+
+// Files the index again under the settings above, on the scan thread, without
+// reading the card: the artist and genre lists and the album keys are worked
+// out anew from the tags already indexed. The listener hears REORGANIZING
+// straight away and REORGANIZED when it is done. Busy with Detect changes, it
+// runs as soon as that is over; behind a scan, the same without the
+// REORGANIZING. False, with nothing to do, when there is no index or nothing
+// in it.
+//
+// The index records which settings it was last filed under, so one filed
+// under others -- the settings changed while the card was out or the index
+// closed, a run stopped halfway -- is filed again by library_card_returned()
+// and by library_organize_check().
+bool library_reorganize(void);
+
+// library_reorganize() when the index open now was filed under other settings.
+// Called once the interface is up. Returns whether it started.
+bool library_organize_check(void);
+
 // Called wherever the card is back and the index reopened. Starts the run above
 // on the scan thread when the setting is on and nothing is scanning, and says
 // whether it did: its notice is then about the card too, and the caller's own
-// "card is back" notice would only cover it.
+// "card is back" notice would only cover it. An index filed under other
+// settings than the current ones (library_reorganize) is filed again as well:
+// after the run, or on its own when the setting is off.
 bool library_card_returned(const char *root);
 
 // Told about a Detect changes run: LOOKING as soon as it is asked for, on the
 // thread that asked; then, on the scan thread, ADDING with the number of new
-// files when there are some and they are about to be read, and at the end
-// either FINISHED with the tracks that went in and came out (both zero when
-// nothing changed) or STOPPED when it was cut short with nothing done.
+// files (`added`) and of changed ones (`updated`) when there are some and they
+// are about to be read, and at the end either FINISHED with the tracks that
+// went in, came out and were read again (all zero when nothing changed) or
+// STOPPED when it was cut short with nothing done.
+//
+// And about library_reorganize(): REORGANIZING on the thread that asked,
+// REORGANIZED on the scan thread when it is done, or STOPPED when it was not.
 typedef enum {
 	LIBRARY_UPDATE_LOOKING,
 	LIBRARY_UPDATE_ADDING,
 	LIBRARY_UPDATE_FINISHED,
 	LIBRARY_UPDATE_STOPPED,
+	LIBRARY_UPDATE_REORGANIZING,
+	LIBRARY_UPDATE_REORGANIZED,
 } library_update_event_t;
-typedef void (*library_update_listener_t)(library_update_event_t event, int added, int removed);
+typedef void (*library_update_listener_t)(library_update_event_t event, int added, int removed, int updated);
 void library_set_update_listener(library_update_listener_t listener);
 
 // Whether there is an index to ask. False while the card is handed to a

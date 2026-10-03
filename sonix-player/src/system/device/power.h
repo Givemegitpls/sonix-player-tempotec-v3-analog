@@ -160,6 +160,11 @@ long power_get_max_brightness(void);   // -1 if unknown
 // date picker being the obvious one.
 void power_hold_screen_on(bool hold);
 
+// The same, held by what is on the screen rather than by a job: the lyrics in
+// the player, for as long as they are on show. A flag of its own, so that one
+// of the two letting go does not release the other.
+void power_hold_screen_for_view(bool hold);
+
 // Stops charging once the battery reaches `percent` (80..100; 100 means no
 // limit). Whether this can be enforced depends on the charger driver exposing
 // a control node -- power_charge_limit_supported() says whether it found one.

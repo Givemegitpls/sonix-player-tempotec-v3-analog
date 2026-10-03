@@ -1421,6 +1421,12 @@ static bool lyrics_available(void) {
 // The page is up, or on its way in or out under a finger.
 static bool lyrics_on_screen(void) { return lyrics_pane && !lv_obj_has_flag(lyrics_pane, LV_OBJ_FLAG_HIDDEN); }
 
+// Words being read are not an idle screen: while the lyrics are up on an open
+// player, the idle timer does not blank the panel under them. Asked again
+// wherever either half changes; the hold itself ignores a call that changes
+// nothing.
+static void lyrics_screen_hold_update(void) { power_hold_screen_for_view(sheet_open && lyrics_on_screen()); }
+
 // The words of the file playing are known before any swipe: a track with
 // none cannot be swiped to them, and the page goes away by itself on one.
 static bool lyrics_has_words(void) { return lyrics_loaded && lyrics_cur.count > 0; }
@@ -1664,6 +1670,7 @@ static void lyrics_progress_apply(int32_t progress) {
 		lv_obj_remove_flag(lyrics_pane, LV_OBJ_FLAG_HIDDEN);
 		lv_obj_move_foreground(lyrics_pane);
 	}
+	lyrics_screen_hold_update();
 	lv_obj_set_x(lyrics_pane, lyrics_pane_x + travel * (LYRICS_FULL - progress) / LYRICS_FULL);
 	if (rest || !lyrics_look_on) {
 		lyrics_look(!rest);
@@ -4241,6 +4248,7 @@ void player_sheet_open(bool animate) {
 	}
 	sheet_open = true;
 	back_btn_player_mode(true);
+	lyrics_screen_hold_update();
 
 	// Explicitly the bottom-most thing on the top layer: it covers the page it
 	// slides over, while the status bar and the floating back button stay drawn
@@ -4271,6 +4279,7 @@ void player_sheet_close(bool animate) {
 	bool was_open = sheet_open;
 	sheet_open = false;
 	back_btn_player_mode(false);
+	lyrics_screen_hold_update();
 	topbar_set_hidden(false);
 	// The tab does not travel with the page: coming back to a player with a
 	// panel hanging open is not what leaving it looked like.

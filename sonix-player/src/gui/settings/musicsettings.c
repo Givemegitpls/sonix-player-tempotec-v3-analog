@@ -15,6 +15,7 @@
 #include "src/gui/audio/msebsettings.h"
 #include "src/gui/audio/peqpage.h"
 #include "src/gui/nowplaying/coverflow.h"
+#include "src/gui/settings/artistexceptions.h"
 #include "src/gui/settings/lastfmsettings.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/library/music.h"
@@ -1017,6 +1018,9 @@ lv_obj_t *musicsettings_mseb_screen(void) { return mseb_screen; }
 
 lv_obj_t *musicsettings_fade_screen(void) { return fade_screen; }
 
+static lv_obj_t *playback_screen;
+lv_obj_t *musicsettings_playback_screen(void) { return playback_screen; }
+
 bool musicsettings_fade_enabled(void) { return config_get_bool("audio", "fade", false); }
 
 bool musicsettings_endless_shuffle(void) { return config_get_bool("player", "endless_shuffle", false); }
@@ -1118,7 +1122,6 @@ static void album_chain_cb(lv_event_t *e) {
 // the music page among the DAC's own settings: nothing here touches the sound.
 // ---------------------------------------------------------------------------
 
-static lv_obj_t *playback_screen;
 static lv_obj_t *folder_chain_switch;
 static lv_obj_t *scan_screen;
 static lv_obj_t *keep_articles_switch;
@@ -1133,13 +1136,14 @@ static void folder_chain_cb(lv_event_t *e) {
 }
 
 // The dim paragraph under a toggle that needs one.
-static void option_note(lv_obj_t *parent, const char *text) {
+static lv_obj_t *option_note(lv_obj_t *parent, const char *text) {
 	lv_obj_t *note = lv_label_create(parent);
 	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(note, lv_pct(100));
 	lv_obj_add_style(note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(note, &font_ui_22, 0);
 	lv_label_set_text(note, tr(text));
+	return note;
 }
 
 // ---------------------------------------------------------------------------
@@ -1161,8 +1165,126 @@ static void keep_articles_cb(lv_event_t *e) {
 	library_set_skip_articles(!keep);
 }
 
+// The retag check is part of Detect changes, and shown only while that is on.
+static lv_obj_t *retagged_row, *retagged_note;
+
+static void retagged_show(void) {
+	bool on = library_detect_changes();
+	lv_obj_set_flag(retagged_row, LV_OBJ_FLAG_HIDDEN, !on);
+	lv_obj_set_flag(retagged_note, LV_OBJ_FLAG_HIDDEN, !on);
+}
+
 static void detect_changes_cb(lv_event_t *e) {
 	library_set_detect_changes(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+	retagged_show();
+}
+
+static void detect_retagged_cb(lv_event_t *e) {
+	library_set_detect_retagged(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
+// How tracks are filed: artists and genres split, albums joined. The index is
+// filed again once, when the page is left, however many of these were touched
+// on the way (library_reorganize).
+static bool organize_changed;
+
+static void organize_touched(void) { organize_changed = true; }
+
+static lv_obj_t *split_artists_switch, *split_artists_pills;
+static lv_obj_t *split_genres_switch, *split_genres_pills;
+static lv_obj_t *unsplit_row;
+static lv_obj_t *join_albums_switch;
+
+typedef struct {
+	const char *text;
+	unsigned bit;
+} split_pill_t;
+
+static const split_pill_t SPLIT_ARTIST_PILLS[] = {
+	{";", LIBRARY_SPLIT_SEMICOLON},
+	{"/", LIBRARY_SPLIT_SLASH},
+	{"&", LIBRARY_SPLIT_AMPERSAND},
+	{",", LIBRARY_SPLIT_COMMA},
+	{"feat.", LIBRARY_SPLIT_FEAT},
+	{"vs.", LIBRARY_SPLIT_VS},
+};
+static const split_pill_t SPLIT_GENRE_PILLS[] = {
+	{";", LIBRARY_SPLIT_SEMICOLON},
+	{"/", LIBRARY_SPLIT_SLASH},
+	{",", LIBRARY_SPLIT_COMMA},
+};
+#define SPLIT_ARTIST_COUNT (int)(sizeof(SPLIT_ARTIST_PILLS) / sizeof(SPLIT_ARTIST_PILLS[0]))
+#define SPLIT_GENRE_COUNT (int)(sizeof(SPLIT_GENRE_PILLS) / sizeof(SPLIT_GENRE_PILLS[0]))
+static lv_obj_t *split_artist_pill[SPLIT_ARTIST_COUNT];
+static lv_obj_t *split_genre_pill[SPLIT_GENRE_COUNT];
+
+static void organize_refresh(void) {
+	bool artists = library_split_artists();
+	bool genres = library_split_genres();
+	unsigned a = library_artist_separators();
+	unsigned g = library_genre_separators();
+
+	lv_obj_set_state(split_artists_switch, LV_STATE_CHECKED, artists);
+	lv_obj_set_flag(split_artists_pills, LV_OBJ_FLAG_HIDDEN, !artists);
+	lv_obj_set_flag(unsplit_row, LV_OBJ_FLAG_HIDDEN, !artists);
+	for (int i = 0; i < SPLIT_ARTIST_COUNT; i++) {
+		settingsrow_pill_active(split_artist_pill[i], (a & SPLIT_ARTIST_PILLS[i].bit) != 0);
+	}
+	lv_obj_set_state(split_genres_switch, LV_STATE_CHECKED, genres);
+	lv_obj_set_flag(split_genres_pills, LV_OBJ_FLAG_HIDDEN, !genres);
+	for (int i = 0; i < SPLIT_GENRE_COUNT; i++) {
+		settingsrow_pill_active(split_genre_pill[i], (g & SPLIT_GENRE_PILLS[i].bit) != 0);
+	}
+	lv_obj_set_state(join_albums_switch, LV_STATE_CHECKED, library_join_albums());
+}
+
+static void split_artists_cb(lv_event_t *e) {
+	library_set_split_artists(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+	organize_touched();
+	organize_refresh();
+}
+
+static void split_genres_cb(lv_event_t *e) {
+	library_set_split_genres(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+	organize_touched();
+	organize_refresh();
+}
+
+// The pills are switches of their own: any number of separators at once.
+static void split_artist_pill_cb(lv_event_t *e) {
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return;
+	}
+	unsigned bit = (unsigned)(uintptr_t)lv_event_get_user_data(e);
+	library_set_artist_separators(library_artist_separators() ^ bit);
+	organize_touched();
+	organize_refresh();
+}
+
+static void genre_pill_cb(lv_event_t *e) {
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return;
+	}
+	unsigned bit = (unsigned)(uintptr_t)lv_event_get_user_data(e);
+	library_set_genre_separators(library_genre_separators() ^ bit);
+	organize_touched();
+	organize_refresh();
+}
+
+static void join_albums_cb(lv_event_t *e) {
+	library_set_join_albums(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+	organize_touched();
+}
+
+// Leaving for anywhere but the exceptions page, which is part of this one.
+static void organize_leave_cb(lv_event_t *e) {
+	(void)e;
+	lv_obj_t *next = lv_screen_active();
+	if (!organize_changed || next == scan_screen || next == artistexceptions_screen) {
+		return;
+	}
+	organize_changed = false;
+	library_reorganize();
 }
 
 static void build_scan_page(gui_config_t *cfg) {
@@ -1184,6 +1306,36 @@ static void build_scan_page(gui_config_t *cfg) {
 	if (library_detect_changes()) {
 		lv_obj_add_state(detect_changes_switch, LV_STATE_CHECKED);
 	}
+
+	lv_obj_t *retagged_switch = NULL;
+	retagged_row = settingsrow_toggle(container, "musicsettings_detect_retagged", &retagged_switch, detect_retagged_cb);
+	retagged_note = option_note(container, "musicsettings_detect_retagged_note");
+	lv_obj_set_state(retagged_switch, LV_STATE_CHECKED, library_detect_retagged());
+	retagged_show();
+
+	settingsrow_toggle_pills(container, "musicsettings_split_artists", split_artists_cb, &split_artists_switch,
+							 &split_artists_pills);
+	for (int i = 0; i < SPLIT_ARTIST_COUNT; i++) {
+		split_artist_pill[i] = settingsrow_pill_text(split_artists_pills, SPLIT_ARTIST_PILLS[i].text, (int)SPLIT_ARTIST_PILLS[i].bit,
+											   split_artist_pill_cb);
+	}
+	unsplit_row = settingsrow_add(container, "musicsettings_unsplit_artists", NULL, switch_screen_cb,
+								  artistexceptions_screen);
+
+	settingsrow_toggle_pills(container, "musicsettings_split_genres", split_genres_cb, &split_genres_switch,
+							 &split_genres_pills);
+	for (int i = 0; i < SPLIT_GENRE_COUNT; i++) {
+		split_genre_pill[i] =
+			settingsrow_pill_text(split_genres_pills, SPLIT_GENRE_PILLS[i].text, (int)SPLIT_GENRE_PILLS[i].bit, genre_pill_cb);
+	}
+	option_note(container, "musicsettings_split_note");
+
+	settingsrow_toggle(container, "musicsettings_join_albums", &join_albums_switch, join_albums_cb);
+	option_note(container, "musicsettings_join_albums_note");
+
+	organize_refresh();
+	lv_obj_add_event_cb(scan_screen, organize_leave_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
+	lv_obj_add_event_cb(artistexceptions_screen, organize_leave_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
 
 	switcher_attach_back_gesture(scan_screen);
 }
@@ -1440,6 +1592,14 @@ static void sleep_wheel_cb(lv_event_t *e) {
 	sleeptimer_set_minutes(SLEEPTIMER_MUSIC, settingsrow_duration_minutes(&sleep_row));
 }
 
+// The control centre switches the same timer from outside this page, so the
+// switch and the wheels are read again every time the page comes up.
+static void playback_loaded_cb(lv_event_t *e) {
+	(void)e;
+	settingsrow_duration_set_minutes(&sleep_row, sleeptimer_minutes(SLEEPTIMER_MUSIC));
+	sleep_refresh();
+}
+
 static void build_playback_page(gui_config_t *cfg) {
 	playback_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(playback_screen, cfg, "musicsettings_playback_options");
@@ -1490,6 +1650,7 @@ static void build_playback_page(gui_config_t *cfg) {
 	settingsrow_duration_set_minutes(&sleep_row, sleeptimer_minutes(SLEEPTIMER_MUSIC));
 	sleep_refresh();
 	theme_register_refresh(sleep_refresh);
+	lv_obj_add_event_cb(playback_screen, playback_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 
 	// One record into the next, instead of the queue simply running out.
 	settingsrow_toggle(container, "musicsettings_play_albums_back_to_back", &album_chain_switch, album_chain_cb);
@@ -1534,6 +1695,7 @@ void musicsettings_init(gui_config_t *cfg) {
 	// around a track, how the lists look, and Last.fm, which only reports what
 	// was played. Then the sound, from the widest tool to the narrowest, and the
 	// DAC's own switches at the end.
+	artistexceptions_init(cfg, organize_touched);
 	build_scan_page(cfg);
 	settingsrow_add(container, "musicsettings_scan_options", NULL, switch_screen_cb, scan_screen);
 

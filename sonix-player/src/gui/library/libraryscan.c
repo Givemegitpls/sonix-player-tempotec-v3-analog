@@ -455,6 +455,7 @@ typedef struct {
 	library_update_event_t event;
 	int added;
 	int removed;
+	int updated;
 } update_note_t;
 
 static void update_note_cb(void *user) {
@@ -468,10 +469,16 @@ static void update_note_cb(void *user) {
 
 	case LIBRARY_UPDATE_ADDING:
 		if (toast_busy_showing()) {
+			// The new files when there are some, the changed ones otherwise.
 			if (note->added == 1) {
 				toast_busy_dismissable("libraryscan_adding_one_track");
-			} else {
+			} else if (note->added > 1) {
 				snprintf(text, sizeof(text), tr("libraryscan_adding_d_tracks"), note->added);
+				toast_busy_dismissable(text);
+			} else if (note->updated == 1) {
+				toast_busy_dismissable("libraryscan_updating_one_track");
+			} else {
+				snprintf(text, sizeof(text), tr("libraryscan_updating_d_tracks"), note->updated);
 				toast_busy_dismissable(text);
 			}
 		}
@@ -481,9 +488,27 @@ static void update_note_cb(void *user) {
 		toast_busy_end();
 		break;
 
+	case LIBRARY_UPDATE_REORGANIZING:
+		toast_busy_dismissable("libraryscan_reorganizing");
+		break;
+
+	case LIBRARY_UPDATE_REORGANIZED:
+		toast_busy_end();
+		toast_success("libraryscan_reorganized");
+		break;
+
 	case LIBRARY_UPDATE_FINISHED:
 		toast_busy_end();
-		if (note->added > 0 && note->removed > 0) {
+		if (note->updated > 0 && (note->added > 0 || note->removed > 0)) {
+			snprintf(text, sizeof(text), tr("libraryscan_d_added_d_removed_d_updated"), note->added, note->removed,
+					 note->updated);
+			toast_success(text);
+		} else if (note->updated == 1) {
+			toast_success("libraryscan_one_track_updated");
+		} else if (note->updated > 1) {
+			snprintf(text, sizeof(text), tr("libraryscan_d_tracks_updated"), note->updated);
+			toast_success(text);
+		} else if (note->added > 0 && note->removed > 0) {
 			snprintf(text, sizeof(text), tr("libraryscan_d_added_d_removed"), note->added, note->removed);
 			toast_success(text);
 		} else if (note->added == 1) {
@@ -505,7 +530,7 @@ static void update_note_cb(void *user) {
 }
 
 // On the scan thread: everything it says goes over to the interface thread.
-static void update_listener(library_update_event_t event, int added, int removed) {
+static void update_listener(library_update_event_t event, int added, int removed, int updated) {
 	update_note_t *note = malloc(sizeof(*note));
 	if (!note) {
 		return;
@@ -513,6 +538,7 @@ static void update_listener(library_update_event_t event, int added, int removed
 	note->event = event;
 	note->added = added;
 	note->removed = removed;
+	note->updated = updated;
 	if (!gui_post(update_note_cb, note)) {
 		free(note);
 	}
@@ -569,4 +595,8 @@ void libraryscan_init(gui_config_t *cfg) {
 
 	poll_timer = lv_timer_create(poll_cb, SCAN_POLL_MS, NULL);
 	lv_timer_pause(poll_timer);
+
+	// The index opened at boot may have been filed under settings changed
+	// since; the listener is in place now to say so.
+	library_organize_check();
 }

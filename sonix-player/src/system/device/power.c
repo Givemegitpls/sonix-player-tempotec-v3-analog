@@ -278,6 +278,7 @@ static uint32_t input_idle_ms(uint32_t now) {
 }
 
 static bool g_screen_on_hold;
+static bool g_screen_view_hold; // see power_hold_screen_for_view
 
 // ---------------------------------------------------------------------------
 // charge limit
@@ -1572,7 +1573,8 @@ static void power_timer_cb(lv_timer_t *timer) {
 	uint32_t off_idle_wall = boottime_ms() - g_last_active_boot_ms;
 
 	// 4. auto screen-off after the configured input-idle timeout
-	if (g_screen_on && g_cfg.screen_off_enabled && !g_screen_on_hold && input_idle >= g_cfg.screen_off_timeout_ms) {
+	if (g_screen_on && g_cfg.screen_off_enabled && !g_screen_on_hold && !g_screen_view_hold &&
+		input_idle >= g_cfg.screen_off_timeout_ms) {
 		// Say why. A screen that goes dark on its own is indistinguishable
 		// from a crash unless the log records that it was the idle timer.
 		printf("power: screen off after %u ms without input (timeout %u ms)\n", input_idle,
@@ -1654,6 +1656,21 @@ void power_hold_screen_on(bool hold) {
 		// scan, the power menu): without resetting the idle clocks here the
 		// screen-off timer would fire on the very next tick, blanking the
 		// panel the moment the long job announces it has finished.
+		power_notify_activity();
+		if (g_disp) {
+			lv_display_trigger_activity(g_disp);
+		}
+	}
+}
+
+void power_hold_screen_for_view(bool hold) {
+	if (hold == g_screen_view_hold) {
+		return;
+	}
+	g_screen_view_hold = hold;
+	if (!hold) {
+		// As above: the idle timer starts over from the moment the view went,
+		// not from the last touch before it came up.
 		power_notify_activity();
 		if (g_disp) {
 			lv_display_trigger_activity(g_disp);

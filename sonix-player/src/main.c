@@ -2209,6 +2209,11 @@ int main(int argc, char **argv) {
 	// switch is on, which the same config read decides.
 	sonixlink_init();
 
+	// The sleep timers, as they were left. Before the interface: the music,
+	// audiobook and podcast pages read their switch and their wheels while
+	// they are built, and read before this they all say off, 0 minutes.
+	sleeptimer_init();
+
 	gui_init(&gui_cfg);
 
 	// "Rotate screen", as it was left. After gui_init so there are screens to
@@ -2220,7 +2225,6 @@ int main(int argc, char **argv) {
 	// The USB-C port, allowed to take a peripheral. Before the volume restore
 	// below, so that a DAC already plugged in at boot is found and the level
 	// lands on it rather than on a CS43198 nobody is listening to.
-	sleeptimer_init();
 	usbaudio_init();
 	usbaudio_poll();
 
