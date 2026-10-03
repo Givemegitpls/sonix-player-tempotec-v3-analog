@@ -37,6 +37,7 @@
 // The A2DP sink UUID, which is what separates a pair of headphones from a phone
 // in a scan list.
 #define UUID_A2DP_SINK "0000110b-0000-1000-8000-00805f9b34fb"
+#define UUID_A2DP_SOURCE "0000110a-0000-1000-8000-00805f9b34fb"
 
 #define CALL_MS 8000		// anything that is not pairing or connecting
 #define OBJECT_PATH_MAX 160
@@ -1083,6 +1084,27 @@ bool btstack_connect_a2dp(const char *address, int timeout_ms) {
 	bool ok = dbus_call_send(c, timeout_ms, err, sizeof(err));
 	if (!ok) {
 		fprintf(stderr, "btstack: ConnectProfile(A2DP sink) on %s -> %s\n", address, err[0] ? err : "no reply");
+	}
+	return ok;
+}
+
+bool btstack_connect_a2dp_source(const char *address, int timeout_ms) {
+	char path[OBJECT_PATH_MAX];
+	if (!device_path(address, path, sizeof(path))) {
+		return false;
+	}
+	pthread_mutex_lock(&lock);
+	dbus_conn_t *c = conn;
+	pthread_mutex_unlock(&lock);
+	if (!c) {
+		return false;
+	}
+	dbus_writer_t *w = dbus_call_begin(c, BLUEZ_SERVICE, path, BLUEZ_DEVICE_IFACE, "ConnectProfile", "s");
+	dbus_w_string(w, UUID_A2DP_SOURCE);
+	char err[DBUS_NAME_MAX];
+	bool ok = dbus_call_send(c, timeout_ms, err, sizeof(err));
+	if (!ok) {
+		fprintf(stderr, "btstack: ConnectProfile(A2DP source) on %s -> %s\n", address, err[0] ? err : "no reply");
 	}
 	return ok;
 }

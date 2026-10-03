@@ -33,6 +33,13 @@ void medialist_init(gui_config_t *cfg);
 bool medialist_album_view(void);
 void medialist_set_album_view(bool on);
 
+// "Go to the current track": All tracks, Albums, Artists, Album artists and
+// Genres open scrolled to the row of what is playing -- the track itself in
+// All tracks, its album, artist, album artist or genre in the others. Off by
+// default; Music > Display options.
+bool medialist_go_to_current(void);
+void medialist_set_go_to_current(bool on);
+
 // Whether a track row wears a small badge saying what it is -- lossy, CD,
 // hi-res or DSD -- under its title. Off by default.
 bool medialist_quality_badges(void);

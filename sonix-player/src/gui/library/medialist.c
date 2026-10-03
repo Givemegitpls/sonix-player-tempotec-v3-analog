@@ -283,6 +283,10 @@ static bool album_view = true;
 // way down.
 static bool quality_badges;
 
+// "Go to the current track": the five lists the Music page opens start at the
+// row of whatever is playing. Off by default.
+static bool go_to_current;
+
 // "Show artist": the artist under each row's title, on the lists picked out by
 // artist_lists (MEDIALIST_ARTIST_* bits). Off by default, with all of them
 // picked so that switching it on shows something at once.
@@ -304,6 +308,7 @@ static void load_view_settings(void) {
 	album_view = config_get_int("library", "album_view", 1) != 0;
 	quality_badges = config_get_int("library", "quality_badges", 0) != 0;
 	show_artist = config_get_int("library", "show_artist", 0) != 0;
+	go_to_current = config_get_int("library", "go_to_current", 0) != 0;
 	artist_lists = (int)config_get_int("library", "artist_lists", artist_lists);
 }
 
@@ -316,6 +321,18 @@ void medialist_set_album_view(bool on) {
 	load_view_settings();
 	album_view = on;
 	config_set_int("library", "album_view", on ? 1 : 0);
+	config_save();
+}
+
+bool medialist_go_to_current(void) {
+	load_view_settings();
+	return go_to_current;
+}
+
+void medialist_set_go_to_current(bool on) {
+	load_view_settings();
+	go_to_current = on;
+	config_set_int("library", "go_to_current", on ? 1 : 0);
 	config_save();
 }
 
@@ -653,6 +670,9 @@ static void row_drop_thumb(panel_t *p, row_t *row) {
 
 static char np_path[512];
 static char np_album[256];
+// The playing track's record as an Albums row names it -- the name and the key
+// that tells same-named albums apart -- or empty when the file is not indexed.
+static char np_album_value[300];
 static char np_artist[256];
 static char np_album_artist[256];
 static char np_genre[128];
@@ -666,6 +686,9 @@ static void np_cache_refresh(void) {
 	snprintf(np_artist, sizeof(np_artist), "%s", state.metadata.artist);
 	snprintf(np_album_artist, sizeof(np_album_artist), "%s", state.metadata.album_artist);
 	snprintf(np_genre, sizeof(np_genre), "%s", state.metadata.genre);
+	if (!np_path[0] || !library_track_album_value(np_path, np_album_value, sizeof(np_album_value))) {
+		np_album_value[0] = '\0';
+	}
 
 	// An album with no album-artist tag still belongs to its artist, which is
 	// what the mark in Album artists is looked up by.
@@ -696,7 +719,13 @@ static bool entry_is_now_playing(panel_t *p, int index) {
 	}
 	switch (p->kind) {
 	case LIBRARY_LIST_ALBUMS:
-		return np_album[0] && strcmp(name, np_album) == 0;
+		// A row is named by album and key. The key decides when the index knows
+		// the file; a track it does not know has only its tag, which matches
+		// every album of that name.
+		if (np_album_value[0]) {
+			return strcmp(name, np_album_value) == 0;
+		}
+		return np_album[0] && library_album_same(name, np_album);
 	case LIBRARY_LIST_ARTISTS:
 		return np_artist[0] && strcmp(name, np_artist) == 0;
 	case LIBRARY_LIST_ALBUM_ARTISTS:
@@ -2455,8 +2484,9 @@ static void screen_unloaded_cb(lv_event_t *e) {
 }
 
 // Reopens whatever this panel is showing, under whatever the ordering now is.
-// The signature is cleared first so the list comes back at the top: after a
-// re-sort the old scroll position points at nothing in particular.
+// The signature is cleared first so the list comes back at the top, or on what
+// is playing (see current_row): after a re-sort the old scroll position points
+// at nothing in particular.
 static void reload_current(panel_t *p) {
 	if (p->from_paths) {
 		return;
@@ -3329,6 +3359,38 @@ static void show_corner(lv_obj_t *btn, bool shown) {
 	}
 }
 
+// The row of the list `p` has just loaded that "Go to the current track" opens
+// on: the playing track in All tracks, and in the four name lists whatever it
+// belongs to -- its record, its artist, its album artist, its genre. -1 when
+// the option is off, the list is not one of those five, or nothing in it is
+// playing.
+static int current_row(panel_t *p) {
+	if (!medialist_go_to_current() || !p->ix) {
+		return -1;
+	}
+	np_cache_refresh();
+	if (!np_path[0]) {
+		return -1;
+	}
+	switch (p->kind) {
+	case LIBRARY_LIST_TRACKS:
+		return p->filter == LIBRARY_FILTER_NONE ? library_index_find_path(p->ix, np_path) : -1;
+	case LIBRARY_LIST_ALBUMS:
+		if (p->filter != LIBRARY_FILTER_NONE) {
+			return -1;
+		}
+		return library_index_find_name(p->ix, np_album_value[0] ? np_album_value : np_album);
+	case LIBRARY_LIST_ARTISTS:
+		return library_index_find_name(p->ix, np_artist);
+	case LIBRARY_LIST_ALBUM_ARTISTS:
+		return library_index_find_name(p->ix, np_album_artist);
+	case LIBRARY_LIST_GENRES:
+		return library_index_find_name(p->ix, np_genre);
+	default:
+		return -1;
+	}
+}
+
 void medialist_open(const char *title, library_list_t kind, library_filter_t filter, const char *filter_value) {
 	// Nothing to open without the card. The index lives on it, so every list
 	// here would come up empty -- and an empty list under a title, with "scan
@@ -3487,8 +3549,17 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	index_rebuild(p, p->index_wanted, sortable && sort_is_desc(kind));
 
 	// The same list resumes at its old scroll position; a different one
-	// starts at the top.
+	// starts at the top -- unless it opens on what is playing.
 	int target_scroll = same_list ? p->saved_scroll : 0;
+	int current = current_row(p);
+	if (current >= 0) {
+		// In the middle of the screen rather than at the top, so the rows
+		// around it show where in the list it is.
+		target_scroll = current * ROW_PITCH - (lv_obj_get_height(p->list) - ROW_PITCH) / 2;
+		if (target_scroll < 0) {
+			target_scroll = 0;
+		}
+	}
 	int max_scroll = p->count * ROW_PITCH - lv_obj_get_height(p->list);
 	if (target_scroll > max_scroll) {
 		target_scroll = max_scroll > 0 ? max_scroll : 0;

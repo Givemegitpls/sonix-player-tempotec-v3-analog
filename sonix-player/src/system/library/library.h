@@ -351,6 +351,11 @@ void library_index_describe(const library_index_t *ix, library_index_spec_t *out
 // list underneath it has been rebuilt.
 int library_index_find_path(const library_index_t *ix, const char *path);
 
+// The same for a name list -- albums, artists, album artists, genres -- by the
+// name a row of it carries. An album value with its key finds that record; a
+// name alone finds the first album of that name. -1 when it is not in the list.
+int library_index_find_name(const library_index_t *ix, const char *name);
+
 // Bumped whenever the row ids of the tables behind `kind` may have moved.
 // Favourites count separately from the index: starring a track rewrites one row
 // of one table and must not invalidate a list of tracks.

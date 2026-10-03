@@ -531,6 +531,25 @@ static double progress_current_secs = 0.0;
 // means no floor.
 static double progress_floor_secs = -1.0;
 
+// The position to report for a file that is being opened: where a seek already
+// waiting for it will put it, or 0. A reopen at the same point -- the output
+// moving to or from the headphones -- is a play and a seek, and reporting 0
+// until the seek is reached drew the bar at the start and back. Caller holds
+// audio_mutex.
+static double opening_position(void) {
+	return seek_request && seek_target_secs > 0 ? seek_target_secs : 0.0;
+}
+
+// The position after a block has gone out, unless a seek has been asked for
+// meanwhile: audio_seek() already reports its target, and the block that was
+// being written when it arrived belongs to the old position. Caller holds
+// audio_mutex.
+static void report_position(double seconds) {
+	if (!seek_request) {
+		progress_current_secs = seconds;
+	}
+}
+
 // Playback speed, for audiobooks. It lives here rather than being handed in
 // with the track because it can be changed while one is playing, from the
 // player's own pop-over. 1.0 is untouched and costs nothing: speed.c bypasses
@@ -2471,7 +2490,7 @@ static void play_wav_file(const char *filepath) {
 	int src_frame_bytes = info.src_frame_bytes;
 	pthread_mutex_lock(&audio_mutex);
 	progress_total_secs = (double)info.data_size / bytes_per_sec;
-	progress_current_secs = 0.0;
+	progress_current_secs = opening_position();
 	progress_floor_secs = -1.0;
 	stream_sample_rate = info.sample_rate;
 	stream_channels = info.channels;
@@ -2874,7 +2893,7 @@ static void play_wav_file(const char *filepath) {
 		health_tick(&health, info.sample_rate, info.sample_rate, info.bits_per_sample);
 		host_pace(written, info.sample_rate);
 		pthread_mutex_lock(&audio_mutex);
-		progress_current_secs = (double)bytes_played / bytes_per_sec;
+		report_position((double)bytes_played / bytes_per_sec);
 		pthread_mutex_unlock(&audio_mutex);
 	}
 
@@ -3047,7 +3066,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 
 	pthread_mutex_lock(&audio_mutex);
 	progress_total_secs = (double)total_frames / sample_rate;
-	progress_current_secs = 0.0;
+	progress_current_secs = opening_position();
 	progress_floor_secs = -1.0;
 	stream_sample_rate = sample_rate;
 	stream_channels = channels;
@@ -3648,7 +3667,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		health_tick(&health, sample_rate, out_rate, source_bits);
 		host_pace(written, out_rate);
 		pthread_mutex_lock(&audio_mutex);
-		progress_current_secs = (double)bytes_played / bytes_per_sec;
+		report_position((double)bytes_played / bytes_per_sec);
 		pthread_mutex_unlock(&audio_mutex);
 	}
 

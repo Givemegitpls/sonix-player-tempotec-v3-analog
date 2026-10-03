@@ -14,12 +14,12 @@
 //
 // Two halves, and only one of them lives in this file.
 //
-// The profile is the other half and belongs to the bring-up: bluealsa is
-// started with `-p a2dp-source -p a2dp-sink` and bluez publishes both endpoints
-// in the local SDP record. That is what lets a MacBook connect at all -- with
-// only the source endpoint it finds no profile in common and Connect() fails --
-// and it is true whether or not this mode is switched on. Nothing here can make
-// that happen later: an endpoint is registered when the daemon starts.
+// The profile is the other half and belongs to bluetooth.c: while the receiver
+// page is open bluealsa runs with `-p a2dp-source -p a2dp-sink` and bluez
+// publishes both endpoints in the local SDP record, which is what lets a
+// MacBook connect at all -- with only the source endpoint it finds no profile in
+// common and Connect() fails. The rest of the time it runs with the source
+// alone (bluetooth_set_receiver_profile()).
 //
 // This file is the audio. bluealsa publishes a capture PCM for the link,
 //

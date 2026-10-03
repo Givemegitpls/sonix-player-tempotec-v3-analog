@@ -127,6 +127,9 @@ bool btstack_connect(const char *address, int timeout_ms, char *err_out, size_t 
 // Only the headphones' A2DP stream, on a device whose link is already up: what
 // is left to bring back after bluealsa has been restarted under it.
 bool btstack_connect_a2dp(const char *address, int timeout_ms);
+// The other direction: a phone or a computer's A2DP source, streaming to this
+// device, on a link that is already up.
+bool btstack_connect_a2dp_source(const char *address, int timeout_ms);
 
 bool btstack_disconnect(const char *address);
 bool btstack_trust(const char *address, bool on);

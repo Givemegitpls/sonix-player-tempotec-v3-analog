@@ -1125,6 +1125,7 @@ static lv_obj_t *keep_articles_switch;
 static lv_obj_t *display_screen;
 static lv_obj_t *album_view_switch;
 static lv_obj_t *quality_badges_switch;
+static lv_obj_t *go_to_current_switch;
 
 static void folder_chain_cb(lv_event_t *e) {
 	device_state_set_folder_chaining(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
@@ -1205,6 +1206,10 @@ static lv_obj_t *nowplaying_at_boot_switch;
 static void nowplaying_at_boot_cb(lv_event_t *e) {
 	config_set_bool("music", "nowplaying_at_boot", lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 	config_save();
+}
+
+static void go_to_current_cb(lv_event_t *e) {
+	medialist_set_go_to_current(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
 static void quality_badges_cb(lv_event_t *e) {
@@ -1308,6 +1313,14 @@ static void build_display_page(gui_config_t *cfg) {
 	option_note(container, "musicsettings_artist_opens_albums_note");
 	if (medialist_album_view()) {
 		lv_obj_add_state(album_view_switch, LV_STATE_CHECKED);
+	}
+
+	// The library lists open on what is playing: the track in All tracks, what
+	// it belongs to in the others.
+	settingsrow_toggle(container, "musicsettings_go_to_current", &go_to_current_switch, go_to_current_cb);
+	option_note(container, "musicsettings_go_to_current_note");
+	if (medialist_go_to_current()) {
+		lv_obj_add_state(go_to_current_switch, LV_STATE_CHECKED);
 	}
 
 	// A small mark under a track's title saying what the file is. It comes from

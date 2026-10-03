@@ -250,6 +250,9 @@ static bool back_guard(void) {
 
 static void loaded_cb(lv_event_t *e) {
 	(void)e;
+	// The A2DP sink exists only while this page is open (bluetooth.h): a phone
+	// connects to it from here on.
+	bluetooth_set_receiver_profile(true);
 	last_serial = (unsigned)-1;
 	// Arriving is the switch: there is nothing else this page does, so a toggle
 	// on it would only repeat what opening it already said.
@@ -265,6 +268,7 @@ static void unloaded_cb(lv_event_t *e) {
 	// the deliberate ones; this catches the rest, so the device is never left
 	// holding a stream nobody can see.
 	btreceiver_stop();
+	bluetooth_set_receiver_profile(false);
 }
 
 void btreceiverpage_init(gui_config_t *cfg) {

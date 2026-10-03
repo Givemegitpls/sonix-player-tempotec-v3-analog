@@ -110,6 +110,12 @@ static bool progress_running;
 #define POLL_PERIOD_PLAYING_MS 500
 #define POLL_PERIOD_IDLE_MS 2000
 
+// How far past their 56 px the buttons at the two ends of the transport row
+// take a tap. Upwards and downwards the 84 px row still clips it; sideways the
+// previous and next buttons start about 50 px further in, so 20 reaches
+// neither.
+#define CORNER_BTN_EXT_CLICK 20
+
 // How often the progress display is carried forward between polls.
 //
 // The poll asks the playback thread where it is, and half a second is as often
@@ -4729,6 +4735,9 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(repeat_btn, 0, 0);
 	lv_obj_add_event_cb(repeat_btn, repeat_btn_event_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_align(repeat_btn, LV_ALIGN_LEFT_MID, 0, 0);
+	// The glyph stays 56 px; the area that takes the tap does not, out to the
+	// height of the row and short of the previous button.
+	lv_obj_set_ext_click_area(repeat_btn, CORNER_BTN_EXT_CLICK);
 
 	repeat_btn_icon = lv_image_create(repeat_btn);
 	lv_obj_center(repeat_btn_icon);
@@ -4745,6 +4754,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(speed_btn, 0, 0);
 	lv_obj_add_event_cb(speed_btn, speed_btn_event_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_align(speed_btn, LV_ALIGN_LEFT_MID, 0, 0);
+	lv_obj_set_ext_click_area(speed_btn, CORNER_BTN_EXT_CLICK);
 	lv_obj_add_flag(speed_btn, LV_OBJ_FLAG_HIDDEN);
 
 	speed_btn_icon = lv_image_create(speed_btn);
@@ -4763,6 +4773,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(more_btn, 0, 0);
 	lv_obj_add_event_cb(more_btn, more_btn_event_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_align(more_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+	lv_obj_set_ext_click_area(more_btn, CORNER_BTN_EXT_CLICK);
 
 	lv_obj_t *more_icon = lv_image_create(more_btn);
 	more_btn_icon = more_icon;

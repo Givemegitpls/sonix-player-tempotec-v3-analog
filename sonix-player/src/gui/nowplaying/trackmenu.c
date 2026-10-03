@@ -18,6 +18,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/nowplaying/cover.h"
 #include "src/system/audio/audio.h"
+#include "src/system/audio/replaygain.h"
 #include "src/system/decode/decode.h"
 #include "src/system/library/metadata.h"
 #include "src/system/playback/device_state.h"
@@ -367,8 +368,23 @@ static char details_path[512];
 // none; `lossy` says the format discards information. See decode.h: for a lossy
 // file the bit/kHz pair describes the PCM leaving the decoder, not what was
 // encoded.
+// One ReplayGain figure from the tags: the correction, and the peak it was
+// measured against when the file gives one.
+static void details_add_gain(const char *name, float gain_db, float peak) {
+	char buffer[64];
+	if (peak > 0) {
+		snprintf(buffer, sizeof(buffer), tr("trackmenu_rg_gain_peak"), gain_db, peak);
+	} else {
+		snprintf(buffer, sizeof(buffer), "%+.2f dB", gain_db);
+	}
+	details_add_row(name, buffer);
+}
+
+// `playing` adds what the player is applying to this file right now, which
+// only exists for the track being played.
 static void details_fill(const char *file, const song_metadata_t *tags, int bits, double sample_rate,
-						 int channels, double duration_secs, const char *codec, int kbps, bool lossy) {
+						 int channels, double duration_secs, const char *codec, int kbps, bool lossy,
+						 bool playing) {
 	char buffer[64];
 
 	const char *slash = strrchr(file, '/');
@@ -421,6 +437,23 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 			int avg = (int)((double)st_kbps.st_size * 8.0 / duration_secs / 1000.0 + 0.5);
 			snprintf(buffer, sizeof(buffer), "%d kbps", avg);
 			details_add_row("trackmenu_bitrate", buffer);
+		}
+	}
+
+	if (tags->has_track_gain) {
+		details_add_gain("trackmenu_rg_track", tags->track_gain_db, tags->track_peak);
+	}
+	if (tags->has_album_gain) {
+		details_add_gain("trackmenu_rg_album", tags->album_gain_db, tags->album_peak);
+	}
+	// The applied figure can differ from both tags: it is the one the mode
+	// picks, lowered when the peak would clip, and capped at +12 dB.
+	if (playing && (tags->has_track_gain || tags->has_album_gain)) {
+		if (replaygain_mode() == REPLAYGAIN_OFF) {
+			details_add_row("trackmenu_rg_applied", tr("trackmenu_rg_off"));
+		} else {
+			snprintf(buffer, sizeof(buffer), "%+.2f dB", replaygain_current_db());
+			details_add_row("trackmenu_rg_applied", buffer);
 		}
 	}
 
@@ -486,7 +519,8 @@ static void details_rebuild(void) {
 			}
 		}
 
-		details_fill(details_path, &tags, bits, sample_rate, channels, duration_secs, codec, kbps, lossy);
+		details_fill(details_path, &tags, bits, sample_rate, channels, duration_secs, codec, kbps, lossy,
+					 false);
 		return;
 	}
 
@@ -516,7 +550,7 @@ static void details_rebuild(void) {
 	}
 
 	details_fill(state.current_file, &state.metadata, audio_get_stream_bits(), state.stream_sample_rate,
-				 state.stream_channels, state.progress_total_secs, codec, kbps, lossy);
+				 state.stream_channels, state.progress_total_secs, codec, kbps, lossy, true);
 }
 
 static void details_loaded_cb(lv_event_t *e) {

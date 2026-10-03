@@ -2491,6 +2491,22 @@ void library_index_describe(const library_index_t *ix, library_index_spec_t *out
 	out->valid = true;
 }
 
+// Where a row id sits in the list as it reads, -1 when it is not in it. A walk
+// of an array of ints: two hundred thousand comparisons is microseconds, where
+// asking the database for each position in turn would be two hundred thousand
+// queries.
+static int position_of_row(const struct library_index *ix, int32_t rowid) {
+	if (rowid < 0) {
+		return -1;
+	}
+	for (int i = 0; i < ix->count; i++) {
+		if (ix->rows[i] == rowid) {
+			return ix->desc ? ix->count - 1 - i : i;
+		}
+	}
+	return -1;
+}
+
 int library_index_find_path(const library_index_t *ix, const char *path) {
 	if (!ix || !path || !path[0] || ix->kind == LIBRARY_LIST_ALBUMS) {
 		return -1;
@@ -2527,18 +2543,59 @@ int library_index_find_path(const library_index_t *ix, const char *path) {
 	}
 	pthread_mutex_unlock(&db_lock);
 
-	if (rowid < 0) {
+	return position_of_row(ix, rowid);
+}
+
+int library_index_find_name(const library_index_t *ix, const char *name) {
+	if (!ix || !name || !name[0]) {
 		return -1;
 	}
-	// One indexed lookup for the row id, then a walk of an array of ints: two
-	// hundred thousand comparisons is microseconds, where asking the database
-	// for each position in turn would be two hundred thousand queries.
-	for (int i = 0; i < ix->count; i++) {
-		if (ix->rows[i] == rowid) {
-			return ix->desc ? ix->count - 1 - i : i;
-		}
+
+	// The table the handle's row ids belong to, and the column it is named by.
+	// An album is one row of ALBUM_GROUP_TABLE per name and key, so a value
+	// with a key finds its own record and a name alone the first of that name.
+	const char *sql;
+	char album[256];
+	const char *key = NULL;
+	switch (ix->kind) {
+	case LIBRARY_LIST_ALBUMS: {
+		library_album_title(name, album, sizeof(album));
+		const char *sep = strchr(name, LIBRARY_ALBUM_KEY_SEP);
+		key = sep ? sep + 1 : NULL;
+		sql = key ? "SELECT rowid FROM ALBUM_GROUP_TABLE WHERE album = ?1 AND album_key = ?2"
+				  : "SELECT rowid FROM ALBUM_GROUP_TABLE WHERE album = ?1 ORDER BY rowid";
+		name = album;
+		break;
 	}
-	return -1;
+	case LIBRARY_LIST_ARTISTS:
+		sql = "SELECT rowid FROM ARTIST_TABLE WHERE artist = ?1";
+		break;
+	case LIBRARY_LIST_ALBUM_ARTISTS:
+		sql = "SELECT rowid FROM ALBUM_ARTIST_TABLE WHERE album_artist = ?1";
+		break;
+	case LIBRARY_LIST_GENRES:
+		sql = "SELECT rowid FROM GENRE_TABLE WHERE genre = ?1";
+		break;
+	default:
+		return -1;
+	}
+
+	pthread_mutex_lock(&db_lock);
+	int32_t rowid = -1;
+	sqlite3_stmt *stmt = NULL;
+	if (db && ix->generation == generation[ix->domain] && sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+		if (key) {
+			sqlite3_bind_text(stmt, 2, key, -1, SQLITE_TRANSIENT);
+		}
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			rowid = (int32_t)sqlite3_column_int64(stmt, 0);
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+
+	return position_of_row(ix, rowid);
 }
 
 void library_index_close(library_index_t *ix) {
