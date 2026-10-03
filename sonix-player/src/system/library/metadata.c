@@ -7,6 +7,7 @@
 #include "src/system/decode/stb_vorbis_decl.h"
 #include "src/system/decode/wavpackdec.h"
 #include "src/system/decode/apedec.h"
+#include "src/system/core/config.h"
 #include "src/system/core/utils.h"
 
 #include <opusfile.h>
@@ -313,9 +314,28 @@ static bool various_artists(const char *name) {
 		   strcasecmp(name, "VA") == 0 || strcasecmp(name, "V.A.") == 0;
 }
 
+// -1 until the configuration is first asked.
+static int track_artist = -1;
+
+bool metadata_track_artist(void) {
+	if (track_artist < 0) {
+		track_artist = config_get_bool("music", "track_artist", false) ? 1 : 0;
+	}
+	return track_artist != 0;
+}
+
+void metadata_set_track_artist(bool on) {
+	track_artist = on ? 1 : 0;
+	config_set_bool("music", "track_artist", on);
+	config_save();
+}
+
 const char *metadata_shown_artist(const song_metadata_t *m) {
 	if (!m) {
 		return "";
+	}
+	if (metadata_track_artist()) {
+		return m->artist[0] ? m->artist : m->album_artist;
 	}
 	if (!m->album_artist[0] || (m->artist[0] && (m->compilation || various_artists(m->album_artist)))) {
 		return m->artist;

@@ -1507,8 +1507,9 @@ static void lyrics_paint_line(int index, bool lit) {
 static void lyrics_repaint_lit(void) { lyrics_paint_line(lyrics_lit, true); }
 
 // The line being sung, lit and held in the middle of the column. Once a
-// finger has scrolled the words, the column comes back to it when the pause
-// is over.
+// finger has scrolled the words, the column comes back to it a few seconds
+// after the finger stops -- or, with the music paused, once it plays again:
+// until then the words stay where the finger left them.
 static void lyrics_follow(double seconds) {
 	if (!lyrics_on_screen() || !lyrics_view || !lyrics_cur.synced || lyrics_cur.count == 0) {
 		return;
@@ -1534,7 +1535,8 @@ static void lyrics_follow(double seconds) {
 	if (lyrics_centred) {
 		return;
 	}
-	if (lyrics_user_until && (int32_t)(lv_tick_get() - lyrics_user_until) < 0) {
+	if (lyrics_user_until &&
+		((int32_t)(lv_tick_get() - lyrics_user_until) < 0 || audio_get_status() != AUDIO_STATUS_PLAYING)) {
 		return;
 	}
 	lyrics_user_until = 0;
@@ -3016,7 +3018,7 @@ static void player_refresh_theme(void) {
 
 static void update_qobuz_badge(void);
 
-// Refreshes the now-playing info (title + album artist) from the current
+// Refreshes the now-playing info (title + artist) from the current
 // device state and resets the per-track length cache. Used both when the user
 // picks a file and when playback auto-advances to a new track.
 static void refresh_now_playing(void) {
@@ -3070,8 +3072,7 @@ static void refresh_now_playing(void) {
 	const char *slash = strrchr(file, '/');
 	scrolltext_set(song_title_label, state.metadata.title[0] ? state.metadata.title : (slash ? slash + 1 : file));
 
-	// The album's artist, not this track's, unless the record is a
-	// compilation: see metadata_shown_artist().
+	// Whose name goes under the title: see metadata_shown_artist().
 	const char *artist = metadata_shown_artist(&state.metadata);
 	scrolltext_set(song_artist_label, artist);
 	lyrics_head_sync();
@@ -4145,6 +4146,23 @@ static void sleep_timer_cb(lv_timer_t *timer) {
 	apply_playback_status(AUDIO_STATUS_PAUSED);
 }
 
+// The artist line again, after "Use track artist" has been switched. Not a
+// whole refresh_now_playing(): nothing else on the page has changed, and that
+// would decode the cover and ask for the lyrics all over again.
+void player_refresh_artist(void) {
+	if (!song_artist_label) {
+		return;
+	}
+	device_state_t state;
+	device_state_get(&state);
+	if (state.live || !state.current_file[0]) {
+		return;
+	}
+	scrolltext_set(song_artist_label, metadata_shown_artist(&state.metadata));
+	lyrics_head_sync();
+	alt_pills_sync();
+}
+
 // Public face of refresh_now_playing, for callers that started playback
 // through device_state themselves (the library lists hand over a whole
 // queue rather than a single file).
@@ -4569,7 +4587,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(song_title_label, &font_ui_26, 0);
 	scrolltext_apply(song_title_label);
 
-	// Only the album's artist goes here -- see refresh_now_playing().
+	// The artist line -- see refresh_now_playing().
 	song_artist_label = lv_label_create(song_text);
 	lv_label_set_text(song_artist_label, "");
 	lv_obj_set_width(song_artist_label, lv_pct(100));

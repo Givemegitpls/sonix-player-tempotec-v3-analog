@@ -33,6 +33,7 @@
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
+#include "src/system/library/metadata.h"
 
 lv_obj_t *musicsettings_screen;
 
@@ -1127,6 +1128,7 @@ static lv_obj_t *scan_screen;
 static lv_obj_t *keep_articles_switch;
 static lv_obj_t *detect_changes_switch;
 static lv_obj_t *display_screen;
+static lv_obj_t *library_screen;
 static lv_obj_t *album_view_switch;
 static lv_obj_t *quality_badges_switch;
 static lv_obj_t *go_to_current_switch;
@@ -1343,10 +1345,11 @@ static void build_scan_page(gui_config_t *cfg) {
 // ---------------------------------------------------------------------------
 // Display options
 //
-// What the lists show, as opposed to what playback does with them. A page of
-// its own rather than rows on the music page: it is the third such question --
-// how a name is filed, what happens after a track, what a list shows -- and the
-// other two already have one.
+// What the lists and the now-playing page show, as opposed to what playback
+// does with them. A page of its own rather than rows on the music page: it is
+// the third such question -- how a name is filed, what happens after a track,
+// what a list shows -- and the other two already have one. How the library's
+// own lists look is one page further in, under Library.
 // ---------------------------------------------------------------------------
 
 static void album_view_cb(lv_event_t *e) {
@@ -1429,6 +1432,13 @@ static void artist_pick_cb(lv_event_t *e) {
 	artist_refresh();
 }
 
+static lv_obj_t *track_artist_switch;
+
+static void track_artist_cb(lv_event_t *e) {
+	metadata_set_track_artist(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+	player_refresh_artist();
+}
+
 static lv_obj_t *coverflow_switch;
 
 static void coverflow_cb(lv_event_t *e) {
@@ -1467,10 +1477,18 @@ static void layout_pick_cb(lv_event_t *e) {
 	layout_refresh();
 }
 
-static void build_display_page(gui_config_t *cfg) {
-	display_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(display_screen, cfg, "musicsettings_display_options");
-	settingsrow_title_corner_slots(settingsrow_page_title(display_screen), cfg, 0);
+// ---------------------------------------------------------------------------
+// Library
+//
+// How the library's lists are drawn: what an artist opens on, what a row says
+// under its title, and which tile the Music page leads with. Inside Display
+// options, which keeps what concerns the now-playing page and the rest.
+// ---------------------------------------------------------------------------
+
+static void build_library_page(gui_config_t *cfg) {
+	library_screen = lv_obj_create(NULL);
+	lv_obj_t *container = settingsrow_page(library_screen, cfg, "musicsettings_library");
+	settingsrow_title_corner_slots(settingsrow_page_title(library_screen), cfg, 0);
 
 	// On: an artist is a list of their records. Off: a flat list of their
 	// tracks, with the grouping button in the corner.
@@ -1478,23 +1496,6 @@ static void build_display_page(gui_config_t *cfg) {
 	option_note(container, "musicsettings_artist_opens_albums_note");
 	if (medialist_album_view()) {
 		lv_obj_add_state(album_view_switch, LV_STATE_CHECKED);
-	}
-
-	// The library lists open on what is playing: the track in All tracks, what
-	// it belongs to in the others.
-	settingsrow_toggle(container, "musicsettings_go_to_current", &go_to_current_switch, go_to_current_cb);
-	option_note(container, "musicsettings_go_to_current_note");
-	if (medialist_go_to_current()) {
-		lv_obj_add_state(go_to_current_switch, LV_STATE_CHECKED);
-	}
-
-	// A small mark under a track's title saying what the file is. It comes from
-	// what the scan wrote down, so a library indexed by an older build wears no
-	// badges until it is scanned again.
-	settingsrow_toggle(container, "audio_quality", &quality_badges_switch, quality_badges_cb);
-	option_note(container, "musicsettings_shows_the_tracks_audio_quality_wi");
-	if (medialist_quality_badges()) {
-		lv_obj_add_state(quality_badges_switch, LV_STATE_CHECKED);
 	}
 
 	// Who a row is by, under its title, on the lists picked here.
@@ -1506,6 +1507,49 @@ static void build_display_page(gui_config_t *cfg) {
 	option_note(container, "musicsettings_show_artist_note");
 	artist_refresh();
 	theme_register_refresh(artist_refresh);
+
+	settingsrow_toggle(container, "musicsettings_playlists_first", &playlists_first_switch, playlists_first_cb);
+	option_note(container, "musicsettings_playlists_first_note");
+	if (musicsettings_playlists_first()) {
+		lv_obj_add_state(playlists_first_switch, LV_STATE_CHECKED);
+	}
+
+	// A small mark under a track's title saying what the file is. It comes from
+	// what the scan wrote down, so a library indexed by an older build wears no
+	// badges until it is scanned again.
+	settingsrow_toggle(container, "audio_quality", &quality_badges_switch, quality_badges_cb);
+	option_note(container, "musicsettings_shows_the_tracks_audio_quality_wi");
+	if (medialist_quality_badges()) {
+		lv_obj_add_state(quality_badges_switch, LV_STATE_CHECKED);
+	}
+
+	switcher_attach_back_gesture(library_screen);
+}
+
+static void build_display_page(gui_config_t *cfg) {
+	display_screen = lv_obj_create(NULL);
+	lv_obj_t *container = settingsrow_page(display_screen, cfg, "musicsettings_display_options");
+	settingsrow_title_corner_slots(settingsrow_page_title(display_screen), cfg, 0);
+
+	build_library_page(cfg);
+	settingsrow_add(container, "musicsettings_library", NULL, switch_screen_cb, library_screen);
+
+	// Whose name goes under the title on the now-playing page, in the control
+	// centre and on the screensaver: the album's artist, as the record is
+	// filed, or the track's own. Off by default -- see metadata_shown_artist().
+	settingsrow_toggle(container, "musicsettings_track_artist", &track_artist_switch, track_artist_cb);
+	option_note(container, "musicsettings_track_artist_note");
+	if (metadata_track_artist()) {
+		lv_obj_add_state(track_artist_switch, LV_STATE_CHECKED);
+	}
+
+	// The library lists open on what is playing: the track in All tracks, what
+	// it belongs to in the others.
+	settingsrow_toggle(container, "musicsettings_go_to_current", &go_to_current_switch, go_to_current_cb);
+	option_note(container, "musicsettings_go_to_current_note");
+	if (medialist_go_to_current()) {
+		lv_obj_add_state(go_to_current_switch, LV_STATE_CHECKED);
+	}
 
 	// The album carousel. Off by default: it is a second way into the records,
 	// not a replacement for the list, and the covers it draws are decoded at a
@@ -1536,14 +1580,6 @@ static void build_display_page(gui_config_t *cfg) {
 	// stream from a phone and an audiobook all get the standard one whatever
 	// this says. Studio asks for less and takes all of them.
 	option_note(container, "musicsettings_local_only_note");
-
-	// Under the layout, because it is the other thing on this page about where
-	// something is rather than about what it says.
-	settingsrow_toggle(container, "musicsettings_playlists_first", &playlists_first_switch, playlists_first_cb);
-	option_note(container, "musicsettings_playlists_first_note");
-	if (musicsettings_playlists_first()) {
-		lv_obj_add_state(playlists_first_switch, LV_STATE_CHECKED);
-	}
 
 	// Whether a start with a remembered track lands on the now-playing page
 	// rather than on the home screen. Read once, at startup (main.c).

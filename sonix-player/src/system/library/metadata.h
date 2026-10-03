@@ -53,11 +53,17 @@ typedef struct {
 // into two shelves.
 void metadata_read(const char *filepath, song_metadata_t *out);
 
-// The artist to show for the track: the album's artist when the tags have
-// one, since that is the name the record is filed under -- except on a
-// compilation, where the album is credited to "Various Artists" or the like
-// and the track's own performer says more.
+// The artist to show for the track. By default the album's artist when the
+// tags have one, since that is the name the record is filed under -- except on
+// a compilation, where the album is credited to "Various Artists" or the like
+// and the track's own performer says more. With "Use track artist" on, the
+// track's own artist tag, whole -- every value of a tag that holds several, as
+// the details show it -- and the album's artist only when the track has none.
 const char *metadata_shown_artist(const song_metadata_t *m);
+
+// "Use track artist", kept as [music] track_artist. Off by default.
+bool metadata_track_artist(void);
+void metadata_set_track_artist(bool on);
 
 // The lyrics the file carries, as text: a Vorbis or APE LYRICS or
 // UNSYNCEDLYRICS field, an ID3v2 USLT frame, an SYLT frame turned into LRC, or
