@@ -77,6 +77,10 @@ void medialist_sort_prefs(unsigned *desc_mask, unsigned *added_mask, bool *artis
 // for the name kinds both filter arguments are ignored.
 void medialist_open(const char *title, library_list_t kind, library_filter_t filter, const char *filter_value);
 
+// Opens one artist the way their disc button was last left: the records, or
+// the tracks strung out. What the search opens an artist with.
+void medialist_open_artist(const char *name);
+
 // Re-reads what is playing and moves the accent mark to whichever rows now
 // carry it. Called from the player whenever the track changes; cheap enough
 // to call on a track that has not (it walks two dozen pool rows).

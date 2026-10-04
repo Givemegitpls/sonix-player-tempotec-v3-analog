@@ -1952,8 +1952,8 @@ int library_for_each(library_list_t kind, library_filter_t filter, const char *v
 
 int library_for_each_ordered(library_list_t kind, library_filter_t filter, const char *value, library_order_t order,
 							 library_row_cb cb, void *user) {
-	if (!cb) {
-		return 0;
+	if (!cb || filter == LIBRARY_FILTER_SEARCH) {
+		return 0; // a search is read through a handle
 	}
 
 	char sql[512];
@@ -2136,9 +2136,61 @@ static bool playlist_table(const char *name, char *out, size_t out_size) {
 
 // The ordered query behind a list, as SQL. `select` is what to ask for, so the
 // same builder serves both the row-id pass and the streaming reader.
+// The LIKE pattern a query becomes: folded the way foldcase() folds the rows,
+// wrapped in wildcards, and with LIKE's own two wildcards escaped -- a query is
+// a piece of a name, so a user typing "_" means an underscore and not "any
+// character". False for a query that folds to nothing.
+static bool search_pattern(const char *query, char *out, size_t size) {
+	char folded[256];
+	if (!query || size < 3 || fold_text(query, folded, sizeof(folded)) == 0) {
+		return false;
+	}
+	size_t at = 0;
+	out[at++] = '%';
+	for (size_t i = 0; folded[i] && at + 3 < size; i++) {
+		if (folded[i] == '%' || folded[i] == '_' || folded[i] == '\\') {
+			out[at++] = '\\';
+		}
+		out[at++] = folded[i];
+	}
+	out[at++] = '%';
+	out[at] = '\0';
+	return true;
+}
+
 static void list_sql(char *sql, size_t size, const char *select, library_list_t kind, library_filter_t filter,
 					 const char *value, library_order_t order) {
 	const char *col = filter_column(filter);
+
+	// A search: the names that contain the query, in list order, with the
+	// pattern bound as ?1. Tracks, albums and artists only.
+	if (filter == LIBRARY_FILTER_SEARCH) {
+		static const struct {
+			library_list_t kind;
+			const char *table;
+			const char *column;
+		} SEARCHED[] = {
+			{LIBRARY_LIST_TRACKS, "MEDIA_TABLE", "name"},
+			{LIBRARY_LIST_ALBUMS, "ALBUM_GROUP_TABLE", "album"},
+			{LIBRARY_LIST_ARTISTS, "ARTIST_TABLE", "artist"},
+		};
+		sql[0] = '\0';
+		for (size_t i = 0; i < sizeof(SEARCHED) / sizeof(SEARCHED[0]); i++) {
+			if (SEARCHED[i].kind != kind) {
+				continue;
+			}
+			if (list_uses_sortkey(kind)) {
+				snprintf(sql, size, "SELECT %s FROM %s WHERE %s <> '' AND foldcase(%s) LIKE ?1 ESCAPE '\\' ORDER BY sortkey",
+						 select, SEARCHED[i].table, SEARCHED[i].column, SEARCHED[i].column);
+			} else {
+				snprintf(sql, size,
+						 "SELECT %s FROM %s WHERE %s <> '' AND foldcase(%s) LIKE ?1 ESCAPE '\\'"
+						 " ORDER BY %s COLLATE listorder",
+						 select, SEARCHED[i].table, SEARCHED[i].column, SEARCHED[i].column, SEARCHED[i].column);
+			}
+		}
+		return;
+	}
 
 	if (kind == LIBRARY_LIST_FAVOURITES) {
 		snprintf(sql, size, "SELECT %s FROM FAVOURITES ORDER BY added_at, rowid", select);
@@ -2343,6 +2395,16 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 				 (kind == LIBRARY_LIST_TRACKS ||
 				  (kind == LIBRARY_LIST_ALBUMS && (filter == LIBRARY_FILTER_ARTIST ||
 												   filter == LIBRARY_FILTER_ALBUM_ARTIST || filter == LIBRARY_FILTER_GENRE)));
+	// A search binds the pattern the value becomes, not the value.
+	char pattern[2 * 256 + 3];
+	if (filter == LIBRARY_FILTER_SEARCH) {
+		if (!search_pattern(value, pattern, sizeof(pattern))) {
+			free(ix);
+			return NULL;
+		}
+		bound = true;
+		value = pattern;
+	}
 
 	char count_sql[PLAYLIST_TABLE_MAX + 256];
 	char rows_sql[PLAYLIST_TABLE_MAX + 256];
@@ -7034,25 +7096,10 @@ int library_search(const char *query, int per_category, library_search_cb_t cb, 
 		return 0;
 	}
 
-	// The pattern, folded the way foldcase() folds the rows, and with LIKE's own
-	// two wildcards escaped: a query is a piece of a name, so a user typing "_"
-	// means an underscore and not "any character".
-	char folded[256];
-	if (fold_text(query, folded, sizeof(folded)) == 0) {
+	char like[2 * 256 + 3];
+	if (!search_pattern(query, like, sizeof(like))) {
 		return 0;
 	}
-
-	char like[2 * sizeof(folded) + 3];
-	size_t at = 0;
-	like[at++] = '%';
-	for (size_t i = 0; folded[i]; i++) {
-		if (folded[i] == '%' || folded[i] == '_' || folded[i] == '\\') {
-			like[at++] = '\\';
-		}
-		like[at++] = folded[i];
-	}
-	like[at++] = '%';
-	like[at] = '\0';
 
 	int total = 0;
 

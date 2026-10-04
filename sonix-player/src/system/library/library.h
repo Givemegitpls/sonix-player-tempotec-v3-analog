@@ -237,6 +237,9 @@ typedef enum {
 	LIBRARY_FILTER_ARTIST,
 	LIBRARY_FILTER_ALBUM_ARTIST,
 	LIBRARY_FILTER_GENRE,
+	// The tracks, albums or artists whose name contains the value, matched the
+	// way library_search() matches. For the handles below only.
+	LIBRARY_FILTER_SEARCH,
 } library_filter_t;
 
 // Streams the whole result set, sorted by the collation, one row per call:
