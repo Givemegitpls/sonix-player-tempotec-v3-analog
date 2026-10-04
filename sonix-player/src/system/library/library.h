@@ -261,6 +261,13 @@ typedef enum {
 	LIBRARY_ORDER_ADDED,	   // by when the file landed on the card, oldest
 							   // first; all tracks, albums, artists and album
 							   // artists only (a row is as new as its newest file)
+	LIBRARY_ORDER_YEAR,		   // by release year, earliest first; all tracks and
+							   // all albums only (an album's year is its tracks'
+							   // latest). Rows with no year come last.
+	LIBRARY_ORDER_YEAR_DESC,   // the same, latest first, and still with the rows
+							   // that have no year last -- which is why it is an
+							   // order of its own and not the one above read
+							   // backwards
 } library_order_t;
 int library_for_each_ordered(library_list_t kind, library_filter_t filter, const char *value, library_order_t order,
 							 library_row_cb cb, void *user);

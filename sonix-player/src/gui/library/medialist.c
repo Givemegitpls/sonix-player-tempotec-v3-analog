@@ -273,6 +273,9 @@ static unsigned sort_desc_mask;
 // Which lists run by when their files arrived rather than by name. Same shape
 // as sort_desc_mask, and the two combine: "newest first" is by date, reversed.
 static unsigned sort_added_mask;
+// Which lists run by release year. Same shape again; a list is by year or by
+// date or by name, never two of them, and the direction bit says which way.
+static unsigned sort_year_mask;
 // The disc button on an artist's own lists: on, an artist opened as a track
 // list -- from the search, or from the Artists list with Album view off --
 // opens as their records instead.
@@ -368,6 +371,18 @@ static void sort_set_added(library_list_t kind, bool added) {
 	config_save();
 }
 
+static bool sort_is_year(library_list_t kind) { return (sort_year_mask & (1u << (unsigned)kind)) != 0; }
+
+static void sort_set_year(library_list_t kind, bool year) {
+	if (year) {
+		sort_year_mask |= 1u << (unsigned)kind;
+	} else {
+		sort_year_mask &= ~(1u << (unsigned)kind);
+	}
+	config_set_int("library", "sort_year", (long)sort_year_mask);
+	config_save();
+}
+
 // The lists that can run by date as well as by name: every track, every
 // record, every artist and every album artist -- the last three by their
 // newest file, so an artist with a new record comes up with it. Genres have no
@@ -377,6 +392,31 @@ static bool sort_can_date(library_list_t kind, library_filter_t filter) {
 	return (kind == LIBRARY_LIST_TRACKS || kind == LIBRARY_LIST_ALBUMS || kind == LIBRARY_LIST_ARTISTS ||
 			kind == LIBRARY_LIST_ALBUM_ARTISTS) &&
 		   filter == LIBRARY_FILTER_NONE;
+}
+
+// The lists that can run by release year: every track and every record. An
+// artist has no year of their own -- the first record and the last are both
+// fair answers -- so the name lists stay out.
+static bool sort_can_year(library_list_t kind, library_filter_t filter) {
+	return (kind == LIBRARY_LIST_TRACKS || kind == LIBRARY_LIST_ALBUMS) && filter == LIBRARY_FILTER_NONE;
+}
+
+// The order a list is opened with, and whether the handle reads it backwards.
+// Z-A and newest first are the ascending list read backwards; by year the
+// database runs it either way itself, so the rows without a year stay at the
+// end in both.
+static void sort_order_for(library_list_t kind, library_filter_t filter, library_order_t *order, bool *desc) {
+	bool reversed = sort_is_desc(kind);
+	if (sort_can_year(kind, filter) && sort_is_year(kind)) {
+		*order = reversed ? LIBRARY_ORDER_YEAR_DESC : LIBRARY_ORDER_YEAR;
+		*desc = false;
+	} else if (sort_can_date(kind, filter) && sort_is_added(kind)) {
+		*order = LIBRARY_ORDER_ADDED;
+		*desc = reversed;
+	} else {
+		*order = LIBRARY_ORDER_DEFAULT;
+		*desc = reversed;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2013,6 +2053,9 @@ static void reorder_icon_paint(panel_t *p) {
 // Whether this panel's list runs by date rather than by name.
 static bool sort_by_date(const panel_t *p) { return sort_can_date(p->kind, p->filter) && sort_is_added(p->kind); }
 
+// Whether it runs by release year.
+static bool sort_by_year(const panel_t *p) { return sort_can_year(p->kind, p->filter) && sort_is_year(p->kind); }
+
 // The sort button's glyph says how the list runs now: by name or by date, and
 // which way. The arrow points the way the list reads in both.
 static void sort_icon_paint(panel_t *p) {
@@ -2020,7 +2063,9 @@ static void sort_icon_paint(panel_t *p) {
 		return;
 	}
 	bool desc = sort_is_desc(p->kind);
-	if (sort_by_date(p)) {
+	// By year it wears the date glyphs too: the arrow is what tells the two
+	// directions apart, and the menu says which kind of date it is.
+	if (sort_by_date(p) || sort_by_year(p)) {
 		lv_image_set_src(p->sort_icon, desc ? &icon_sort_date_new : &icon_sort_date_old);
 	} else {
 		lv_image_set_src(p->sort_icon, desc ? &icon_sort_za : &icon_sort_az);
@@ -2536,13 +2581,17 @@ static void reload_current(panel_t *p) {
 	medialist_open(title, p->kind, p->filter, value[0] ? value : NULL);
 }
 
-// The four ways a datable list can run, as the menu offers them. Each is a
-// pair of bits, and the menu's tick is whichever pair is set now.
+// The ways a datable list can run, as the menu offers them -- the last two only
+// on the lists that have a year. Each is a set of bits, and the menu's tick is
+// whichever set is on now.
 typedef enum {
 	SORT_NAME_AZ,
 	SORT_NAME_ZA,
 	SORT_ADDED_NEW,
 	SORT_ADDED_OLD,
+	SORT_YEAR_UP,
+	SORT_YEAR_DOWN,
+	SORT_CHOICES,
 } sort_choice_t;
 
 static panel_t *sort_menu_panel;
@@ -2554,7 +2603,8 @@ static void sort_picked(void *user) {
 	}
 	sort_choice_t choice = (sort_choice_t)(intptr_t)user;
 	sort_set_added(p->kind, choice == SORT_ADDED_NEW || choice == SORT_ADDED_OLD);
-	sort_set_desc(p->kind, choice == SORT_NAME_ZA || choice == SORT_ADDED_NEW);
+	sort_set_year(p->kind, choice == SORT_YEAR_UP || choice == SORT_YEAR_DOWN);
+	sort_set_desc(p->kind, choice == SORT_NAME_ZA || choice == SORT_ADDED_NEW || choice == SORT_YEAR_DOWN);
 	reload_current(p);
 }
 
@@ -2571,22 +2621,26 @@ static void sort_clicked_cb(lv_event_t *e) {
 		return;
 	}
 
-	bool added = sort_is_added(p->kind);
 	bool desc = sort_is_desc(p->kind);
-	sort_choice_t current = added ? (desc ? SORT_ADDED_NEW : SORT_ADDED_OLD) : (desc ? SORT_NAME_ZA : SORT_NAME_AZ);
+	sort_choice_t current = desc ? SORT_NAME_ZA : SORT_NAME_AZ;
+	if (sort_by_year(p)) {
+		current = desc ? SORT_YEAR_DOWN : SORT_YEAR_UP;
+	} else if (sort_by_date(p)) {
+		current = desc ? SORT_ADDED_NEW : SORT_ADDED_OLD;
+	}
 
-	static const char *const labels[] = {
-		[SORT_NAME_AZ] = "medialist_sort_name_az",
-		[SORT_NAME_ZA] = "medialist_sort_name_za",
-		[SORT_ADDED_NEW] = "medialist_sort_added_new",
-		[SORT_ADDED_OLD] = "medialist_sort_added_old",
+	static const char *const labels[SORT_CHOICES] = {
+		[SORT_NAME_AZ] = "medialist_sort_name_az",	   [SORT_NAME_ZA] = "medialist_sort_name_za",
+		[SORT_ADDED_NEW] = "medialist_sort_added_new", [SORT_ADDED_OLD] = "medialist_sort_added_old",
+		[SORT_YEAR_UP] = "medialist_sort_year_up",	   [SORT_YEAR_DOWN] = "medialist_sort_year_down",
 	};
-	popover_item_t items[4];
-	for (int i = 0; i < 4; i++) {
+	int n = sort_can_year(p->kind, p->filter) ? SORT_CHOICES : SORT_YEAR_UP;
+	popover_item_t items[SORT_CHOICES];
+	for (int i = 0; i < n; i++) {
 		items[i] = (popover_item_t){labels[i], sort_picked, (void *)(intptr_t)i, i == (int)current};
 	}
 	sort_menu_panel = p;
-	popover_show(lv_event_get_current_target(e), items, 4);
+	popover_show(lv_event_get_current_target(e), items, n);
 }
 
 // Favourites reversed: the most recently starred track on top. The database
@@ -3553,7 +3607,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 		lv_obj_set_style_image_recolor(lv_obj_get_child(p->reverse_btn, 0),
 									   fav_reversed ? theme()->accent : theme()->text_primary, 0);
 	}
-	bool by_date = sort_by_date(p);
+	bool by_date = sort_by_date(p) || sort_by_year(p);
 	sort_icon_paint(p);
 	lv_obj_move_foreground(p->corner);
 
@@ -3565,7 +3619,9 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	}
 
 	model_clear(p);
-	library_order_t order = by_date ? LIBRARY_ORDER_ADDED : LIBRARY_ORDER_DEFAULT;
+	library_order_t order = LIBRARY_ORDER_DEFAULT;
+	bool sort_desc = false;
+	sort_order_for(kind, filter, &order, &sort_desc);
 
 	// Z-A is the same list read backwards. The database has already done the
 	// hard part -- the collation groups by script, folds case and accents and
@@ -3574,7 +3630,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// again. Reversed favourites are the same list read backwards as well: the
 	// database returns it oldest-starred first, and with the button on, the
 	// newest belongs on top.
-	bool desc = (sortable && sort_is_desc(kind)) || (kind == LIBRARY_LIST_FAVOURITES && fav_reversed);
+	bool desc = (sortable && sort_desc) || (kind == LIBRARY_LIST_FAVOURITES && fav_reversed);
 
 	p->from_paths = false;
 	p->list_order = order;
@@ -3720,6 +3776,7 @@ void medialist_init(gui_config_t *cfg) {
 
 	sort_desc_mask = (unsigned)config_get_int("library", "sort_desc", 0);
 	sort_added_mask = (unsigned)config_get_int("library", "sort_added", 0);
+	sort_year_mask = (unsigned)config_get_int("library", "sort_year", 0);
 	artist_records = config_get_int("library", "artist_records", 0) != 0;
 	load_view_settings();
 	fav_reversed = config_get_int("library", "fav_reversed", 0) != 0;
@@ -3755,24 +3812,28 @@ void medialist_init(gui_config_t *cfg) {
 // ---------------------------------------------------------------------------
 
 // The same decisions the corner buttons make in the list itself: which lists
-// can be reversed or put by date.
+// can be reversed or put by date or by year.
 void medialist_list_order(library_list_t kind, library_filter_t filter, library_order_t *order, bool *desc) {
 	bool sortable = (kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_NONE) ||
 					(kind == LIBRARY_LIST_ALBUMS && filter == LIBRARY_FILTER_NONE) || kind == LIBRARY_LIST_ARTISTS ||
 					kind == LIBRARY_LIST_ALBUM_ARTISTS;
-	bool by_date = sort_can_date(kind, filter) && sort_is_added(kind);
+	library_order_t sort_order = LIBRARY_ORDER_DEFAULT;
+	bool sort_desc = false;
+	sort_order_for(kind, filter, &sort_order, &sort_desc);
 	if (order) {
-		*order = by_date ? LIBRARY_ORDER_ADDED : LIBRARY_ORDER_DEFAULT;
+		*order = sort_order;
 	}
 	if (desc) {
-		*desc = (sortable && sort_is_desc(kind)) ||
-				(kind == LIBRARY_LIST_FAVOURITES && fav_reversed);
+		*desc = (sortable && sort_desc) || (kind == LIBRARY_LIST_FAVOURITES && fav_reversed);
 	}
 }
 
 void medialist_sort_prefs(unsigned *desc_mask, unsigned *added_mask, bool *artist_by_album, bool *favourites_reversed) {
+	// The app knows names and dates, not years: a list the player runs by year
+	// is described to it as A-Z rather than as a direction it would apply to
+	// the names.
 	if (desc_mask) {
-		*desc_mask = sort_desc_mask;
+		*desc_mask = sort_desc_mask & ~sort_year_mask;
 	}
 	if (added_mask) {
 		*added_mask = sort_added_mask;
