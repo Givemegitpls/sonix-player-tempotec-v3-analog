@@ -178,4 +178,20 @@ void volume_profile_persist(void);
 void volume_profile_persist_now(void);
 void change_volume_percent(int delta);
 
+// The volume limit: a ceiling for each of the two sockets and for USB-C, which
+// the level cannot be raised past while the limit is on, by any route -- the
+// keys, the slider, the app, a phone over DLNA. Lowering a ceiling under the
+// level an output was left at brings that level down to it, at once if it is
+// the output in use. Bluetooth is not limited: the headphones out there keep a
+// volume of their own. Line out is a fixed level switched on on purpose, and
+// is not either. Off, with every ceiling at 100, until it is set.
+//
+// The ceilings are written to the config as they move, without saving: the
+// page saves on release, so a drag is one write and not ninety.
+#define VOLUME_LIMIT_MIN 10
+bool volume_limit_enabled(void);
+void volume_limit_set_enabled(bool on);
+int volume_limit(volume_output_t out); // 100 for an output that has none
+void volume_limit_set(volume_output_t out, int percent);
+
 #endif

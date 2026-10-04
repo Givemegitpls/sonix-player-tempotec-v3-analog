@@ -822,11 +822,117 @@ static const char *PROFILE_NAMES[VOLUME_OUTPUT_COUNT] = {
 
 static bool output_in_range(volume_output_t out) { return out >= 0 && out < VOLUME_OUTPUT_COUNT; }
 
+// ---------------------------------------------------------------------------
+// The volume limit (see alsa-controls.h)
+// ---------------------------------------------------------------------------
+
+static bool limit_loaded;
+static bool limit_on;
+static int limit_level[VOLUME_OUTPUT_COUNT] = {100, 100, 100, 100};
+
+static const char *const LIMIT_KEYS[VOLUME_OUTPUT_COUNT] = {
+	[VOLUME_OUTPUT_PHONES] = "volume_limit_phones",
+	[VOLUME_OUTPUT_BALANCED] = "volume_limit_balanced",
+	[VOLUME_OUTPUT_USB] = "volume_limit_usb",
+};
+
+static int limit_clamp_value(int percent) {
+	return percent < VOLUME_LIMIT_MIN ? VOLUME_LIMIT_MIN : (percent > 100 ? 100 : percent);
+}
+
+// Read on first use rather than at init: the first level is applied by
+// audio_init(), after the config is loaded but before anything here is set up.
+static void limit_load(void) {
+	if (limit_loaded) {
+		return;
+	}
+	limit_loaded = true;
+	limit_on = config_get_int("audio", "volume_limit", 0) != 0;
+	for (int i = 0; i < VOLUME_OUTPUT_COUNT; i++) {
+		if (LIMIT_KEYS[i]) {
+			limit_level[i] = limit_clamp_value((int)config_get_int("audio", LIMIT_KEYS[i], 100));
+		}
+	}
+}
+
+// The ceiling in force for `out` right now: 100 with the limit off and for the
+// outputs it does not cover.
+static int limit_ceiling(volume_output_t out) {
+	limit_load();
+	if (!limit_on || !output_in_range(out) || !LIMIT_KEYS[out]) {
+		return 100;
+	}
+	return limit_level[out];
+}
+
+bool volume_limit_enabled(void) {
+	limit_load();
+	return limit_on;
+}
+
+int volume_limit(volume_output_t out) {
+	limit_load();
+	if (!output_in_range(out) || !LIMIT_KEYS[out]) {
+		return 100;
+	}
+	return limit_level[out];
+}
+
+static void apply_volume_hw(int percent);
+
+// Brings the remembered level of `out` under its ceiling, and the hardware with
+// it when that is the output playing. Line out holds its own level and keeps
+// it; the user's level underneath it is what comes down.
+static void limit_enforce(volume_output_t out) {
+	int ceiling = limit_ceiling(out);
+	if (level[out] > ceiling) {
+		level[out] = ceiling;
+		profile_dirty = true;
+	}
+	if (out != profile_out) {
+		return;
+	}
+	if (lineout_on) {
+		if (lineout_saved_percent > ceiling) {
+			lineout_saved_percent = ceiling;
+		}
+	} else if (current_percent > ceiling) {
+		profile_dirty = true;
+		apply_volume_hw(ceiling);
+	}
+}
+
+void volume_limit_set_enabled(bool on) {
+	limit_load();
+	limit_on = on;
+	config_set_int("audio", "volume_limit", on ? 1 : 0);
+	config_save();
+	if (on) {
+		limit_enforce(VOLUME_OUTPUT_PHONES);
+		limit_enforce(VOLUME_OUTPUT_BALANCED);
+		limit_enforce(VOLUME_OUTPUT_USB);
+		volume_profile_persist();
+	}
+}
+
+void volume_limit_set(volume_output_t out, int percent) {
+	limit_load();
+	if (!output_in_range(out) || !LIMIT_KEYS[out]) {
+		return;
+	}
+	limit_level[out] = limit_clamp_value(percent);
+	config_set_int("audio", LIMIT_KEYS[out], limit_level[out]);
+	limit_enforce(out);
+}
+
 void volume_profile_set_level(volume_output_t out, int percent) {
 	if (!output_in_range(out)) {
 		return;
 	}
 	level[out] = (percent >= 0 && percent <= 100) ? percent : -1;
+	if (level[out] > limit_ceiling(out)) {
+		level[out] = limit_ceiling(out);
+	}
 }
 
 void volume_profile_init(int wired_percent, int bt_percent) {
@@ -961,6 +1067,12 @@ void set_volume_percent(int percent) {
 	// from pulling the output off the index the mode exists to hold.
 	if (lineout_on) {
 		return;
+	}
+
+	// And no higher than the ceiling of the socket in use.
+	int ceiling = limit_ceiling(profile_out);
+	if (percent > ceiling) {
+		percent = ceiling;
 	}
 
 	if (current_percent != percent || level[profile_out] != percent) {

@@ -23,6 +23,8 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/audio/alsa-controls.h"
+#include "src/gui/shell/topbar.h"
+#include "src/system/device/sysinfo.h"
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/audio/audio.h"
 #include "src/system/bluetooth/bluetooth.h"
@@ -556,6 +558,104 @@ static void build_balance_page(gui_config_t *cfg) {
 
 	balance_refresh();
 	switcher_attach_back_gesture(balance_screen);
+}
+
+// ---------------------------------------------------------------------------
+// Volume limit
+//
+// A switch, and while it is on one ceiling per output: the level cannot be
+// raised past it from anywhere (see alsa-controls.h). One each because the two
+// sockets and USB-C are three different things to listen through, and keep
+// three levels for the same reason. The R1 has no 4.4 mm socket, and so no
+// slider for it.
+// ---------------------------------------------------------------------------
+
+static void refresh_active_chevrons(void);
+
+static lv_obj_t *vlimit_screen;
+static lv_obj_t *vlimit_switch;
+#define VLIMIT_OUTPUT_COUNT 3
+static lv_obj_t *vlimit_cards[VLIMIT_OUTPUT_COUNT], *vlimit_values[VLIMIT_OUTPUT_COUNT],
+	*vlimit_sliders[VLIMIT_OUTPUT_COUNT];
+static const volume_output_t VLIMIT_OUTPUTS[VLIMIT_OUTPUT_COUNT] = {VOLUME_OUTPUT_PHONES, VOLUME_OUTPUT_BALANCED,
+																	 VOLUME_OUTPUT_USB};
+
+#define VLIMIT_STEPS (100 - VOLUME_LIMIT_MIN + 1)
+
+static bool vlimit_has_balanced(void) { return !sysinfo_model()->cs43131; }
+
+static void vlimit_refresh(void) {
+	bool on = volume_limit_enabled();
+	if (on) {
+		lv_obj_add_state(vlimit_switch, LV_STATE_CHECKED);
+	} else {
+		lv_obj_remove_state(vlimit_switch, LV_STATE_CHECKED);
+	}
+	for (int i = 0; i < VLIMIT_OUTPUT_COUNT; i++) {
+		int limit = volume_limit(VLIMIT_OUTPUTS[i]);
+		lv_label_set_text_fmt(vlimit_values[i], "%d", limit);
+		lv_slider_set_value(vlimit_sliders[i], limit - VOLUME_LIMIT_MIN, LV_ANIM_OFF);
+		bool absent = VLIMIT_OUTPUTS[i] == VOLUME_OUTPUT_BALANCED && !vlimit_has_balanced();
+		lv_obj_set_hidden(vlimit_cards[i], !on || absent);
+	}
+}
+
+// The level may just have come down under a new ceiling, and the number in
+// the status bar is the one place on screen that says what it is.
+static void vlimit_level_moved(void) { topbar_refresh_volume(get_volume_percent()); }
+
+static void vlimit_toggle_cb(lv_event_t *e) {
+	(void)e;
+	volume_limit_set_enabled(lv_obj_has_state(vlimit_switch, LV_STATE_CHECKED));
+	vlimit_refresh();
+	vlimit_level_moved();
+	refresh_active_chevrons();
+}
+
+static void vlimit_slider_cb(lv_event_t *e) {
+	int i = (int)(intptr_t)lv_event_get_user_data(e);
+	int limit = VOLUME_LIMIT_MIN + (int)lv_slider_get_value(vlimit_sliders[i]);
+	volume_limit_set(VLIMIT_OUTPUTS[i], limit);
+	lv_label_set_text_fmt(vlimit_values[i], "%d", volume_limit(VLIMIT_OUTPUTS[i]));
+	vlimit_level_moved();
+}
+
+static void vlimit_released_cb(lv_event_t *e) {
+	(void)e;
+	config_save();
+}
+
+static void vlimit_loaded_cb(lv_event_t *e) {
+	(void)e;
+	vlimit_refresh();
+}
+
+static void build_volume_limit_page(gui_config_t *cfg) {
+	vlimit_screen = lv_obj_create(NULL);
+	lv_obj_t *container = settingsrow_page(vlimit_screen, cfg, "musicsettings_volume_limit");
+
+	settingsrow_toggle(container, "on", &vlimit_switch, vlimit_toggle_cb);
+
+	static const char *const NAMES[VLIMIT_OUTPUT_COUNT] = {"musicsettings_volume_limit_phones",
+														   "musicsettings_volume_limit_balanced",
+														   "musicsettings_volume_limit_usb"};
+	for (int i = 0; i < VLIMIT_OUTPUT_COUNT; i++) {
+		vlimit_cards[i] = settingsrow_slider(container, NAMES[i], VLIMIT_STEPS, &vlimit_values[i], &vlimit_sliders[i],
+											 NULL);
+		lv_obj_add_event_cb(vlimit_sliders[i], vlimit_slider_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
+		lv_obj_add_event_cb(vlimit_sliders[i], vlimit_released_cb, LV_EVENT_RELEASED, NULL);
+	}
+
+	lv_obj_t *note = lv_label_create(container);
+	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(note, lv_pct(100));
+	lv_obj_add_style(note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(note, &font_ui_22, 0);
+	lv_label_set_text(note, tr("musicsettings_volume_limit_note"));
+
+	vlimit_refresh();
+	lv_obj_add_event_cb(vlimit_screen, vlimit_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	switcher_attach_back_gesture(vlimit_screen);
 }
 
 // ---------------------------------------------------------------------------
@@ -1098,7 +1198,7 @@ void musicsettings_set_mseb_enabled(bool enabled) {
 // The rows whose chevron says whether what lies behind it is on. Every row
 // that can be switched off, not a selection of them: a green chevron on MSEB
 // and a grey one on an enabled fade is not a nuance, it is a lie.
-static lv_obj_t *eq_row, *peq_row, *mseb_row, *soundfield_row, *crossfeed_row, *fade_row, *balance_row;
+static lv_obj_t *eq_row, *peq_row, *mseb_row, *soundfield_row, *crossfeed_row, *fade_row, *balance_row, *vlimit_row;
 
 static void refresh_active_chevrons(void) {
 	settingsrow_chevron_active(eq_row, eq_get_enabled());
@@ -1108,6 +1208,7 @@ static void refresh_active_chevrons(void) {
 	settingsrow_chevron_active(crossfeed_row, crossfeed_get_enabled());
 	settingsrow_chevron_active(fade_row, musicsettings_fade_enabled());
 	settingsrow_chevron_active(balance_row, balance_get_enabled());
+	settingsrow_chevron_active(vlimit_row, volume_limit_enabled());
 }
 
 static void screen_loaded_cb(lv_event_t *e) {
@@ -1796,6 +1897,9 @@ void musicsettings_init(gui_config_t *cfg) {
 
 	build_balance_page(cfg);
 	balance_row = settingsrow_add(container, "musicsettings_channel_balance", NULL, switch_screen_cb, balance_screen);
+
+	build_volume_limit_page(cfg);
+	vlimit_row = settingsrow_add(container, "musicsettings_volume_limit", NULL, switch_screen_cb, vlimit_screen);
 
 	// The gain step: off = low gain (the stock default), on = +6 dB.
 	settingsrow_toggle(container, "musicsettings_high_gain", &gain_switch, gain_toggle_cb);
