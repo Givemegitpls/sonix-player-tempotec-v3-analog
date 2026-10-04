@@ -1081,6 +1081,8 @@ bool radio_recent_get(int index, radio_station_t *out) {
 // ---------------------------------------------------------------------------
 
 static radio_station_t custom[RADIO_CUSTOM_MAX];
+// The heading each station opens, empty for the ones that open none.
+static char custom_heading[RADIO_CUSTOM_MAX][RADIO_NAME_MAX];
 static int custom_count;
 static bool custom_present;
 static pthread_mutex_t custom_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1102,9 +1104,27 @@ static char *trim(char *s) {
 // What a line is.
 typedef enum {
 	CUSTOM_LINE_STATION,
+	CUSTOM_LINE_HEADING, // "[ROCK]": the stations below belong to it
 	CUSTOM_LINE_IGNORED, // blank, or a comment: not something to complain about
 	CUSTOM_LINE_BAD,
 } custom_line_t;
+
+// A heading is a whole line in square brackets with something inside. A
+// station whose name starts with a bracket ("[Live] Radio, http://...") does
+// not end with one, so it stays a station. `heading` receives the text.
+static bool custom_parse_heading(char *text, char *heading, size_t heading_size) {
+	size_t len = strlen(text);
+	if (len < 3 || text[0] != '[' || text[len - 1] != ']') {
+		return false;
+	}
+	text[len - 1] = '\0';
+	char *inside = trim(text + 1);
+	if (!inside[0]) {
+		return false;
+	}
+	snprintf(heading, heading_size, "%s", inside);
+	return true;
+}
 
 // One line into a station.
 //
@@ -1112,10 +1132,13 @@ typedef enum {
 // after it: an address cannot contain a comma before its scheme, and a station
 // called "Radio Uno, Roma" is more likely than one whose URL needs the split to
 // happen later.
-static custom_line_t custom_parse_line(char *line, radio_station_t *out) {
+static custom_line_t custom_parse_line(char *line, radio_station_t *out, char *heading, size_t heading_size) {
 	char *text = trim(line);
 	if (!text[0] || text[0] == '#') {
 		return CUSTOM_LINE_IGNORED;
+	}
+	if (custom_parse_heading(text, heading, heading_size)) {
+		return CUSTOM_LINE_HEADING;
 	}
 
 	char *comma = strchr(text, ',');
@@ -1161,10 +1184,21 @@ void radio_custom_reload(void) {
 
 	char line[RADIO_URL_MAX + RADIO_NAME_MAX + 8];
 	int bad = 0;
+	int headings = 0;
+	// A heading waits for the station under it; two in a row, the second wins,
+	// and one with no station after it shows nothing.
+	char pending[RADIO_NAME_MAX] = "";
 	while (custom_count < RADIO_CUSTOM_MAX && fgets(line, sizeof(line), f)) {
-		switch (custom_parse_line(line, &custom[custom_count])) {
+		char heading[RADIO_NAME_MAX];
+		switch (custom_parse_line(line, &custom[custom_count], heading, sizeof(heading))) {
 		case CUSTOM_LINE_STATION:
+			snprintf(custom_heading[custom_count], sizeof(custom_heading[0]), "%s", pending);
+			pending[0] = '\0';
 			custom_count++;
+			break;
+		case CUSTOM_LINE_HEADING:
+			snprintf(pending, sizeof(pending), "%s", heading);
+			headings++;
 			break;
 		case CUSTOM_LINE_BAD:
 			bad++;
@@ -1177,7 +1211,8 @@ void radio_custom_reload(void) {
 
 	// Only the lines somebody meant as a station and got wrong are counted:
 	// blanks and comments are how the file is meant to be written.
-	fprintf(stderr, "radio: %s -- %d stations, %d unreadable lines\n", path, custom_count, bad);
+	fprintf(stderr, "radio: %s -- %d stations, %d headings, %d unreadable lines\n", path, custom_count, headings,
+			bad);
 	pthread_mutex_unlock(&custom_lock);
 }
 
@@ -1196,6 +1231,20 @@ bool radio_custom_get(int index, radio_station_t *out) {
 	bool ok = index >= 0 && index < custom_count;
 	if (ok) {
 		*out = custom[index];
+	}
+	pthread_mutex_unlock(&custom_lock);
+	return ok;
+}
+
+bool radio_custom_heading(int index, char *out, size_t out_size) {
+	if (!out || out_size == 0) {
+		return false;
+	}
+	out[0] = '\0';
+	pthread_mutex_lock(&custom_lock);
+	bool ok = index >= 0 && index < custom_count && custom_heading[index][0];
+	if (ok) {
+		snprintf(out, out_size, "%s", custom_heading[index]);
 	}
 	pthread_mutex_unlock(&custom_lock);
 	return ok;

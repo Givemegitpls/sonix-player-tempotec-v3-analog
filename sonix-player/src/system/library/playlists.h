@@ -105,12 +105,13 @@ bool playlists_backup(const char *name, char *path_out, size_t path_size);
 // ---------------------------------------------------------------------------
 // Import
 //
-// What the page's import button works on. Two places: loose .m3u/.m3u8 files at
-// the root of the card, which is where a list copied off a computer lands, and
-// the Playlist folder, which is where Backup writes. The second is what brings
-// a deleted playlist back -- its backup is still there. A backup of a playlist
-// that still exists is not offered, since importing it would only make a second
-// copy of something already on the page.
+// What the page's import button works on. Loose .m3u/.m3u8 files at the root of
+// the card, which is where a list copied off a computer lands, the Playlist
+// folder, which is where Backup writes, and the stock player's playlist_data.
+// The Playlist folder is what brings a deleted playlist back -- its backup is
+// still there. A file named like a playlist that exists is offered too, marked
+// as such: importing it replaces that playlist with what the file holds, which
+// is how an edited copy goes back in.
 //
 // Importing reads a list once and writes it into the index as a playlist of
 // this player's own: every entry resolved to a path it can open, the ones the
@@ -128,6 +129,7 @@ typedef struct {
 	char name[201]; // what it would be called: the file name, without extension
 	char path[512]; // the file itself
 	enum PlaylistLocation playlist_location; // a backup, rather than a loose file at the root
+	bool exists; // a playlist already answers to `name`: importing replaces it
 } playlists_candidate_t;
 
 // Fills `out` with at most `max` importable playlists, by name. Returns how
@@ -152,6 +154,12 @@ typedef struct {
 // index -- not something to call from the interface thread. False when the file
 // cannot be read or nothing in it could be resolved, and then nothing was
 // written. The source file is never touched.
-bool playlists_import(const char *source_path, playlists_import_result_t *out);
+//
+// With `overwrite`, a playlist that already has the file's name is replaced by
+// what the file holds; without it the import takes the name with a number
+// added. The replacement is written beside the old playlist first and only
+// takes its place once it is complete, so a failed import leaves the old one
+// as it was.
+bool playlists_import(const char *source_path, bool overwrite, playlists_import_result_t *out);
 
 #endif // PLAYLISTS_H

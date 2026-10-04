@@ -621,6 +621,10 @@ static bool collect_row_cb(const char *name, void *user) {
 
 #define IMPORT_MAX_CANDIDATES 24
 
+// The warning mark on a row that would replace a playlist: amber, readable on
+// the light card and the dark one alike.
+#define IMPORT_ALERT_COLOUR 0xE0A030
+
 static lv_obj_t *import_layer;
 static lv_obj_t *import_heading;
 static lv_obj_t *import_body;	// the scrolling middle: rows, or the report
@@ -787,7 +791,11 @@ static void *import_worker(void *arg) {
 
 	for (int i = 0; i < job->count; i++) {
 		import_entry_t *entry = &result->entries[result->count++];
-		entry->imported = playlists_import(job->items[i].path, &entry->got);
+		// Always replacing: a file imported under a name that is taken is the
+		// new version of that playlist, every track it no longer lists gone
+		// with the old one -- also when an earlier file in this same import
+		// has just taken the name.
+		entry->imported = playlists_import(job->items[i].path, true, &entry->got);
 		if (!entry->imported) {
 			memset(&entry->got, 0, sizeof(entry->got));
 			snprintf(entry->got.name, sizeof(entry->got.name), "%s", job->items[i].name);
@@ -878,6 +886,55 @@ static bool import_start(void) {
 	return true;
 }
 
+// The import goes ahead from the confirmation, if the dialog it was asked from
+// is still up with its rows.
+static void import_overwrite_confirmed(void *user) {
+	(void)user;
+	if (import_running || import_count == 0 || !import_layer || lv_obj_is_hidden(import_layer)) {
+		return;
+	}
+	if (import_start()) {
+		import_count = 0;
+	}
+}
+
+// Ticked playlists whose names are taken are said out loud before anything is
+// replaced: the playlists they would replace, by name, and a button that says
+// what it does. True when the question was asked and the import now waits for
+// the answer.
+#define IMPORT_OVERWRITE_NAMED 6
+
+static bool import_confirm_overwrite(void) {
+	int taken = 0;
+	char names[IMPORT_OVERWRITE_NAMED * 64 + 16] = "";
+	size_t used = 0;
+	for (int i = 0; i < import_count; i++) {
+		if (!import_selected[i] || !import_candidates[i].exists) {
+			continue;
+		}
+		if (taken < IMPORT_OVERWRITE_NAMED) {
+			int wrote = snprintf(names + used, sizeof(names) - used, "\n%.60s", import_candidates[i].name);
+			if (wrote > 0 && (size_t)wrote < sizeof(names) - used) {
+				used += (size_t)wrote;
+			}
+		} else if (taken == IMPORT_OVERWRITE_NAMED) {
+			int wrote = snprintf(names + used, sizeof(names) - used, "\n...");
+			if (wrote > 0 && (size_t)wrote < sizeof(names) - used) {
+				used += (size_t)wrote;
+			}
+		}
+		taken++;
+	}
+	if (taken == 0) {
+		return false;
+	}
+
+	static char message[sizeof(names) + 256];
+	snprintf(message, sizeof(message), "%s%s", tr("playlist_overwrite_note"), names);
+	confirm_show("playlist_overwrite_title", message, "playlist_overwrite", import_overwrite_confirmed, NULL);
+	return true;
+}
+
 static void import_action_cb(lv_event_t *e) {
 	(void)e;
 	if (player_sheet_drag_active() || switcher_back_drag_active()) {
@@ -889,7 +946,7 @@ static void import_action_cb(lv_event_t *e) {
 	// The same button finishes both states: it starts the import while there
 	// are rows to choose from, and closes the report afterwards.
 	if (import_count > 0) {
-		if (import_start()) {
+		if (!import_confirm_overwrite() && import_start()) {
 			import_count = 0; // the rows are gone; the next press closes
 		}
 		return;
@@ -974,6 +1031,14 @@ static void import_add_candidate_row(int index) {
 	lv_label_set_text(where,tr(get_playlist_location_tr(import_candidates[index])));
 	lv_obj_add_style(where, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(where, &font_ui_16, 0);
+
+	// A playlist by this name is already there, and importing replaces it.
+	if (import_candidates[index].exists) {
+		lv_obj_t *alert = lv_image_create(row);
+		lv_image_set_src(alert, &icon_playlist_overwrite_alert);
+		lv_obj_set_style_image_recolor(alert, lv_color_hex(IMPORT_ALERT_COLOUR), 0);
+		lv_obj_set_style_image_recolor_opa(alert, LV_OPA_COVER, 0);
+	}
 }
 
 static void import_btn_cb(lv_event_t *e) {
@@ -994,7 +1059,9 @@ static void import_btn_cb(lv_event_t *e) {
 	lv_obj_clean(import_body);
 	for (int i = 0; i < IMPORT_MAX_CANDIDATES; i++) {
 		import_ticks[i] = NULL;
-		import_selected[i] = i < import_count; // everything found, unless unticked
+		// Everything found, unless unticked -- except what would replace a
+		// playlist that is already there, which waits to be asked for.
+		import_selected[i] = i < import_count && !import_candidates[i].exists;
 	}
 	for (int i = 0; i < import_count; i++) {
 		import_add_candidate_row(i);

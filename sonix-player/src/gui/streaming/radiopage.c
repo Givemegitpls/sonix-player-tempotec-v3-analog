@@ -73,6 +73,16 @@ typedef struct {
 #define PLAYMARK_INSET 4 // from the row's left edge
 #define ROW_PAD_HOR 14
 
+// radio.txt's headings: a line of dim text over the first station of each
+// group, in the gap the group's rows are pushed down by. Only that list has
+// them, so only that list's rows are placed from a table rather than at a
+// fixed pitch.
+#define HEADING_HEIGHT 56
+static int custom_row_y[RADIO_CUSTOM_MAX]; // where each station row sits
+static int custom_list_height;
+static lv_obj_t *heading_labels[RADIO_CUSTOM_MAX];
+static int heading_count;
+
 // The radio.txt line the rows were last marked for, -1 for none.
 static int marked_custom = -1;
 
@@ -379,6 +389,59 @@ static void row_update_playmark(row_t *row) {
 	}
 }
 
+static bool list_has_headings(void) { return list_mode == LIST_CUSTOM && heading_count > 0; }
+
+static int row_y(int index) {
+	if (list_has_headings() && index >= 0 && index < RADIO_CUSTOM_MAX) {
+		return custom_row_y[index];
+	}
+	return index * ROW_PITCH;
+}
+
+static int list_height(int count) {
+	if (list_has_headings()) {
+		return custom_list_height;
+	}
+	return count > 0 ? count * ROW_PITCH : ROW_PITCH;
+}
+
+// The headings of radio.txt, made again with the list. The labels belong to
+// this list alone, so any other list clears them.
+static void headings_layout(void) {
+	for (int i = 0; i < heading_count; i++) {
+		lv_obj_delete(heading_labels[i]);
+	}
+	heading_count = 0;
+	custom_list_height = 0;
+	if (list_mode != LIST_CUSTOM) {
+		return;
+	}
+
+	int line = lv_font_get_line_height(&font_ui_22);
+	int width = lv_obj_get_style_width(list_body, LV_PART_MAIN);
+	int y = 0;
+	for (int i = 0; i < station_count && i < RADIO_CUSTOM_MAX; i++) {
+		char text[RADIO_NAME_MAX];
+		if (radio_custom_heading(i, text, sizeof(text))) {
+			lv_obj_t *label = lv_label_create(list_body);
+			lv_label_set_text(label, text);
+			lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+			lv_obj_set_width(label, width - 2 * ROW_PAD_HOR);
+			lv_obj_add_style(label, &theme_style_text_dim, 0);
+			lv_obj_set_style_text_font(label, &font_ui_22, 0);
+			// Close over its own rows rather than midway in the gap, so it
+			// reads as their title and not as the previous group's last line.
+			lv_obj_set_pos(label, ROW_PAD_HOR / 2, y + HEADING_HEIGHT - line - 10);
+			lv_obj_set_clickable(label, false);
+			heading_labels[heading_count++] = label;
+			y += HEADING_HEIGHT;
+		}
+		custom_row_y[i] = y;
+		y += ROW_PITCH;
+	}
+	custom_list_height = y > 0 ? y : ROW_PITCH;
+}
+
 static void row_bind(row_t *row, int index) {
 	row->index = index;
 	row_update_playmark(row);
@@ -389,7 +452,7 @@ static void row_bind(row_t *row, int index) {
 	}
 
 	show(row->button);
-	lv_obj_set_y(row->button, index * ROW_PITCH);
+	lv_obj_set_y(row->button, row_y(index));
 
 	if (list_mode == LIST_TERMS) {
 		lv_label_set_text(row->name, terms[index].label);
@@ -452,7 +515,8 @@ static void list_rebuild_keep(bool keep_scroll) {
 	int count = list_count();
 	marked_station_update(); // the rows below are marked from it
 
-	lv_obj_set_height(list_body, count > 0 ? count * ROW_PITCH : ROW_PITCH);
+	headings_layout();
+	lv_obj_set_height(list_body, list_height(count));
 	if (!keep_scroll) {
 		lv_obj_scroll_to_y(list_view, 0, LV_ANIM_OFF);
 	}
@@ -480,6 +544,15 @@ static void list_window_update(void) {
 	}
 
 	int first = (scroll / ROW_PITCH) - 1;
+	if (list_has_headings()) {
+		// The first row whose bottom is below the top of the view, and one
+		// before it, as the fixed pitch would give.
+		first = 0;
+		while (first < count && custom_row_y[first] + ROW_HEIGHT <= scroll) {
+			first++;
+		}
+		first--;
+	}
 	if (first + ROW_POOL > count) {
 		first = count - ROW_POOL;
 	}

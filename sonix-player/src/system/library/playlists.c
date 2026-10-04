@@ -823,13 +823,9 @@ static void consider_candidate(const char *folder, const char *file_name, enum P
 	}
 	playlists_candidate_t *slot = &out[*count];
 	name_from_file(file_name, slot->name, sizeof(slot->name));
-	// In the Playlist folder, whatever the player already has is not offered:
-	// the folder holds backups, and a backup of a playlist that is still there
-	// would be a second copy of it. What is left is the useful case -- the
-	// backup of one that was deleted, and anybody else's file.
-	if (playlist_location && library_playlist_exists(slot->name)) {
-		return;
-	}
+	// A file named like a playlist that is already there is offered all the
+	// same, marked, since importing it replaces that playlist.
+	slot->exists = library_playlist_exists(slot->name);
 	copy_capped(slot->path, sizeof(slot->path), full);
 	slot->playlist_location = playlist_location;
 	(*count)++;
@@ -944,7 +940,7 @@ static bool import_name(const char *stem, char *name_out, size_t name_size) {
 	return false;
 }
 
-bool playlists_import(const char *source_path, playlists_import_result_t *out) {
+bool playlists_import(const char *source_path, bool overwrite, playlists_import_result_t *out) {
 	if (!source_path || !source_path[0] || !out) {
 		return false;
 	}
@@ -1096,8 +1092,17 @@ bool playlists_import(const char *source_path, playlists_import_result_t *out) {
 	const char *slash = strrchr(source_path, '/');
 	name_from_file(slash ? slash + 1 : source_path, stem, sizeof(stem));
 
+	// Replacing: the rows go into a playlist of their own beside the old one,
+	// which is only dropped once they are all in. A leftover from an import cut
+	// short is cleared first.
 	char name[201];
-	if (!import_name(stem, name, sizeof(name))) {
+	bool replacing = overwrite && name_is_usable(stem) && library_playlist_exists(stem);
+	if (replacing) {
+		snprintf(name, sizeof(name), "%.180s (import)", stem);
+		if (library_playlist_exists(name)) {
+			library_playlist_drop(name);
+		}
+	} else if (!import_name(stem, name, sizeof(name))) {
 		import_entries_free(entries, count);
 		return false;
 	}
@@ -1142,7 +1147,17 @@ bool playlists_import(const char *source_path, playlists_import_result_t *out) {
 	ok = library_playlist_write_end(writer, ok && written > 0);
 	import_entries_free(entries, count);
 	if (!ok) {
+		if (replacing) {
+			library_playlist_drop(name); // the old playlist stays as it was
+		}
 		return false;
+	}
+
+	// The new rows are complete: they take the old playlist's place. Should
+	// that fail, they stay under the name they were written to rather than
+	// being lost.
+	if (replacing && library_playlist_drop(stem) && library_playlist_rename(name, stem)) {
+		copy_capped(name, sizeof(name), stem);
 	}
 
 	copy_capped(out->name, sizeof(out->name), name);
