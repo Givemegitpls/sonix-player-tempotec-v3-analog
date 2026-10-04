@@ -97,13 +97,13 @@ static void rebuild_rows(void) {
 	}
 
 	if (shown > 0) {
-		lv_obj_add_flag(status_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(status_label, true);
 		return;
 	}
 
 	lv_label_set_text(status_label, show_color ? tr("gearboy_empty_note")
 											   : tr("gearboy_empty_gb_note"));
-	lv_obj_remove_flag(status_label, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(status_label, false);
 }
 
 static void pick_view_cb(lv_event_t *e) {
@@ -194,7 +194,7 @@ static void start_scan(void) {
 	scan_generation++;
 
 	lv_label_set_text(status_label, tr("gearboy_looking_for_games"));
-	lv_obj_remove_flag(status_label, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(status_label, false);
 
 	pthread_t t;
 	if (pthread_create(&t, NULL, scan_thread, (void *)(uintptr_t)scan_generation) != 0) {
@@ -255,7 +255,7 @@ void gearboypage_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_hor(container, cfg->padding, 0);
 	lv_obj_set_style_pad_ver(container, 0, 0);
 	lv_obj_set_style_pad_gap(container, 12, 0);
-	lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(container, false);
 	lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 	switcher_attach_back_gesture(container);
@@ -266,7 +266,7 @@ void gearboypage_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(chooser, 0, 0);
 	lv_obj_set_style_pad_all(chooser, 0, 0);
 	lv_obj_set_style_pad_gap(chooser, 10, 0);
-	lv_obj_remove_flag(chooser, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(chooser, false);
 	lv_obj_set_flex_flow(chooser, LV_FLEX_FLOW_ROW);
 
 	btn_gb = make_view_choice(chooser, "gearboy_gb", false);

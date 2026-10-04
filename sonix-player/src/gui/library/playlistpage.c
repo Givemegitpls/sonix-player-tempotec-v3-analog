@@ -476,7 +476,7 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 	lv_obj_set_style_pad_column(row, 14, 0);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE); // the player sheet drags from here too
+	lv_obj_set_event_bubble(row, true); // the player sheet drags from here too
 	char *uuid = NULL;
 	if (qobuz_id > 0) {
 		// An account playlist has no file to delete, so it carries no menu:
@@ -507,8 +507,8 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 	lv_obj_set_style_bg_opa(texts, 0, 0);
 	lv_obj_set_style_border_width(texts, 0, 0);
 	lv_obj_set_style_pad_all(texts, 0, 0);
-	lv_obj_remove_flag(texts, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(texts, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(texts, false);
+	lv_obj_set_event_bubble(texts, true);
 	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(texts, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -716,15 +716,14 @@ static void import_show_report(const char *text) {
 
 	lv_label_set_text(import_heading, tr("playlist_import_finished"));
 	lv_label_set_text(import_action_label, tr("ok"));
-	lv_obj_remove_flag(import_action, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(import_action, false);
 }
 
 static void import_finished(void *user) {
 	import_result_t *result = user;
 	import_running = false;
 
-	if (result->generation == import_generation && import_layer &&
-		!lv_obj_has_flag(import_layer, LV_OBJ_FLAG_HIDDEN)) {
+	if (result->generation == import_generation && import_layer && !lv_obj_is_hidden(import_layer)) {
 		import_show_report(result->text);
 	}
 	if (result->imported > 0) {
@@ -796,7 +795,7 @@ static void *import_worker(void *arg) {
 // --- the dialog ------------------------------------------------------------
 
 static void import_tick_paint(int index) {
-	if (!import_ticks[index] || !lv_obj_is_valid(import_ticks[index])) {
+	if (!gui_obj_alive(import_ticks[index])) {
 		return;
 	}
 	bool on = import_selected[index];
@@ -854,7 +853,7 @@ static void import_start(void) {
 	lv_obj_set_width(label, lv_pct(100));
 	lv_obj_add_style(label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(label, &font_ui_24, 0);
-	lv_obj_add_flag(import_action, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(import_action, true);
 }
 
 static void import_action_cb(lv_event_t *e) {
@@ -877,7 +876,7 @@ static void import_action_cb(lv_event_t *e) {
 
 static void import_layer_hide(void) {
 	if (import_layer) {
-		lv_obj_add_flag(import_layer, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(import_layer, true);
 	}
 	import_generation++;
 	import_count = 0;
@@ -933,8 +932,8 @@ static void import_add_candidate_row(int index) {
 	lv_obj_set_style_bg_opa(texts, 0, 0);
 	lv_obj_set_style_border_width(texts, 0, 0);
 	lv_obj_set_style_pad_all(texts, 0, 0);
-	lv_obj_remove_flag(texts, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(texts, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(texts, false);
+	lv_obj_set_clickable(texts, false);
 	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(texts, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -978,8 +977,8 @@ static void import_btn_cb(lv_event_t *e) {
 
 	lv_label_set_text(import_heading, tr("playlist_import_playlists"));
 	lv_label_set_text(import_action_label, tr("playlist_import"));
-	lv_obj_remove_flag(import_action, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(import_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(import_action, false);
+	lv_obj_set_hidden(import_layer, false);
 	lv_obj_move_foreground(import_layer);
 }
 
@@ -989,7 +988,7 @@ static void import_btn_cb(lv_event_t *e) {
 
 static void name_layer_hide(void) {
 	if (name_layer) {
-		lv_obj_add_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(name_layer, true);
 	}
 	// A rename that was cancelled, or a dialog put away on the way into the
 	// page: either way there is no longer a playlist waiting to be renamed, and
@@ -1095,7 +1094,7 @@ static void name_layer_show(const char *initial) {
 	// the event by hand avoids a frozen caret here while the search page blinks.
 	lv_obj_add_state(name_field, LV_STATE_FOCUSED);
 	lv_obj_send_event(name_field, LV_EVENT_FOCUSED, NULL);
-	lv_obj_remove_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(name_layer, false);
 	lv_obj_move_foreground(name_layer);
 }
 
@@ -1135,7 +1134,7 @@ static void rebuild_rows(void) {
 	lv_obj_set_style_pad_column(new_row, 14, 0);
 	lv_obj_set_flex_flow(new_row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(new_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_add_flag(new_row, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(new_row, true);
 	lv_obj_add_event_cb(new_row, new_playlist_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *new_icon = lv_image_create(new_row);
@@ -1184,9 +1183,9 @@ static void rebuild_rows(void) {
 	}
 
 	if (count == 0) {
-		lv_obj_remove_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(empty_label, false);
 	} else {
-		lv_obj_add_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(empty_label, true);
 	}
 }
 
@@ -1199,7 +1198,7 @@ void playlistpage_open(void) {
 	lv_label_set_text(title_label, tr("playlists"));
 	name_layer_hide();
 	import_layer_hide();
-	lv_obj_remove_flag(import_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(import_btn, false);
 	rebuild_rows();
 	switch_screen(playlistpage_screen);
 }
@@ -1224,7 +1223,7 @@ void playlistpage_add_track(const char *track_path) {
 	// While the page is choosing where a track goes it is not somewhere to
 	// import from: the corner button would open a dialog over a half-finished
 	// action.
-	lv_obj_add_flag(import_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(import_btn, true);
 	rebuild_rows();
 	switch_screen(playlistpage_screen);
 }
@@ -1254,7 +1253,7 @@ void playlistpage_add_tracks(const char *const *paths, int count) {
 	lv_label_set_text(title_label, tr("playlist_add_to_playlist_2"));
 	name_layer_hide();
 	import_layer_hide();
-	lv_obj_add_flag(import_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(import_btn, true);
 	rebuild_rows();
 	switch_screen(playlistpage_screen);
 }
@@ -1287,7 +1286,7 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_scroll_dir(list, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
 	lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
-	lv_obj_add_flag(list, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(list, true);
 
 	empty_label = lv_label_create(playlistpage_screen);
 	lv_label_set_text(empty_label, tr("playlist_empty_note"));
@@ -1295,7 +1294,7 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_add_style(empty_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(empty_label, &font_ui_24, 0);
 	lv_obj_align(empty_label, LV_ALIGN_TOP_MID, 0, content_top + 140);
-	lv_obj_add_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(empty_label, true);
 
 	// --- the naming dialog: a full-screen layer with the field at the top and
 	// the shared keyboard at the bottom, matching the search page.
@@ -1307,8 +1306,8 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(name_layer, 0, 0);
 	lv_obj_set_style_radius(name_layer, 0, 0);
 	lv_obj_set_style_pad_all(name_layer, 0, 0);
-	lv_obj_remove_flag(name_layer, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(name_layer, false);
+	lv_obj_set_hidden(name_layer, true);
 
 	lv_obj_t *heading = lv_label_create(name_layer);
 	lv_label_set_text(heading, tr("playlist_name"));
@@ -1374,8 +1373,8 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(import_layer, 0, 0);
 	lv_obj_set_style_radius(import_layer, 0, 0);
 	lv_obj_set_style_pad_all(import_layer, 0, 0);
-	lv_obj_remove_flag(import_layer, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(import_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(import_layer, false);
+	lv_obj_set_hidden(import_layer, true);
 
 	import_heading = lv_label_create(import_layer);
 	lv_label_set_text(import_heading, tr("playlist_import_playlists"));

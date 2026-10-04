@@ -185,14 +185,14 @@ static void build_graph(lv_obj_t *parent) {
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 14, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	// Not clickable, so the back gesture can start on top of the graph.
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(card, false);
 
 	graph = lv_chart_create(card);
 	lv_obj_set_size(graph, lv_pct(100), 168);
 	lv_obj_align(graph, LV_ALIGN_TOP_MID, 0, 0);
-	lv_obj_remove_flag(graph, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(graph, false);
 	lv_obj_set_style_border_width(graph, 0, 0);
 	lv_obj_set_style_radius(graph, 8, 0);
 	lv_obj_set_style_pad_all(graph, 6, 0);
@@ -216,8 +216,8 @@ static void build_graph(lv_obj_t *parent) {
 	lv_obj_set_style_bg_opa(marks, 0, 0);
 	lv_obj_set_style_border_width(marks, 0, 0);
 	lv_obj_set_style_pad_all(marks, 0, 0);
-	lv_obj_remove_flag(marks, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(marks, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(marks, false);
+	lv_obj_set_clickable(marks, false);
 	lv_obj_set_flex_flow(marks, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(marks, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -294,9 +294,9 @@ static void band_page_refresh(void) {
 	gain_text(b.gain_tenths, text, sizeof(text));
 	lv_label_set_text(gain_value, text);
 	if (type_has_gain(b.type)) {
-		lv_obj_remove_flag(gain_card, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(gain_card, false);
 	} else {
-		lv_obj_add_flag(gain_card, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(gain_card, true);
 	}
 
 	lv_slider_set_value(q_slider, index_from_q(b.q_cent), LV_ANIM_OFF);
@@ -437,7 +437,7 @@ static void build_band_page(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(shape_card, 0, 0);
 	lv_obj_set_style_pad_all(shape_card, 18, 0);
 	lv_obj_set_style_pad_row(shape_card, 14, 0);
-	lv_obj_remove_flag(shape_card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(shape_card, false);
 	lv_obj_set_flex_flow(shape_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(shape_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -452,7 +452,7 @@ static void build_band_page(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
 	lv_obj_set_style_pad_gap(pills, 10, 0);
-	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
 
@@ -542,12 +542,12 @@ static void refresh_preamp(void) {
 	if (headroom_label) {
 		int headroom = eq_auto_headroom_tenths();
 		if (headroom == 0) {
-			lv_obj_add_flag(headroom_label, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(headroom_label, true);
 		} else {
 			char cut[24];
 			gain_text(headroom, cut, sizeof(cut));
 			lv_label_set_text_fmt(headroom_label, tr("peq_headroom_auto"), cut);
-			lv_obj_remove_flag(headroom_label, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(headroom_label, false);
 		}
 	}
 }
@@ -559,11 +559,11 @@ static void apply_enabled(bool on) {
 	if (reset_btn) {
 		if (on) {
 			lv_obj_remove_state(reset_btn, LV_STATE_DISABLED);
-			lv_obj_add_flag(reset_btn, LV_OBJ_FLAG_CLICKABLE);
+			lv_obj_set_clickable(reset_btn, true);
 			lv_obj_set_style_opa(reset_btn, LV_OPA_COVER, 0);
 		} else {
 			lv_obj_add_state(reset_btn, LV_STATE_DISABLED);
-			lv_obj_remove_flag(reset_btn, LV_OBJ_FLAG_CLICKABLE);
+			lv_obj_set_clickable(reset_btn, false);
 			lv_obj_set_style_opa(reset_btn, LV_OPA_40, 0);
 		}
 	}
@@ -581,9 +581,9 @@ static void apply_enabled(bool on) {
 			continue;
 		}
 		if (on) {
-			lv_obj_add_flag(band_rows[i], LV_OBJ_FLAG_CLICKABLE);
+			lv_obj_set_clickable(band_rows[i], true);
 		} else {
-			lv_obj_remove_flag(band_rows[i], LV_OBJ_FLAG_CLICKABLE);
+			lv_obj_set_clickable(band_rows[i], false);
 		}
 		lv_obj_set_style_opa(band_rows[i], LV_OPA_COVER, 0);
 
@@ -753,7 +753,7 @@ void peqpage_init(gui_config_t *cfg) {
 	lv_obj_add_style(headroom_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(headroom_label, &font_ui_18, 0);
 	lv_label_set_text(headroom_label, "");
-	lv_obj_add_flag(headroom_label, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(headroom_label, true);
 
 	for (int i = 0; i < PEQ_BANDS; i++) {
 		band_rows[i] = settingsrow_add(container, "peq_band", &band_values[i], band_clicked_cb, (void *)(intptr_t)i);

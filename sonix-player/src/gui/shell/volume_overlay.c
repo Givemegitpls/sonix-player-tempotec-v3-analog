@@ -81,7 +81,7 @@ static void hide_cb(lv_timer_t *timer) {
 		lv_timer_reset(hide_timer);
 		return;
 	}
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(veil, true);
 	lv_timer_pause(hide_timer);
 }
 
@@ -151,7 +151,7 @@ void volume_overlay_show(int percent) {
 	lv_label_set_text_fmt(overlay_label, "%d", percent);
 	apply_label_color(percent);
 
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(veil, false);
 	lv_obj_move_foreground(veil);
 
 	// Every key press pushes the dismissal back, so holding the key keeps the
@@ -171,9 +171,9 @@ void volume_overlay_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(veil, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(veil, 0, 0);
 	lv_obj_set_style_pad_all(veil, 0, 0);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(veil, false);
+	lv_obj_set_clickable(veil, false);
+	lv_obj_set_hidden(veil, true);
 
 	overlay = lv_obj_create(veil);
 	lv_obj_set_size(overlay, OVERLAY_WIDTH, OVERLAY_HEIGHT);
@@ -184,8 +184,8 @@ void volume_overlay_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_hor(overlay, 22, 0);
 	lv_obj_set_style_pad_ver(overlay, 0, 0);
 	lv_obj_set_style_pad_gap(overlay, 16, 0);
-	lv_obj_remove_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(overlay, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(overlay, false);
+	lv_obj_set_event_bubble(overlay, false);
 
 	lv_obj_set_flex_flow(overlay, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(overlay, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

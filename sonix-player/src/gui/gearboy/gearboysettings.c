@@ -108,7 +108,7 @@ static lv_obj_t *make_pill_card(lv_obj_t *parent, const char *title_tag) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 16, 0);
 	lv_obj_set_style_pad_row(card, 12, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -125,7 +125,7 @@ static lv_obj_t *make_pill_card(lv_obj_t *parent, const char *title_tag) {
 	lv_obj_set_style_pad_all(pills, 0, 0);
 	lv_obj_set_style_pad_column(pills, 8, 0);
 	lv_obj_set_style_pad_row(pills, 8, 0);
-	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	return pills;

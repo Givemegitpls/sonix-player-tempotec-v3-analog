@@ -176,7 +176,7 @@ static lv_obj_t *make_viewport(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t **b
 	lv_obj_add_event_cb(list, scroll_cb, LV_EVENT_SCROLL, NULL);
 	// Presses on the rows and on the empty area bubble into the gesture
 	// handlers; set here because an empty list binds no row to set it later.
-	lv_obj_add_flag(list, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(list, true);
 
 	lv_obj_t *body = lv_obj_create(list);
 	lv_obj_set_width(body, row_width);
@@ -185,8 +185,8 @@ static lv_obj_t *make_viewport(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t **b
 	lv_obj_set_style_bg_opa(body, 0, 0);
 	lv_obj_set_style_border_width(body, 0, 0);
 	lv_obj_set_style_pad_all(body, 0, 0);
-	lv_obj_remove_flag(body, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(body, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(body, false);
+	lv_obj_set_event_bubble(body, true);
 
 	lv_obj_t *empty = lv_label_create(list);
 	lv_obj_set_width(empty, row_width);
@@ -195,7 +195,7 @@ static lv_obj_t *make_viewport(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t **b
 	lv_obj_add_style(empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(empty, &font_ui_24, 0);
 	lv_obj_align(empty, LV_ALIGN_TOP_MID, 0, 90);
-	lv_obj_add_flag(empty, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(empty, true);
 
 	player_sheet_attach_drag(list, true);
 	switcher_attach_back_gesture(list);
@@ -334,9 +334,9 @@ static void row_update_playmark(row_t *row) {
 	const char *path = NULL;
 	bool playing = np_book[0] && row_at(row->index, NULL, &path) && path[0] && strcmp(path, np_book) == 0;
 	if (playing) {
-		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->playmark, false);
 	} else {
-		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->playmark, true);
 	}
 }
 
@@ -363,7 +363,7 @@ static void row_bind(row_t *row, int index) {
 	row->index = index;
 
 	if (index < 0 || index >= entry_count) {
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->button, true);
 		return;
 	}
 
@@ -371,11 +371,11 @@ static void row_bind(row_t *row, int index) {
 	if (!row_at(index, &name, NULL)) {
 		// The handle went stale under the list, or the row is gone. Hiding it
 		// is what the next window_update() undoes, once the list is rebuilt.
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->button, true);
 		return;
 	}
 
-	lv_obj_remove_flag(row->button, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(row->button, false);
 	lv_obj_set_y(row->button, index * ROW_PITCH);
 	lv_label_set_text(row->label, name);
 	row_show_glyph(row);
@@ -450,9 +450,9 @@ static void thumb_timer_cb(lv_timer_t *timer) {
 
 static void show_empty(lv_obj_t *label, int count) {
 	if (count == 0) {
-		lv_obj_remove_flag(label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(label, false);
 	} else {
-		lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(label, true);
 	}
 }
 
@@ -758,8 +758,8 @@ static void build_books_page(gui_config_t *cfg) {
 		lv_obj_set_style_shadow_width(row->button, 0, 0);
 		lv_obj_set_style_pad_all(row->button, ROW_PAD, 0);
 		lv_obj_set_style_pad_column(row->button, ROW_PAD, 0);
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_EVENT_BUBBLE); // so the player sheet can be dragged in
+		lv_obj_set_hidden(row->button, true);
+		lv_obj_set_event_bubble(row->button, true); // so the player sheet can be dragged in
 		lv_obj_add_event_cb(row->button, book_clicked_cb, LV_EVENT_CLICKED, NULL);
 		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -780,7 +780,7 @@ static void build_books_page(gui_config_t *cfg) {
 
 		// Out of the flex layout: it sits in the row's own left padding.
 		row->playmark = lv_obj_create(row->button);
-		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_IGNORE_LAYOUT);
+		lv_obj_set_ignore_layout(row->playmark, true);
 		lv_obj_set_size(row->playmark, PLAYMARK_WIDTH, PLAYMARK_HEIGHT);
 		lv_obj_align(row->playmark, LV_ALIGN_LEFT_MID, PLAYMARK_INSET - ROW_PAD, 0);
 		lv_obj_add_style(row->playmark, &theme_style_accent_bg, 0);
@@ -788,9 +788,9 @@ static void build_books_page(gui_config_t *cfg) {
 		lv_obj_set_style_border_width(row->playmark, 0, 0);
 		lv_obj_set_style_shadow_width(row->playmark, 0, 0);
 		lv_obj_set_style_pad_all(row->playmark, 0, 0);
-		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_scrollable(row->playmark, false);
+		lv_obj_set_clickable(row->playmark, false);
+		lv_obj_set_hidden(row->playmark, true);
 
 		row->index = -1;
 		row->has_thumb = false;
@@ -875,10 +875,10 @@ static void name_row_bind(name_row_t *row, int index) {
 	}
 	row->index = index;
 	if (index < 0 || index >= name_count) {
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->button, true);
 		return;
 	}
-	lv_obj_remove_flag(row->button, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(row->button, false);
 	lv_obj_set_y(row->button, index * NAME_ROW_PITCH);
 	lv_label_set_text(row->label, shown_name(names[index].name));
 	lv_label_set_text_fmt(row->count, "%d", names[index].books);
@@ -982,8 +982,8 @@ static void build_names_page(gui_config_t *cfg) {
 		lv_obj_set_style_shadow_width(row->button, 0, 0);
 		lv_obj_set_style_pad_hor(row->button, 20, 0);
 		lv_obj_set_style_pad_column(row->button, 12, 0);
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_hidden(row->button, true);
+		lv_obj_set_event_bubble(row->button, true);
 		lv_obj_add_event_cb(row->button, name_clicked_cb, LV_EVENT_CLICKED, NULL);
 		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1116,9 +1116,9 @@ static void toggle_pills_expanded(const toggle_pills_t *tp, bool expanded) {
 		return;
 	}
 	if (expanded) {
-		lv_obj_remove_flag(tp->pills, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(tp->pills, false);
 	} else {
-		lv_obj_add_flag(tp->pills, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(tp->pills, true);
 	}
 }
 
@@ -1132,8 +1132,8 @@ static void build_toggle_pills(lv_obj_t *parent, const char *title, lv_event_cb_
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);
 	lv_obj_set_style_pad_row(card, 18, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(card, false);
+	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -1143,8 +1143,8 @@ static void build_toggle_pills(lv_obj_t *parent, const char *title, lv_event_cb_
 	lv_obj_set_style_bg_opa(head, 0, 0);
 	lv_obj_set_style_border_width(head, 0, 0);
 	lv_obj_set_style_pad_all(head, 0, 0);
-	lv_obj_remove_flag(head, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(head, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(head, false);
+	lv_obj_set_event_bubble(head, true);
 	lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(head, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -1165,8 +1165,8 @@ static void build_toggle_pills(lv_obj_t *parent, const char *title, lv_event_cb_
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
 	lv_obj_set_style_pad_gap(pills, 10, 0);
-	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(pills, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(pills, false);
+	lv_obj_set_event_bubble(pills, true);
 	// Wrapping, because the four minute pills plus "end of chapter" are more
 	// than one line of this screen.
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
@@ -1401,8 +1401,8 @@ static lv_obj_t *make_control_card(lv_obj_t *parent, const char *title) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);
 	lv_obj_set_style_pad_gap(card, 18, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(card, false);
+	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -1417,8 +1417,8 @@ static lv_obj_t *make_control_card(lv_obj_t *parent, const char *title) {
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
 	lv_obj_set_style_pad_gap(row, 14, 0);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(row, false);
+	lv_obj_set_event_bubble(row, true);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -1466,8 +1466,8 @@ static void scan_show_finished(int found) {
 	lv_label_set_text_fmt(scan_count_label, "%d", found);
 	lv_label_set_text(scan_status_label, found == 1 ? tr("audiobook_found") : tr("audiobook_found_count"));
 
-	lv_obj_add_flag(scan_cancel_button, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(scan_ok_button, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(scan_cancel_button, true);
+	lv_obj_set_hidden(scan_ok_button, false);
 	power_hold_screen_on(false);
 }
 
@@ -1504,13 +1504,13 @@ static void scan_cancel_cb(lv_event_t *e) {
 static void scan_begin(void) {
 	lv_label_set_text(scan_count_label, "0");
 	lv_label_set_text(scan_status_label, tr("audiobook_found_count"));
-	lv_obj_add_flag(scan_ok_button, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(scan_cancel_button, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(scan_ok_button, true);
+	lv_obj_set_hidden(scan_cancel_button, false);
 
 	if (!audiobookdb_scan_start(scan_root)) {
 		lv_label_set_text(scan_status_label, tr("no_card_to_scan"));
-		lv_obj_add_flag(scan_cancel_button, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_remove_flag(scan_ok_button, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(scan_cancel_button, true);
+		lv_obj_set_hidden(scan_ok_button, false);
 		return;
 	}
 
@@ -1574,7 +1574,7 @@ static void build_scan_page(gui_config_t *cfg) {
 	lv_obj_set_style_radius(container, 0, 0);
 	lv_obj_set_style_pad_all(container, cfg->padding, 0);
 	lv_obj_set_style_pad_gap(container, 10, 0);
-	lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(container, false);
 	lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -1596,7 +1596,7 @@ static void build_scan_page(gui_config_t *cfg) {
 
 	scan_cancel_button = scan_make_button("cancel", lv_color_make(210, 66, 58), scan_cancel_cb, cfg);
 	scan_ok_button = scan_make_button("ok", theme()->accent, scan_ok_cb, cfg);
-	lv_obj_add_flag(scan_ok_button, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(scan_ok_button, true);
 
 	scan_poll_timer = lv_timer_create(scan_poll_cb, SCAN_POLL_MS, NULL);
 	lv_timer_pause(scan_poll_timer);

@@ -234,7 +234,7 @@ void dacpage_init(gui_config_t *cfg) {
 	// over the moment it opens.
 	mode_switch = NULL;
 	lv_obj_t *mode_row = settingsrow_toggle(container, "dac_mode", &mode_switch, mode_cb);
-	lv_obj_add_flag(mode_row, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(mode_row, true);
 	lv_obj_add_event_cb(mode_row, mode_row_cb, LV_EVENT_CLICKED, NULL);
 
 	// Straight into the flex flow, with no alignment of its own: the container

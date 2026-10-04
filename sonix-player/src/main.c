@@ -940,15 +940,10 @@ static void install_signal_guards(void) {
 }
 
 #ifdef HOST_BUILD
-#include "src/drivers/sdl/lv_sdl_keyboard.h"
-#include "src/drivers/sdl/lv_sdl_mouse.h"
-#include "src/drivers/sdl/lv_sdl_window.h"
 #include <SDL2/SDL.h>
 
 #define GET_MUSIC_DIR() (snprintf((char[256]){0}, 256, "%s/Music", getenv("HOME") ? getenv("HOME") : ""))
 #else
-#include "src/drivers/display/fb/lv_linux_fbdev.h"
-#include "src/drivers/evdev/lv_evdev.h"
 #include <fcntl.h>
 #include <linux/fb.h>
 #include <sys/ioctl.h>
@@ -964,8 +959,7 @@ static void install_signal_guards(void) {
 //
 // LVGL has kinetic scrolling of its own -- the list glides and brakes when the
 // finger lifts -- but with the factory values it is barely noticeable on this
-// screen. Two knobs, both per-indev and with no public setter in 9.1, hence
-// the private header include:
+// screen. Two knobs, both per-indev:
 //
 //   * scroll_throw: the percentage the velocity drops on each frame of the
 //     throw animation. The default 10 kills the glide in half a second; at 5
@@ -977,7 +971,6 @@ static void install_signal_guards(void) {
 // Applied to both the device touch panel and the simulator mouse, so the two
 // feel the same.
 // ---------------------------------------------------------------------------
-#include "lvgl/src/indev/lv_indev_private.h"
 
 #define SCROLL_THROW_DECAY_PCT 5
 #define SCROLL_START_LIMIT_PX 4
@@ -1028,8 +1021,8 @@ static void tune_kinetic_scroll(lv_indev_t *indev) {
 	if (!indev) {
 		return;
 	}
-	indev->scroll_throw = SCROLL_THROW_DECAY_PCT;
-	indev->scroll_limit = SCROLL_START_LIMIT_PX;
+	lv_indev_set_scroll_throw(indev, SCROLL_THROW_DECAY_PCT);
+	lv_indev_set_scroll_limit(indev, SCROLL_START_LIMIT_PX);
 }
 
 // Kinetic scrolling and the tap guard, for the touch panel and the simulator mouse.

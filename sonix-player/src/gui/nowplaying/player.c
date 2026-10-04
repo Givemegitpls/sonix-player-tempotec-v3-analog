@@ -7,8 +7,6 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "src/core/lv_obj.h"
-#include "src/core/lv_obj_pos.h"
 #include "src/gui/library/browser.h"
 #include "src/gui/library/audiobookextras.h"
 #include "src/gui/nowplaying/chapters.h"
@@ -25,7 +23,6 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
-#include "src/misc/lv_area.h"
 #include "src/system/device/power.h"
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/gearboy/gearboy.h"
@@ -385,18 +382,18 @@ static void apply_live_mode(bool live) {
 			continue;
 		}
 		if (live) {
-			lv_obj_add_flag(hidden_when_live[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(hidden_when_live[i], true);
 		} else {
-			lv_obj_remove_flag(hidden_when_live[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(hidden_when_live[i], false);
 		}
 	}
 	// The row under the bar stays for a station from a list, for its place in
 	// the list and nothing else.
 	if (below_slider_obj) {
 		if (live && !custom_nav) {
-			lv_obj_add_flag(below_slider_obj, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(below_slider_obj, true);
 		} else {
-			lv_obj_remove_flag(below_slider_obj, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(below_slider_obj, false);
 		}
 	}
 
@@ -406,9 +403,9 @@ static void apply_live_mode(bool live) {
 	// the standard one would leave an empty strip under the title.
 	if (wave_box) {
 		if (live || !layout_wave_now) {
-			lv_obj_add_flag(wave_box, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(wave_box, true);
 		} else {
-			lv_obj_remove_flag(wave_box, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(wave_box, false);
 		}
 	}
 
@@ -418,30 +415,30 @@ static void apply_live_mode(bool live) {
 			continue;
 		}
 		if (transport_hidden) {
-			lv_obj_add_flag(transport[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(transport[i], true);
 		} else {
-			lv_obj_remove_flag(transport[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(transport[i], false);
 		}
 	}
 
 	if (live_badge) {
 		if (live) {
-			lv_obj_remove_flag(live_badge, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(live_badge, false);
 			lv_obj_move_foreground(live_badge);
 		} else {
-			lv_obj_add_flag(live_badge, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(live_badge, true);
 		}
 	}
 	// The marks share one corner and can never go there together: a live
 	// stream does not come from Qobuz.
 	if (tidal_badge && live) {
-		lv_obj_add_flag(tidal_badge, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(tidal_badge, true);
 	}
 	if (podcast_badge && live) {
-		lv_obj_add_flag(podcast_badge, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(podcast_badge, true);
 	}
 	if (qobuz_badge && live) {
-		lv_obj_add_flag(qobuz_badge, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(qobuz_badge, true);
 	}
 
 	// A note means "track", a book means a book, and a station with no artwork
@@ -518,25 +515,25 @@ static void apply_audiobook_mode(bool book, bool podcast) {
 	// instalments is nothing anybody asks for.
 	if (fav_btn_obj) {
 		if (book) {
-			lv_obj_add_flag(fav_btn_obj, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(fav_btn_obj, true);
 		} else {
-			lv_obj_remove_flag(fav_btn_obj, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(fav_btn_obj, false);
 		}
 	}
 	if (repeat_btn_obj) {
 		if (book || podcast) {
-			lv_obj_add_flag(repeat_btn_obj, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(repeat_btn_obj, true);
 		} else {
-			lv_obj_remove_flag(repeat_btn_obj, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(repeat_btn_obj, false);
 		}
 	}
 
 	if (speed_btn_obj) {
 		if (book || podcast) {
-			lv_obj_remove_flag(speed_btn_obj, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(speed_btn_obj, false);
 			update_speed_button();
 		} else {
-			lv_obj_add_flag(speed_btn_obj, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(speed_btn_obj, true);
 		}
 	}
 
@@ -885,17 +882,17 @@ static void cover_show(bool have_cover) {
 	}
 	bool studio = layout_studio_now;
 	if (have_cover && !studio) {
-		lv_obj_remove_flag(cover_img, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(cover_img, false);
 	} else {
-		lv_obj_add_flag(cover_img, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(cover_img, true);
 	}
 	if (!cover_placeholder_icon) {
 		return;
 	}
 	if (!have_cover && !studio) {
-		lv_obj_remove_flag(cover_placeholder_icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(cover_placeholder_icon, false);
 	} else {
-		lv_obj_add_flag(cover_placeholder_icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(cover_placeholder_icon, true);
 	}
 }
 
@@ -1051,9 +1048,9 @@ static void alt_pills_sync(void) {
 	}
 	const char *artist = lv_label_get_text(song_artist_label);
 	if (artist && artist[0]) {
-		lv_obj_remove_flag(alt_artist_pill, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(alt_artist_pill, false);
 	} else {
-		lv_obj_add_flag(alt_artist_pill, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(alt_artist_pill, true);
 	}
 }
 
@@ -1149,7 +1146,7 @@ static bool playing_local_file(const device_state_t *state) {
 // slider laid over it.
 static void cover_panel_hit_test_cb(lv_event_t *e) {
 	lv_hit_test_info_t *info = lv_event_get_hit_test_info(e);
-	if (!info || !wave_box || lv_obj_has_flag(wave_box, LV_OBJ_FLAG_HIDDEN)) {
+	if (!info || !wave_box || lv_obj_is_hidden(wave_box)) {
 		return;
 	}
 	lv_area_t wave;
@@ -1332,9 +1329,9 @@ static void lyrics_note_show(const char *tag) {
 	}
 	if (tag) {
 		lv_label_set_text(lyrics_note, tr(tag));
-		lv_obj_remove_flag(lyrics_note, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(lyrics_note, false);
 	} else {
-		lv_obj_add_flag(lyrics_note, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(lyrics_note, true);
 	}
 }
 
@@ -1372,8 +1369,8 @@ static void lyrics_fill(void) {
 		lv_obj_set_style_text_align(line, LV_TEXT_ALIGN_CENTER, 0);
 		lv_obj_set_style_text_font(line, &font_ui_26, 0);
 		lv_obj_set_style_text_opa(line, lyrics_cur.synced ? LYRICS_DIM_OPA : LV_OPA_COVER, 0);
-		lv_obj_add_flag(line, LV_OBJ_FLAG_EVENT_BUBBLE);
-		lv_obj_remove_flag(line, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_event_bubble(line, true);
+		lv_obj_set_clickable(line, false);
 	}
 }
 
@@ -1419,7 +1416,7 @@ static bool lyrics_available(void) {
 }
 
 // The page is up, or on its way in or out under a finger.
-static bool lyrics_on_screen(void) { return lyrics_pane && !lv_obj_has_flag(lyrics_pane, LV_OBJ_FLAG_HIDDEN); }
+static bool lyrics_on_screen(void) { return lyrics_pane && !lv_obj_is_hidden(lyrics_pane); }
 
 // Words being read are not an idle screen: while the lyrics are up on an open
 // player, the idle timer does not blank the panel under them. Asked again
@@ -1596,13 +1593,13 @@ static void lyrics_look(bool on) {
 	}
 	if (on) {
 		lv_image_set_src(studio_bg, backdrop);
-		lv_obj_remove_flag(studio_bg, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(studio_bg, false);
 		lv_obj_move_background(studio_bg);
 		lv_obj_set_style_bg_opa(cover_panel, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_bg_opa(player_menu, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_bg_image_opa(player_menu, LV_OPA_TRANSP, 0);
 	} else if (lyrics_look_on && !layout_studio_now) {
-		lv_obj_add_flag(studio_bg, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(studio_bg, true);
 		lv_obj_remove_local_style_prop(cover_panel, LV_STYLE_BG_OPA, 0);
 		lv_obj_remove_local_style_prop(player_menu, LV_STYLE_BG_OPA, 0);
 		lv_obj_remove_local_style_prop(player_menu, LV_STYLE_BG_IMAGE_OPA, 0);
@@ -1667,9 +1664,9 @@ static void lyrics_progress_apply(int32_t progress) {
 	int32_t travel = cover_box_w - lyrics_pane_x;
 
 	if (rest) {
-		lv_obj_add_flag(lyrics_pane, LV_OBJ_FLAG_HIDDEN);
-	} else if (lv_obj_has_flag(lyrics_pane, LV_OBJ_FLAG_HIDDEN)) {
-		lv_obj_remove_flag(lyrics_pane, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(lyrics_pane, true);
+	} else if (lv_obj_is_hidden(lyrics_pane)) {
+		lv_obj_set_hidden(lyrics_pane, false);
 		lv_obj_move_foreground(lyrics_pane);
 	}
 	lyrics_screen_hold_update();
@@ -1699,10 +1696,10 @@ static void lyrics_progress_apply(int32_t progress) {
 	lyrics_star_to_head(full);
 	if (full) {
 		lyrics_head_sync();
-		lv_obj_remove_flag(lyrics_head, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(lyrics_head, false);
 		lv_obj_move_foreground(lyrics_head);
 	} else {
-		lv_obj_add_flag(lyrics_head, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(lyrics_head, true);
 	}
 }
 
@@ -1784,7 +1781,7 @@ static void lyrics_layout(void) {
 	// and the head belongs to the one before.
 	lyrics_star_up = false;
 	if (lyrics_head) {
-		lv_obj_add_flag(lyrics_head, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(lyrics_head, true);
 	}
 
 	lv_obj_set_y(lyrics_pane, pane_y);
@@ -1960,15 +1957,15 @@ static void lyrics_tap_cb(lv_event_t *e) {
 static void lyrics_build(void) {
 	lyrics_pane = lv_obj_create(cover_panel);
 	lv_obj_remove_style_all(lyrics_pane);
-	lv_obj_add_flag(lyrics_pane, LV_OBJ_FLAG_IGNORE_LAYOUT);
-	lv_obj_remove_flag(lyrics_pane, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_ignore_layout(lyrics_pane, true);
+	lv_obj_set_scrollable(lyrics_pane, false);
 	// Presses on the page outside the column go to the sleeve under it.
-	lv_obj_remove_flag(lyrics_pane, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(lyrics_pane, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_clickable(lyrics_pane, false);
+	lv_obj_set_hidden(lyrics_pane, true);
 
 	lyrics_view = lv_obj_create(lyrics_pane);
 	lv_obj_remove_style_all(lyrics_view);
-	lv_obj_add_flag(lyrics_view, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(lyrics_view, true);
 	lv_obj_set_flex_flow(lyrics_view, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(lyrics_view, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_row(lyrics_view, LYRICS_LINE_GAP, 0);
@@ -1983,23 +1980,23 @@ static void lyrics_build(void) {
 	lv_obj_add_event_cb(lyrics_view, lyrics_drag_cb, LV_EVENT_PRESS_LOST, (void *)(uintptr_t) false);
 
 	lyrics_note = lv_label_create(lyrics_pane);
-	lv_obj_add_flag(lyrics_note, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(lyrics_note, true);
 	lv_label_set_long_mode(lyrics_note, LV_LABEL_LONG_WRAP);
 	lv_obj_set_style_text_align(lyrics_note, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_set_style_text_font(lyrics_note, &font_ui_24, 0);
 	lv_obj_set_style_text_color(lyrics_note, lv_color_white(), 0);
 	lv_obj_set_style_text_opa(lyrics_note, LV_OPA_70, 0);
-	lv_obj_add_flag(lyrics_note, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(lyrics_note, true);
 
 	// The title and artist at the top, Studio's head, over the whole screen and
 	// above the sleeve. Copies of the two in the row below, which keeps its
 	// place so the controls do not move.
 	lyrics_head = lv_obj_create(player_screen);
 	lv_obj_remove_style_all(lyrics_head);
-	lv_obj_add_flag(lyrics_head, LV_OBJ_FLAG_IGNORE_LAYOUT);
-	lv_obj_remove_flag(lyrics_head, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(lyrics_head, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(lyrics_head, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_ignore_layout(lyrics_head, true);
+	lv_obj_set_scrollable(lyrics_head, false);
+	lv_obj_set_clickable(lyrics_head, false);
+	lv_obj_set_hidden(lyrics_head, true);
 
 	lv_obj_t *col = lv_obj_create(lyrics_head);
 	lv_obj_remove_style_all(col);
@@ -2008,8 +2005,8 @@ static void lyrics_build(void) {
 	lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_row(col, 4, 0);
-	lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(col, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(col, false);
+	lv_obj_set_clickable(col, false);
 
 	lyrics_head_title = lv_label_create(col);
 	lv_obj_set_width(lyrics_head_title, lv_pct(100));
@@ -2242,9 +2239,9 @@ static void studio_refresh_cover(void) {
 	bool have = current_cover.pixels != NULL;
 	lv_image_set_src(studio_cover, have ? &current_cover.dsc : NULL);
 	if (have) {
-		lv_obj_remove_flag(studio_cover, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(studio_cover, false);
 	} else {
-		lv_obj_add_flag(studio_cover, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(studio_cover, true);
 	}
 
 	// One of the two squares is always up. Without this a track with no artwork
@@ -2252,9 +2249,9 @@ static void studio_refresh_cover(void) {
 	// background behind it, and the page's own colour across the whole screen.
 	if (studio_empty) {
 		if (have) {
-			lv_obj_add_flag(studio_empty, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(studio_empty, true);
 		} else {
-			lv_obj_remove_flag(studio_empty, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(studio_empty, false);
 		}
 	}
 	if (studio_empty_icon) {
@@ -2267,9 +2264,9 @@ static void studio_refresh_cover(void) {
 	if (studio_bg) {
 		lv_image_set_src(studio_bg, current_backdrop.pixels ? &current_backdrop.dsc : NULL);
 		if (current_backdrop.pixels) {
-			lv_obj_remove_flag(studio_bg, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(studio_bg, false);
 		} else {
-			lv_obj_add_flag(studio_bg, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(studio_bg, true);
 		}
 	}
 }
@@ -2287,8 +2284,8 @@ static void align_title_with_star(void) {
 	}
 	int32_t shift = 0;
 	if (song_text_obj && song_side_obj && fav_btn_obj && lv_obj_get_parent(song_title_label) == song_text_obj &&
-		lv_obj_get_parent(fav_btn_obj) == song_side_obj && !lv_obj_has_flag(fav_btn_obj, LV_OBJ_FLAG_HIDDEN) &&
-		!lv_obj_has_flag(song_side_obj, LV_OBJ_FLAG_HIDDEN)) {
+		lv_obj_get_parent(fav_btn_obj) == song_side_obj && !lv_obj_is_hidden(fav_btn_obj) &&
+		!lv_obj_is_hidden(song_side_obj)) {
 		const lv_font_t *font = lv_obj_get_style_text_font(song_title_label, 0);
 		int32_t line = lv_font_get_line_height(font);
 		int32_t title_mid = line / 2;
@@ -2326,12 +2323,12 @@ static void studio_take_back(void) {
 	if (!studio_box) {
 		return;
 	}
-	lv_obj_add_flag(studio_box, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(studio_box, true);
 	if (studio_bg) {
-		lv_obj_add_flag(studio_bg, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(studio_bg, true);
 	}
 	if (studio_empty) {
-		lv_obj_add_flag(studio_empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(studio_empty, true);
 	}
 
 	// The surfaces this arrangement made transparent, and the light chrome that
@@ -2369,12 +2366,12 @@ static void studio_take_back(void) {
 
 	if (more_btn_obj && controls_row) {
 		lv_obj_set_parent(more_btn_obj, controls_row);
-		lv_obj_add_flag(more_btn_obj, LV_OBJ_FLAG_IGNORE_LAYOUT);
+		lv_obj_set_ignore_layout(more_btn_obj, true);
 		lv_obj_align(more_btn_obj, LV_ALIGN_RIGHT_MID, 0, 0);
 	}
 	if (fav_btn_obj) {
 		// Laid out by its row again: the next step decides which row that is.
-		lv_obj_remove_flag(fav_btn_obj, LV_OBJ_FLAG_IGNORE_LAYOUT);
+		lv_obj_set_ignore_layout(fav_btn_obj, false);
 	}
 }
 
@@ -2395,9 +2392,9 @@ static void studio_put(void) {
 		lv_obj_set_width(song_artist_label, lv_pct(100));
 		lv_obj_set_style_max_width(song_artist_label, LV_COORD_MAX, 0);
 	}
-	lv_obj_add_flag(song_text_obj, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(song_text_obj, true);
 	if (song_side_obj) {
-		lv_obj_add_flag(song_side_obj, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(song_side_obj, true);
 	}
 
 	// The line under the sleeve is the same label the standard arrangement
@@ -2405,7 +2402,7 @@ static void studio_put(void) {
 	// "320 kbps MP3" and "DSD256", a station included. Moved, not copied.
 	if (format_label) {
 		lv_obj_set_parent(format_label, studio_quality);
-		lv_obj_remove_flag(format_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(format_label, false);
 		lv_obj_set_width(format_label, LV_SIZE_CONTENT);
 		lv_obj_set_style_text_align(format_label, LV_TEXT_ALIGN_LEFT, 0);
 	}
@@ -2414,12 +2411,12 @@ static void studio_put(void) {
 	// is about, and the star takes the corner of the transport row it left.
 	if (more_btn_obj && studio_head) {
 		lv_obj_set_parent(more_btn_obj, studio_head);
-		lv_obj_add_flag(more_btn_obj, LV_OBJ_FLAG_IGNORE_LAYOUT);
+		lv_obj_set_ignore_layout(more_btn_obj, true);
 		lv_obj_align(more_btn_obj, LV_ALIGN_RIGHT_MID, 0, 0);
 	}
 	if (fav_btn_obj && controls_row) {
 		lv_obj_set_parent(fav_btn_obj, controls_row);
-		lv_obj_add_flag(fav_btn_obj, LV_OBJ_FLAG_IGNORE_LAYOUT);
+		lv_obj_set_ignore_layout(fav_btn_obj, true);
 		lv_obj_align(fav_btn_obj, LV_ALIGN_RIGHT_MID, 0, 0);
 	}
 
@@ -2448,7 +2445,7 @@ static void studio_put(void) {
 	}
 	cover_show(current_cover.pixels != NULL);
 
-	lv_obj_remove_flag(studio_box, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(studio_box, false);
 	lv_obj_move_foreground(studio_box);
 	if (studio_bg) {
 		lv_obj_move_background(studio_bg);
@@ -2499,21 +2496,21 @@ static void apply_layout(void) {
 			lv_obj_center(fav_btn_obj);
 		}
 		if (format_label) {
-			lv_obj_add_flag(format_label, LV_OBJ_FLAG_HIDDEN); // the sleeve is not the place for a bitrate
+			lv_obj_set_hidden(format_label, true); // the sleeve is not the place for a bitrate
 		}
 		if (song_side_obj) {
-			lv_obj_add_flag(song_side_obj, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(song_side_obj, true);
 		}
-		lv_obj_add_flag(song_text_obj, LV_OBJ_FLAG_HIDDEN); // empty now, and it would still take a row
+		lv_obj_set_hidden(song_text_obj, true); // empty now, and it would still take a row
 
-		lv_obj_remove_flag(alt_text_col, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_remove_flag(alt_fav_circle, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(alt_text_col, false);
+		lv_obj_set_hidden(alt_fav_circle, false);
 		// Over the sleeve and not under it: both were built before the picture
 		// so that the picture would not have to be rebuilt around them.
 		lv_obj_move_foreground(alt_text_col);
 		lv_obj_move_foreground(alt_fav_circle);
 		if (wave_canvas) {
-			lv_obj_remove_flag(wave_box, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(wave_box, false);
 			lv_obj_move_to_index(wave_box, lv_obj_get_index(progress_slider));
 			slider_over_waveform(true);
 		}
@@ -2530,29 +2527,29 @@ static void apply_layout(void) {
 			lv_obj_set_width(song_artist_label, lv_pct(100));
 			lv_obj_set_style_max_width(song_artist_label, LV_COORD_MAX, 0);
 		}
-		lv_obj_remove_flag(song_text_obj, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(song_text_obj, false);
 
 		if (fav_btn_obj && song_side_obj) {
 			lv_obj_set_parent(fav_btn_obj, song_side_obj);
 			lv_obj_move_to_index(fav_btn_obj, 0);
 		}
 		if (format_label) {
-			lv_obj_remove_flag(format_label, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(format_label, false);
 		}
 		if (song_side_obj) {
-			lv_obj_remove_flag(song_side_obj, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(song_side_obj, false);
 		}
 
-		lv_obj_add_flag(alt_text_col, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(alt_fav_circle, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(alt_text_col, true);
+		lv_obj_set_hidden(alt_fav_circle, true);
 		if (layout_wave_now && wave_canvas) {
-			lv_obj_remove_flag(wave_box, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(wave_box, false);
 			lv_obj_move_to_index(wave_box, lv_obj_get_index(progress_slider));
 			slider_over_waveform(true);
 		} else {
 			slider_over_waveform(false);
 			if (wave_box) {
-				lv_obj_add_flag(wave_box, LV_OBJ_FLAG_HIDDEN);
+				lv_obj_set_hidden(wave_box, true);
 			}
 		}
 	}
@@ -3200,26 +3197,26 @@ static void update_qobuz_badge(void) {
 
 	if (qobuz_badge) {
 		if (from_qobuz) {
-			lv_obj_remove_flag(qobuz_badge, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(qobuz_badge, false);
 			lv_obj_move_foreground(qobuz_badge);
 		} else {
-			lv_obj_add_flag(qobuz_badge, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(qobuz_badge, true);
 		}
 	}
 	if (tidal_badge) {
 		if (from_tidal) {
-			lv_obj_remove_flag(tidal_badge, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(tidal_badge, false);
 			lv_obj_move_foreground(tidal_badge);
 		} else {
-			lv_obj_add_flag(tidal_badge, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(tidal_badge, true);
 		}
 	}
 	if (podcast_badge) {
 		if (from_podcast) {
-			lv_obj_remove_flag(podcast_badge, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(podcast_badge, false);
 			lv_obj_move_foreground(podcast_badge);
 		} else {
-			lv_obj_add_flag(podcast_badge, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(podcast_badge, true);
 		}
 	}
 }
@@ -3377,9 +3374,9 @@ static void update_format_label(const device_state_t *state) {
 		const lv_image_dsc_t *mark = studio_quality_mark(state);
 		if (mark) {
 			lv_image_set_src(studio_quality_icon, mark);
-			lv_obj_remove_flag(studio_quality_icon, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(studio_quality_icon, false);
 		} else {
-			lv_obj_add_flag(studio_quality_icon, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(studio_quality_icon, true);
 		}
 	}
 
@@ -4272,7 +4269,7 @@ void player_sheet_open(bool animate) {
 	// slides over, while the status bar and the floating back button stay drawn
 	// above it, exactly where the page underneath put them. Nothing shared is
 	// moved or hidden, so nothing shared slides around during the drag.
-	lv_obj_remove_flag(player_screen, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(player_screen, false);
 	lv_obj_move_background(player_screen);
 
 	// Artwork runs to the top edge here, so the bar steps aside. It is hidden
@@ -4285,7 +4282,7 @@ void player_sheet_open(bool animate) {
 static void sheet_hidden_anim_ready_cb(lv_anim_t *a) {
 	(void)a;
 	if (!sheet_open) {
-		lv_obj_add_flag(player_screen, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(player_screen, true);
 	}
 	// Whatever page the close landed on, the chevron's visibility is settled
 	// once more now that the last animation frame has run -- the fix for the
@@ -4311,7 +4308,7 @@ void player_sheet_close(bool animate) {
 	if (!animate) {
 		lv_obj_set_x(player_screen, sheet_width);
 		back_btn_translate(0);
-		lv_obj_add_flag(player_screen, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(player_screen, true);
 		back_btn_sync_visibility();
 		return;
 	}
@@ -4360,7 +4357,7 @@ static void sheet_drag_cb(lv_event_t *e) {
 
 		if (opening) {
 			// It has to be on screen to be dragged, even if only by a pixel.
-			lv_obj_remove_flag(player_screen, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(player_screen, false);
 			lv_obj_move_background(player_screen);
 			lv_obj_set_x(player_screen, sheet_width);
 		}
@@ -4485,7 +4482,7 @@ void player_sheet_attach_drag(lv_obj_t *obj, bool opening) {
 		return;
 	}
 
-	lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(obj, true);
 	lv_obj_add_event_cb(obj, sheet_drag_cb, LV_EVENT_PRESSED, (void *)(uintptr_t)opening);
 	lv_obj_add_event_cb(obj, sheet_drag_cb, LV_EVENT_PRESSING, (void *)(uintptr_t)opening);
 	lv_obj_add_event_cb(obj, sheet_drag_cb, LV_EVENT_RELEASED, (void *)(uintptr_t)opening);
@@ -4506,9 +4503,9 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(player_screen, 0, 0);
 	lv_obj_set_style_border_width(player_screen, 0, 0);
 	lv_obj_set_style_radius(player_screen, 0, 0);
-	lv_obj_remove_flag(player_screen, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(player_screen, false);
 	lv_obj_set_pos(player_screen, sheet_width, 0);
-	lv_obj_add_flag(player_screen, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(player_screen, true);
 
 
 	// Geometry first, because everything else hangs off it: the artwork is a
@@ -4549,7 +4546,7 @@ void player_init(gui_config_t *cfg) {
 	}
 	lv_obj_set_style_pad_ver(player_menu, menu_pad_ver, 0);
 	lv_obj_set_style_pad_gap(player_menu, menu_gap, 0);
-	lv_obj_remove_flag(player_menu, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(player_menu, false);
 
 	// Track info: the text on the left, the star and the format on the right.
 	lv_obj_t *song_info = lv_obj_create(player_menu);
@@ -4561,7 +4558,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_column(song_info, 10, 0);
 	lv_obj_set_flex_flow(song_info, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(song_info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_remove_flag(song_info, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(song_info, false);
 	// Every time the row is laid out (a new text size, the star shown or
 	// hidden, the row coming back from another arrangement) the title is lined
 	// up with the star again.
@@ -4575,7 +4572,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(song_text, 0, 0);
 	lv_obj_set_style_pad_all(song_text, 0, 0);
 	lv_obj_set_flex_flow(song_text, LV_FLEX_FLOW_COLUMN);
-	lv_obj_remove_flag(song_text, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(song_text, false);
 
 	// Long titles scroll rather than end in an ellipsis: on a 480 px panel a
 	// good half of real album titles do not fit, and the tail is usually the
@@ -4605,7 +4602,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_gap(song_side, 2, 0);
 	lv_obj_set_flex_flow(song_side, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(song_side, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER);
-	lv_obj_remove_flag(song_side, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(song_side, false);
 
 	lv_obj_t *fav_btn = lv_btn_create(song_side);
 	fav_btn_obj = fav_btn;
@@ -4632,8 +4629,8 @@ void player_init(gui_config_t *cfg) {
 	wave_box = lv_obj_create(player_menu);
 	lv_obj_remove_style_all(wave_box);
 	lv_obj_set_size(wave_box, lv_pct(100), WAVE_HEIGHT);
-	lv_obj_remove_flag(wave_box, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(wave_box, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(wave_box, false);
+	lv_obj_set_hidden(wave_box, true);
 
 	{
 		wave_w = (int)cfg->screen_width - 2 * cfg->padding;
@@ -4647,7 +4644,7 @@ void player_init(gui_config_t *cfg) {
 			lv_canvas_set_buffer(wave_canvas, wave_buf, wave_w, WAVE_HEIGHT, LV_COLOR_FORMAT_RGB565A8);
 			lv_obj_set_size(wave_canvas, wave_w, WAVE_HEIGHT);
 			lv_obj_align(wave_canvas, LV_ALIGN_CENTER, 0, 0);
-			lv_obj_remove_flag(wave_canvas, LV_OBJ_FLAG_CLICKABLE);
+			lv_obj_set_clickable(wave_canvas, false);
 		} else {
 			fprintf(stderr, "player: no room for the waveform; the alternative layout keeps the bar\n");
 		}
@@ -4712,7 +4709,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(below_slider_group, 0, 0);
 	lv_obj_set_style_radius(below_slider_group, 0, 0);
 	lv_obj_set_style_pad_all(below_slider_group, 0, 0);
-	lv_obj_remove_flag(below_slider_group, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(below_slider_group, false);
 
 	// Elapsed and total time, tucked under the two ends of the bar.
 	elapsed_label = lv_label_create(below_slider_group);
@@ -4756,7 +4753,7 @@ void player_init(gui_config_t *cfg) {
 	// stays centred on the screen.
 	lv_obj_t *repeat_btn = lv_btn_create(player_controls_buttons);
 	repeat_btn_obj = repeat_btn;
-	lv_obj_add_flag(repeat_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(repeat_btn, true);
 	lv_obj_set_size(repeat_btn, 56, 56);
 	lv_obj_set_style_bg_opa(repeat_btn, 0, 0);
 	lv_obj_set_style_shadow_width(repeat_btn, 0, 0);
@@ -4775,14 +4772,14 @@ void player_init(gui_config_t *cfg) {
 	// so one hides and the other appears in its place.
 	lv_obj_t *speed_btn = lv_btn_create(player_controls_buttons);
 	speed_btn_obj = speed_btn;
-	lv_obj_add_flag(speed_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(speed_btn, true);
 	lv_obj_set_size(speed_btn, 56, 56);
 	lv_obj_set_style_bg_opa(speed_btn, 0, 0);
 	lv_obj_set_style_shadow_width(speed_btn, 0, 0);
 	lv_obj_add_event_cb(speed_btn, speed_btn_event_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_align(speed_btn, LV_ALIGN_LEFT_MID, 0, 0);
 	lv_obj_set_ext_click_area(speed_btn, CORNER_BTN_EXT_CLICK);
-	lv_obj_add_flag(speed_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(speed_btn, true);
 
 	speed_btn_icon = lv_image_create(speed_btn);
 	lv_image_set_src(speed_btn_icon, &icon_play_speed);
@@ -4794,7 +4791,7 @@ void player_init(gui_config_t *cfg) {
 	// details in an iOS-style popover next to the button.
 	lv_obj_t *more_btn = lv_btn_create(player_controls_buttons);
 	more_btn_obj = more_btn;
-	lv_obj_add_flag(more_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(more_btn, true);
 	lv_obj_set_size(more_btn, 56, 56);
 	lv_obj_set_style_bg_opa(more_btn, 0, 0);
 	lv_obj_set_style_shadow_width(more_btn, 0, 0);
@@ -4861,7 +4858,7 @@ void player_init(gui_config_t *cfg) {
 	player_sheet_attach_drag(cover_panel, false);
 	// Studio stretches the panel down over the top of the controls, where the
 	// taller shape of the track can reach: presses there go to the slider.
-	lv_obj_add_flag(cover_panel, LV_OBJ_FLAG_ADV_HITTEST);
+	lv_obj_set_adv_hittest(cover_panel, true);
 	lv_obj_add_event_cb(cover_panel, cover_panel_hit_test_cb, LV_EVENT_HIT_TEST, NULL);
 	lv_obj_set_size(cover_panel, cover_size, cover_size);
 	lv_obj_align(cover_panel, LV_ALIGN_TOP_MID, 0, 0);
@@ -4869,7 +4866,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(cover_panel, 0, 0);
 	lv_obj_set_style_radius(cover_panel, 0, 0);
 	lv_obj_set_style_pad_all(cover_panel, 0, 0);
-	lv_obj_remove_flag(cover_panel, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(cover_panel, false);
 
 	// The live badge, top right over the artwork: the one thing that has to be
 	// legible at a glance is that this is not a file being played but a
@@ -4886,7 +4883,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_hor(live_badge, 10, 0);
 	lv_obj_set_style_pad_ver(live_badge, 5, 0);
 	lv_obj_align(live_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
-	lv_obj_add_flag(live_badge, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(live_badge, true);
 
 	// The Qobuz mark, in the same corner and for the same reason: say where
 	// what is playing comes from. It is the white-outlined image, legible even
@@ -4895,20 +4892,20 @@ void player_init(gui_config_t *cfg) {
 	qobuz_badge = lv_image_create(cover_panel);
 	lv_image_set_src(qobuz_badge, &icon_qobuz_badge);
 	lv_obj_align(qobuz_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
-	lv_obj_add_flag(qobuz_badge, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(qobuz_badge, true);
 
 	// Same corner, same size: the marks replace each other instead of sitting
 	// side by side, and update_qobuz_badge() decides which.
 	tidal_badge = lv_image_create(cover_panel);
 	lv_image_set_src(tidal_badge, &icon_tidal_badge);
 	lv_obj_align(tidal_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
-	lv_obj_add_flag(tidal_badge, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(tidal_badge, true);
 
 	// And the third, same corner and same size as the other two.
 	podcast_badge = lv_image_create(cover_panel);
 	lv_image_set_src(podcast_badge, &icon_podcast_badge);
 	lv_obj_align(podcast_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
-	lv_obj_add_flag(podcast_badge, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(podcast_badge, true);
 
 	// Shown while there is no artwork for the current track.
 	cover_placeholder_icon = lv_image_create(cover_panel);
@@ -4932,14 +4929,14 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(alt_text_col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(alt_text_col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 	lv_obj_set_style_pad_row(alt_text_col, 6, 0);
-	lv_obj_remove_flag(alt_text_col, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(alt_text_col, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(alt_text_col, false);
+	lv_obj_set_hidden(alt_text_col, true);
 	// None of this takes presses. A plain object is clickable the moment it is
 	// made, and these lie on the artwork -- which is the surface the player is
 	// dragged shut by. Left clickable they swallowed every gesture that began
 	// on the title, so putting the player away by pushing it off the right of
 	// the screen worked everywhere except on the words naming the track.
-	lv_obj_remove_flag(alt_text_col, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(alt_text_col, false);
 
 	for (int i = 0; i < 2; i++) {
 		lv_obj_t *pill = lv_obj_create(alt_text_col);
@@ -4954,8 +4951,8 @@ void player_init(gui_config_t *cfg) {
 		// fill was the sleeve's colour at full strength. It is now a dark
 		// surface of fixed weight, which separates from artwork on its own, and
 		// the shadow under it only made the pill look pasted on.
-		lv_obj_remove_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_remove_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_scrollable(pill, false);
+		lv_obj_set_clickable(pill, false);
 		if (i == 0) {
 			alt_title_pill = pill;
 		} else {
@@ -4969,15 +4966,15 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(alt_fav_circle, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_opa(alt_fav_circle, LV_OPA_COVER, 0);
 	lv_obj_align(alt_fav_circle, LV_ALIGN_BOTTOM_RIGHT, -ALT_PAD, -ALT_PAD);
-	lv_obj_remove_flag(alt_fav_circle, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(alt_fav_circle, false);
 	// Likewise: the star's own button is a child of this and takes its own
 	// presses, so the disc around it has no reason to take any.
-	lv_obj_remove_flag(alt_fav_circle, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(alt_fav_circle, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_clickable(alt_fav_circle, false);
+	lv_obj_set_hidden(alt_fav_circle, true);
 
 	cover_img = lv_image_create(cover_panel);
 	lv_obj_center(cover_img);
-	lv_obj_add_flag(cover_img, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(cover_img, true);
 
 	// ---------------------------------------------------------------------
 	// Studio: the blurred sleeve behind the whole screen, and everything else
@@ -4990,7 +4987,7 @@ void player_init(gui_config_t *cfg) {
 	// by, and the buttons that do take presses are moved here from elsewhere.
 	// ---------------------------------------------------------------------
 	studio_bg = lv_image_create(player_screen);
-	lv_obj_add_flag(studio_bg, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(studio_bg, true);
 	lv_obj_set_size(studio_bg, cfg->screen_width, cfg->screen_height);
 	lv_obj_set_pos(studio_bg, 0, 0);
 	// COVER and not STRETCH: the blurred copy is asked for at the shape of the
@@ -4998,8 +4995,8 @@ void player_init(gui_config_t *cfg) {
 	// it the one on hand is still the old shape, and stretching that is a
 	// visibly squashed sleeve.
 	lv_image_set_inner_align(studio_bg, LV_IMAGE_ALIGN_COVER);
-	lv_obj_remove_flag(studio_bg, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(studio_bg, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_clickable(studio_bg, false);
+	lv_obj_set_hidden(studio_bg, true);
 	lv_obj_move_background(studio_bg);
 
 	studio_box_w = cover_size;
@@ -5011,15 +5008,15 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(studio_box);
 	lv_obj_set_size(studio_box, studio_box_w, studio_box_h);
 	lv_obj_set_pos(studio_box, 0, 0);
-	lv_obj_remove_flag(studio_box, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(studio_box, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(studio_box, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(studio_box, false);
+	lv_obj_set_clickable(studio_box, false);
+	lv_obj_set_hidden(studio_box, true);
 
 	studio_head = lv_obj_create(studio_box);
 	lv_obj_remove_style_all(studio_head);
 	lv_obj_set_size(studio_head, cover_size - 2 * STUDIO_MARGIN, STUDIO_HEAD_H);
-	lv_obj_remove_flag(studio_head, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(studio_head, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(studio_head, false);
+	lv_obj_set_clickable(studio_head, false);
 
 	// Centred in the head and not filling it: the ellipsis sits at the right
 	// edge and the chevron at the left, and the two names have to stop before
@@ -5033,41 +5030,41 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_flex_align(studio_text_col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_row(studio_text_col, 4, 0);
 	lv_obj_set_style_text_align(studio_text_col, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_remove_flag(studio_text_col, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(studio_text_col, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(studio_text_col, false);
+	lv_obj_set_clickable(studio_text_col, false);
 
 	// The sleeve at whatever size studio_place() settles on. The picture is
 	// decoded at the width of the screen for the standard arrangement, so it is
 	// scaled down here rather than decoded twice.
 	studio_cover = lv_image_create(studio_box);
-	lv_obj_add_flag(studio_cover, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(studio_cover, true);
 	lv_image_set_inner_align(studio_cover, LV_IMAGE_ALIGN_STRETCH);
-	lv_obj_remove_flag(studio_cover, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(studio_cover, false);
 
 	// What stands in the sleeve's place when the track has no artwork: the same
 	// surface and the same mark the full-width cover panel uses, at the size
 	// this arrangement gives the sleeve.
 	studio_empty = lv_obj_create(studio_box);
-	lv_obj_add_flag(studio_empty, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(studio_empty, true);
 	lv_obj_add_style(studio_empty, &theme_style_panel, 0);
 	lv_obj_set_style_border_width(studio_empty, 0, 0);
 	lv_obj_set_style_radius(studio_empty, 8, 0);
-	lv_obj_remove_flag(studio_empty, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(studio_empty, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(studio_empty, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(studio_empty, false);
+	lv_obj_set_clickable(studio_empty, false);
+	lv_obj_set_hidden(studio_empty, true);
 
 	studio_empty_icon = lv_image_create(studio_empty);
 	lv_obj_set_style_image_recolor_opa(studio_empty_icon, LV_OPA_COVER, 0);
 	lv_obj_center(studio_empty_icon);
-	lv_obj_remove_flag(studio_empty_icon, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(studio_empty_icon, false);
 
 	studio_quality = lv_obj_create(studio_box);
 	lv_obj_remove_style_all(studio_quality);
 	lv_obj_set_flex_flow(studio_quality, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(studio_quality, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(studio_quality, 8, 0);
-	lv_obj_remove_flag(studio_quality, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(studio_quality, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(studio_quality, false);
+	lv_obj_set_clickable(studio_quality, false);
 
 	// No theme_style_icon here: the four quality marks carry their own colours,
 	// which is how the track lists draw them, and a recolour to the text colour
@@ -5082,8 +5079,8 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(panel_edge);
 	lv_obj_set_size(panel_edge, cfg->screen_width, cfg->top_bar_height);
 	lv_obj_set_pos(panel_edge, 0, 0);
-	lv_obj_remove_flag(panel_edge, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(panel_edge, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(panel_edge, false);
+	lv_obj_set_clickable(panel_edge, true);
 	lv_obj_add_event_cb(panel_edge, panel_edge_drag_cb, LV_EVENT_PRESSED, NULL);
 	lv_obj_add_event_cb(panel_edge, panel_edge_drag_cb, LV_EVENT_PRESSING, NULL);
 	lv_obj_add_event_cb(panel_edge, panel_edge_drag_cb, LV_EVENT_RELEASED, NULL);

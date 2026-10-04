@@ -115,7 +115,7 @@ static lv_obj_t *make_row(int i, const char *title, const char *clock, bool play
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 14, 0);
 	lv_obj_set_style_pad_column(row, 12, 0);
-	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(row, true);
 	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -263,7 +263,7 @@ void chapters_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(chapter_list, LV_FLEX_FLOW_COLUMN);
 	// Set here, not in the row builder: a book with no chapters creates no
 	// rows, and the page still has to answer the swipe-back.
-	lv_obj_add_flag(chapter_list, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(chapter_list, true);
 
 	// No player-sheet swipe here, for the queue page's reason: it would slide
 	// the sheet over the list being read. The swipe-back still works.

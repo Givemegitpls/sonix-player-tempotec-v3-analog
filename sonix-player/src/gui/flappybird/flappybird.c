@@ -1547,12 +1547,12 @@ void flappybird_init(gui_config_t *cfg) {
 
 	lv_obj_set_style_bg_color(flappybird_screen, lv_color_black(), 0);
 	lv_obj_set_style_bg_opa(flappybird_screen, LV_OPA_COVER, 0);
-	lv_obj_remove_flag(flappybird_screen, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(flappybird_screen, false);
 
 	frame_image = lv_image_create(flappybird_screen);
 	lv_obj_set_pos(frame_image, 0, 0);
 	lv_obj_set_size(frame_image, panel_w, panel_h);
-	lv_obj_remove_flag(frame_image, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(frame_image, false);
 
 	lv_obj_add_event_cb(flappybird_screen, press_cb, LV_EVENT_PRESSED, NULL);
 	lv_obj_add_event_cb(flappybird_screen, release_cb, LV_EVENT_RELEASED, NULL);

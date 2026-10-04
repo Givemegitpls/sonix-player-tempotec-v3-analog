@@ -40,8 +40,8 @@ static lv_timer_t *poll_timer;
 
 // ---------------------------------------------------------------------------
 
-static void hide(lv_obj_t *obj) { lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN); }
-static void show(lv_obj_t *obj) { lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN); }
+static void hide(lv_obj_t *obj) { lv_obj_set_hidden(obj, true); }
+static void show(lv_obj_t *obj) { lv_obj_set_hidden(obj, false); }
 
 static bool switch_is_on(void) { return lv_obj_has_state(toggle, LV_STATE_CHECKED); }
 

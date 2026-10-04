@@ -341,9 +341,9 @@ static void row_update_playmark(row_t *row) {
 	}
 
 	if (playing) {
-		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->playmark, false);
 	} else {
-		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->playmark, true);
 	}
 }
 
@@ -373,18 +373,18 @@ static void row_bind(row_t *row, int index) {
 	row->generation = listing_generation;
 
 	if (index < 0 || (size_t)index >= shown.count) {
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->button, true);
+		lv_obj_set_hidden(row->check, true);
 		// The mark goes with the entry, or it outlives it: the row is hidden
 		// here, but set_message() shows the first one again for "reading" and
 		// "no audio files" without rebinding it, and a row that comes back for
 		// a folder with fewer entries than there are widgets is never rebound
 		// at all.
-		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->playmark, true);
 		return;
 	}
 
-	lv_obj_remove_flag(row->button, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(row->button, false);
 	lv_obj_set_y(row->button, index * ROW_PITCH);
 	lv_label_set_text(row->label, entry_name((size_t)index));
 	row_show_glyph(row, shown.entries[index].is_dir != 0);
@@ -593,9 +593,9 @@ static void row_update_selection(row_t *row) {
 	bool on = selecting && chosen && row->index >= 0 && (size_t)row->index < shown.count && chosen[row->index];
 	if (on) {
 		lv_obj_set_style_image_recolor(row->check, theme()->accent, 0);
-		lv_obj_remove_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->check, false);
 	} else {
-		lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->check, true);
 	}
 }
 
@@ -922,9 +922,9 @@ static void show_if(lv_obj_t *obj, bool show) {
 		return;
 	}
 	if (show) {
-		lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(obj, false);
 	} else {
-		lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(obj, true);
 	}
 }
 
@@ -1038,18 +1038,18 @@ bool browser_go_up(void) {
 // The first row doubles as the place messages are shown: there is no reason to
 // build a widget just to say a folder is empty.
 static void set_message(const char *text) {
-	lv_obj_remove_flag(rows[0].button, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(rows[0].button, false);
 	lv_obj_set_y(rows[0].button, 0);
-	lv_obj_add_flag(rows[0].icon, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(rows[0].icon, true);
 	// A sentence is not a track: whatever this row was showing before, it is
 	// not playing now.
-	lv_obj_add_flag(rows[0].playmark, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(rows[0].playmark, true);
 	lv_label_set_text(rows[0].label, tr(text));
 	lv_obj_add_style(rows[0].label, &style_list_error, 0);
 }
 
 static void clear_message(void) {
-	lv_obj_remove_flag(rows[0].icon, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(rows[0].icon, false);
 	lv_obj_remove_style(rows[0].label, &style_list_error, 0);
 }
 
@@ -1479,8 +1479,8 @@ static void build_rows(int width) {
 		lv_obj_add_style(row->button, &theme_style_card, 0);
 		lv_obj_add_style(row->button, &style_list_btn, 0);
 		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_EVENT_BUBBLE); // so a swipe can start on a row
+		lv_obj_set_hidden(row->button, true);
+		lv_obj_set_event_bubble(row->button, true); // so a swipe can start on a row
 		lv_obj_add_event_cb(row->button, entry_clicked_cb, LV_EVENT_CLICKED, NULL);
 		lv_obj_add_event_cb(row->button, entry_long_pressed_cb, LV_EVENT_LONG_PRESSED, NULL);
 
@@ -1508,13 +1508,13 @@ static void build_rows(int width) {
 		lv_image_set_src(row->check, &icon_check);
 		lv_obj_add_style(row->check, &theme_style_icon, 0);
 		lv_obj_set_style_image_recolor_opa(row->check, LV_OPA_COVER, 0);
-		lv_obj_remove_flag(row->check, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_clickable(row->check, false);
+		lv_obj_set_hidden(row->check, true);
 
 		// Outside the flex layout, in the row's own left padding: it marks the
 		// row without moving anything on it.
 		row->playmark = lv_obj_create(row->button);
-		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_IGNORE_LAYOUT);
+		lv_obj_set_ignore_layout(row->playmark, true);
 		lv_obj_set_size(row->playmark, PLAYMARK_WIDTH, PLAYMARK_HEIGHT);
 		lv_obj_align(row->playmark, LV_ALIGN_LEFT_MID, PLAYMARK_INSET - LIST_ROW_PAD, 0);
 		lv_obj_add_style(row->playmark, &theme_style_accent_bg, 0);
@@ -1522,9 +1522,9 @@ static void build_rows(int width) {
 		lv_obj_set_style_border_width(row->playmark, 0, 0);
 		lv_obj_set_style_shadow_width(row->playmark, 0, 0);
 		lv_obj_set_style_pad_all(row->playmark, 0, 0);
-		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_scrollable(row->playmark, false);
+		lv_obj_set_clickable(row->playmark, false);
+		lv_obj_set_hidden(row->playmark, true);
 
 		row->index = -1;
 		row->has_thumb = false;
@@ -1544,7 +1544,7 @@ static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t
 	lv_obj_set_style_pad_all(btn, 0, 0);
 	lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * 62, cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(btn, true);
 
 	lv_obj_t *image = lv_image_create(btn);
 	lv_image_set_src(image, glyph);
@@ -1608,7 +1608,7 @@ void browser_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(screen_container, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(screen_container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_gap(screen_container, cfg->padding, 0);
-	lv_obj_remove_flag(screen_container, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(screen_container, false);
 
 	// No path line: the title names the folder and the rows say what is in it,
 	// so the raw filesystem path would be a row of space spent on noise.
@@ -1634,8 +1634,8 @@ void browser_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(list_body, 0, 0);
 	lv_obj_set_style_border_width(list_body, 0, 0);
 	lv_obj_set_style_pad_all(list_body, 0, 0);
-	lv_obj_remove_flag(list_body, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(list_body, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(list_body, false);
+	lv_obj_set_event_bubble(list_body, true);
 
 	// Full usable width. The row's own inner padding must not be subtracted
 	// here as well, or every row carries ~30 px of dead space down its right

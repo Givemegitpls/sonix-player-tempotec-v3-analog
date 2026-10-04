@@ -455,9 +455,9 @@ static void panel_refresh_stale(panel_t *p) {
 	}
 	lv_obj_set_height(p->body, p->count ? p->count * ROW_PITCH : ROW_PITCH);
 	if (p->count == 0) {
-		lv_obj_remove_flag(p->empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(p->empty, false);
 	} else {
-		lv_obj_add_flag(p->empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(p->empty, true);
 	}
 	index_rebuild(p, p->index_wanted, p->index_desc);
 }
@@ -742,9 +742,9 @@ static void row_update_playmark(panel_t *p, row_t *row) {
 		return;
 	}
 	if (entry_is_now_playing(p, row->index)) {
-		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->playmark, false);
 	} else {
-		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->playmark, true);
 	}
 }
 
@@ -772,7 +772,7 @@ static void row_update_quality(panel_t *p, row_t *row, const char *path) {
 		return;
 	}
 	if (!quality_badges || !path || !path[0]) {
-		lv_obj_add_flag(row->quality, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->quality, true);
 		return;
 	}
 
@@ -796,11 +796,11 @@ static void row_update_quality(panel_t *p, row_t *row, const char *path) {
 	(void)p;
 
 	if (!icon) {
-		lv_obj_add_flag(row->quality, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->quality, true);
 		return;
 	}
 	lv_image_set_src(row->quality, icon);
-	lv_obj_remove_flag(row->quality, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(row->quality, false);
 }
 
 // Whether this list is one "Show artist" is on for: all the tracks, the albums
@@ -840,16 +840,16 @@ static void row_update_detail(panel_t *p, row_t *row, int index, const char *pat
 	}
 	if (artist) {
 		lv_label_set_text(row->artist, artist);
-		lv_obj_remove_flag(row->artist, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->artist, false);
 	} else {
-		lv_obj_add_flag(row->artist, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->artist, true);
 	}
 
-	bool badge = row->quality && !lv_obj_has_flag(row->quality, LV_OBJ_FLAG_HIDDEN);
+	bool badge = row->quality && !lv_obj_is_hidden(row->quality);
 	if (badge || artist) {
-		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->detail, false);
 	} else {
-		lv_obj_add_flag(row->detail, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->detail, true);
 	}
 }
 
@@ -901,16 +901,16 @@ static void row_update_selection(panel_t *p, row_t *row, const char *name, const
 	bool chosen = p->selecting && sel_find(p, row_key(p, row->index, name, path, buf, sizeof(buf))) >= 0;
 	if (chosen) {
 		lv_obj_set_style_image_recolor(row->check, theme()->accent, 0);
-		lv_obj_remove_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->check, false);
 	} else {
-		lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->check, true);
 	}
 	lv_obj_t *usual = row->menu_btn ? row->menu_btn : row->chevron;
 	if (usual) {
 		if (p->selecting) {
-			lv_obj_add_flag(usual, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(usual, true);
 		} else {
-			lv_obj_remove_flag(usual, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(usual, false);
 		}
 	}
 }
@@ -922,7 +922,7 @@ static void rows_update_selection(panel_t *p) {
 		if (row->index >= 0 && row->index < p->count && row_at(p, row->index, &name, &path)) {
 			row_update_selection(p, row, name, path);
 		} else {
-			lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(row->check, true);
 		}
 	}
 }
@@ -952,9 +952,9 @@ static lv_obj_t **corner_usual(panel_t *p, int *count) {
 
 static void show_if(lv_obj_t *obj, bool show) {
 	if (show) {
-		lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(obj, false);
 	} else {
-		lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(obj, true);
 	}
 }
 
@@ -983,7 +983,7 @@ static void selection_stop(panel_t *p) {
 	lv_obj_t **buttons = corner_usual(p, &n);
 	for (int i = 0; i < n; i++) {
 		if (buttons[i] && (p->corner_shown & (1u << i))) {
-			lv_obj_remove_flag(buttons[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(buttons[i], false);
 		}
 	}
 	sel_buttons_show(p, false);
@@ -1002,9 +1002,9 @@ static void selection_start(panel_t *p) {
 	int n = 0;
 	lv_obj_t **buttons = corner_usual(p, &n);
 	for (int i = 0; i < n; i++) {
-		if (buttons[i] && !lv_obj_has_flag(buttons[i], LV_OBJ_FLAG_HIDDEN)) {
+		if (buttons[i] && !lv_obj_is_hidden(buttons[i])) {
 			p->corner_shown |= 1u << i;
-			lv_obj_add_flag(buttons[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(buttons[i], true);
 		}
 	}
 	sel_buttons_show(p, true);
@@ -1385,7 +1385,7 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 	row->index = index;
 
 	if (index < 0 || index >= p->count) {
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->button, true);
 		return;
 	}
 
@@ -1395,11 +1395,11 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 		// The handle went stale under the list, or the row is gone. Hiding the
 		// row is what a reload will fix; drawing a neighbour's name would not
 		// look like a fault at all.
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->button, true);
 		return;
 	}
 
-	lv_obj_remove_flag(row->button, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(row->button, false);
 	lv_obj_set_y(row->button, index * ROW_PITCH);
 	// An album row is named by its value -- name and key, see library.h -- and
 	// only the name is for reading.
@@ -1410,10 +1410,10 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 	// Artists, Albums and Genres in turn: only the bind knows which list is
 	// loaded right now.
 	if (panel_shows_icons(p)) {
-		lv_obj_remove_flag(row->icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->icon, false);
 		row_show_glyph(p, row);
 	} else {
-		lv_obj_add_flag(row->icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->icon, true);
 	}
 	row_update_playmark(p, row);
 	row_update_detail(p, row, index, path);
@@ -1622,7 +1622,7 @@ static void model_remove(panel_t *p, int index) {
 
 	lv_obj_set_height(p->body, p->count ? p->count * ROW_PITCH : ROW_PITCH);
 	if (p->count == 0) {
-		lv_obj_remove_flag(p->empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(p->empty, false);
 	}
 	window_update(p);
 }
@@ -1641,10 +1641,10 @@ static void index_show_bar(panel_t *p, bool shown) {
 		return;
 	}
 	if (shown) {
-		lv_obj_remove_flag(p->index_bar, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(p->index_bar, false);
 		lv_obj_move_foreground(p->index_bar);
 	} else {
-		lv_obj_add_flag(p->index_bar, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(p->index_bar, true);
 	}
 }
 
@@ -1655,7 +1655,7 @@ static void index_flash(panel_t *p) {
 		return;
 	}
 	p->index_wanted_at = lv_tick_get();
-	if (p->index_bar && lv_obj_has_flag(p->index_bar, LV_OBJ_FLAG_HIDDEN)) {
+	if (p->index_bar && lv_obj_is_hidden(p->index_bar)) {
 		index_show_bar(p, true);
 	}
 }
@@ -1666,7 +1666,7 @@ static void index_hint_show(panel_t *p, int slot) {
 	}
 	int bucket = p->index_desc ? INDEX_BUCKETS - 1 - slot : slot;
 	lv_label_set_text(p->index_hint_label, INDEX_TEXT[bucket]);
-	lv_obj_remove_flag(p->index_hint, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(p->index_hint, false);
 	lv_obj_move_foreground(p->index_hint);
 	p->index_hint_at = lv_tick_get();
 }
@@ -1683,7 +1683,7 @@ static void index_rebuild(panel_t *p, bool enabled, bool descending) {
 
 	index_show_bar(p, false);
 	if (p->index_hint) {
-		lv_obj_add_flag(p->index_hint, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(p->index_hint, true);
 	}
 
 	if (!p->index_enabled) {
@@ -1936,13 +1936,11 @@ static void index_tick(panel_t *p) {
 	if (!index_guard_ok(p)) {
 		return;
 	}
-	if (p->index_bar && !lv_obj_has_flag(p->index_bar, LV_OBJ_FLAG_HIDDEN) &&
-		lv_tick_elaps(p->index_wanted_at) > INDEX_HIDE_MS) {
+	if (p->index_bar && !lv_obj_is_hidden(p->index_bar) && lv_tick_elaps(p->index_wanted_at) > INDEX_HIDE_MS) {
 		index_show_bar(p, false);
 	}
-	if (p->index_hint && !lv_obj_has_flag(p->index_hint, LV_OBJ_FLAG_HIDDEN) &&
-		lv_tick_elaps(p->index_hint_at) > INDEX_HINT_MS) {
-		lv_obj_add_flag(p->index_hint, LV_OBJ_FLAG_HIDDEN);
+	if (p->index_hint && !lv_obj_is_hidden(p->index_hint) && lv_tick_elaps(p->index_hint_at) > INDEX_HINT_MS) {
+		lv_obj_set_hidden(p->index_hint, true);
 	}
 }
 
@@ -2018,8 +2016,8 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 	lv_obj_set_style_bg_color(p->index_bar, theme()->surface, 0);
 	lv_obj_set_style_bg_opa(p->index_bar, LV_OPA_60, 0);
 	lv_obj_set_style_radius(p->index_bar, INDEX_BAR_WIDTH / 2, 0);
-	lv_obj_remove_flag(p->index_bar, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(p->index_bar, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(p->index_bar, false);
+	lv_obj_set_hidden(p->index_bar, true);
 	lv_obj_set_flex_flow(p->index_bar, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(p->index_bar, LV_FLEX_ALIGN_SPACE_AROUND, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -2027,7 +2025,7 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 	// -- but it is still part of the page, so the swipe back and the pull that
 	// brings the player in start on it as well. Which of the three a press is
 	// gets decided in index_bar_cb, from the direction it moves.
-	lv_obj_add_flag(p->index_bar, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(p->index_bar, true);
 	lv_obj_add_event_cb(p->index_bar, index_bar_cb, LV_EVENT_PRESSED, p);
 	lv_obj_add_event_cb(p->index_bar, index_bar_cb, LV_EVENT_PRESSING, p);
 	lv_obj_add_event_cb(p->index_bar, index_bar_cb, LV_EVENT_RELEASED, p);
@@ -2042,7 +2040,7 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 		lv_obj_set_style_text_font(p->index_letters[i], &font_ui_14, 0);
 		// The presses belong to the strip as a whole: the letter under the
 		// finger comes from where it is, not from which label it landed on.
-		lv_obj_remove_flag(p->index_letters[i], LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_clickable(p->index_letters[i], false);
 	}
 
 	// The letter under the finger, in the middle of the screen where the hand
@@ -2055,9 +2053,9 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 	lv_obj_set_style_bg_color(p->index_hint, theme()->accent, 0);
 	lv_obj_set_style_bg_opa(p->index_hint, LV_OPA_90, 0);
 	lv_obj_set_style_radius(p->index_hint, 26, 0);
-	lv_obj_remove_flag(p->index_hint, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(p->index_hint, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(p->index_hint, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(p->index_hint, false);
+	lv_obj_set_clickable(p->index_hint, false);
+	lv_obj_set_hidden(p->index_hint, true);
 
 	p->index_hint_label = lv_label_create(p->index_hint);
 	lv_label_set_text(p->index_hint_label, "");
@@ -2213,7 +2211,7 @@ static lv_obj_t *corner_button(lv_obj_t *parent, const lv_image_dsc_t *glyph, lv
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_pad_all(btn, 0, 0);
-	lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(btn, true);
 	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, p);
 
 	lv_obj_t *image = lv_image_create(btn);
@@ -2273,9 +2271,9 @@ static void row_apply_reorder_look(const panel_t *p, const row_t *row) {
 		lv_image_set_src(glyph, p->reordering ? &icon_grip : &icon_ellipsis_vertical);
 	}
 	if (p->reordering) {
-		lv_obj_remove_flag(row->menu_btn, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
+		lv_obj_set_scroll_chain_ver(row->menu_btn, false);
 	} else {
-		lv_obj_add_flag(row->menu_btn, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
+		lv_obj_set_scroll_chain_ver(row->menu_btn, true);
 	}
 }
 
@@ -2284,9 +2282,9 @@ static void row_apply_reorder_look(const panel_t *p, const row_t *row) {
 static void drop_line_show(panel_t *p, int before_index) {
 	if (!drop_line) {
 		drop_line = lv_obj_create(p->body);
-		lv_obj_add_flag(drop_line, LV_OBJ_FLAG_IGNORE_LAYOUT);
-		lv_obj_remove_flag(drop_line, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_remove_flag(drop_line, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_ignore_layout(drop_line, true);
+		lv_obj_set_scrollable(drop_line, false);
+		lv_obj_set_clickable(drop_line, false);
 		lv_obj_set_style_border_width(drop_line, 0, 0);
 		lv_obj_set_style_shadow_width(drop_line, 0, 0);
 		lv_obj_set_style_pad_all(drop_line, 0, 0);
@@ -2297,13 +2295,13 @@ static void drop_line_show(panel_t *p, int before_index) {
 	}
 	lv_obj_set_size(drop_line, lv_obj_get_width(p->body) - 2 * ROW_PAD, 4);
 	lv_obj_set_pos(drop_line, ROW_PAD, before_index * ROW_PITCH - ROW_GAP / 2 - 2);
-	lv_obj_remove_flag(drop_line, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(drop_line, false);
 	lv_obj_move_foreground(drop_line);
 }
 
 static void drop_line_hide(void) {
 	if (drop_line) {
-		lv_obj_add_flag(drop_line, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(drop_line, true);
 	}
 }
 
@@ -2611,7 +2609,7 @@ static panel_t *play_menu_panel;
 
 static void play_menu_hide(void) {
 	if (play_menu_panel && play_menu_panel->play_menu) {
-		lv_obj_add_flag(play_menu_panel->play_menu, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(play_menu_panel->play_menu, true);
 	}
 	play_menu_panel = NULL;
 }
@@ -2811,7 +2809,7 @@ static lv_obj_t *play_menu_row(lv_obj_t *parent, const char *text, lv_event_cb_t
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(row, false);
 	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *label = lv_label_create(row);
@@ -2833,9 +2831,9 @@ static void play_menu_build(panel_t *p) {
 	lv_obj_set_size(p->play_menu, lv_pct(100), lv_pct(100));
 	lv_obj_set_style_bg_color(p->play_menu, lv_color_black(), 0);
 	lv_obj_set_style_bg_opa(p->play_menu, LV_OPA_60, 0);
-	lv_obj_add_flag(p->play_menu, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_remove_flag(p->play_menu, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(p->play_menu, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_clickable(p->play_menu, true);
+	lv_obj_set_scrollable(p->play_menu, false);
+	lv_obj_set_hidden(p->play_menu, true);
 	lv_obj_add_event_cb(p->play_menu, play_menu_dismiss_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *card = lv_obj_create(p->play_menu);
@@ -2848,7 +2846,7 @@ static void play_menu_build(panel_t *p) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 16, 0);
 	lv_obj_set_style_pad_gap(card, 10, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -2866,7 +2864,7 @@ static void play_menu_clicked_cb(lv_event_t *e) {
 		play_menu_build(p);
 	}
 	play_menu_panel = p;
-	lv_obj_remove_flag(p->play_menu, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(p->play_menu, false);
 	lv_obj_move_foreground(p->play_menu);
 }
 
@@ -3111,10 +3109,10 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	lv_obj_set_style_bg_opa(p->body, 0, 0);
 	lv_obj_set_style_border_width(p->body, 0, 0);
 	lv_obj_set_style_pad_all(p->body, 0, 0);
-	lv_obj_remove_flag(p->body, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(p->body, false);
 	// Row presses bubble row -> body -> list; without this flag they stop here
 	// and the swipe gestures never see a press that began on a row.
-	lv_obj_add_flag(p->body, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(p->body, true);
 
 	// The corner strip, on the title row's right: whichever of the three
 	// buttons this particular list has a use for. A row rather than three
@@ -3129,9 +3127,9 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	// parent, at x = -60, and is never drawn. Sizing for the most buttons that
 	// can coexist costs a strip of empty space on the pages that show fewer.
 	lv_obj_set_size(p->corner, CORNER_MAX_BUTTONS * CORNER_BUTTON_SIZE + (CORNER_MAX_BUTTONS - 1) * CORNER_GAP, 56);
-	lv_obj_remove_flag(p->corner, LV_OBJ_FLAG_CLICKABLE); // it is a shelf, not a control
+	lv_obj_set_clickable(p->corner, false); // it is a shelf, not a control
 	lv_obj_align(p->corner, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
-	lv_obj_remove_flag(p->corner, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(p->corner, false);
 	lv_obj_set_flex_flow(p->corner, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(p->corner, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(p->corner, CORNER_GAP, 0);
@@ -3176,10 +3174,10 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	p->sel_unfav_btn = corner_button(p->corner, &icon_star_x, sel_unfav_cb, p);
 	p->sel_unlist_btn = corner_button(p->corner, &icon_list_x, sel_unlist_cb, p);
 	p->sel_close_btn = corner_button(p->corner, &icon_close, sel_close_cb, p);
-	lv_obj_add_flag(p->sel_queue_btn, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_add_flag(p->sel_fav_btn, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_add_flag(p->sel_add_btn, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_add_flag(p->sel_close_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(p->sel_queue_btn, true);
+	lv_obj_set_hidden(p->sel_fav_btn, true);
+	lv_obj_set_hidden(p->sel_add_btn, true);
+	lv_obj_set_hidden(p->sel_close_btn, true);
 
 	p->empty = lv_label_create(p->list);
 	lv_label_set_text(p->empty, tr("library_empty_note"));
@@ -3187,7 +3185,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	lv_obj_add_style(p->empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(p->empty, &font_ui_24, 0);
 	lv_obj_align(p->empty, LV_ALIGN_TOP_MID, 0, 120);
-	lv_obj_add_flag(p->empty, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(p->empty, true);
 
 	for (int i = 0; i < ROW_POOL; i++) {
 		row_t *row = &p->rows[i];
@@ -3198,8 +3196,8 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_add_style(row->button, &theme_style_card, 0);
 		lv_obj_add_style(row->button, &style_row, 0);
 		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_EVENT_BUBBLE); // so the player sheet can be dragged in
+		lv_obj_set_hidden(row->button, true);
+		lv_obj_set_event_bubble(row->button, true); // so the player sheet can be dragged in
 		lv_obj_add_event_cb(row->button, row_clicked_cb, LV_EVENT_CLICKED, p);
 		lv_obj_add_event_cb(row->button, row_long_pressed_cb, LV_EVENT_LONG_PRESSED, p);
 
@@ -3220,9 +3218,9 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_set_flex_flow(row->text, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_flex_align(row->text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 		lv_obj_set_style_pad_row(row->text, QUALITY_GAP, 0);
-		lv_obj_remove_flag(row->text, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_remove_flag(row->text, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_add_flag(row->text, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_scrollable(row->text, false);
+		lv_obj_set_clickable(row->text, false);
+		lv_obj_set_event_bubble(row->text, true);
 
 		row->label = lv_label_create(row->text);
 		lv_label_set_long_mode(row->label, LV_LABEL_LONG_DOT);
@@ -3239,18 +3237,18 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_set_flex_flow(row->detail, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->detail, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 		lv_obj_set_style_pad_column(row->detail, 8, 0);
-		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_add_flag(row->detail, LV_OBJ_FLAG_EVENT_BUBBLE);
-		lv_obj_add_flag(row->detail, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_scrollable(row->detail, false);
+		lv_obj_set_clickable(row->detail, false);
+		lv_obj_set_event_bubble(row->detail, true);
+		lv_obj_set_hidden(row->detail, true);
 
 		// Only track rows have a quality to show: an album or an artist is not
 		// one recording.
 		row->quality = NULL;
 		if (is_tracks) {
 			row->quality = lv_image_create(row->detail);
-			lv_obj_add_flag(row->quality, LV_OBJ_FLAG_HIDDEN);
-			lv_obj_remove_flag(row->quality, LV_OBJ_FLAG_CLICKABLE);
+			lv_obj_set_hidden(row->quality, true);
+			lv_obj_set_clickable(row->quality, false);
 		}
 
 		// One line like the title, cut with dots, in the quieter colour.
@@ -3261,13 +3259,13 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_set_height(row->artist, lv_font_get_line_height(&font_ui_20));
 		lv_obj_add_style(row->artist, &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(row->artist, &font_ui_20, 0);
-		lv_obj_add_flag(row->artist, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(row->artist, true);
 
 		// Out of the flex layout on purpose: it sits in the row's own left
 		// padding, so adding it moves nothing. Hidden until a row it belongs
 		// to is bound.
 		row->playmark = lv_obj_create(row->button);
-		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_IGNORE_LAYOUT);
+		lv_obj_set_ignore_layout(row->playmark, true);
 		lv_obj_set_size(row->playmark, PLAYMARK_WIDTH, PLAYMARK_HEIGHT);
 		lv_obj_align(row->playmark, LV_ALIGN_LEFT_MID, PLAYMARK_INSET - ROW_PAD, 0);
 		lv_obj_add_style(row->playmark, &theme_style_accent_bg, 0);
@@ -3275,9 +3273,9 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_set_style_border_width(row->playmark, 0, 0);
 		lv_obj_set_style_shadow_width(row->playmark, 0, 0);
 		lv_obj_set_style_pad_all(row->playmark, 0, 0);
-		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_scrollable(row->playmark, false);
+		lv_obj_set_clickable(row->playmark, false);
+		lv_obj_set_hidden(row->playmark, true);
 
 		row->menu_btn = NULL;
 		row->chevron = NULL;
@@ -3320,8 +3318,8 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_image_set_src(row->check, &icon_check);
 		lv_obj_add_style(row->check, &theme_style_icon, 0);
 		lv_obj_set_style_image_recolor_opa(row->check, LV_OPA_COVER, 0);
-		lv_obj_remove_flag(row->check, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_clickable(row->check, false);
+		lv_obj_set_hidden(row->check, true);
 
 		row->index = -1;
 		row->has_thumb = false;
@@ -3353,9 +3351,9 @@ static void show_corner(lv_obj_t *btn, bool shown) {
 		return;
 	}
 	if (shown) {
-		lv_obj_remove_flag(btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(btn, false);
 	} else {
-		lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(btn, true);
 	}
 }
 
@@ -3533,9 +3531,9 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 
 	lv_obj_set_height(p->body, p->count ? p->count * ROW_PITCH : ROW_PITCH);
 	if (p->count == 0) {
-		lv_obj_remove_flag(p->empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(p->empty, false);
 	} else {
-		lv_obj_add_flag(p->empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(p->empty, true);
 	}
 
 	// The A-Z strip, on the two long flat lists: all the tracks and all the
@@ -3624,9 +3622,9 @@ void medialist_open_paths(const char *title, const char *const *paths, const cha
 
 	lv_obj_set_height(p->body, p->count ? p->count * ROW_PITCH : ROW_PITCH);
 	if (p->count == 0) {
-		lv_obj_remove_flag(p->empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(p->empty, false);
 	} else {
-		lv_obj_add_flag(p->empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(p->empty, true);
 	}
 
 	// No A-Z strip on a playlist: its order is the one the user put it in.

@@ -59,7 +59,7 @@ static void toast_dismiss(void) {
 		busy_dismissable = false;
 	}
 	if (veil) {
-		lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(veil, true);
 	}
 	lv_timer_pause(hide_timer);
 }
@@ -83,7 +83,7 @@ void toast_init(gui_config_t *cfg) {
 	// and no drop shadow on the card, so a confirmation and a warning read as
 	// the same kind of object.
 	veil = lv_obj_create(lv_layer_top());
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(veil, true);
 	lv_obj_set_size(veil, lv_pct(100), lv_pct(100));
 	lv_obj_set_pos(veil, 0, 0);
 	lv_obj_set_style_bg_color(veil, lv_color_black(), 0);
@@ -92,13 +92,13 @@ void toast_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(veil, 0, 0);
 	lv_obj_set_style_shadow_width(veil, 0, 0);
 	lv_obj_set_style_pad_all(veil, 0, 0);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(veil, false);
+	lv_obj_set_clickable(veil, true);
 	lv_obj_add_event_cb(veil, veil_cb, LV_EVENT_CLICKED, NULL);
 
 	card = lv_obj_create(veil);
 	lv_obj_set_size(card, TOAST_WIDTH, LV_SIZE_CONTENT);
-	lv_obj_set_style_max_height(card, lv_display_get_vertical_resolution(NULL) - 2 * TOAST_SIDE_MARGIN, 0);
+	lv_obj_set_style_max_height(card, lv_display_get_vertical_resolution(lv_display_get_default()) - 2 * TOAST_SIDE_MARGIN, 0);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_card, 0);
 	lv_obj_set_style_radius(card, 20, 0);
@@ -106,8 +106,8 @@ void toast_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);
 	lv_obj_set_style_pad_gap(card, 16, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE); // a tap on it is not a tap outside
+	lv_obj_set_scrollable(card, false);
+	lv_obj_set_clickable(card, true); // a tap on it is not a tap outside
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -133,7 +133,7 @@ void toast_init(gui_config_t *cfg) {
 static void fit_card(const char *text, bool above) {
 	int32_t width = TOAST_WIDTH;
 	if (text && strlen(text) > TOAST_WIDE_CHARS) {
-		int32_t room = lv_display_get_horizontal_resolution(NULL) - 2 * TOAST_SIDE_MARGIN;
+		int32_t room = lv_display_get_horizontal_resolution(lv_display_get_default()) - 2 * TOAST_SIDE_MARGIN;
 		width = room < TOAST_WIDE_WIDTH ? room : TOAST_WIDE_WIDTH;
 		if (width < TOAST_WIDTH) {
 			width = TOAST_WIDTH;
@@ -171,14 +171,14 @@ static void show(const lv_image_dsc_t *glyph, lv_color_t colour, const char *tex
 	if (glyph) {
 		lv_image_set_src(icon, glyph);
 		lv_obj_set_style_image_recolor(icon, colour, 0);
-		lv_obj_remove_flag(icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(icon, false);
 	} else {
-		lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(icon, true);
 	}
 	fit_card(shown, glyph != NULL);
 
 	lv_label_set_text(label, shown);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(veil, false);
 	lv_obj_move_foreground(veil);
 	lv_timer_set_period(hide_timer, shown_for(shown));
 	lv_timer_reset(hide_timer);
@@ -199,7 +199,7 @@ void toast_busy(const char *text) {
 	}
 	busy_dismissable = false;
 	lv_timer_pause(hide_timer);
-	lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(icon, true);
 	if (!busy_spinner) {
 		busy_spinner = spinner_create(card, &icon_loader_big);
 		lv_obj_move_to_index(busy_spinner, 0);
@@ -207,7 +207,7 @@ void toast_busy(const char *text) {
 	const char *shown = text ? tr(text) : "";
 	fit_card(shown, true);
 	lv_label_set_text(label, shown);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(veil, false);
 	lv_obj_move_foreground(veil);
 }
 
@@ -218,7 +218,7 @@ void toast_busy_end(void) {
 	lv_obj_delete(busy_spinner);
 	busy_spinner = NULL;
 	busy_dismissable = false;
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(veil, true);
 }
 
 void toast_busy_dismissable(const char *text) {

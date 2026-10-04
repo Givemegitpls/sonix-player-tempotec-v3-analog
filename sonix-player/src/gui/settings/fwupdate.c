@@ -65,8 +65,8 @@ static void button_cb(lv_event_t *e) {
 static void veil_cb(lv_event_t *e) { (void)e; }
 
 static void build(void) {
-	int32_t screen_w = lv_display_get_horizontal_resolution(NULL);
-	int32_t screen_h = lv_display_get_vertical_resolution(NULL);
+	int32_t screen_w = lv_display_get_horizontal_resolution(lv_display_get_default());
+	int32_t screen_h = lv_display_get_vertical_resolution(lv_display_get_default());
 
 	veil = lv_obj_create(lv_layer_top());
 	lv_obj_set_size(veil, lv_pct(100), lv_pct(100));
@@ -76,8 +76,8 @@ static void build(void) {
 	lv_obj_set_style_border_width(veil, 0, 0);
 	lv_obj_set_style_radius(veil, 0, 0);
 	lv_obj_set_style_pad_all(veil, 0, 0);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(veil, false);
+	lv_obj_set_hidden(veil, true);
 	lv_obj_add_event_cb(veil, veil_cb, LV_EVENT_CLICKED, NULL);
 
 	card = lv_obj_create(veil);
@@ -90,7 +90,7 @@ static void build(void) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 22, 0);
 	lv_obj_set_style_pad_gap(card, 14, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -115,7 +115,7 @@ static void build(void) {
 	notes_box = lv_obj_create(card);
 	lv_obj_set_width(notes_box, lv_pct(100));
 	lv_obj_set_height(notes_box, notes_max_h);
-	lv_obj_remove_flag(notes_box, LV_OBJ_FLAG_SCROLL_ELASTIC);
+	lv_obj_set_scroll_elastic(notes_box, false);
 	lv_obj_set_style_bg_opa(notes_box, 0, 0);
 	lv_obj_set_style_border_width(notes_box, 0, 0);
 	lv_obj_set_style_pad_all(notes_box, 0, 0);
@@ -128,7 +128,8 @@ static void build(void) {
 	lv_obj_set_style_border_width(notes_content, 0, 0);
 	lv_obj_set_style_pad_all(notes_content, 0, 0);
 	lv_obj_set_style_pad_row(notes_content, 2, 0);
-	lv_obj_remove_flag(notes_content, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_clickable(notes_content, false);
+	lv_obj_set_scrollable(notes_content, false);
 	lv_obj_set_flex_flow(notes_content, LV_FLEX_FLOW_COLUMN);
 
 	bar = lv_bar_create(card);
@@ -146,7 +147,7 @@ static void build(void) {
 	lv_obj_set_style_border_width(column, 0, 0);
 	lv_obj_set_style_pad_all(column, 0, 0);
 	lv_obj_set_style_pad_gap(column, 12, 0);
-	lv_obj_remove_flag(column, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(column, false);
 	lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
 
 	for (int i = 0; i < BUTTONS; i++) {
@@ -183,22 +184,22 @@ static void set_button(int i, const char *key, bool accent, action_fn action) {
 	lv_label_set_text(button_labels[i], tr(key));
 	lv_obj_set_style_text_color(button_labels[i], accent ? lv_color_white() : theme()->text_primary, 0);
 	button_actions[i] = action;
-	lv_obj_remove_flag(btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(btn, false);
 }
 
 // Hides button `from` and every one after it.
 static void hide_buttons(int from) {
 	for (int i = from; i < BUTTONS; i++) {
-		lv_obj_add_flag(buttons[i], LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(buttons[i], true);
 		button_actions[i] = NULL;
 	}
 }
 
 static void set_visible(lv_obj_t *obj, bool visible) {
 	if (visible) {
-		lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(obj, false);
 	} else {
-		lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(obj, true);
 	}
 }
 
@@ -224,7 +225,7 @@ static void close_card(void) {
 	stop_polling();
 	phase = PHASE_NONE;
 	if (veil) {
-		lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(veil, true);
 	}
 	if (holding_screen) {
 		holding_screen = false;
@@ -304,7 +305,7 @@ static void strip_marks(char *text) {
 // font_ui_20_bold, wrapping at the width it is given.
 static lv_obj_t *notes_rich(lv_obj_t *parent, const char *text) {
 	lv_obj_t *group = lv_spangroup_create(parent);
-	lv_obj_remove_flag(group, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(group, false);
 	// The width of the notes and the height of the content: the lines wrap.
 	// A bullet narrows it to what is left beside the bullet.
 	lv_obj_set_size(group, lv_pct(100), LV_SIZE_CONTENT);
@@ -357,7 +358,8 @@ static lv_obj_t *notes_bullet(const char *text, int depth) {
 	lv_obj_set_style_pad_all(row, 0, 0);
 	lv_obj_set_style_pad_left(row, depth * BULLET_INDENT, 0);
 	lv_obj_set_style_pad_column(row, 8, 0);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_clickable(row, false);
+	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 
 	notes_text_label(row, "\xE2\x80\xA2", &font_ui_20); // U+2022
@@ -496,7 +498,7 @@ static void show_progress(void) {
 
 static void show_downloading(void) {
 	layout(PRODUCT_NAME, "", false, true);
-	lv_obj_remove_flag(message_label, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(message_label, false);
 	lv_bar_set_value(bar, 0, LV_ANIM_OFF);
 	show_progress();
 	set_button(0, "cancel", false, cancel_running);
@@ -664,7 +666,7 @@ void fwupdate_show(void) {
 	}
 	phase = PHASE_NONE;
 	show_choice();
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(veil, false);
 	lv_obj_move_foreground(veil);
 	if (!holding_screen) {
 		holding_screen = true;

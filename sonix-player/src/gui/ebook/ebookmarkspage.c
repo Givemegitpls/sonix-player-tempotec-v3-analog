@@ -149,7 +149,7 @@ static void build_marks(void) {
 		lv_obj_set_style_min_height(row, 88, 0);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_style_pad_row(row, 6, 0);
-		lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_event_bubble(row, true);
 		lv_obj_add_event_cb(row, mark_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 		lv_obj_add_event_cb(row, mark_long_pressed_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
 
@@ -163,14 +163,14 @@ static void build_marks(void) {
 			lv_label_set_text(text, bm.text);
 			lv_obj_add_style(text, &theme_style_text, 0);
 			lv_obj_set_style_text_font(text, &font_ui_20, 0);
-			lv_obj_add_flag(text, LV_OBJ_FLAG_EVENT_BUBBLE);
+			lv_obj_set_event_bubble(text, true);
 		}
 
 		lv_obj_t *where = lv_label_create(row);
 		lv_label_set_text_fmt(where, "%s %u", tr("chapter"), bm.spine + 1u);
 		lv_obj_add_style(where, &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(where, &font_ui_18, 0);
-		lv_obj_add_flag(where, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_event_bubble(where, true);
 	}
 }
 
@@ -213,7 +213,7 @@ static bool cover_ready(int index, const char *title, const cover_image_t *cover
 	entry->cover = *cover;
 	entry->has_cover = true;
 	lv_image_set_src(entry->image, &entry->cover.dsc);
-	lv_obj_remove_flag(entry->image, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(entry->image, false);
 	return true;
 }
 
@@ -292,7 +292,7 @@ static void build_rows(void) {
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 		lv_obj_set_style_pad_column(row, 14, 0);
-		lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_event_bubble(row, true);
 		lv_obj_add_event_cb(row, open_book_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
 		// The cover's place, held open whether or not one arrives: rows that
@@ -304,8 +304,8 @@ static void build_rows(void) {
 		lv_obj_set_style_bg_color(plate, theme()->screen_bg, 0);
 		lv_obj_set_style_bg_opa(plate, LV_OPA_COVER, 0);
 		lv_obj_set_style_radius(plate, 6, 0);
-		lv_obj_remove_flag(plate, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_add_flag(plate, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_scrollable(plate, false);
+		lv_obj_set_event_bubble(plate, true);
 
 		lv_obj_t *glyph = lv_image_create(plate);
 		lv_image_set_src(glyph, &icon_ebook_cover_small);
@@ -316,8 +316,8 @@ static void build_rows(void) {
 
 		entry->image = lv_image_create(plate);
 		lv_obj_center(entry->image);
-		lv_obj_add_flag(entry->image, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(entry->image, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_hidden(entry->image, true);
+		lv_obj_set_event_bubble(entry->image, true);
 
 		lv_obj_t *column = lv_obj_create(row);
 		lv_obj_remove_style_all(column);
@@ -325,8 +325,8 @@ static void build_rows(void) {
 		lv_obj_set_flex_grow(column, 1);
 		lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_style_pad_row(column, 6, 0);
-		lv_obj_remove_flag(column, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_add_flag(column, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_scrollable(column, false);
+		lv_obj_set_event_bubble(column, true);
 
 		entry->label = lv_label_create(column);
 		lv_label_set_long_mode(entry->label, LV_LABEL_LONG_WRAP);
@@ -334,14 +334,14 @@ static void build_rows(void) {
 		lv_label_set_text(entry->label, entry->name);
 		lv_obj_add_style(entry->label, &theme_style_text, 0);
 		lv_obj_set_style_text_font(entry->label, &font_ui_22, 0);
-		lv_obj_add_flag(entry->label, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_event_bubble(entry->label, true);
 
 		lv_obj_t *count = lv_label_create(column);
 		lv_label_set_text_fmt(count, "%d %s", entry->count,
 							  tr(entry->count == 1 ? "ebookmarks_bookmark_one" : "ebookmarks_bookmark_many"));
 		lv_obj_add_style(count, &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(count, &font_ui_18, 0);
-		lv_obj_add_flag(count, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_event_bubble(count, true);
 	}
 }
 
@@ -397,11 +397,11 @@ static void books_loaded_cb(lv_event_t *e) {
 	scan_folder();
 
 	if (book_count) {
-		lv_obj_add_flag(books_empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(books_empty, true);
 		build_rows();
 		covers_begin();
 	} else {
-		lv_obj_remove_flag(books_empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(books_empty, false);
 	}
 }
 
@@ -428,10 +428,10 @@ void ebookmarkspage_init(gui_config_t *cfg) {
 	lv_obj_set_size(books_list, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_flex_flow(books_list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_style_pad_row(books_list, 10, 0);
-	lv_obj_remove_flag(books_list, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(books_list, false);
 	// One step at a time: a row hands the press to this, and this to the
 	// container, which is where the swipe that goes back is watched.
-	lv_obj_add_flag(books_list, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(books_list, true);
 
 	books_empty = lv_label_create(container);
 	lv_label_set_long_mode(books_empty, LV_LABEL_LONG_WRAP);
@@ -440,7 +440,7 @@ void ebookmarkspage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(books_empty, &font_ui_20, 0);
 	lv_obj_set_style_text_align(books_empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_label_set_text(books_empty, tr("ebookmarks_empty_note"));
-	lv_obj_add_flag(books_empty, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(books_empty, true);
 
 	lv_obj_add_event_cb(ebookmarkspage_screen, books_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(ebookmarkspage_screen, books_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
@@ -462,8 +462,8 @@ void ebookmarkspage_init(gui_config_t *cfg) {
 	lv_obj_set_size(marks_list, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_flex_flow(marks_list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_style_pad_row(marks_list, 10, 0);
-	lv_obj_remove_flag(marks_list, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(marks_list, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(marks_list, false);
+	lv_obj_set_event_bubble(marks_list, true);
 
 	// Built on arrival and not when a book is picked: coming back here from the
 	// reader is an arrival too, and a bookmark saved in between has to be in

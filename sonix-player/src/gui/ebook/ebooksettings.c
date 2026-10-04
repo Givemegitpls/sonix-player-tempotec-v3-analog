@@ -89,9 +89,9 @@ static void scope_refresh(void) {
 	}
 	if (scope_row) {
 		if (ebookbar_option(EBOOKBAR_PROGRESS)) {
-			lv_obj_remove_flag(scope_row, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(scope_row, false);
 		} else {
-			lv_obj_add_flag(scope_row, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(scope_row, true);
 		}
 	}
 }
@@ -169,9 +169,9 @@ void ebooksettings_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(preview_paper, 12, 0);
 	lv_obj_set_style_pad_all(preview_paper, 14, 0);
 	lv_obj_set_style_pad_row(preview_paper, 10, 0);
-	lv_obj_remove_flag(preview_paper, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(preview_paper, false);
 	lv_obj_set_flex_flow(preview_paper, LV_FLEX_FLOW_COLUMN);
-	lv_obj_add_flag(preview_paper, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(preview_paper, true);
 
 	// Two lines of a book above it, so the strip is seen where it lives rather
 	// than floating in a box of its own.
@@ -182,7 +182,7 @@ void ebooksettings_init(gui_config_t *cfg) {
 		lv_obj_set_style_radius(line, 5, 0);
 		lv_obj_set_style_bg_color(line, lv_color_hex(PAPER_INK), 0);
 		lv_obj_set_style_bg_opa(line, LV_OPA_20, 0);
-		lv_obj_remove_flag(line, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_scrollable(line, false);
 	}
 
 	ebookbar_create(&preview, preview_paper, (int32_t)cfg->screen_width - 2 * cfg->padding - 28);

@@ -189,8 +189,8 @@ static void qr_open(void) {
 	lv_obj_set_style_radius(veil, 0, 0);
 	lv_obj_set_style_shadow_width(veil, 0, 0);
 	lv_obj_set_style_pad_all(veil, 0, 0);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(veil, false);
+	lv_obj_set_clickable(veil, true);
 	lv_obj_add_event_cb(veil, veil_clicked_cb, LV_EVENT_CLICKED, NULL);
 
 	// White whatever the theme is: a code read by a camera is black on white,
@@ -205,7 +205,7 @@ static void qr_open(void) {
 	lv_obj_set_style_radius(card, 18, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, QR_PAD, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	lv_obj_center(card);
 
 	qr_image = lv_image_create(card);
@@ -248,7 +248,7 @@ void easteregg_attach(lv_obj_t *row) {
 		return;
 	}
 
-	lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(row, true);
 	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(row, row_long_pressed_cb, LV_EVENT_LONG_PRESSED, NULL);
 }

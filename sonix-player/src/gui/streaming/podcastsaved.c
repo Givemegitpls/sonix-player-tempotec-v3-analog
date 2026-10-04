@@ -216,10 +216,10 @@ static lv_obj_t *make_row(lv_obj_t *parent, const cover_image_t *image, const ch
 	lv_obj_set_style_pad_hor(row, 16, 0);
 	lv_obj_set_style_pad_ver(row, 0, 0);
 	lv_obj_set_style_pad_column(row, 12, 0);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(row, true);
 	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
 	if (long_cb) {
 		lv_obj_add_event_cb(row, long_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)index);
@@ -228,7 +228,7 @@ static lv_obj_t *make_row(lv_obj_t *parent, const cover_image_t *image, const ch
 	lv_obj_t *thumb = lv_image_create(row);
 	lv_obj_set_size(thumb, SAVED_THUMB, SAVED_THUMB);
 	lv_image_set_inner_align(thumb, LV_IMAGE_ALIGN_CENTER);
-	lv_obj_add_flag(thumb, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(thumb, true);
 	paint_thumb(thumb, image);
 
 	lv_obj_t *texts = lv_obj_create(row);
@@ -236,8 +236,8 @@ static lv_obj_t *make_row(lv_obj_t *parent, const cover_image_t *image, const ch
 	lv_obj_set_flex_grow(texts, 1);
 	lv_obj_set_height(texts, LV_SIZE_CONTENT);
 	lv_obj_set_style_pad_row(texts, 6, 0);
-	lv_obj_remove_flag(texts, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(texts, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(texts, false);
+	lv_obj_set_event_bubble(texts, true);
 	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
 
 	lv_obj_t *name = lv_label_create(texts);
@@ -302,9 +302,9 @@ static void shows_fill(void) {
 		make_row(shows_list, &shows[i].thumb, shows[i].name, detail, show_clicked_cb, NULL, i);
 	}
 	if (show_count == 0) {
-		lv_obj_remove_flag(shows_empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(shows_empty, false);
 	} else {
-		lv_obj_add_flag(shows_empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(shows_empty, true);
 	}
 }
 
@@ -457,7 +457,7 @@ void podcastsaved_init(gui_config_t *cfg) {
 	lv_obj_add_style(shows_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(shows_empty, &font_ui_24, 0);
 	lv_obj_align(shows_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 140);
-	lv_obj_add_flag(shows_empty, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(shows_empty, true);
 
 	episodes_screen = lv_obj_create(NULL);
 	episodes_list = settingsrow_page(episodes_screen, cfg, "podcasts");

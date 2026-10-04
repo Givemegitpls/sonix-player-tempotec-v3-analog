@@ -213,9 +213,9 @@ static void rebuild_preset_list(void) {
 	mseb_preset_for_each(add_preset_row, &count);
 
 	if (count == 0) {
-		lv_obj_remove_flag(list_empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(list_empty, false);
 	} else {
-		lv_obj_add_flag(list_empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(list_empty, true);
 	}
 }
 
@@ -231,7 +231,7 @@ static void open_preset_list_cb(lv_event_t *e) {
 
 static void name_layer_hide(void) {
 	if (name_layer) {
-		lv_obj_add_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(name_layer, true);
 	}
 }
 
@@ -273,7 +273,7 @@ static void open_name_dialog_cb(lv_event_t *e) {
 	// forced on it; otherwise the caret sits there without blinking.
 	lv_obj_add_state(name_field, LV_STATE_FOCUSED);
 	lv_obj_send_event(name_field, LV_EVENT_FOCUSED, NULL);
-	lv_obj_remove_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(name_layer, false);
 	lv_obj_move_foreground(name_layer);
 }
 
@@ -286,8 +286,8 @@ static void build_name_dialog(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(name_layer, 0, 0);
 	lv_obj_set_style_radius(name_layer, 0, 0);
 	lv_obj_set_style_pad_all(name_layer, 0, 0);
-	lv_obj_remove_flag(name_layer, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(name_layer, false);
+	lv_obj_set_hidden(name_layer, true);
 
 	lv_obj_t *heading = lv_label_create(name_layer);
 	lv_label_set_text(heading, tr("preset_name"));
@@ -342,7 +342,7 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_add_style(list_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
 	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 100);
-	lv_obj_add_flag(list_empty, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(list_empty, true);
 
 	switcher_attach_back_gesture(list_screen);
 }
@@ -366,7 +366,7 @@ void msebsettings_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 16, 0);
 	lv_obj_set_style_pad_row(card, 12, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -382,7 +382,7 @@ void msebsettings_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
 	lv_obj_set_style_pad_column(pills, 8, 0);
-	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 

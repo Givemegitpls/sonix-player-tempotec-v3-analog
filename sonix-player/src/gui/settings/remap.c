@@ -140,7 +140,7 @@ static uint16_t pack565(int r, int g, int b) {
 static void side_free(side_t *side) {
 	if (side->image) {
 		lv_image_set_src(side->image, NULL);
-		lv_obj_add_flag(side->image, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(side->image, true);
 	}
 	if (side->pixels) {
 		// LVGL's cache is indexed by pointer: without this, reopening the page
@@ -219,7 +219,7 @@ static bool side_load(side_t *side, lv_color_t bg) {
 	side->dsc.data = side->pixels;
 
 	lv_image_set_src(side->image, &side->dsc);
-	lv_obj_remove_flag(side->image, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(side->image, false);
 	return true;
 }
 
@@ -325,7 +325,7 @@ static void double_close_cb(lv_event_t *e) {
 	// and the button that closes it, close it.
 	lv_obj_t *target = lv_event_get_target(e);
 	if (target == double_veil || lv_event_get_user_data(e)) {
-		lv_obj_add_flag(double_veil, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(double_veil, true);
 	}
 }
 
@@ -346,7 +346,7 @@ static void double_open_cb(lv_event_t *e) {
 		}
 	}
 	refresh_double();
-	lv_obj_remove_flag(double_veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(double_veil, false);
 	lv_obj_move_foreground(double_veil);
 }
 
@@ -372,7 +372,7 @@ static lv_obj_t *dialog_pills(lv_obj_t *parent) {
 	lv_obj_remove_style_all(pills);
 	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_style_pad_gap(pills, 8, 0);
-	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
 	return pills;
 }
@@ -387,8 +387,9 @@ static void build_double_dialog(gui_config_t *cfg, const hit_t *hits, int hit_co
 	lv_obj_set_style_border_width(double_veil, 0, 0);
 	lv_obj_set_style_radius(double_veil, 0, 0);
 	lv_obj_set_style_pad_all(double_veil, 0, 0);
-	lv_obj_remove_flag(double_veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(double_veil, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(double_veil, false);
+	lv_obj_set_clickable(double_veil, true);
+	lv_obj_set_hidden(double_veil, true);
 	lv_obj_add_event_cb(double_veil, double_close_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *card = lv_obj_create(double_veil);
@@ -403,8 +404,8 @@ static void build_double_dialog(gui_config_t *cfg, const hit_t *hits, int hit_co
 	// language.
 	lv_obj_set_style_max_height(card, cfg->screen_height - 2 * cfg->padding, 0);
 	lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_clickable(card, true);
+	lv_obj_set_event_bubble(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_center(card);
 
@@ -462,7 +463,7 @@ static void build_double_row(gui_config_t *cfg, int x, int y, int w) {
 	lv_obj_set_style_pad_hor(row, 14, 0);
 	lv_obj_set_style_pad_ver(row, 10, 0);
 	lv_obj_set_style_pad_row(row, 2, 0);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
 	lv_obj_add_event_cb(row, double_open_cb, LV_EVENT_CLICKED, NULL);
 
@@ -533,7 +534,7 @@ static void build_side(side_t *side, gui_config_t *cfg) {
 	side->image = lv_image_create(remap_screen);
 	lv_obj_set_pos(side->image, side->x, side->y);
 	lv_obj_set_size(side->image, side->w, side->h);
-	lv_obj_add_flag(side->image, LV_OBJ_FLAG_HIDDEN); // until it is loaded
+	lv_obj_set_hidden(side->image, true); // until it is loaded
 
 	// Where the touch zones start, where the row column starts and how wide it
 	// is.
@@ -560,8 +561,8 @@ static void build_side(side_t *side, gui_config_t *cfg) {
 		lv_obj_remove_style_all(zone);
 		lv_obj_set_pos(zone, hit_x, side->y + hit->y);
 		lv_obj_set_size(zone, HIT_W, hit->h);
-		lv_obj_add_flag(zone, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_remove_flag(zone, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_clickable(zone, true);
+		lv_obj_set_scrollable(zone, false);
 		lv_obj_add_event_cb(zone, pick_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)hit->button);
 
 		// The leader line tying a button to its row. Eighteen pixels of nothing,
@@ -586,7 +587,7 @@ static void build_side(side_t *side, gui_config_t *cfg) {
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
 		lv_obj_set_style_pad_hor(row, 14, 0);
-		lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_scrollable(row, false);
 		lv_obj_add_event_cb(row, pick_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)hit->button);
 
 		lv_obj_t *value = lv_label_create(row);
@@ -629,7 +630,7 @@ static void refresh_theme(void) {
 void remap_init(gui_config_t *cfg) {
 	remap_screen = lv_obj_create(NULL);
 	lv_obj_add_style(remap_screen, &theme_style_screen, 0);
-	lv_obj_remove_flag(remap_screen, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(remap_screen, false);
 
 	const sysinfo_model_t *model = sysinfo_model();
 	if (!model) {

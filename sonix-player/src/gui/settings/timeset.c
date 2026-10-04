@@ -183,9 +183,9 @@ static void apply_time_format(int hour24) {
 	lv_roller_set_options(roller_hour, h24 ? hours_options : hours12_options, LV_ROLLER_MODE_NORMAL);
 	if (roller_ampm) {
 		if (h24) {
-			lv_obj_add_flag(roller_ampm, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(roller_ampm, true);
 		} else {
-			lv_obj_remove_flag(roller_ampm, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(roller_ampm, false);
 		}
 	}
 
@@ -311,9 +311,9 @@ static void tz_paint(void) {
 			continue;
 		}
 		if (i == selected) {
-			lv_obj_remove_flag(tz_checks[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(tz_checks[i], false);
 		} else {
-			lv_obj_add_flag(tz_checks[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(tz_checks[i], true);
 		}
 	}
 
@@ -330,7 +330,7 @@ static void tz_paint(void) {
 
 static void tz_close(void) {
 	if (tz_panel) {
-		lv_obj_add_flag(tz_panel, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(tz_panel, true);
 	}
 	if (panel) {
 		lv_obj_move_foreground(panel);
@@ -373,7 +373,7 @@ static void tz_open_cb(lv_event_t *e) {
 		return;
 	}
 	tz_paint();
-	lv_obj_remove_flag(tz_panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(tz_panel, false);
 	lv_obj_move_foreground(tz_panel);
 
 	// The status bar goes back in front of the panel just brought forward.
@@ -416,7 +416,7 @@ static lv_obj_t *make_card(lv_obj_t *parent) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 14, 0);
 	lv_obj_set_style_pad_gap(card, 10, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	return card;
@@ -437,9 +437,9 @@ static void confirm_cb(lv_event_t *e) {
 	power_hold_screen_on(false);
 	power_notify_activity();
 
-	lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(panel, true);
 	if (tz_panel) {
-		lv_obj_add_flag(tz_panel, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(tz_panel, true);
 	}
 }
 
@@ -455,9 +455,9 @@ static void cancel_cb(lv_event_t *e) {
 	// not become the device's new time.
 	power_hold_screen_on(false);
 	power_notify_activity();
-	lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(panel, true);
 	if (tz_panel) {
-		lv_obj_add_flag(tz_panel, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(tz_panel, true);
 	}
 }
 
@@ -518,9 +518,9 @@ void timeset_show(void) {
 	// clock is not set yet and there is no way back.
 	if (cancel_btn) {
 		if (timeset_needed()) {
-			lv_obj_add_flag(cancel_btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(cancel_btn, true);
 		} else {
-			lv_obj_remove_flag(cancel_btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(cancel_btn, false);
 		}
 	}
 
@@ -537,7 +537,7 @@ void timeset_show(void) {
 							  LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	}
 
-	lv_obj_remove_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(panel, false);
 	lv_obj_move_foreground(panel);
 
 	// Opened from the settings, this is a page like any other and the status
@@ -594,8 +594,8 @@ static void build_timezone_panel(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(tz_panel, cfg->padding, 0);
 	lv_obj_set_style_pad_hor(tz_panel, 0, 0); // as above: the scrollbar at the screen edge
 	lv_obj_set_style_pad_top(tz_panel, cfg->padding + cfg->top_bar_height, 0);
-	lv_obj_remove_flag(tz_panel, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(tz_panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(tz_panel, false);
+	lv_obj_set_hidden(tz_panel, true);
 	lv_obj_set_flex_flow(tz_panel, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(tz_panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_gap(tz_panel, 0, 0);
@@ -607,8 +607,8 @@ static void build_timezone_panel(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(head, 0, 0);
 	lv_obj_set_style_pad_hor(head, cfg->padding, 0);
 	lv_obj_set_style_pad_column(head, 14, 0);
-	lv_obj_remove_flag(head, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(head, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(head, false);
+	lv_obj_set_clickable(head, false);
 	lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -654,7 +654,7 @@ static void build_timezone_panel(gui_config_t *cfg) {
 		lv_obj_set_style_pad_hor(row, 20, 0);
 		lv_obj_set_style_pad_ver(row, 0, 0);
 		lv_obj_set_style_pad_column(row, 12, 0);
-		lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_scrollable(row, false);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 		lv_obj_add_event_cb(row, tz_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
@@ -683,7 +683,7 @@ static void build_timezone_panel(gui_config_t *cfg) {
 		lv_image_set_src(tz_checks[i], &icon_check);
 		lv_obj_set_style_image_recolor(tz_checks[i], TZ_CHECK_GREEN, 0);
 		lv_obj_set_style_image_recolor_opa(tz_checks[i], LV_OPA_COVER, 0);
-		lv_obj_add_flag(tz_checks[i], LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(tz_checks[i], true);
 	}
 }
 
@@ -715,8 +715,8 @@ void timeset_init(gui_config_t *cfg) {
 	// content, each for itself.
 	lv_obj_set_style_pad_all(panel, cfg->padding, 0);
 	lv_obj_set_style_pad_hor(panel, 0, 0);
-	lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(panel, false);
+	lv_obj_set_hidden(panel, true);
 
 	lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -738,8 +738,8 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(header_row, 0, 0);
 	lv_obj_set_style_pad_hor(header_row, cfg->padding, 0);
 	lv_obj_set_style_pad_column(header_row, 14, 0);
-	lv_obj_remove_flag(header_row, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(header_row, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(header_row, false);
+	lv_obj_set_clickable(header_row, false);
 	lv_obj_set_flex_flow(header_row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(header_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -752,7 +752,7 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(cancel_btn, 0, 0);
 	lv_obj_set_style_shadow_width(cancel_btn, 0, 0);
 	lv_obj_set_style_pad_all(cancel_btn, 0, 0);
-	lv_obj_add_flag(cancel_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(cancel_btn, true);
 	lv_obj_add_event_cb(cancel_btn, cancel_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *cancel_icon = lv_image_create(cancel_btn);
@@ -781,7 +781,7 @@ void timeset_init(gui_config_t *cfg) {
 	// settingsrow_content_top).
 	lv_obj_set_style_pad_top(content, cfg->padding, 0);
 	lv_obj_set_style_pad_gap(content, 18, 0);
-	lv_obj_remove_flag(content, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(content, false);
 	lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
 
 	// Scrollable, and vertically only: the cards together (the two rollers, the
@@ -791,7 +791,7 @@ void timeset_init(gui_config_t *cfg) {
 	// The alignment is START and not CENTER: centring content taller than its
 	// container starts it above the top edge, so the first card stays cut off
 	// even when it can scroll.
-	lv_obj_add_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(content, true);
 	lv_obj_set_scroll_dir(content, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
 	lv_obj_set_style_pad_bottom(content, 12, 0);
@@ -820,7 +820,7 @@ void timeset_init(gui_config_t *cfg) {
 	// destroying it on every format change would mean rebuilding its styling too
 	// and re-entering it in the list the theme repaints.
 	roller_ampm = make_roller(time_card, AMPM_OPTIONS, 92);
-	lv_obj_add_flag(roller_ampm, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(roller_ampm, true);
 
 	// Time zone, above "24 hour", because it decides what time the rollers above
 	// it say. A single row with the value on the right, like any settings row;
@@ -834,7 +834,7 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(tz_card, 0, 0);
 	lv_obj_set_style_pad_hor(tz_card, 20, 0);
 	lv_obj_set_style_pad_ver(tz_card, 16, 0);
-	lv_obj_remove_flag(tz_card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(tz_card, false);
 	lv_obj_set_flex_flow(tz_card, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(tz_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_add_event_cb(tz_card, tz_open_cb, LV_EVENT_CLICKED, NULL);
@@ -865,7 +865,7 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_hor(dst_card, 20, 0);
 	lv_obj_set_style_pad_ver(dst_card, 14, 0);
 	lv_obj_set_style_pad_gap(dst_card, 10, 0);
-	lv_obj_remove_flag(dst_card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(dst_card, false);
 	lv_obj_set_flex_flow(dst_card, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(dst_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -897,7 +897,7 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(h24_card, 0, 0);
 	lv_obj_set_style_pad_hor(h24_card, 20, 0);
 	lv_obj_set_style_pad_ver(h24_card, 16, 0);
-	lv_obj_remove_flag(h24_card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(h24_card, false);
 	lv_obj_set_flex_flow(h24_card, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(h24_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 

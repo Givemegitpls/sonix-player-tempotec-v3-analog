@@ -127,8 +127,8 @@ void ebookbar_create(ebookbar_t *bar, lv_obj_t *parent, int32_t width) {
 	bar->root = lv_obj_create(parent);
 	lv_obj_remove_style_all(bar->root);
 	lv_obj_set_size(bar->root, width, LV_SIZE_CONTENT);
-	lv_obj_remove_flag(bar->root, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(bar->root, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(bar->root, false);
+	lv_obj_set_clickable(bar->root, false);
 	lv_obj_set_flex_flow(bar->root, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(bar->root, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_row(bar->root, BAR_GAP, 0);
@@ -140,7 +140,7 @@ void ebookbar_create(ebookbar_t *bar, lv_obj_t *parent, int32_t width) {
 	lv_obj_remove_style_all(bar->line);
 	lv_obj_set_size(bar->line, width - 40, BAR_LINE_HEIGHT);
 	lv_obj_set_style_radius(bar->line, BAR_LINE_HEIGHT / 2, 0);
-	lv_obj_remove_flag(bar->line, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(bar->line, false);
 
 	lv_obj_t *fill = lv_obj_create(bar->line);
 	lv_obj_remove_style_all(fill);
@@ -154,7 +154,7 @@ void ebookbar_create(ebookbar_t *bar, lv_obj_t *parent, int32_t width) {
 	bar->facts = lv_obj_create(bar->root);
 	lv_obj_remove_style_all(bar->facts);
 	lv_obj_set_size(bar->facts, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-	lv_obj_remove_flag(bar->facts, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(bar->facts, false);
 	lv_obj_set_flex_flow(bar->facts, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(bar->facts, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(bar->facts, 3, 0);
@@ -168,7 +168,7 @@ void ebookbar_create(ebookbar_t *bar, lv_obj_t *parent, int32_t width) {
 	bar->battery = lv_obj_create(bar->facts);
 	lv_obj_remove_style_all(bar->battery);
 	lv_obj_set_size(bar->battery, BATTERY_ICON_SIZE, BATTERY_ICON_SIZE);
-	lv_obj_remove_flag(bar->battery, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(bar->battery, false);
 
 	bar->charge = lv_obj_create(bar->battery);
 	lv_obj_remove_style_all(bar->charge);
@@ -215,7 +215,7 @@ void ebookbar_refresh(ebookbar_t *bar, const ebookbar_state_t *state) {
 		if (percent > 100) {
 			percent = 100;
 		}
-		lv_obj_remove_flag(bar->line, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bar->line, false);
 		lv_obj_set_style_bg_color(bar->line, state->ink, 0);
 		lv_obj_set_style_bg_opa(bar->line, LV_OPA_20, 0);
 		lv_obj_t *fill = lv_obj_get_child(bar->line, 0);
@@ -225,7 +225,7 @@ void ebookbar_refresh(ebookbar_t *bar, const ebookbar_state_t *state) {
 			lv_obj_set_style_bg_opa(fill, LV_OPA_70, 0);
 		}
 	} else {
-		lv_obj_add_flag(bar->line, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bar->line, true);
 	}
 
 	// And the line of facts, in two pieces with the battery between them: what
@@ -274,27 +274,27 @@ void ebookbar_refresh(ebookbar_t *bar, const ebookbar_state_t *state) {
 	}
 
 	if (head[0]) {
-		lv_obj_remove_flag(bar->text, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bar->text, false);
 		lv_label_set_text(bar->text, head);
 		lv_obj_set_style_text_color(bar->text, state->ink, 0);
 		lv_obj_set_style_text_opa(bar->text, LV_OPA_50, 0);
 	} else {
-		lv_obj_add_flag(bar->text, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bar->text, true);
 	}
 
 	if (tail[0]) {
-		lv_obj_remove_flag(bar->tail, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bar->tail, false);
 		lv_label_set_text(bar->tail, tail);
 		lv_obj_set_style_text_color(bar->tail, state->ink, 0);
 		lv_obj_set_style_text_opa(bar->tail, LV_OPA_50, 0);
 	} else {
-		lv_obj_add_flag(bar->tail, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bar->tail, true);
 	}
 
 	if (!battery_on) {
-		lv_obj_add_flag(bar->battery, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bar->battery, true);
 	} else {
-		lv_obj_remove_flag(bar->battery, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bar->battery, false);
 		lv_obj_t *shell = lv_obj_get_child(bar->battery, 1);
 		if (shell) {
 			lv_obj_set_style_image_recolor(shell, state->ink, 0);
@@ -304,13 +304,13 @@ void ebookbar_refresh(ebookbar_t *bar, const ebookbar_state_t *state) {
 		// colour on paper, and a green battery on a sepia page is the only
 		// thing on it that did not come out of the book.
 		if (level <= 0) {
-			lv_obj_add_flag(bar->charge, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(bar->charge, true);
 		} else {
 			int32_t width = (BATTERY_CAVITY_W * level) / 100;
 			if (width < 2) {
 				width = 2; // a nearly flat battery still has to be visible
 			}
-			lv_obj_remove_flag(bar->charge, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(bar->charge, false);
 			lv_obj_set_pos(bar->charge, BATTERY_CAVITY_X, BATTERY_CAVITY_Y);
 			lv_obj_set_size(bar->charge, width, BATTERY_CAVITY_H);
 			lv_obj_set_style_bg_color(bar->charge, state->ink, 0);

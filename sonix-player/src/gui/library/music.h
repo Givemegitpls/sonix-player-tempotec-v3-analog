@@ -3,7 +3,7 @@
 
 #include "src/gui/shell/gui.h"
 
-#include "src/misc/lv_types.h"
+#include "lvgl/lvgl.h"
 
 // The Music page: the library's index tiles (all tracks, albums, artists,
 // album artists, genres) plus the file browser, with library settings,

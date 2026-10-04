@@ -124,8 +124,8 @@ static bool wifi_link_is_up(void) { return link_missing_ticks < WT_LINK_GRACE_TI
 
 static bool switch_is_on(void) { return lv_obj_has_state(toggle, LV_STATE_CHECKED); }
 
-static void hide(lv_obj_t *obj) { lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN); }
-static void show(lv_obj_t *obj) { lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN); }
+static void hide(lv_obj_t *obj) { lv_obj_set_hidden(obj, true); }
+static void show(lv_obj_t *obj) { lv_obj_set_hidden(obj, false); }
 
 // lv_label_set_text reallocates and invalidates whether or not the text
 // changed, so setting the same five labels twice a second would redraw the

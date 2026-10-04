@@ -192,8 +192,8 @@ static void back_underlay_build(void) {
 	lv_obj_set_style_border_width(back_underlay, 0, 0);
 	lv_obj_set_style_radius(back_underlay, 0, 0);
 	lv_obj_set_style_pad_all(back_underlay, 0, 0);
-	lv_obj_remove_flag(back_underlay, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(back_underlay, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(back_underlay, false);
+	lv_obj_set_clickable(back_underlay, false);
 
 	lv_obj_t *target = NULL;
 	bool going_to_player = false;
@@ -220,13 +220,13 @@ static void back_underlay_build(void) {
 	}
 
 	if (target) {
-		bool was_hidden = lv_obj_has_flag(target, LV_OBJ_FLAG_HIDDEN);
+		bool was_hidden = lv_obj_is_hidden(target);
 		if (was_hidden) {
-			lv_obj_remove_flag(target, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(target, false);
 		}
 		back_snapshot = lv_snapshot_take(target, LV_COLOR_FORMAT_RGB565);
 		if (was_hidden) {
-			lv_obj_add_flag(target, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(target, true);
 		}
 		if (back_snapshot) {
 			lv_obj_t *img = lv_image_create(back_underlay);
@@ -262,8 +262,8 @@ static void back_underlay_build(void) {
 	lv_obj_set_style_bg_opa(veil, LV_OPA_30, 0);
 	lv_obj_set_style_border_width(veil, 0, 0);
 	lv_obj_set_style_radius(veil, 0, 0);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(veil, false);
+	lv_obj_set_clickable(veil, false);
 }
 
 static void back_anim_exec_cb(void *var, int32_t v) {
@@ -398,7 +398,7 @@ void switcher_attach_back_gesture(lv_obj_t *obj) {
 	if (!obj) {
 		return;
 	}
-	lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(obj, true);
 	lv_obj_add_event_cb(obj, back_drag_cb, LV_EVENT_PRESSED, NULL);
 	lv_obj_add_event_cb(obj, back_drag_cb, LV_EVENT_PRESSING, NULL);
 	lv_obj_add_event_cb(obj, back_drag_cb, LV_EVENT_RELEASED, NULL);
@@ -461,9 +461,9 @@ static void load_screen(lv_obj_t *target_screen) {
 		// left halfway through by the chevron.
 		if (target_screen == main_menu_screen || target_screen == libraryscan_screen ||
 			target_screen == audiobookscan_screen) {
-			lv_obj_add_flag(back_btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(back_btn, true);
 		} else {
-			lv_obj_remove_flag(back_btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(back_btn, false);
 		}
 
 		place_back_btn(true);
@@ -670,19 +670,19 @@ void back_btn_sync_visibility(void) {
 		return;
 	}
 	if (chevron_forced_hidden) {
-		lv_obj_add_flag(back_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(back_btn, true);
 		return;
 	}
 	if (player_sheet_is_open()) {
-		lv_obj_remove_flag(back_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(back_btn, false);
 		return;
 	}
 	lv_obj_t *screen = lv_screen_active();
 	if (screen == main_menu_screen || screen == libraryscan_screen || screen == audiobookscan_screen) {
-		lv_obj_add_flag(back_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(back_btn, true);
 		lv_obj_set_style_translate_x(back_btn, 0, 0);
 	} else {
-		lv_obj_remove_flag(back_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(back_btn, false);
 	}
 }
 
@@ -697,13 +697,13 @@ void back_btn_player_mode(bool in_player) {
 	}
 
 	if (chevron_forced_hidden) {
-		lv_obj_add_flag(back_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(back_btn, true);
 	} else if (in_player) {
-		lv_obj_remove_flag(back_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(back_btn, false);
 	} else {
 		lv_obj_t *screen = lv_screen_active();
 		if (screen == main_menu_screen || screen == libraryscan_screen || screen == audiobookscan_screen) {
-			lv_obj_add_flag(back_btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(back_btn, true);
 		}
 	}
 	chevron_in_player = in_player;

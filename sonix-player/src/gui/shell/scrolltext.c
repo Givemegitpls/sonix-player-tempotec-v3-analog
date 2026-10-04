@@ -423,7 +423,7 @@ static bool label_shows(lv_obj_t *label, const char *text) {
 	if (!*p) {
 		return false;
 	}
-	char *joined = malloc(lv_text_ap_calc_bytes_count(text));
+	char *joined = malloc(lv_text_ap_strlen(text) + 1);
 	if (!joined) {
 		return false;
 	}

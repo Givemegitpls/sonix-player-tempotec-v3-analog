@@ -287,7 +287,7 @@ void textview_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_row(page, 0, 0);
 	lv_obj_set_scroll_dir(page, LV_DIR_VER);
 	lv_obj_set_flex_flow(page, LV_FLEX_FLOW_COLUMN);
-	lv_obj_add_flag(page, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(page, true);
 
 	switcher_attach_back_gesture(textview_screen);
 }

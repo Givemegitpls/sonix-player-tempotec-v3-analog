@@ -148,7 +148,7 @@ static lv_obj_t *busy_layer;
 
 static void busy_hide(void) {
 	if (busy_layer) {
-		lv_obj_add_flag(busy_layer, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(busy_layer, true);
 	}
 }
 
@@ -157,7 +157,7 @@ static void busy_show(const char *text) {
 	if (!busy_layer) {
 		return;
 	}
-	lv_obj_remove_flag(busy_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(busy_layer, false);
 	lv_obj_move_foreground(busy_layer);
 }
 
@@ -169,8 +169,8 @@ static void build_busy_layer(void) {
 	lv_obj_set_style_bg_opa(busy_layer, LV_OPA_50, 0);
 	lv_obj_set_style_border_width(busy_layer, 0, 0);
 	lv_obj_set_style_radius(busy_layer, 0, 0);
-	lv_obj_remove_flag(busy_layer, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(busy_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(busy_layer, false);
+	lv_obj_set_hidden(busy_layer, true);
 	lv_obj_set_flex_flow(busy_layer, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(busy_layer, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -697,13 +697,13 @@ static lv_obj_t *make_row(const char *name, const char *detail, const char *cove
 	lv_obj_set_style_pad_hor(row, 16, 0);
 	lv_obj_set_style_pad_ver(row, 0, 0);
 	lv_obj_set_style_pad_column(row, 8, 0);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	// Gestures (back, and pulling in the player sheet) often start on a row,
 	// and a button keeps the press to itself: without this neither drag works
 	// on these lists.
-	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(row, true);
 	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
 
 	// The cover, where there is a URL for one. It starts as the grey note and
@@ -716,7 +716,7 @@ static lv_obj_t *make_row(const char *name, const char *detail, const char *cove
 		lv_image_set_src(thumb, &icon_music2);
 		lv_obj_add_style(thumb, &theme_style_icon, 0);
 		lv_obj_set_style_image_recolor_opa(thumb, LV_OPA_COVER, 0);
-		lv_obj_add_flag(thumb, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_event_bubble(thumb, true);
 		row_thumbs[index] = thumb;
 		snprintf(row_cover_url[index], sizeof(row_cover_url[0]), "%s", cover_url);
 	}
@@ -728,8 +728,8 @@ static lv_obj_t *make_row(const char *name, const char *detail, const char *cove
 	lv_obj_set_style_border_width(texts, 0, 0);
 	lv_obj_set_style_pad_all(texts, 0, 0);
 	lv_obj_set_style_pad_row(texts, 6, 0); // breathing room between title and subtitle
-	lv_obj_remove_flag(texts, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(texts, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(texts, false);
+	lv_obj_set_event_bubble(texts, true);
 	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(texts, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -841,9 +841,9 @@ static void fill_list(int from) {
 	art_request_visible();
 
 	if (result_count == 0) {
-		lv_obj_remove_flag(list_empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(list_empty, false);
 	} else {
-		lv_obj_add_flag(list_empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(list_empty, true);
 	}
 
 	lv_label_set_text(list_title, result_title);
@@ -1815,9 +1815,9 @@ static void refresh_search_clear(void) {
 	}
 	const char *text = lv_textarea_get_text(search_field);
 	if (text && text[0]) {
-		lv_obj_remove_flag(search_clear_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(search_clear_btn, false);
 	} else {
-		lv_obj_add_flag(search_clear_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(search_clear_btn, true);
 	}
 }
 
@@ -1890,7 +1890,7 @@ static void build_search_page(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(search_clear_btn, 0, 0);
 	lv_obj_set_style_border_width(search_clear_btn, 0, 0);
 	lv_obj_set_style_pad_all(search_clear_btn, 0, 0);
-	lv_obj_add_flag(search_clear_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(search_clear_btn, true);
 	lv_obj_add_event_cb(search_clear_btn, search_clear_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *search_clear_icon = lv_image_create(search_clear_btn);
@@ -2079,9 +2079,9 @@ static void update_corner_buttons(void) {
 			continue;
 		}
 		if (visible) {
-			lv_obj_remove_flag(buttons[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(buttons[i], false);
 		} else {
-			lv_obj_add_flag(buttons[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(buttons[i], true);
 		}
 	}
 }
@@ -2183,8 +2183,8 @@ static void build_settings_page(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);
 	lv_obj_set_style_pad_row(card, 18, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(card, false);
+	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -2199,8 +2199,8 @@ static void build_settings_page(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
 	lv_obj_set_style_pad_gap(pills, 12, 0);
-	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(pills, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(pills, false);
+	lv_obj_set_event_bubble(pills, true);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
 
@@ -2352,7 +2352,7 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_add_style(list_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
 	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 100);
-	lv_obj_add_flag(list_empty, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(list_empty, true);
 
 	lv_obj_add_event_cb(list_container, list_scrolled_cb, LV_EVENT_SCROLL, NULL);
 	switcher_attach_back_gesture(list_screen);

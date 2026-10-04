@@ -164,12 +164,12 @@ static bool wifi_is_connected(void) {
 
 static void hide(lv_obj_t *o) {
 	if (o) {
-		lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(o, true);
 	}
 }
 static void show(lv_obj_t *o) {
 	if (o) {
-		lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(o, false);
 	}
 }
 
@@ -336,9 +336,9 @@ static void sort_button_update(void) {
 	}
 	if (list_mode == LIST_TERMS) {
 		lv_image_set_src(sort_icon, terms_desc(list_browse) ? &icon_sort_za : &icon_sort_az);
-		lv_obj_remove_flag(sort_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(sort_btn, false);
 	} else {
-		lv_obj_add_flag(sort_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(sort_btn, true);
 		azindex_set_rows(list_index, NULL, 0, false);
 	}
 }
@@ -883,8 +883,8 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(list_body, 0, 0);
 	lv_obj_set_style_border_width(list_body, 0, 0);
 	lv_obj_set_style_pad_all(list_body, 0, 0);
-	lv_obj_remove_flag(list_body, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(list_body, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(list_body, false);
+	lv_obj_set_event_bubble(list_body, true);
 
 	list_message = lv_label_create(list_view);
 	lv_label_set_text(list_message, "");
@@ -913,7 +913,7 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_obj_set_style_pad_ver(row->button, 10, 0);
 		lv_obj_set_style_pad_column(row->button, 14, 0);
 		hide(row->button);
-		lv_obj_add_flag(row->button, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_event_bubble(row->button, true);
 		lv_obj_add_event_cb(row->button, row_clicked_cb, LV_EVENT_CLICKED, NULL);
 		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -929,8 +929,8 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_obj_set_style_bg_opa(text, 0, 0);
 		lv_obj_set_style_border_width(text, 0, 0);
 		lv_obj_set_style_pad_all(text, 0, 0);
-		lv_obj_remove_flag(text, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_add_flag(text, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_scrollable(text, false);
+		lv_obj_set_event_bubble(text, true);
 		lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_flex_align(text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 		lv_obj_set_style_pad_row(text, 4, 0);
@@ -953,16 +953,16 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_obj_set_flex_flow(row->detail, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->detail, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 		lv_obj_set_style_pad_column(row->detail, 8, 0);
-		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_add_flag(row->detail, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_scrollable(row->detail, false);
+		lv_obj_set_clickable(row->detail, false);
+		lv_obj_set_event_bubble(row->detail, true);
 		hide(row->detail);
 
 		// White, tinted per row with the colour of its quality.
 		row->quality = lv_image_create(row->detail);
 		lv_image_set_src(row->quality, &icon_radio_quality);
 		lv_obj_set_style_image_recolor_opa(row->quality, LV_OPA_COVER, 0);
-		lv_obj_remove_flag(row->quality, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_clickable(row->quality, false);
 		hide(row->quality);
 
 		row->code = lv_label_create(row->detail);
@@ -994,7 +994,7 @@ static void build_list_page(gui_config_t *cfg) {
 		// Outside the flex layout, in the row's own left padding: it marks the
 		// row without moving anything on it.
 		row->playmark = lv_obj_create(row->button);
-		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_IGNORE_LAYOUT);
+		lv_obj_set_ignore_layout(row->playmark, true);
 		lv_obj_set_size(row->playmark, PLAYMARK_WIDTH, PLAYMARK_HEIGHT);
 		lv_obj_align(row->playmark, LV_ALIGN_LEFT_MID, PLAYMARK_INSET - ROW_PAD_HOR, 0);
 		lv_obj_add_style(row->playmark, &theme_style_accent_bg, 0);
@@ -1002,8 +1002,8 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_obj_set_style_border_width(row->playmark, 0, 0);
 		lv_obj_set_style_shadow_width(row->playmark, 0, 0);
 		lv_obj_set_style_pad_all(row->playmark, 0, 0);
-		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_scrollable(row->playmark, false);
+		lv_obj_set_clickable(row->playmark, false);
 		hide(row->playmark);
 
 		row->index = -1;
@@ -1019,7 +1019,7 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(sort_btn, 0, 0);
 	lv_obj_align(sort_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(sort_btn, sort_clicked_cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_add_flag(sort_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(sort_btn, true);
 
 	sort_icon = lv_image_create(sort_btn);
 	lv_image_set_src(sort_icon, &icon_sort_az);

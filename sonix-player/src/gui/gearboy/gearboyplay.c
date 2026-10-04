@@ -304,8 +304,8 @@ static lv_obj_t *pressable(lv_obj_t *parent, int x, int y, int w, int h, uint16_
 	lv_obj_remove_style_all(o);
 	lv_obj_set_pos(o, x, y);
 	lv_obj_set_size(o, w, h);
-	lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_clickable(o, true);
+	lv_obj_set_scrollable(o, false);
 	lv_obj_add_event_cb(o, key_event_cb, LV_EVENT_PRESSED, (void *)(uintptr_t)keys);
 	lv_obj_add_event_cb(o, key_event_cb, LV_EVENT_RELEASED, (void *)(uintptr_t)keys);
 	lv_obj_add_event_cb(o, key_event_cb, LV_EVENT_PRESS_LOST, (void *)(uintptr_t)keys);
@@ -402,7 +402,7 @@ static void build_pill(lv_obj_t *parent, int x, const char *label, uint16_t key)
 static bool menu_still_deaf(void) { return (lv_tick_get() - menu_opened_ms) < MENU_DEAF_MS; }
 
 static void menu_open(void) {
-	if (!menu_layer || !lv_obj_has_flag(menu_layer, LV_OBJ_FLAG_HIDDEN)) {
+	if (!menu_layer || !lv_obj_is_hidden(menu_layer)) {
 		return;
 	}
 
@@ -414,7 +414,7 @@ static void menu_open(void) {
 	fallback_keys = 0;
 
 	menu_opened_ms = lv_tick_get();
-	lv_obj_remove_flag(menu_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(menu_layer, false);
 	lv_obj_move_foreground(menu_layer);
 }
 
@@ -422,7 +422,7 @@ static void menu_close_and_resume(void) {
 	if (!menu_layer) {
 		return;
 	}
-	lv_obj_add_flag(menu_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(menu_layer, true);
 	grab_glass();
 	gearboy_set_paused(false);
 }
@@ -438,7 +438,7 @@ static void menu_close_and_resume(void) {
 static void badge_hide_cb(lv_timer_t *timer) {
 	(void)timer;
 	if (badge) {
-		lv_obj_add_flag(badge, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(badge, true);
 	}
 	lv_timer_pause(badge_timer);
 }
@@ -452,7 +452,7 @@ static void badge_show(const lv_image_dsc_t *icon) {
 	lv_obj_set_style_image_recolor(badge_icon, theme()->text_primary, 0);
 	lv_obj_set_style_image_recolor_opa(badge_icon, LV_OPA_COVER, 0);
 
-	lv_obj_remove_flag(badge, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(badge, false);
 	lv_obj_move_foreground(badge);
 
 	lv_timer_reset(badge_timer);
@@ -475,7 +475,7 @@ static void menu_savestate_cb(lv_event_t *e) {
 	// The game does NOT resume here: it stays paused until the thread is done,
 	// because the thread only looks at requests while paused. poll_cb resumes
 	// it when the result arrives.
-	lv_obj_add_flag(menu_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(menu_layer, true);
 	waiting_for_state = true;
 	gearboy_request_savestate();
 }
@@ -485,7 +485,7 @@ static void menu_loadstate_cb(lv_event_t *e) {
 	if (menu_still_deaf()) {
 		return;
 	}
-	lv_obj_add_flag(menu_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(menu_layer, true);
 	waiting_for_state = true;
 	gearboy_request_loadstate();
 }
@@ -495,7 +495,7 @@ static void menu_exit_cb(lv_event_t *e) {
 	if (menu_still_deaf()) {
 		return;
 	}
-	lv_obj_add_flag(menu_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(menu_layer, true);
 	// No resume and no gbinput: this is the way out, and unloading the page
 	// tears everything down properly (see screen_unloaded_cb).
 	back_btn_cb(NULL);
@@ -511,7 +511,7 @@ static void menu_settings_cb(lv_event_t *e) {
 	if (menu_still_deaf()) {
 		return;
 	}
-	lv_obj_add_flag(menu_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(menu_layer, true);
 	// The game stays PAUSED: it resumes on return to this page
 	// (screen_loaded_cb), which the settings page's back button or back swipe
 	// reaches on their own.
@@ -528,7 +528,7 @@ static lv_obj_t *menu_row(lv_obj_t *parent, const char *text, lv_event_cb_t cb) 
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_hor(row, 20, 0);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(row, false);
 	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *label = lv_label_create(row);
@@ -547,9 +547,9 @@ static void build_menu(void) {
 	lv_obj_set_pos(menu_layer, 0, 0);
 	lv_obj_set_style_bg_color(menu_layer, lv_color_black(), 0);
 	lv_obj_set_style_bg_opa(menu_layer, LV_OPA_60, 0);
-	lv_obj_add_flag(menu_layer, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_remove_flag(menu_layer, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(menu_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_clickable(menu_layer, true);
+	lv_obj_set_scrollable(menu_layer, false);
+	lv_obj_set_hidden(menu_layer, true);
 	lv_obj_add_event_cb(menu_layer, menu_dismiss_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *card = lv_obj_create(menu_layer);
@@ -562,7 +562,7 @@ static void build_menu(void) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 16, 0);
 	lv_obj_set_style_pad_gap(card, 10, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -584,9 +584,9 @@ static void build_badge(void) {
 	lv_obj_set_style_bg_color(badge, theme()->screen_bg, 0);
 	lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
 	lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
-	lv_obj_remove_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(badge, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(badge, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(badge, false);
+	lv_obj_set_clickable(badge, false);
+	lv_obj_set_hidden(badge, true);
 
 	badge_icon = lv_image_create(badge);
 	lv_image_set_src(badge_icon, &icon_save_state);
@@ -622,13 +622,13 @@ static void set_veil(veil_state_t want) {
 	veil_state = want;
 
 	if (want == VEIL_GONE) {
-		lv_obj_add_flag(pause_veil, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_remove_flag(game_image, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(pause_veil, true);
+		lv_obj_set_hidden(game_image, false);
 		return;
 	}
 
-	lv_obj_add_flag(game_image, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(pause_veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(game_image, true);
+	lv_obj_set_hidden(pause_veil, false);
 	lv_label_set_text(veil_label,
 					  want == VEIL_FAILED
 						  ? tr("gearboy_start_failed")
@@ -769,11 +769,11 @@ static void screen_unloaded_cb(lv_event_t *e) {
 	lv_timer_pause(poll_timer);
 
 	if (menu_layer) {
-		lv_obj_add_flag(menu_layer, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(menu_layer, true);
 	}
 	waiting_for_state = false;
 	if (badge) {
-		lv_obj_add_flag(badge, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(badge, true);
 		lv_timer_pause(badge_timer);
 	}
 
@@ -838,7 +838,7 @@ void gearboyplay_init(gui_config_t *cfg) {
 
 	lv_obj_add_style(gearboyplay_screen, &theme_style_screen, 0);
 	lv_obj_set_style_bg_color(gearboyplay_screen, lv_color_black(), 0);
-	lv_obj_remove_flag(gearboyplay_screen, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(gearboyplay_screen, false);
 
 	// Background for the controls half. This page's screen is black because the
 	// game picture sits above it and any other colour would frame it; below the
@@ -873,7 +873,7 @@ void gearboyplay_init(gui_config_t *cfg) {
 	game_image = lv_image_create(gearboyplay_screen);
 	lv_obj_set_pos(game_image, 0, SCREEN_TOP);
 	lv_obj_set_size(game_image, GAME_W, GAME_H);
-	lv_obj_add_flag(game_image, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(game_image, true);
 
 	// Select and Start in the picture corners, when there is no row for them.
 	// Invisible: the objects exist only for the simulator, which has no
@@ -889,8 +889,8 @@ void gearboyplay_init(gui_config_t *cfg) {
 		lv_obj_remove_style_all(zone);
 		lv_obj_set_pos(zone, MENU_X, MENU_Y);
 		lv_obj_set_size(zone, MENU_W, MENU_H);
-		lv_obj_add_flag(zone, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_remove_flag(zone, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_clickable(zone, true);
+		lv_obj_set_scrollable(zone, false);
 		lv_obj_add_event_cb(zone, menu_zone_cb, LV_EVENT_CLICKED, NULL);
 	}
 

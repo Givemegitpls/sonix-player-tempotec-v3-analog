@@ -23,7 +23,7 @@ lv_obj_t *spinner_create(lv_obj_t *parent, const lv_image_dsc_t *icon) {
 	// Rotation pushes pixels outside the image rectangle: without this LVGL
 	// draws within the original bounds and clips the circle's corners every
 	// quarter turn.
-	lv_obj_add_flag(img, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+	lv_obj_set_overflow_visible(img, true);
 
 	lv_anim_t a;
 	lv_anim_init(&a);

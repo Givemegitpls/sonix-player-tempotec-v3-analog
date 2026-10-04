@@ -135,7 +135,7 @@ static const lv_image_dsc_t *case_icon(airpods_model_t model) {
 // ---------------------------------------------------------------------------
 
 static void set_column(int index, const lv_image_dsc_t *art, const airpods_level_t *level) {
-	lv_obj_remove_flag(columns[index], LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(columns[index], false);
 	lv_image_set_src(column_art[index], art);
 
 	// A part that is not reporting -- an earbud sitting in the case, a case
@@ -174,7 +174,7 @@ static void set_column(int index, const lv_image_dsc_t *art, const airpods_level
 								level->charge == AIRPODS_CHARGE_CHARGING ? theme()->accent : theme()->text_primary, 0);
 }
 
-static void hide_column(int index) { lv_obj_add_flag(columns[index], LV_OBJ_FLAG_HIDDEN); }
+static void hide_column(int index) { lv_obj_set_hidden(columns[index], true); }
 
 // ---------------------------------------------------------------------------
 // The noise control
@@ -191,19 +191,19 @@ static void set_tab_active(int index, bool active) {
 
 static void redraw_tabbar(const airpods_state_t *state) {
 	if (!state->has_noise_control) {
-		lv_obj_add_flag(tabbar, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(tabbar, true);
 		return;
 	}
-	lv_obj_remove_flag(tabbar, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(tabbar, false);
 
 	for (int i = 0; i < TAB_COUNT; i++) {
 		// The adaptive mode is the one not every model with noise control has,
 		// so its tab comes and goes while the other two are always there.
 		bool offered = TAB_MODES[i] != AIRPODS_NOISE_ADAPTIVE || state->has_adaptive;
 		if (offered) {
-			lv_obj_remove_flag(tabs[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(tabs[i], false);
 		} else {
-			lv_obj_add_flag(tabs[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(tabs[i], true);
 		}
 		set_tab_active(i, offered && state->noise == TAB_MODES[i]);
 	}
@@ -267,20 +267,20 @@ static void redraw(const airpods_state_t *state) {
 	// arrange. On the first Pro and the Max there are two and their order is
 	// the only one there is; on the plain AirPods the long press is Siri.
 	if (state->has_press_hold) {
-		lv_obj_remove_flag(hold_row, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(hold_row, false);
 		redraw_hold(state);
 	} else {
-		lv_obj_add_flag(hold_row, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(hold_row, true);
 	}
 
 	if (!state->have_battery) {
 		for (int i = 0; i < 3; i++) {
 			hide_column(i);
 		}
-		lv_obj_remove_flag(waiting_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(waiting_label, false);
 		return;
 	}
-	lv_obj_add_flag(waiting_label, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(waiting_label, true);
 
 	// The Max are one headset with one battery and no case, so they get one
 	// column in the middle instead of three. Reporting a single battery at all
@@ -336,8 +336,8 @@ static lv_obj_t *plain_box(lv_obj_t *parent) {
 	lv_obj_set_style_border_width(box, 0, 0);
 	lv_obj_set_style_shadow_width(box, 0, 0);
 	lv_obj_set_style_pad_all(box, 0, 0);
-	lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(box, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(box, false);
+	lv_obj_set_event_bubble(box, true);
 	return box;
 }
 
@@ -363,8 +363,8 @@ static void build_column(int index) {
 	lv_arc_set_range(column_ring[index], 0, 100);
 	lv_arc_set_value(column_ring[index], 0);
 	lv_obj_remove_style(column_ring[index], NULL, LV_PART_KNOB);
-	lv_obj_remove_flag(column_ring[index], LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(column_ring[index], LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_clickable(column_ring[index], false);
+	lv_obj_set_event_bubble(column_ring[index], true);
 	lv_obj_set_style_arc_width(column_ring[index], RING_WIDTH, 0);
 	lv_obj_set_style_arc_width(column_ring[index], RING_WIDTH, LV_PART_INDICATOR);
 	lv_obj_set_style_arc_color(column_ring[index], theme()->surface_pressed, 0);
@@ -398,8 +398,8 @@ static void build_tabbar(lv_obj_t *container) {
 	lv_obj_set_style_border_width(tabbar, 0, 0);
 	lv_obj_set_style_shadow_width(tabbar, 0, 0);
 	lv_obj_set_style_pad_all(tabbar, 10, 0);
-	lv_obj_remove_flag(tabbar, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(tabbar, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(tabbar, false);
+	lv_obj_set_event_bubble(tabbar, true);
 	lv_obj_set_flex_flow(tabbar, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(tabbar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -457,8 +457,8 @@ void airpodspage_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_ver(card, 22, 0);
 	lv_obj_set_style_pad_hor(card, 10, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(card, false);
+	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -473,14 +473,14 @@ void airpodspage_init(gui_config_t *cfg) {
 	lv_label_set_text(waiting_label, tr("airpods_battery_reading"));
 	lv_obj_add_style(waiting_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(waiting_label, &font_ui_22, 0);
-	lv_obj_add_flag(waiting_label, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(waiting_label, true);
 
 	build_tabbar(container);
-	lv_obj_add_flag(tabbar, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(tabbar, true);
 
 	build_hold_page(cfg);
 	hold_row = settingsrow_add(container, "airpods_press_and_hold", NULL, open_hold_cb, NULL);
-	lv_obj_add_flag(hold_row, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(hold_row, true);
 
 	poll_timer = lv_timer_create(poll_cb, POLL_MS, NULL);
 	lv_timer_pause(poll_timer);

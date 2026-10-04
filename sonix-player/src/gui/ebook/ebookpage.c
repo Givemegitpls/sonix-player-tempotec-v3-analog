@@ -107,7 +107,7 @@ static bool cover_ready(int index, const char *title, const cover_image_t *cover
 	entry->cover = *cover;
 	entry->has_cover = true;
 	lv_image_set_src(entry->image, &entry->cover.dsc);
-	lv_obj_remove_flag(entry->image, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(entry->image, false);
 	return true;
 }
 
@@ -235,13 +235,13 @@ static void build_tiles(void) {
 		lv_obj_t *tile = lv_obj_create(grid);
 		lv_obj_remove_style_all(tile);
 		lv_obj_set_size(tile, cover_w, cover_h + 46);
-		lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_scrollable(tile, false);
+		lv_obj_set_clickable(tile, true);
 		// The press has to reach the page under the tile as well as the tile:
 		// a clickable object swallows it by default, and the swipe that goes
 		// back is watched on the page. open_book_cb() refuses to open a book at
 		// the end of a drag, so the two do not fight.
-		lv_obj_add_flag(tile, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_event_bubble(tile, true);
 		lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_style_pad_row(tile, 6, 0);
 		lv_obj_add_event_cb(tile, open_book_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
@@ -256,8 +256,8 @@ static void build_tiles(void) {
 		lv_obj_set_style_radius(plate, 8, 0);
 		lv_obj_set_style_border_width(plate, 0, 0);
 		lv_obj_set_style_shadow_width(plate, 0, 0);
-		lv_obj_remove_flag(plate, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_add_flag(plate, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_scrollable(plate, false);
+		lv_obj_set_event_bubble(plate, true);
 
 		lv_obj_t *glyph = lv_image_create(plate);
 		lv_image_set_src(glyph, &icon_ebook_cover);
@@ -272,8 +272,8 @@ static void build_tiles(void) {
 
 		entry->image = lv_image_create(plate);
 		lv_obj_center(entry->image);
-		lv_obj_add_flag(entry->image, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(entry->image, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_hidden(entry->image, true);
+		lv_obj_set_event_bubble(entry->image, true);
 
 		entry->label = lv_label_create(tile);
 		lv_label_set_long_mode(entry->label, LV_LABEL_LONG_DOT);
@@ -282,7 +282,7 @@ static void build_tiles(void) {
 		lv_obj_add_style(entry->label, &theme_style_text, 0);
 		lv_obj_set_style_text_font(entry->label, &font_ui_18, 0);
 		lv_obj_set_style_text_align(entry->label, LV_TEXT_ALIGN_CENTER, 0);
-		lv_obj_add_flag(entry->label, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_event_bubble(entry->label, true);
 
 		entry->tile = tile;
 	}
@@ -335,11 +335,11 @@ static void loaded_cb(lv_event_t *e) {
 	scan_folder();
 
 	if (shelf_count) {
-		lv_obj_add_flag(empty_note, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(empty_note, true);
 		build_tiles();
 		worker_begin();
 	} else {
-		lv_obj_remove_flag(empty_note, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(empty_note, false);
 	}
 }
 
@@ -391,11 +391,11 @@ void ebookpage_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_style_pad_column(grid, TILE_GAP, 0);
 	lv_obj_set_style_pad_row(grid, TILE_GAP, 0);
-	lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(grid, false);
 	// Bubbling is one step at a time: the tile passes the press to this, and
 	// without this it stops here instead of reaching the container, which is
 	// where the swipe that goes back is watched.
-	lv_obj_add_flag(grid, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(grid, true);
 
 	empty_note = lv_label_create(container);
 	lv_label_set_long_mode(empty_note, LV_LABEL_LONG_WRAP);
@@ -404,7 +404,7 @@ void ebookpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(empty_note, &font_ui_20, 0);
 	lv_obj_set_style_text_align(empty_note, LV_TEXT_ALIGN_CENTER, 0);
 	lv_label_set_text(empty_note, tr("ebook_empty_note"));
-	lv_obj_add_flag(empty_note, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(empty_note, true);
 
 	lv_obj_add_event_cb(ebookpage_screen, loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(ebookpage_screen, unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);

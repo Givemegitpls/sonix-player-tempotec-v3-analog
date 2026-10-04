@@ -188,7 +188,7 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);
 	lv_obj_set_style_pad_gap(card, 18, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -203,7 +203,7 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
 	lv_obj_set_style_pad_gap(row, 14, 0);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -220,8 +220,8 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(clock_card, 0, 0);
 	lv_obj_set_style_pad_all(clock_card, 20, 0);
 	lv_obj_set_style_pad_gap(clock_card, 18, 0);
-	lv_obj_remove_flag(clock_card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(clock_card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(clock_card, false);
+	lv_obj_set_event_bubble(clock_card, true);
 	lv_obj_set_flex_flow(clock_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(clock_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -236,7 +236,7 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(clock_row, 0, 0);
 	lv_obj_set_style_pad_all(clock_row, 0, 0);
 	lv_obj_set_style_pad_gap(clock_row, 10, 0);
-	lv_obj_remove_flag(clock_row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(clock_row, false);
 	// Wrapped, not a single line: four pills of translated words do not fit
 	// across 480 pixels in every language, and one that does not fit is drawn
 	// off the card rather than shrunk.
@@ -258,8 +258,8 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(accent_card, 0, 0);
 	lv_obj_set_style_pad_all(accent_card, 20, 0);
 	lv_obj_set_style_pad_gap(accent_card, 18, 0);
-	lv_obj_remove_flag(accent_card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(accent_card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(accent_card, false);
+	lv_obj_set_event_bubble(accent_card, true);
 	lv_obj_set_flex_flow(accent_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(accent_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -274,7 +274,7 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(accent_row, 0, 0);
 	lv_obj_set_style_pad_all(accent_row, 0, 0);
 	lv_obj_set_style_pad_gap(accent_row, 14, 0);
-	lv_obj_remove_flag(accent_row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(accent_row, false);
 	lv_obj_set_flex_flow(accent_row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(accent_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 

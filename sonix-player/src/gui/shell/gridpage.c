@@ -67,12 +67,12 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 
 	// Presses bubble up to the grid so a swipe can start on a tile: the whole
 	// page has to be draggable, not just the gaps between the tiles.
-	lv_obj_add_flag(tile, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(tile, true);
 
 	lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_gap(tile, 8, 0);
-	lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(tile, false);
 
 	// The tile artwork keeps its own colours, so unlike the interface glyphs it
 	// is not run through the theme's recolour.
@@ -114,7 +114,7 @@ lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t
 	lv_obj_set_style_radius(grid, 0, 0);
 	lv_obj_set_style_pad_all(grid, cfg->padding, 0);
 	lv_obj_set_style_pad_gap(grid, GRID_GAP, 0);
-	lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(grid, false);
 
 	lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
 	// START on the main axis, not CENTER: the tile size is computed for a full
@@ -156,10 +156,10 @@ lv_obj_t *gridpage_empty_panel(lv_obj_t *screen, gui_config_t *cfg, const lv_ima
 	lv_obj_set_style_pad_hor(panel, cfg->padding * 2, 0);
 	lv_obj_set_style_pad_bottom(panel, cfg->padding * 2, 0);
 	lv_obj_set_style_pad_row(panel, 22, 0);
-	lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(panel, false);
 	lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(panel, true);
 
 	lv_obj_t *picture = lv_image_create(panel);
 	lv_image_set_src(picture, icon);
@@ -195,18 +195,18 @@ lv_obj_t *gridpage_empty_panel(lv_obj_t *screen, gui_config_t *cfg, const lv_ima
 void gridpage_show_empty(lv_obj_t *grid, lv_obj_t *panel, bool empty) {
 	if (grid) {
 		if (empty) {
-			lv_obj_add_flag(grid, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(grid, true);
 		} else {
-			lv_obj_remove_flag(grid, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(grid, false);
 		}
 	}
 	if (panel) {
 		if (empty) {
 			// The accent may have changed since the panel was built.
 			lv_obj_set_style_bg_color(lv_obj_get_child(panel, 2), theme()->accent, 0);
-			lv_obj_remove_flag(panel, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(panel, false);
 		} else {
-			lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(panel, true);
 		}
 	}
 }

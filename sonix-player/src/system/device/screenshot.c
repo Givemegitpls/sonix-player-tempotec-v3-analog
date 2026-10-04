@@ -165,8 +165,8 @@ static void flash_show(void) {
 	lv_obj_set_style_border_width(flash, 0, 0);
 	lv_obj_set_style_radius(flash, 0, 0);
 	lv_obj_set_style_pad_all(flash, 0, 0);
-	lv_obj_remove_flag(flash, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(flash, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(flash, false);
+	lv_obj_set_clickable(flash, false);
 
 	lv_anim_t a;
 	lv_anim_init(&a);

@@ -114,4 +114,10 @@ void gui_notify_volume(int percent);
 // The power key was held down.
 void gui_notify_power_menu(void);
 
+// Whether obj is still one of the objects on a display. It compares the pointer
+// against the live widget tree and never reads through it, so a pointer to an
+// object already deleted is safe to pass. LVGL's lv_obj_is_in_widget_tree(),
+// which lv_obj_is_valid() maps to, follows obj's parent links and is not.
+bool gui_obj_alive(const lv_obj_t *obj);
+
 #endif /* GUI_H */

@@ -65,8 +65,8 @@ static void rebuild(void) {
 		lv_obj_set_style_pad_left(row, 20, 0);
 		lv_obj_set_style_pad_right(row, 8, 0);
 		lv_obj_set_style_pad_ver(row, 0, 0);
-		lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_scrollable(row, false);
+		lv_obj_set_event_bubble(row, true);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -91,9 +91,9 @@ static void rebuild(void) {
 		lv_obj_center(icon);
 	}
 	if (name_count == 0) {
-		lv_obj_remove_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(empty_label, false);
 	} else {
-		lv_obj_add_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(empty_label, true);
 	}
 }
 
@@ -102,7 +102,7 @@ static void load(void) {
 	names = library_artist_exceptions(&name_count);
 }
 
-static void name_layer_hide(void) { lv_obj_add_flag(name_layer, LV_OBJ_FLAG_HIDDEN); }
+static void name_layer_hide(void) { lv_obj_set_hidden(name_layer, true); }
 
 static void add_cb(lv_event_t *e) {
 	(void)e;
@@ -115,7 +115,7 @@ static void add_cb(lv_event_t *e) {
 	// the focus that starts the caret blinking is sent by hand.
 	lv_obj_add_state(name_field, LV_STATE_FOCUSED);
 	lv_obj_send_event(name_field, LV_EVENT_FOCUSED, NULL);
-	lv_obj_remove_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(name_layer, false);
 	lv_obj_move_foreground(name_layer);
 }
 
@@ -203,7 +203,7 @@ void artistexceptions_init(gui_config_t *cfg, void (*changed)(void)) {
 	lv_obj_set_size(list, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_style_pad_row(list, 8, 0);
 	lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
-	lv_obj_add_flag(list, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(list, true);
 
 	empty_label = lv_label_create(container);
 	lv_label_set_long_mode(empty_label, LV_LABEL_LONG_WRAP);
@@ -224,8 +224,8 @@ void artistexceptions_init(gui_config_t *cfg, void (*changed)(void)) {
 	lv_obj_set_style_border_width(name_layer, 0, 0);
 	lv_obj_set_style_radius(name_layer, 0, 0);
 	lv_obj_set_style_pad_all(name_layer, 0, 0);
-	lv_obj_remove_flag(name_layer, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(name_layer, false);
+	lv_obj_set_hidden(name_layer, true);
 
 	lv_obj_t *heading = lv_label_create(name_layer);
 	lv_label_set_text(heading, tr("artistexceptions_add"));

@@ -116,7 +116,7 @@ static void add_proc_row(const char *name, long rss_kb) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_hor(card, 18, 0);
 	lv_obj_set_style_pad_ver(card, 10, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 
 	lv_obj_t *name_lbl = lv_label_create(card);
 	lv_label_set_text(name_lbl, name);
@@ -264,7 +264,7 @@ void processespage_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(ram_card, 0, 0);
 	lv_obj_set_style_shadow_width(ram_card, 0, 0);
 	lv_obj_set_style_pad_all(ram_card, 18, 0);
-	lv_obj_remove_flag(ram_card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(ram_card, false);
 
 	ram_label = lv_label_create(ram_card);
 	lv_obj_set_width(ram_label, lv_pct(100));
@@ -286,7 +286,7 @@ void processespage_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(proc_list, 0, 0);
 	lv_obj_set_style_pad_row(proc_list, 8, 0);
 	lv_obj_set_flex_flow(proc_list, LV_FLEX_FLOW_COLUMN);
-	lv_obj_remove_flag(proc_list, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(proc_list, false);
 
 	rebuild();
 	lv_obj_add_event_cb(processespage_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);

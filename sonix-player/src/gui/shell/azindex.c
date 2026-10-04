@@ -53,10 +53,10 @@ static lv_timer_t *timer;
 
 static void show_bar(azindex_t *ix, bool shown) {
 	if (shown) {
-		lv_obj_remove_flag(ix->bar, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(ix->bar, false);
 		lv_obj_move_foreground(ix->bar);
 	} else {
-		lv_obj_add_flag(ix->bar, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(ix->bar, true);
 	}
 }
 
@@ -65,7 +65,7 @@ void azindex_flash(azindex_t *ix) {
 		return;
 	}
 	ix->wanted_at = lv_tick_get();
-	if (lv_obj_has_flag(ix->bar, LV_OBJ_FLAG_HIDDEN)) {
+	if (lv_obj_is_hidden(ix->bar)) {
 		show_bar(ix, true);
 	}
 }
@@ -73,7 +73,7 @@ void azindex_flash(azindex_t *ix) {
 static void hint_show(azindex_t *ix, int slot) {
 	int bucket = ix->descending ? BUCKETS - 1 - slot : slot;
 	lv_label_set_text(ix->hint_label, TEXT[bucket]);
-	lv_obj_remove_flag(ix->hint, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(ix->hint, false);
 	lv_obj_move_foreground(ix->hint);
 	ix->hint_at = lv_tick_get();
 }
@@ -85,7 +85,7 @@ void azindex_set_rows(azindex_t *ix, const int first[LIBRARY_INDEX_BUCKETS], int
 	ix->enabled = first && count >= AZINDEX_MIN_ROWS;
 	ix->descending = descending;
 	show_bar(ix, false);
-	lv_obj_add_flag(ix->hint, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(ix->hint, true);
 	if (!ix->enabled) {
 		return;
 	}
@@ -217,11 +217,11 @@ static void timer_cb(lv_timer_t *t) {
 	(void)t;
 	for (int i = 0; i < strip_count; i++) {
 		azindex_t *ix = strips[i];
-		if (!lv_obj_has_flag(ix->bar, LV_OBJ_FLAG_HIDDEN) && lv_tick_elaps(ix->wanted_at) > HIDE_MS) {
+		if (!lv_obj_is_hidden(ix->bar) && lv_tick_elaps(ix->wanted_at) > HIDE_MS) {
 			show_bar(ix, false);
 		}
-		if (!lv_obj_has_flag(ix->hint, LV_OBJ_FLAG_HIDDEN) && lv_tick_elaps(ix->hint_at) > HINT_MS) {
-			lv_obj_add_flag(ix->hint, LV_OBJ_FLAG_HIDDEN);
+		if (!lv_obj_is_hidden(ix->hint) && lv_tick_elaps(ix->hint_at) > HINT_MS) {
+			lv_obj_set_hidden(ix->hint, true);
 		}
 	}
 }
@@ -256,15 +256,15 @@ azindex_t *azindex_create(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t *list, i
 	lv_obj_set_style_bg_color(ix->bar, theme()->surface, 0);
 	lv_obj_set_style_bg_opa(ix->bar, LV_OPA_60, 0);
 	lv_obj_set_style_radius(ix->bar, BAR_WIDTH / 2, 0);
-	lv_obj_remove_flag(ix->bar, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(ix->bar, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(ix->bar, false);
+	lv_obj_set_hidden(ix->bar, true);
 	lv_obj_set_flex_flow(ix->bar, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(ix->bar, LV_FLEX_ALIGN_SPACE_AROUND, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
 	// The strip takes its own presses -- it must not scroll the list underneath
 	// -- but it is still part of the page, so the swipe back and the pull that
 	// brings the player in start on it as well; bar_cb tells them apart.
-	lv_obj_add_flag(ix->bar, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(ix->bar, true);
 	lv_obj_add_event_cb(ix->bar, bar_cb, LV_EVENT_PRESSED, ix);
 	lv_obj_add_event_cb(ix->bar, bar_cb, LV_EVENT_PRESSING, ix);
 	lv_obj_add_event_cb(ix->bar, bar_cb, LV_EVENT_RELEASED, ix);
@@ -277,7 +277,7 @@ azindex_t *azindex_create(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t *list, i
 		lv_label_set_text(ix->letters[i], TEXT[i]);
 		lv_obj_add_style(ix->letters[i], &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(ix->letters[i], &font_ui_14, 0);
-		lv_obj_remove_flag(ix->letters[i], LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_clickable(ix->letters[i], false);
 	}
 
 	// The letter under the finger, in the middle of the screen where the hand
@@ -289,9 +289,9 @@ azindex_t *azindex_create(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t *list, i
 	lv_obj_set_style_bg_color(ix->hint, theme()->accent, 0);
 	lv_obj_set_style_bg_opa(ix->hint, LV_OPA_90, 0);
 	lv_obj_set_style_radius(ix->hint, 26, 0);
-	lv_obj_remove_flag(ix->hint, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(ix->hint, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(ix->hint, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(ix->hint, false);
+	lv_obj_set_clickable(ix->hint, false);
+	lv_obj_set_hidden(ix->hint, true);
 
 	ix->hint_label = lv_label_create(ix->hint);
 	lv_label_set_text(ix->hint_label, "");

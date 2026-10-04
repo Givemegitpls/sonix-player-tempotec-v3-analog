@@ -29,7 +29,7 @@ static void refresh_theme(void);
 
 void confirm_close(void) {
 	if (veil) {
-		lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(veil, true);
 	}
 }
 
@@ -108,8 +108,8 @@ void confirm_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(veil, 0, 0);
 	lv_obj_set_style_radius(veil, 0, 0);
 	lv_obj_set_style_pad_all(veil, 0, 0);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(veil, false);
+	lv_obj_set_hidden(veil, true);
 	lv_obj_add_event_cb(veil, veil_cb, LV_EVENT_CLICKED, NULL);
 
 	card = lv_obj_create(veil);
@@ -122,7 +122,7 @@ void confirm_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 22, 0);
 	lv_obj_set_style_pad_gap(card, 14, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -147,7 +147,7 @@ void confirm_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(buttons, 0, 0);
 	lv_obj_set_style_pad_all(buttons, 0, 0);
 	lv_obj_set_style_pad_gap(buttons, 12, 0);
-	lv_obj_remove_flag(buttons, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(buttons, false);
 	lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -181,9 +181,9 @@ void confirm_show(const char *title, const char *message, const char *ok_text, v
 	lv_label_set_text(title_label, title ? tr(title) : "");
 	if (message && message[0]) {
 		lv_label_set_text(message_label, tr(message));
-		lv_obj_remove_flag(message_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(message_label, false);
 	} else {
-		lv_obj_add_flag(message_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(message_label, true);
 	}
 	lv_label_set_text(ok_label, tr(ok_text && ok_text[0] ? ok_text : "ok"));
 	// Repaint on the way up too, in case the theme changed while the dialog was
@@ -191,10 +191,10 @@ void confirm_show(const char *title, const char *message, const char *ok_text, v
 	refresh_theme();
 
 	if (cancel_btn) {
-		lv_obj_remove_flag(cancel_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(cancel_btn, false);
 	}
 
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(veil, false);
 	lv_obj_move_foreground(veil);
 }
 
@@ -204,6 +204,6 @@ void confirm_notice(const char *title, const char *message) {
 	// as the other one. Two buttons that do the same thing ask a question that
 	// was never put.
 	if (cancel_btn) {
-		lv_obj_add_flag(cancel_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(cancel_btn, true);
 	}
 }

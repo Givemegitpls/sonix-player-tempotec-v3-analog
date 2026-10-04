@@ -7,17 +7,20 @@
 #define LV_CONF_SKIP 0
 
 /* RGB565, which is what the panel scans out. */
-#define LV_COLOR_DEPTH 16
+#define LV_COLOR_FORMAT_DEFAULT LV_COLOR_FORMAT_RGB565
 
 /* malloc, string and sprintf from the C library rather than LVGL's own. */
 #define LV_USE_STDLIB_MALLOC  LV_STDLIB_CLIB
 
-/* LVGL's log is off by default, and its assert handler is while(1). A failed
- * allocation -- LV_USE_ASSERT_MALLOC is on -- therefore stops the interface
- * dead without a word and without exiting, which on a device with no console
- * cannot be told apart from a lock-up. Turning the log on leaves the halting
- * as it is and gets the line that names it into the log the player already
- * writes. Warnings and errors only. */
+/* LVGL's assertions, off by default: its internal checks, and NULL pointers and
+ * failed allocations caught where they happen, rather than running on with
+ * them. A failed one halts in the assert handler, while(1), which stops the
+ * interface dead without exiting -- on a device with no console that cannot be
+ * told apart from a lock-up. The log, also off by default, gets the line that
+ * names it into the log the player already writes. Warnings and errors only. */
+#define LV_USE_ASSERT 1
+#define LV_USE_ASSERT_NULL 1
+#define LV_USE_ASSERT_MALLOC 1
 #define LV_USE_LOG 1
 #define LV_LOG_LEVEL LV_LOG_LEVEL_WARN
 #define LV_LOG_PRINTF 1
@@ -26,6 +29,13 @@
 #define LV_LOG_USE_TIMESTAMP 0
 #define LV_USE_STDLIB_STRING  LV_STDLIB_CLIB
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
+
+/* LVGL's public functions check their arguments -- NULL pointers, indexes,
+ * ranges -- and skip the call when a check fails. A failed check is logged as a
+ * warning naming the LVGL function, file and line, without the condition's
+ * text, which would add a string per check. */
+#define LV_USE_CHECK_ARG 1
+#define LV_CHECK_ARG_LOG_MODE LV_CHECK_ARG_LOG_MODE_MINIMAL
 
 /* No font is built into the binary: every string is rendered through FreeType
  * from the faces in /usr/resource/sonix/fonts (see src/gui/fonts/fonts.c). */

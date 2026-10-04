@@ -680,9 +680,9 @@ static void rebuild_results(job_t *job) {
 		settingsrow_name_lines(row, 2);
 	}
 	if (result_count) {
-		lv_obj_add_flag(results_empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(results_empty, true);
 	} else {
-		lv_obj_remove_flag(results_empty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(results_empty, false);
 	}
 	switch_screen(results_screen);
 }
@@ -830,7 +830,7 @@ static void build_pages(gui_config_t *config) {
 	lv_obj_set_width(results_empty, config->screen_width - 2 * config->padding);
 	lv_obj_set_style_text_align(results_empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_align(results_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(config) + 100);
-	lv_obj_add_flag(results_empty, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(results_empty, true);
 }
 
 void peqautoeq_init(gui_config_t *config) {

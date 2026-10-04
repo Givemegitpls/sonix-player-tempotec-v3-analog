@@ -170,7 +170,7 @@ static void start_cb(lv_event_t *e) {
 	(void)e;
 
 	stop_cycle();
-	lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(panel, true);
 
 	// The next screen holds the display on itself, so nothing is released here:
 	// the panel must not blank between the two pages.
@@ -196,8 +196,8 @@ void welcome_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(panel, 0, 0);
 	lv_obj_set_style_radius(panel, 0, 0);
 	lv_obj_set_style_pad_all(panel, cfg->padding, 0);
-	lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(panel, false);
+	lv_obj_set_hidden(panel, true);
 
 	// The word and the button below it are the only two elements, so they are
 	// centred in the panel rather than stacked from the top as on the language
@@ -244,7 +244,7 @@ void welcome_show_first_boot(void) {
 	lv_obj_set_style_translate_x(word_label, 0, 0);
 	lv_obj_set_style_opa(word_label, LV_OPA_COVER, 0);
 
-	lv_obj_remove_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(panel, false);
 	lv_obj_move_foreground(panel);
 
 	start_hold();

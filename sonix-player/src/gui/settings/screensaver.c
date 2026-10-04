@@ -105,7 +105,7 @@ static void set_strip_height(int height) {
 	}
 }
 
-bool screensaver_is_visible(void) { return saver && !lv_obj_has_flag(saver, LV_OBJ_FLAG_HIDDEN); }
+bool screensaver_is_visible(void) { return saver && !lv_obj_is_hidden(saver); }
 bool screensaver_get_enabled(void) { return enabled; }
 
 screensaver_source_t screensaver_source(void) { return source; }
@@ -295,15 +295,15 @@ static void draw_from_folder(void) {
 		// Already built at screen size by cover_load_screensaver_images: no
 		// zoom to apply, and none to leave over from the album source.
 		lv_image_set_scale(cover_img, 256);
-		lv_obj_remove_flag(cover_img, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(cover_placeholder, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(cover_img, false);
+		lv_obj_set_hidden(cover_placeholder, true);
 	} else {
 		// An empty folder, or a card that is not there. The note in the middle
 		// of a black screen, which is what the album source shows for a track
 		// with no artwork -- the same screen, missing the same thing.
 		lv_image_set_src(cover_img, NULL);
-		lv_obj_add_flag(cover_img, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_remove_flag(cover_placeholder, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(cover_img, true);
+		lv_obj_set_hidden(cover_placeholder, false);
 	}
 
 	if (image_strip.pixels) {
@@ -383,12 +383,12 @@ static void refresh_content(void) {
 		int32_t zoom_w = (256 * screen_w) / (int32_t)cover->header.w;
 		int32_t zoom_h = (256 * (screen_h - strip_h)) / (int32_t)cover->header.h;
 		lv_image_set_scale(cover_img, zoom_w > zoom_h ? zoom_w : zoom_h);
-		lv_obj_remove_flag(cover_img, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(cover_placeholder, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(cover_img, false);
+		lv_obj_set_hidden(cover_placeholder, true);
 	} else {
 		lv_image_set_src(cover_img, NULL);
-		lv_obj_add_flag(cover_img, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_remove_flag(cover_placeholder, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(cover_img, true);
+		lv_obj_set_hidden(cover_placeholder, false);
 	}
 
 	if (backdrop) {
@@ -420,7 +420,7 @@ void screensaver_show(void) {
 	refresh_content();
 	lv_anim_delete(saver, anim_y_cb);
 	lv_obj_set_y(saver, 0);
-	lv_obj_remove_flag(saver, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(saver, false);
 	lv_obj_move_foreground(saver);
 	lv_timer_resume(clock_timer);
 }
@@ -428,7 +428,7 @@ void screensaver_show(void) {
 // Everything that has to happen once it is really gone, whether it was
 // dismissed by a tap, by a finished swipe, or by switching the option off.
 static void finish_hide(void) {
-	lv_obj_add_flag(saver, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(saver, true);
 	lv_obj_set_y(saver, 0);
 	lv_timer_pause(clock_timer);
 	// Let go of the player's pixels: it frees them at the next track change,
@@ -522,8 +522,8 @@ void screensaver_release_artwork(void) {
 	// Whatever happens next, nothing here may still be pointing at the
 	// player's buffers when it frees them.
 	lv_image_set_src(cover_img, NULL);
-	lv_obj_add_flag(cover_img, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(cover_placeholder, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(cover_img, true);
+	lv_obj_set_hidden(cover_placeholder, false);
 	lv_obj_set_style_bg_image_src(info_strip, NULL, 0);
 	lv_obj_set_style_bg_color(info_strip, lv_color_black(), 0);
 	lv_obj_set_style_bg_opa(info_strip, LV_OPA_60, 0);
@@ -609,9 +609,9 @@ void screensaver_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(saver, 0, 0);
 	lv_obj_set_style_radius(saver, 0, 0);
 	lv_obj_set_style_pad_all(saver, 0, 0);
-	lv_obj_remove_flag(saver, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(saver, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(saver, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(saver, false);
+	lv_obj_set_clickable(saver, true);
+	lv_obj_set_hidden(saver, true);
 	lv_obj_add_event_cb(saver, drag_cb, LV_EVENT_PRESSED, NULL);
 	lv_obj_add_event_cb(saver, drag_cb, LV_EVENT_PRESSING, NULL);
 	lv_obj_add_event_cb(saver, drag_cb, LV_EVENT_RELEASED, NULL);
@@ -627,9 +627,9 @@ void screensaver_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(cover_box, 0, 0);
 	lv_obj_set_style_pad_all(cover_box, 0, 0);
 	lv_obj_set_style_clip_corner(cover_box, true, 0);
-	lv_obj_remove_flag(cover_box, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(cover_box, LV_OBJ_FLAG_EVENT_BUBBLE);
-	lv_obj_remove_flag(cover_box, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(cover_box, false);
+	lv_obj_set_event_bubble(cover_box, true);
+	lv_obj_set_clickable(cover_box, false);
 
 	// Nothing to show for a track with no artwork: the same note the player
 	// puts in the same place, so the screensaver is recognisably the player
@@ -655,9 +655,9 @@ void screensaver_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_hor(info_strip, cfg->padding + 6, 0);
 	lv_obj_set_style_pad_ver(info_strip, 18, 0);
 	lv_obj_set_style_pad_gap(info_strip, 2, 0);
-	lv_obj_remove_flag(info_strip, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(info_strip, LV_OBJ_FLAG_EVENT_BUBBLE);
-	lv_obj_remove_flag(info_strip, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(info_strip, false);
+	lv_obj_set_event_bubble(info_strip, true);
+	lv_obj_set_clickable(info_strip, false);
 	lv_obj_set_flex_flow(info_strip, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(info_strip, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -694,8 +694,8 @@ void screensaver_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(chevron_btn, 0, 0);
 	lv_obj_set_style_shadow_width(chevron_btn, 0, 0);
 	lv_obj_set_style_pad_all(chevron_btn, 0, 0);
-	lv_obj_remove_flag(chevron_btn, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_remove_flag(chevron_btn, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_clickable(chevron_btn, false);
+	lv_obj_set_scrollable(chevron_btn, false);
 
 	lv_obj_t *chevron = lv_image_create(chevron_btn);
 	lv_image_set_src(chevron, &icon_chevron_up);

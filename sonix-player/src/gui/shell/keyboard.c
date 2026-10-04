@@ -246,13 +246,13 @@ static void kb_apply_layout(keyboard_t *kb) {
 			// set_parent appends, so working through the rows in order is what
 			// puts the letters in the right order inside each of them.
 			lv_obj_set_parent(kb->letter_btn[index], kb->rows[row]);
-			lv_obj_remove_flag(kb->letter_btn[index], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(kb->letter_btn[index], false);
 		}
 	}
 	kb->key_count = index;
 
 	for (int i = index; i < KB_MAX_KEYS; i++) {
-		lv_obj_add_flag(kb->letter_btn[i], LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(kb->letter_btn[i], true);
 	}
 
 	// Shift and delete bracket the bottom row, whatever the re-parenting above
@@ -612,7 +612,7 @@ static void kb_space_cb(lv_event_t *e) {
 
 static void kb_preview_hide(keyboard_t *kb) {
 	if (kb->preview) {
-		lv_obj_add_flag(kb->preview, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(kb->preview, true);
 	}
 }
 
@@ -622,7 +622,7 @@ static void kb_preview_show(keyboard_t *kb, lv_obj_t *key, const char *text) {
 	}
 
 	lv_label_set_text(kb->preview_label, text);
-	lv_obj_remove_flag(kb->preview, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(kb->preview, false);
 	lv_obj_move_foreground(kb->preview);
 
 	// Centred over the key and sitting just above it, clamped to the host so
@@ -676,7 +676,7 @@ static lv_obj_t *kb_make_row(lv_obj_t *parent, int height) {
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
 	lv_obj_set_style_pad_gap(row, 6, 0);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	return row;
@@ -771,7 +771,7 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	lv_obj_set_style_radius(kb->tray, 0, 0);
 	lv_obj_set_style_pad_all(kb->tray, 8, 0);
 	lv_obj_set_style_pad_gap(kb->tray, 7, 0);
-	lv_obj_remove_flag(kb->tray, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(kb->tray, false);
 	lv_obj_set_flex_flow(kb->tray, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(kb->tray, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -788,7 +788,7 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	lv_obj_set_style_border_width(kb->qwerty, 0, 0);
 	lv_obj_set_style_pad_all(kb->qwerty, 0, 0);
 	lv_obj_set_style_pad_gap(kb->qwerty, 7, 0);
-	lv_obj_remove_flag(kb->qwerty, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(kb->qwerty, false);
 	lv_obj_set_flex_flow(kb->qwerty, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(kb->qwerty, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -848,7 +848,7 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	lv_obj_set_style_border_width(kb->t9, 0, 0);
 	lv_obj_set_style_pad_all(kb->t9, 0, 0);
 	lv_obj_set_style_pad_gap(kb->t9, 7, 0);
-	lv_obj_remove_flag(kb->t9, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(kb->t9, false);
 	lv_obj_set_flex_flow(kb->t9, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(kb->t9, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -899,9 +899,9 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 
 	// One of the two panels is hidden, per the setting.
 	if (config_get_int("other", "keyboard_t9", 0) != 0) {
-		lv_obj_add_flag(kb->qwerty, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(kb->qwerty, true);
 	} else {
-		lv_obj_add_flag(kb->t9, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(kb->t9, true);
 	}
 
 	// The preview bubble lives above the keyboard, on the page itself, so it
@@ -916,9 +916,9 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	lv_obj_set_style_shadow_color(kb->preview, lv_color_black(), 0);
 	lv_obj_set_style_shadow_offset_y(kb->preview, 3, 0);
 	lv_obj_set_style_pad_all(kb->preview, 0, 0);
-	lv_obj_remove_flag(kb->preview, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(kb->preview, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(kb->preview, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(kb->preview, false);
+	lv_obj_set_clickable(kb->preview, false);
+	lv_obj_set_hidden(kb->preview, true);
 
 	kb->preview_label = lv_label_create(kb->preview);
 	lv_obj_add_style(kb->preview_label, &theme_style_text, 0);
@@ -950,14 +950,14 @@ void keyboard_set_visible(keyboard_t *kb, bool visible) {
 		return;
 	}
 	if (visible) {
-		lv_obj_remove_flag(kb->tray, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(kb->tray, false);
 	} else {
-		lv_obj_add_flag(kb->tray, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(kb->tray, true);
 		kb_preview_hide(kb);
 	}
 }
 
-bool keyboard_is_visible(keyboard_t *kb) { return kb && kb->tray && !lv_obj_has_flag(kb->tray, LV_OBJ_FLAG_HIDDEN); }
+bool keyboard_is_visible(keyboard_t *kb) { return kb && kb->tray && !lv_obj_is_hidden(kb->tray); }
 
 void keyboard_set_field(keyboard_t *kb, lv_obj_t *field) {
 	if (kb) {
@@ -1124,11 +1124,11 @@ void keyboard_refresh_type(void) {
 			continue;
 		}
 		if (t9) {
-			lv_obj_add_flag(kb->qwerty, LV_OBJ_FLAG_HIDDEN);
-			lv_obj_remove_flag(kb->t9, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(kb->qwerty, true);
+			lv_obj_set_hidden(kb->t9, false);
 		} else {
-			lv_obj_add_flag(kb->t9, LV_OBJ_FLAG_HIDDEN);
-			lv_obj_remove_flag(kb->qwerty, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(kb->t9, true);
+			lv_obj_set_hidden(kb->qwerty, false);
 		}
 		keyboard_reset(kb);
 	}

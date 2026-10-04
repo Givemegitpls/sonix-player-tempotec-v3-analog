@@ -132,14 +132,14 @@ static void update_battery_indicator(int percent, bool charging) {
 	lv_image_set_src(bat_shell, charging ? &icon_battery_charging_body : &icon_battery);
 
 	if (charging) {
-		lv_obj_remove_flag(bat_bolt, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bat_bolt, false);
 	} else {
-		lv_obj_add_flag(bat_bolt, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bat_bolt, true);
 	}
 
 	if (percent < 0) {
 		// Unknown level: empty shell, with nothing to fill in.
-		lv_obj_add_flag(bat_fill, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bat_fill, true);
 		lv_obj_set_style_image_recolor(bat_shell, theme()->text_secondary, 0);
 		lv_label_set_text(bat_label, "--%");
 		return;
@@ -150,11 +150,11 @@ static void update_battery_indicator(int percent, bool charging) {
 	lv_obj_set_style_image_recolor(bat_shell, theme()->text_primary, 0);
 
 	if (charging) {
-		lv_obj_add_flag(bat_fill, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bat_fill, true);
 		return;
 	}
 
-	lv_obj_remove_flag(bat_fill, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(bat_fill, false);
 
 	int width = (cavity_w * percent) / 100;
 	if (width < 3 && percent > 0)
@@ -290,17 +290,17 @@ static void refresh_headphone_icon(void) {
 		lv_image_set_src(hp_icon, &icon_usbaudioout);
 		lv_obj_remove_local_style_prop(hp_icon, LV_STYLE_IMAGE_RECOLOR, 0);
 		lv_obj_remove_local_style_prop(hp_icon, LV_STYLE_IMAGE_RECOLOR_OPA, 0);
-		lv_obj_remove_flag(hp_icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(hp_icon, false);
 		return;
 	}
 	lv_image_set_src(hp_icon, &icon_headphones);
 
 	if (state == JACK_NONE) {
-		lv_obj_add_flag(hp_icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(hp_icon, true);
 		return;
 	}
 
-	lv_obj_remove_flag(hp_icon, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(hp_icon, false);
 	if (state == JACK_BALANCED) {
 		// Gold marks the balanced output.
 		lv_obj_set_style_image_recolor(hp_icon, lv_color_make(212, 175, 55), 0);
@@ -382,9 +382,9 @@ void topbar_refresh_radios(void) {
 		// bringing the radio up takes a second or two during which the status
 		// still reads OFF.
 		if (!wifi_get_enabled()) {
-			lv_obj_add_flag(wifi_icon, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(wifi_icon, true);
 		} else {
-			lv_obj_remove_flag(wifi_icon, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(wifi_icon, false);
 
 			if (status.state == WIFI_STATE_CONNECTED) {
 				// Connected: the arc shows the signal strength.
@@ -414,9 +414,9 @@ void topbar_refresh_radios(void) {
 		// status bar that stays empty for all of them looks like the switch did
 		// nothing.
 		if (!bluetooth_get_enabled()) {
-			lv_obj_add_flag(bt_icon, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(bt_icon, true);
 		} else {
-			lv_obj_remove_flag(bt_icon, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(bt_icon, false);
 			lv_obj_set_style_image_opa(bt_icon,
 									   bluetooth_get_state() == BT_STATE_CONNECTED ? LV_OPA_COVER : RADIO_IDLE_OPA, 0);
 
@@ -450,9 +450,9 @@ static void refresh_sonixlink_icon(void) {
 		return;
 	}
 	if (sonixlink_is_connected()) {
-		lv_obj_remove_flag(sonixlink_icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(sonixlink_icon, false);
 	} else {
-		lv_obj_add_flag(sonixlink_icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(sonixlink_icon, true);
 	}
 }
 
@@ -490,7 +490,7 @@ static void refresh_play_icon(const device_state_t *state) {
 	if (ap.playing) {
 		lv_image_set_src(play_icon, &icon_airplay_status);
 		lv_obj_remove_local_style_prop(play_icon, LV_STYLE_IMAGE_RECOLOR, 0);
-		lv_obj_remove_flag(play_icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(play_icon, false);
 		return;
 	}
 
@@ -499,7 +499,7 @@ static void refresh_play_icon(const device_state_t *state) {
 	} else if (state->current_file[0]) {
 		lv_image_set_src(play_icon, &icon_pause_status);
 	} else {
-		lv_obj_add_flag(play_icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(play_icon, true);
 		return;
 	}
 
@@ -512,7 +512,7 @@ static void refresh_play_icon(const device_state_t *state) {
 	} else {
 		lv_obj_remove_local_style_prop(play_icon, LV_STYLE_IMAGE_RECOLOR, 0);
 	}
-	lv_obj_remove_flag(play_icon, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(play_icon, false);
 }
 
 // The things noticed with the hands, on their own fast timer: what is in the
@@ -653,10 +653,10 @@ void topbar_set_clock_position(int pos) {
 	}
 
 	if (pos == TOPBAR_CLOCK_HIDDEN) {
-		lv_obj_add_flag(clock_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(clock_label, true);
 		return;
 	}
-	lv_obj_remove_flag(clock_label, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(clock_label, false);
 
 	if (pos == TOPBAR_CLOCK_LEFT) {
 		lv_obj_set_parent(clock_label, container_left);
@@ -770,7 +770,7 @@ static void topbar_clear_child_presses(lv_obj_t *obj) {
 	uint32_t n = lv_obj_get_child_count(obj);
 	for (uint32_t i = 0; i < n; i++) {
 		lv_obj_t *child = lv_obj_get_child(obj, (int32_t)i);
-		lv_obj_remove_flag(child, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_clickable(child, false);
 		topbar_clear_child_presses(child);
 	}
 }
@@ -787,8 +787,8 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_add_style(top_bar, &theme_style_panel, 0);
 	lv_obj_set_style_border_width(top_bar, 0, 0);
 	lv_obj_set_style_radius(top_bar, 0, 0);
-	lv_obj_remove_flag(top_bar, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(top_bar, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(top_bar, false);
+	lv_obj_set_clickable(top_bar, true);
 	lv_obj_add_event_cb(top_bar, topbar_drag_cb, LV_EVENT_PRESSED, NULL);
 	lv_obj_add_event_cb(top_bar, topbar_drag_cb, LV_EVENT_PRESSING, NULL);
 	lv_obj_add_event_cb(top_bar, topbar_drag_cb, LV_EVENT_RELEASED, NULL);
@@ -810,10 +810,10 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(container_left, 0, 0);
 	lv_obj_set_style_pad_all(container_left, 0, 0);
 	lv_obj_set_style_pad_gap(container_left, 8, 0);
-	lv_obj_remove_flag(container_left, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(container_left, false);
 	// Not clickable, so presses reach the bar itself, whose drag handler pulls
 	// the control panel down.
-	lv_obj_remove_flag(container_left, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(container_left, false);
 	lv_obj_set_flex_flow(container_left, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(container_left, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -832,14 +832,14 @@ void topbar_init(gui_config_t *cfg) {
 	hp_icon = lv_image_create(container_left);
 	lv_image_set_src(hp_icon, &icon_headphones);
 	lv_obj_add_style(hp_icon, &theme_style_icon, 0);
-	lv_obj_add_flag(hp_icon, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(hp_icon, true);
 
 	// What the player is doing, right of the jack indicator: play while a track
 	// runs, pause while one is loaded and stopped, hidden when nothing is loaded.
 	play_icon = lv_image_create(container_left);
 	lv_image_set_src(play_icon, &icon_play_status);
 	lv_obj_add_style(play_icon, &theme_style_icon, 0);
-	lv_obj_add_flag(play_icon, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(play_icon, true);
 
 	// And right of that, the SonixLink logo while a phone is on the other end.
 	// Alongside play/pause rather than in place of it: the phone is driving this
@@ -848,7 +848,7 @@ void topbar_init(gui_config_t *cfg) {
 	sonixlink_icon = lv_image_create(container_left);
 	lv_image_set_src(sonixlink_icon, &icon_sonixlink_status);
 	lv_obj_add_style(sonixlink_icon, &theme_style_icon, 0);
-	lv_obj_add_flag(sonixlink_icon, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(sonixlink_icon, true);
 
 	// The right-hand group: radios, charge percentage and battery, packed to the
 	// right edge.
@@ -862,8 +862,8 @@ void topbar_init(gui_config_t *cfg) {
 	// further in than the page padding everything else lines up with.
 	lv_obj_set_style_pad_all(container_right, 0, 0);
 	lv_obj_set_style_pad_gap(container_right, 8, 0);
-	lv_obj_remove_flag(container_right, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(container_right, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(container_right, false);
+	lv_obj_set_clickable(container_right, false);
 	lv_obj_set_flex_flow(container_right, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(container_right, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -873,12 +873,12 @@ void topbar_init(gui_config_t *cfg) {
 	bt_icon = lv_image_create(container_right);
 	lv_image_set_src(bt_icon, &icon_bluetooth_status);
 	lv_obj_add_style(bt_icon, &theme_style_icon, 0);
-	lv_obj_add_flag(bt_icon, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(bt_icon, true);
 
 	wifi_icon = lv_image_create(container_right);
 	lv_image_set_src(wifi_icon, &icon_wifi_max);
 	lv_obj_add_style(wifi_icon, &theme_style_icon, 0);
-	lv_obj_add_flag(wifi_icon, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(wifi_icon, true);
 
 	// Charge level as a number, immediately left of the shell.
 	bat_label = lv_label_create(container_right);
@@ -901,7 +901,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(bat_widget, 0, 0);
 	lv_obj_set_style_border_width(bat_widget, 0, 0);
 	lv_obj_set_style_pad_all(bat_widget, 0, 0);
-	lv_obj_remove_flag(bat_widget, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(bat_widget, false);
 
 	bat_fill = lv_obj_create(bat_widget);
 	lv_obj_set_pos(bat_fill, cavity_x, cavity_y);
@@ -911,7 +911,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(bat_fill, 0, 0);
 	lv_obj_set_style_radius(bat_fill, 1, 0);
 	lv_obj_set_style_pad_all(bat_fill, 0, 0);
-	lv_obj_remove_flag(bat_fill, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(bat_fill, false);
 
 	bat_shell = lv_image_create(bat_widget);
 	lv_image_set_src(bat_shell, &icon_battery);
@@ -924,7 +924,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_style_image_recolor(bat_bolt, lv_color_make(245, 205, 60), 0);
 	lv_obj_set_style_image_recolor_opa(bat_bolt, LV_OPA_COVER, 0);
 	lv_obj_set_pos(bat_bolt, 0, 0);
-	lv_obj_add_flag(bat_bolt, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(bat_bolt, true);
 
 	// Clock, centred on the bar and independent of everything around it.
 	clock_label = lv_label_create(top_bar);
@@ -989,16 +989,16 @@ void topbar_init(gui_config_t *cfg) {
 	theme_register_refresh(topbar_refresh_theme);
 }
 
-bool topbar_is_hidden(void) { return top_bar && lv_obj_has_flag(top_bar, LV_OBJ_FLAG_HIDDEN); }
+bool topbar_is_hidden(void) { return top_bar && lv_obj_is_hidden(top_bar); }
 
 void topbar_set_battery_percent(bool shown) {
 	if (!bat_label) {
 		return;
 	}
 	if (shown) {
-		lv_obj_remove_flag(bat_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bat_label, false);
 	} else {
-		lv_obj_add_flag(bat_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(bat_label, true);
 	}
 }
 
@@ -1016,8 +1016,8 @@ void topbar_set_hidden(bool hidden) {
 	}
 
 	if (hidden) {
-		lv_obj_add_flag(top_bar, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(top_bar, true);
 	} else {
-		lv_obj_remove_flag(top_bar, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(top_bar, false);
 	}
 }

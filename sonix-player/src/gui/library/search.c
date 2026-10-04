@@ -280,7 +280,7 @@ static void menu_remove_one_action(void *user) {
 
 static void remove_menu_show_async(void *user) {
 	(void)user;
-	if (menu_playlist_count < 1 || !menu_anchor || !lv_obj_is_valid(menu_anchor)) {
+	if (menu_playlist_count < 1 || !gui_obj_alive(menu_anchor)) {
 		return;
 	}
 	popover_item_t items[MENU_PLAYLISTS_MAX];
@@ -382,7 +382,7 @@ static void make_row(const char *name, const lv_image_dsc_t *glyph, lv_event_cb_
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(row, true);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(row, 12, 0);
@@ -505,9 +505,9 @@ static void refresh_clear_button(void) {
 	}
 	const char *text = lv_textarea_get_text(field);
 	if (text && text[0]) {
-		lv_obj_remove_flag(clear_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(clear_btn, false);
 	} else {
-		lv_obj_add_flag(clear_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(clear_btn, true);
 	}
 }
 
@@ -626,7 +626,7 @@ void search_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(clear_btn, 0, 0);
 	lv_obj_set_style_border_width(clear_btn, 0, 0);
 	lv_obj_set_style_pad_all(clear_btn, 0, 0);
-	lv_obj_add_flag(clear_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(clear_btn, true);
 	lv_obj_add_event_cb(clear_btn, clear_clicked_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *clear_icon = lv_image_create(clear_btn);
@@ -650,7 +650,7 @@ void search_init(gui_config_t *cfg) {
 	lv_obj_set_scroll_dir(results, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(results, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_set_flex_flow(results, LV_FLEX_FLOW_COLUMN);
-	lv_obj_add_flag(results, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(results, true);
 
 	keyboard = keyboard_create(search_screen, cfg->screen_width, keyboard_h, field, &icon_search, NULL, kb_search_cb,
 							   NULL);

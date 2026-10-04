@@ -108,10 +108,10 @@ static void refresh(void) {
 
 	for (int i = 0; i < QP_BTN_COUNT; i++) {
 		if (i >= row_count) {
-			lv_obj_add_flag(entries[i].row, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(entries[i].row, true);
 			continue;
 		}
-		lv_obj_remove_flag(entries[i].row, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(entries[i].row, false);
 		lv_image_set_src(entries[i].icon, quickpanel_button_icon(row_button[i]));
 		lv_label_set_text(entries[i].name, tr(quickpanel_button_tag(row_button[i])));
 	}
@@ -163,7 +163,7 @@ static target_t target_at(lv_point_t point) {
 static void drop_line_show(target_t t) {
 	int top = t.in_use ? in_use_top() : others_top();
 	lv_obj_set_pos(drop_line, 0, top + t.at * ROW_PITCH - ROW_GAP / 2 - 2);
-	lv_obj_remove_flag(drop_line, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(drop_line, false);
 	lv_obj_move_foreground(drop_line);
 }
 
@@ -262,7 +262,7 @@ static void drag_cb(lv_event_t *e) {
 	if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
 		int index = drag_row;
 		drag_row = -1;
-		lv_obj_add_flag(drop_line, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(drop_line, true);
 		carried_look(index, false);
 
 		if (code == LV_EVENT_RELEASED && drag_moved) {
@@ -302,14 +302,14 @@ static void make_row(entry_t *entry, int width) {
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_hor(row, ROW_PAD, 0);
 	lv_obj_set_style_pad_ver(row, 0, 0);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(row, false);
 	entry->row = row;
 
 	lv_obj_t *box = lv_obj_create(row);
 	lv_obj_remove_style_all(box);
 	lv_obj_set_size(box, ICON_BOX, ROW_HEIGHT);
 	lv_obj_align(box, LV_ALIGN_LEFT_MID, 0, 0);
-	lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(box, false);
 
 	entry->icon = lv_image_create(box);
 	lv_obj_add_style(entry->icon, &theme_style_icon, 0);
@@ -333,10 +333,10 @@ static void make_row(entry_t *entry, int width) {
 	lv_obj_set_style_bg_opa(entry->grip, 0, 0);
 	lv_obj_set_style_border_width(entry->grip, 0, 0);
 	lv_obj_set_style_pad_all(entry->grip, 0, 0);
-	lv_obj_remove_flag(entry->grip, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(entry->grip, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
-	lv_obj_remove_flag(entry->grip, LV_OBJ_FLAG_SCROLL_CHAIN_HOR);
-	lv_obj_add_flag(entry->grip, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(entry->grip, false);
+	lv_obj_set_scroll_chain_ver(entry->grip, false);
+	lv_obj_set_scroll_chain_hor(entry->grip, false);
+	lv_obj_set_clickable(entry->grip, true);
 
 	lv_obj_t *grip_icon = lv_image_create(entry->grip);
 	lv_image_set_src(grip_icon, &icon_grip);
@@ -364,7 +364,7 @@ void ccsettings_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(body, 0, 0);
 	lv_obj_set_style_border_width(body, 0, 0);
 	lv_obj_set_style_pad_all(body, 0, 0);
-	lv_obj_remove_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(body, false);
 
 	make_heading(body, "in_use", 0);
 	others_heading = make_heading(body, "controlcentre_not_in_use", 0);
@@ -381,14 +381,14 @@ void ccsettings_init(gui_config_t *cfg) {
 
 	drop_line = lv_obj_create(body);
 	lv_obj_set_size(drop_line, width, 4);
-	lv_obj_remove_flag(drop_line, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(drop_line, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(drop_line, false);
+	lv_obj_set_clickable(drop_line, false);
 	lv_obj_set_style_border_width(drop_line, 0, 0);
 	lv_obj_set_style_shadow_width(drop_line, 0, 0);
 	lv_obj_set_style_pad_all(drop_line, 0, 0);
 	lv_obj_add_style(drop_line, &theme_style_accent_bg, 0);
 	lv_obj_set_style_radius(drop_line, 2, 0);
-	lv_obj_add_flag(drop_line, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(drop_line, true);
 
 	lv_obj_add_event_cb(ccsettings_screen, loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	switcher_attach_back_gesture(ccsettings_screen);

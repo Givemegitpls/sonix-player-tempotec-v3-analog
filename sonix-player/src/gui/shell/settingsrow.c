@@ -300,11 +300,11 @@ static lv_obj_t *make_card(lv_obj_t *parent, const char *name, lv_obj_t **value_
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_hor(card, 20, 0);
 	lv_obj_set_style_pad_ver(card, 14, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	// As on the plain rows, presses on the card body reach the page container
 	// so the swipe-back drag can start on a toggle or slider card too; the
 	// control inside keeps its own presses.
-	lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(card, true);
 
 	lv_obj_t *label = lv_label_create(card);
 	lv_label_set_text(label, tr(name));
@@ -402,8 +402,8 @@ static void make_ticks(lv_obj_t *parent, lv_obj_t *slider, int steps, int y) {
 		lv_obj_set_style_bg_color(tick, lv_color_white(), 0);
 		lv_obj_set_style_bg_opa(tick, LV_OPA_60, 0);
 		lv_obj_set_style_border_width(tick, 0, 0);
-		lv_obj_remove_flag(tick, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_remove_flag(tick, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_clickable(tick, false);
+		lv_obj_set_scrollable(tick, false);
 	}
 }
 
@@ -480,18 +480,18 @@ void settingsrow_toggle_slider_expanded(lv_obj_t *card, bool expanded) {
 
 	if (expanded) {
 		lv_obj_set_height(card, ts->open_h);
-		lv_obj_remove_flag(ts->slider, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_remove_flag(ts->ticks, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_remove_flag(ts->value, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(ts->slider, false);
+		lv_obj_set_hidden(ts->ticks, false);
+		lv_obj_set_hidden(ts->value, false);
 		// Name and switch move up to the card's first line to make room for
 		// the slider below them.
 		lv_obj_align(ts->name, LV_ALIGN_TOP_LEFT, 0, 0);
 		lv_obj_align(ts->toggle, LV_ALIGN_TOP_RIGHT, 0, -4);
 	} else {
 		lv_obj_set_height(card, ts->closed_h);
-		lv_obj_add_flag(ts->slider, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(ts->ticks, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(ts->value, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(ts->slider, true);
+		lv_obj_set_hidden(ts->ticks, true);
+		lv_obj_set_hidden(ts->value, true);
 		// Back to an ordinary toggle row.
 		lv_obj_align(ts->name, LV_ALIGN_LEFT_MID, 0, 0);
 		lv_obj_align(ts->toggle, LV_ALIGN_RIGHT_MID, 0, 0);
@@ -540,8 +540,8 @@ lv_obj_t *settingsrow_toggle_slider(lv_obj_t *parent, const char *name, int step
 	lv_obj_set_style_bg_opa(ticks, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(ticks, 0, 0);
 	lv_obj_set_style_pad_all(ticks, 0, 0);
-	lv_obj_remove_flag(ticks, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(ticks, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(ticks, false);
+	lv_obj_set_clickable(ticks, false);
 	lv_obj_update_layout(ticks);
 
 	for (int i = 1; i < steps - 1 && steps <= SLIDER_TICK_MAX_STEPS; i++) {
@@ -554,8 +554,8 @@ lv_obj_t *settingsrow_toggle_slider(lv_obj_t *parent, const char *name, int step
 		lv_obj_set_style_bg_color(tick, lv_color_white(), 0);
 		lv_obj_set_style_bg_opa(tick, LV_OPA_60, 0);
 		lv_obj_set_style_border_width(tick, 0, 0);
-		lv_obj_remove_flag(tick, LV_OBJ_FLAG_CLICKABLE);
-		lv_obj_remove_flag(tick, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_clickable(tick, false);
+		lv_obj_set_scrollable(tick, false);
 	}
 
 	toggle_slider_t *ts = malloc(sizeof(*ts));
@@ -659,7 +659,7 @@ lv_obj_t *settingsrow_add(lv_obj_t *parent, const char *name, lv_obj_t **value_o
 	lv_obj_set_style_pad_hor(row, 20, 0);
 	// Presses bubble up to the page container, so the swipe-back drag can start
 	// on a row and not only in the gaps between rows.
-	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(row, true);
 
 	// Rows live for the whole run, so these action records are never freed.
 	row_action_t *action = malloc(sizeof(*action));
@@ -759,8 +759,8 @@ lv_obj_t *settingsrow_toggle_pills(lv_obj_t *parent, const char *title, lv_event
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);
 	lv_obj_set_style_pad_row(card, 18, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(card, false);
+	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -769,8 +769,8 @@ lv_obj_t *settingsrow_toggle_pills(lv_obj_t *parent, const char *title, lv_event
 	lv_obj_set_style_bg_opa(head, 0, 0);
 	lv_obj_set_style_border_width(head, 0, 0);
 	lv_obj_set_style_pad_all(head, 0, 0);
-	lv_obj_remove_flag(head, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(head, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(head, false);
+	lv_obj_set_event_bubble(head, true);
 	lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(head, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_gap(head, 12, 0);
@@ -797,8 +797,8 @@ lv_obj_t *settingsrow_toggle_pills(lv_obj_t *parent, const char *title, lv_event
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
 	lv_obj_set_style_pad_gap(pills, 12, 0);
-	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(pills, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(pills, false);
+	lv_obj_set_event_bubble(pills, true);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
 
@@ -820,8 +820,8 @@ lv_obj_t *settingsrow_pills(lv_obj_t *parent, const char *title, lv_obj_t **pill
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);
 	lv_obj_set_style_pad_row(card, 18, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(card, false);
+	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -836,8 +836,8 @@ lv_obj_t *settingsrow_pills(lv_obj_t *parent, const char *title, lv_obj_t **pill
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
 	lv_obj_set_style_pad_gap(pills, 12, 0);
-	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(pills, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(pills, false);
+	lv_obj_set_event_bubble(pills, true);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
 
@@ -968,10 +968,10 @@ void settingsrow_duration_expanded(settingsrow_duration_t *d, bool on) {
 	}
 	if (on) {
 		lv_obj_add_state(d->toggle, LV_STATE_CHECKED);
-		lv_obj_remove_flag(d->wheels, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(d->wheels, false);
 	} else {
 		lv_obj_remove_state(d->toggle, LV_STATE_CHECKED);
-		lv_obj_add_flag(d->wheels, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(d->wheels, true);
 	}
 }
 

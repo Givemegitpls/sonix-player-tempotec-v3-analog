@@ -96,9 +96,9 @@ static void paint_checks(void) {
 				continue;
 			}
 			if (on) {
-				lv_obj_remove_flag(marks[k], LV_OBJ_FLAG_HIDDEN);
+				lv_obj_set_hidden(marks[k], false);
 			} else {
-				lv_obj_add_flag(marks[k], LV_OBJ_FLAG_HIDDEN);
+				lv_obj_set_hidden(marks[k], true);
 			}
 		}
 	}
@@ -133,7 +133,7 @@ static lv_obj_t *make_row(lv_obj_t *parent, const char *name, int index) {
 	lv_obj_set_style_image_recolor(mark, CHECK_GREEN, 0);
 	lv_obj_set_style_image_recolor_opa(mark, LV_OPA_COVER, 0);
 	lv_obj_align(mark, LV_ALIGN_RIGHT_MID, 0, 0);
-	lv_obj_add_flag(mark, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(mark, true);
 	return mark;
 }
 
@@ -150,7 +150,7 @@ static void confirm_cb(lv_event_t *e) {
 	config_set("ui", "language", lang_current());
 	config_save();
 
-	lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(panel, true);
 	power_hold_screen_on(false);
 	power_notify_activity();
 
@@ -169,8 +169,8 @@ static void build_panel(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(panel, 0, 0);
 	lv_obj_set_style_radius(panel, 0, 0);
 	lv_obj_set_style_pad_all(panel, cfg->padding, 0);
-	lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(panel, false);
+	lv_obj_set_hidden(panel, true);
 	lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
 	// Down from the top rather than centred: with five languages the column is
 	// tall enough that centring would slide it up over the heading. The date
@@ -238,7 +238,7 @@ void language_show_first_boot(void) {
 		return;
 	}
 	paint_checks();
-	lv_obj_remove_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(panel, false);
 	lv_obj_move_foreground(panel);
 
 	// Reading five languages takes as long as it takes, and blanking a panel

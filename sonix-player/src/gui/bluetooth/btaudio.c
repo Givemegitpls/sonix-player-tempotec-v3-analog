@@ -258,13 +258,13 @@ static void refresh_airpods_row(void) {
 	bool present = airpods_get(&state);
 
 	if (present) {
-		lv_obj_remove_flag(airpods_row, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(airpods_row, false);
 		lv_image_set_src(airpods_icon, airpodspage_model_icon(state.model));
 		// The product name, not the tag: "AirPods Pro 2" rather than "AirPods",
 		// so the row says which pair is on the other end.
 		lv_label_set_text(settingsrow_name_label(airpods_row), state.name[0] ? state.name : tr("airpods"));
 	} else {
-		lv_obj_add_flag(airpods_row, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(airpods_row, true);
 	}
 }
 
@@ -429,7 +429,7 @@ static void refresh_name_row(void) {
 
 static void name_layer_hide(void) {
 	if (name_layer) {
-		lv_obj_add_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(name_layer, true);
 	}
 	back_btn_force_hidden(false);
 }
@@ -460,7 +460,7 @@ static void name_row_cb(lv_event_t *e) {
 	}
 	lv_textarea_set_text(name_field, bluetooth_local_name());
 	keyboard_reset(name_keyboard);
-	lv_obj_remove_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(name_layer, false);
 	lv_obj_move_foreground(name_layer);
 	// The sheet has its own close in the corner, and the chevron under it would
 	// leave the page without putting the keyboard away.
@@ -476,8 +476,8 @@ static void build_name_layer(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(name_layer, 0, 0);
 	lv_obj_set_style_radius(name_layer, 0, 0);
 	lv_obj_set_style_pad_all(name_layer, 0, 0);
-	lv_obj_remove_flag(name_layer, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(name_layer, false);
+	lv_obj_set_hidden(name_layer, true);
 
 	lv_obj_t *heading = lv_label_create(name_layer);
 	lv_label_set_text(heading, tr("bt_rename"));
@@ -539,7 +539,7 @@ void btaudio_init(gui_config_t *cfg) {
 	lv_obj_add_style(airpods_icon, &theme_style_icon, 0);
 	lv_image_set_src(airpods_icon, airpodspage_model_icon(AIRPODS_MODEL_UNKNOWN));
 	lv_obj_align(airpods_icon, LV_ALIGN_RIGHT_MID, -AIRPODS_ICON_INSET, 0);
-	lv_obj_add_flag(airpods_row, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(airpods_row, true);
 
 	// The codec in use, and the list of what the sink offered.
 	codec_row = settingsrow_add(container, "btaudio_codecs", &codec_value, codec_row_cb, NULL);

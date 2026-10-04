@@ -685,10 +685,10 @@ static void slot_bind(int i) {
 			slot->index = -1;
 			slot->settled = false;
 		}
-		lv_obj_add_flag(slot->image, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(slot->image, true);
 		return;
 	}
-	lv_obj_remove_flag(slot->image, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(slot->image, false);
 
 	if (slot->index != index) {
 		if (slot->requested) {
@@ -932,7 +932,7 @@ static void place_glow(void) {
 		return;
 	}
 	if (glow_best == INT32_MAX || album_count <= 0) {
-		lv_obj_add_flag(glow_obj, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(glow_obj, true);
 		return;
 	}
 	// Full strength only when the record is facing the front, nothing at all
@@ -945,7 +945,7 @@ static void place_glow(void) {
 	}
 	int opa = CF_GLOW_OPA * upright / span;
 	if (opa <= 0) {
-		lv_obj_add_flag(glow_obj, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(glow_obj, true);
 		return;
 	}
 	// Inside the record and centred on it, so what escapes is a ring and not a
@@ -966,7 +966,7 @@ static void place_glow(void) {
 	}
 
 	int top = glow_bottom - glow_height + (glow_height - gh) / 2;
-	lv_obj_remove_flag(glow_obj, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(glow_obj, false);
 	lv_obj_set_pos(glow_obj, mid_x - gw / 2 - CF_GLOW_REACH, top - CF_GLOW_REACH);
 	// The colour is the image's recolour, which is what lets one alpha map serve
 	// every album.
@@ -1011,9 +1011,9 @@ static void refresh_title(void) {
 	library_album_title(album ? album->name : "", shown, sizeof(shown));
 	scrolltext_set(title_label, shown);
 	if (album_count <= 0) {
-		lv_obj_remove_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(empty_label, false);
 	} else {
-		lv_obj_add_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(empty_label, true);
 	}
 }
 
@@ -1162,8 +1162,8 @@ static bool track_fill_cb(const char *name, const char *path, const char *artist
 	lv_obj_set_style_pad_column(row, 12, 0);
 	lv_obj_set_style_radius(row, 8, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(row, false);
+	lv_obj_set_clickable(row, true);
 	lv_obj_add_event_cb(row, track_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)(number - 1));
 
 	// The running number stands in for the artwork the rows do not carry: it is
@@ -1193,7 +1193,7 @@ static bool track_fill_cb(const char *name, const char *path, const char *artist
 	lv_obj_set_size(sep, lv_pct(100), 1);
 	lv_obj_set_style_bg_color(sep, theme()->text_secondary, 0);
 	lv_obj_set_style_bg_opa(sep, LV_OPA_20, 0);
-	lv_obj_add_flag(sep, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(sep, true);
 	lv_obj_align(sep, LV_ALIGN_BOTTOM_MID, 0, 0);
 	return true;
 }
@@ -1237,7 +1237,7 @@ static void back_fill(const char *album) {
 		if (last) {
 			lv_obj_t *sep = lv_obj_get_child(last, -1);
 			if (sep) {
-				lv_obj_add_flag(sep, LV_OBJ_FLAG_HIDDEN);
+				lv_obj_set_hidden(sep, true);
 			}
 		}
 	}
@@ -1275,11 +1275,11 @@ static void back_grown_cb(lv_anim_t *a) {
 
 static void record_narrowed_cb(lv_anim_t *a) {
 	(void)a;
-	lv_obj_add_flag(slots[CF_BEFORE].image, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(slots[CF_BEFORE].image, true);
 
 	lv_obj_set_width(back_card, 0);
 	lv_obj_align(back_card, LV_ALIGN_CENTER, 0, 0);
-	lv_obj_remove_flag(back_veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(back_veil, false);
 	lv_obj_move_foreground(back_veil);
 
 	lv_anim_t g;
@@ -1320,8 +1320,8 @@ static void record_widened_cb(lv_anim_t *a) {
 
 static void card_shrunk_cb(lv_anim_t *a) {
 	(void)a;
-	lv_obj_add_flag(back_veil, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(slots[CF_BEFORE].image, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(back_veil, true);
+	lv_obj_set_hidden(slots[CF_BEFORE].image, false);
 
 	lv_anim_t a2;
 	lv_anim_init(&a2);
@@ -1342,8 +1342,8 @@ static void flip_close(bool animate) {
 	lv_anim_delete(slots[CF_BEFORE].image, record_width_cb);
 
 	if (!animate) {
-		lv_obj_add_flag(back_veil, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_remove_flag(slots[CF_BEFORE].image, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(back_veil, true);
+		lv_obj_set_hidden(slots[CF_BEFORE].image, false);
 		record_widened_cb(NULL);
 		back_close_index();
 		return;
@@ -1405,7 +1405,7 @@ static void buffers_free(void) {
 	// the life of the process, since the player may never open this page.
 	if (glow_obj) {
 		lv_image_set_src(glow_obj, NULL);
-		lv_obj_add_flag(glow_obj, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(glow_obj, true);
 	}
 	big_free(glow_map, (size_t)CF_GLOW_MAX_W * CF_GLOW_MAX_H);
 	glow_map = NULL;
@@ -1463,7 +1463,7 @@ static bool sheet_prepare(void) {
 	refresh_title();
 	lv_timer_resume(poll_timer);
 
-	lv_obj_remove_flag(sheet, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(sheet, false);
 	lv_obj_move_foreground(sheet);
 	// The clock, battery and volume belong over the sheet, not under it.
 	topbar_bring_to_front();
@@ -1477,7 +1477,7 @@ static void sheet_park(void) {
 	lv_anim_delete(NULL, scroll_anim_cb);
 	sheet_open = false;
 	lv_obj_set_y(sheet, sheet_h);
-	lv_obj_add_flag(sheet, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(sheet, true);
 	if (!sheet_ready) {
 		return;
 	}
@@ -1887,11 +1887,11 @@ void coverflow_init(gui_config_t *cfg) {
 	lv_obj_add_style(sheet, &theme_style_screen, 0);
 	lv_obj_set_size(sheet, cfg->screen_width, cfg->screen_height);
 	lv_obj_set_pos(sheet, 0, sheet_h);
-	lv_obj_remove_flag(sheet, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(sheet, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(sheet, false);
+	lv_obj_set_hidden(sheet, true);
 	// The sheet covers the page underneath: a press that lands on it must not
 	// reach through to whatever it is covering.
-	lv_obj_add_flag(sheet, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(sheet, true);
 
 	// The grip. It sits just under the status bar, above everything, and the
 	// column is not allowed to reach it.
@@ -1899,8 +1899,8 @@ void coverflow_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(bar_hit);
 	lv_obj_set_size(bar_hit, CF_BAR_HIT_W, CF_BAR_HIT_H);
 	lv_obj_align(bar_hit, LV_ALIGN_TOP_MID, 0, cfg->top_bar_height + CF_BAR_TOP);
-	lv_obj_remove_flag(bar_hit, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(bar_hit, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(bar_hit, false);
+	lv_obj_set_clickable(bar_hit, true);
 	lv_obj_add_event_cb(bar_hit, bar_drag_cb, LV_EVENT_PRESSED, NULL);
 	lv_obj_add_event_cb(bar_hit, bar_drag_cb, LV_EVENT_PRESSING, NULL);
 	lv_obj_add_event_cb(bar_hit, bar_drag_cb, LV_EVENT_RELEASED, NULL);
@@ -1922,8 +1922,8 @@ void coverflow_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(viewport);
 	lv_obj_set_size(viewport, cfg->screen_width, height);
 	lv_obj_set_pos(viewport, 0, top);
-	lv_obj_remove_flag(viewport, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(viewport, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(viewport, false);
+	lv_obj_set_clickable(viewport, true);
 	lv_obj_add_event_cb(viewport, column_drag_cb, LV_EVENT_PRESSED, NULL);
 	lv_obj_add_event_cb(viewport, column_drag_cb, LV_EVENT_PRESSING, NULL);
 	lv_obj_add_event_cb(viewport, column_drag_cb, LV_EVENT_RELEASED, NULL);
@@ -1948,15 +1948,15 @@ void coverflow_init(gui_config_t *cfg) {
 	// The map itself is not made here: it belongs to the sheet being up, and
 	// buffers_alloc() asks for it along with the faces.
 	glow_obj = lv_image_create(viewport);
-	lv_obj_add_flag(glow_obj, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(glow_obj, true);
 
 	for (int i = 0; i < CF_SLOTS; i++) {
 		cf_slot_t *slot = &slots[i];
 		slot->index = -1;
 		slot->warp_h = -1;
 		slot->image = lv_image_create(viewport);
-		lv_obj_add_flag(slot->image, LV_OBJ_FLAG_EVENT_BUBBLE);
-		lv_obj_add_flag(slot->image, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_event_bubble(slot->image, true);
+		lv_obj_set_hidden(slot->image, true);
 	}
 
 	// Nearest last, so the middle record sits on top of the pile and the ones
@@ -1991,7 +1991,7 @@ void coverflow_init(gui_config_t *cfg) {
 	lv_obj_add_style(empty_label, &theme_style_text_dim, 0);
 	lv_label_set_text(empty_label, tr("library_empty_note"));
 	lv_obj_align(empty_label, LV_ALIGN_CENTER, 0, 0);
-	lv_obj_add_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(empty_label, true);
 
 	// The back of the record. Built once and kept hidden: it is the same card
 	// every time, only its contents change.
@@ -2000,9 +2000,9 @@ void coverflow_init(gui_config_t *cfg) {
 	lv_obj_set_size(back_veil, lv_pct(100), lv_pct(100));
 	lv_obj_set_style_bg_color(back_veil, lv_color_black(), 0);
 	lv_obj_set_style_bg_opa(back_veil, LV_OPA_60, 0);
-	lv_obj_remove_flag(back_veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(back_veil, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(back_veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(back_veil, false);
+	lv_obj_set_clickable(back_veil, true);
+	lv_obj_set_hidden(back_veil, true);
 	lv_obj_add_event_cb(back_veil, back_veil_clicked_cb, LV_EVENT_CLICKED, NULL);
 
 	back_card = lv_obj_create(back_veil);
@@ -2017,11 +2017,11 @@ void coverflow_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(back_card, 0, 0);
 	lv_obj_set_style_pad_all(back_card, 0, 0);
 	lv_obj_align(back_card, LV_ALIGN_CENTER, 0, 0);
-	lv_obj_remove_flag(back_card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(back_card, false);
 	// A tap on the card is not a tap on the veil: the list under it is scrolled
 	// with a finger, and every scroll would otherwise close the card.
-	lv_obj_remove_flag(back_card, LV_OBJ_FLAG_EVENT_BUBBLE);
-	lv_obj_add_flag(back_card, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_event_bubble(back_card, false);
+	lv_obj_set_clickable(back_card, true);
 
 	// What is printed on the back, at a width that never changes. The card
 	// narrows over it and clips it, which is what turning looks like from the
@@ -2035,8 +2035,8 @@ void coverflow_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(back_body, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_style_pad_row(back_body, 0, 0);
 	lv_obj_align(back_body, LV_ALIGN_CENTER, 0, 0);
-	lv_obj_remove_flag(back_body, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(back_body, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(back_body, false);
+	lv_obj_set_event_bubble(back_body, true);
 
 	// The shared style and not a colour of its own. This card is built once at
 	// startup and only ever has its text replaced, so a hand-set colour here

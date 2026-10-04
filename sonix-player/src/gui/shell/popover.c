@@ -21,7 +21,7 @@ static int items_count;
 
 void popover_close(void) {
 	if (veil) {
-		lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(veil, true);
 	}
 }
 
@@ -58,8 +58,8 @@ void popover_init(void) {
 	lv_obj_set_style_border_width(veil, 0, 0);
 	lv_obj_set_style_radius(veil, 0, 0);
 	lv_obj_set_style_pad_all(veil, 0, 0);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(veil, false);
+	lv_obj_set_hidden(veil, true);
 	lv_obj_add_event_cb(veil, veil_clicked_cb, LV_EVENT_CLICKED, NULL);
 
 	card = lv_obj_create(veil);
@@ -72,9 +72,9 @@ void popover_init(void) {
 	lv_obj_set_style_pad_gap(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	// A tap on the card itself must not fall through to the veil.
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(card, false);
 }
 
 void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
@@ -169,6 +169,6 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 
 	lv_obj_set_pos(card, x, y);
 
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(veil, false);
 	lv_obj_move_foreground(veil);
 }

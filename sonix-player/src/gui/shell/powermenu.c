@@ -57,7 +57,7 @@ typedef struct {
 static slide_t slide_off;
 static slide_t slide_reboot;
 
-bool powermenu_is_open(void) { return panel && !lv_obj_has_flag(panel, LV_OBJ_FLAG_HIDDEN); }
+bool powermenu_is_open(void) { return panel && !lv_obj_is_hidden(panel); }
 
 // ---------------------------------------------------------------------------
 // opening and closing
@@ -73,14 +73,14 @@ void powermenu_show(void) {
 	slide_reset(&slide_off);
 	slide_reset(&slide_reboot);
 
-	lv_obj_remove_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(panel, false);
 	lv_obj_move_foreground(panel);
 	power_hold_screen_on(true);
 }
 
 static void hide(void) {
 	if (panel) {
-		lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(panel, true);
 	}
 	power_hold_screen_on(false);
 	power_notify_activity();
@@ -239,7 +239,7 @@ static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon,
 	lv_obj_set_style_bg_opa(s->pill, LV_OPA_20, 0);
 	lv_obj_set_style_border_width(s->pill, 0, 0);
 	lv_obj_set_style_pad_all(s->pill, 0, 0);
-	lv_obj_remove_flag(s->pill, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(s->pill, false);
 
 	// The instruction, centred on the pill; it fades as the knob advances.
 	s->label = lv_label_create(s->pill);
@@ -274,7 +274,7 @@ static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon,
 	// prevent. With ADV_HITTEST the slider only answers a press that begins on
 	// the knob, so the value can only be dragged to the end. A tap on the rest
 	// of the pill does nothing.
-	lv_obj_add_flag(s->slider, LV_OBJ_FLAG_ADV_HITTEST);
+	lv_obj_set_adv_hittest(s->slider, true);
 	// The knob stays easy to grab: the extended area applies to its hit-test,
 	// not to the track.
 	lv_obj_set_ext_click_area(s->slider, SLIDE_HEIGHT / 2);
@@ -294,7 +294,7 @@ static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon,
 	s->knob_icon_w = (int)icon->header.w;
 	lv_obj_set_style_image_recolor(s->knob_icon, icon_tint, 0);
 	lv_obj_set_style_image_recolor_opa(s->knob_icon, LV_OPA_COVER, 0);
-	lv_obj_add_flag(s->knob_icon, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(s->knob_icon, true);
 
 	slide_track_knob(s);
 }
@@ -310,8 +310,8 @@ void powermenu_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(panel, 0, 0);
 	lv_obj_set_style_radius(panel, 0, 0);
 	lv_obj_set_style_pad_all(panel, 0, 0);
-	lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(panel, false);
+	lv_obj_set_hidden(panel, true);
 
 	// The two pills, upper third of the screen, like the real thing.
 	lv_obj_t *pills = lv_obj_create(panel);
@@ -321,7 +321,7 @@ void powermenu_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
 	lv_obj_set_style_pad_gap(pills, 26, 0);
-	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 

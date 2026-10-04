@@ -43,8 +43,8 @@ static void show_finished(int found) {
 	lv_label_set_text_fmt(count_label, "%d", found);
 	lv_label_set_text(status_label, found == 1 ? tr("libraryscan_track_found") : tr("libraryscan_tracks_found"));
 
-	lv_obj_add_flag(cancel_button, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(ok_button, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(cancel_button, true);
+	lv_obj_set_hidden(ok_button, false);
 
 	// The scan is over; the screen may go back to timing out.
 	power_hold_screen_on(false);
@@ -90,14 +90,14 @@ static void cancel_cb(lv_event_t *e) {
 void libraryscan_begin(void) {
 	lv_label_set_text(count_label, "0");
 	lv_label_set_text(status_label, tr("libraryscan_tracks_found"));
-	lv_obj_add_flag(ok_button, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(cancel_button, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(ok_button, true);
+	lv_obj_set_hidden(cancel_button, false);
 
 	if (!library_scan_start(sd_root)) {
 		// Nothing to scan (no card, or a scan is somehow already going).
 		lv_label_set_text(status_label, tr("no_card_to_scan"));
-		lv_obj_add_flag(cancel_button, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_remove_flag(ok_button, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(cancel_button, true);
+		lv_obj_set_hidden(ok_button, false);
 		return;
 	}
 
@@ -232,7 +232,7 @@ static void pick_row_cb(lv_event_t *e) {
 	}
 }
 
-static void pick_close(void) { lv_obj_add_flag(pick_veil, LV_OBJ_FLAG_HIDDEN); }
+static void pick_close(void) { lv_obj_set_hidden(pick_veil, true); }
 
 static void pick_veil_cb(lv_event_t *e) {
 	if (lv_event_get_target(e) == pick_veil) {
@@ -297,8 +297,9 @@ static void pick_build(void) {
 	lv_obj_set_style_border_width(pick_veil, 0, 0);
 	lv_obj_set_style_radius(pick_veil, 0, 0);
 	lv_obj_set_style_pad_all(pick_veil, 0, 0);
-	lv_obj_remove_flag(pick_veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(pick_veil, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(pick_veil, false);
+	lv_obj_set_clickable(pick_veil, true);
+	lv_obj_set_hidden(pick_veil, true);
 	lv_obj_add_event_cb(pick_veil, pick_veil_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *card = lv_obj_create(pick_veil);
@@ -310,9 +311,9 @@ static void pick_build(void) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);
 	lv_obj_set_style_pad_row(card, 12, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(card, false);
+	lv_obj_set_clickable(card, true);
+	lv_obj_set_event_bubble(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_align(card, LV_ALIGN_CENTER, 0, cfg->top_bar_height / 2);
 
@@ -367,7 +368,7 @@ static void pick_append(int n) {
 		lv_obj_set_style_pad_column(row, 10, 0);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-		lv_obj_add_flag(row, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
+		lv_obj_set_scroll_on_focus(row, true);
 		lv_obj_add_event_cb(row, pick_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
 		lv_obj_t *folder = lv_image_create(row);
@@ -415,7 +416,7 @@ void libraryscan_choose_folders(void) {
 	pick_fill();
 	lv_obj_scroll_to_y(pick_list, 0, LV_ANIM_OFF);
 	pick_paint();
-	lv_obj_remove_flag(pick_veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(pick_veil, false);
 	lv_obj_move_foreground(pick_veil);
 }
 
@@ -565,7 +566,7 @@ void libraryscan_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(container, 0, 0);
 	lv_obj_set_style_pad_all(container, cfg->padding, 0);
 	lv_obj_set_style_pad_gap(container, 10, 0);
-	lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(container, false);
 	lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -591,7 +592,7 @@ void libraryscan_init(gui_config_t *cfg) {
 	// once it is done.
 	cancel_button = make_button(libraryscan_screen, "cancel", lv_color_make(210, 66, 58), cancel_cb, cfg);
 	ok_button = make_button(libraryscan_screen, "ok", theme()->accent, ok_cb, cfg);
-	lv_obj_add_flag(ok_button, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(ok_button, true);
 
 	poll_timer = lv_timer_create(poll_cb, SCAN_POLL_MS, NULL);
 	lv_timer_pause(poll_timer);

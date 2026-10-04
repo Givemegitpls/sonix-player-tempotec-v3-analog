@@ -84,6 +84,7 @@
 #include "src/system/device/power.h"
 
 #include "lvgl/lvgl.h"
+#include "lvgl/src/display/lv_display_private.h"
 #include "src/system/core/lang.h"
 
 // Long enough for a whole sentence: a notice truncated mid-word is a puzzle
@@ -230,7 +231,7 @@ static lv_obj_t *veil_create(bool dismissable) {
 	(void)dismissable; // both kinds swallow taps; only the handler differs
 
 	lv_obj_t *veil = lv_obj_create(lv_layer_top());
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(veil, true);
 	lv_obj_set_size(veil, lv_pct(100), lv_pct(100));
 	lv_obj_set_pos(veil, 0, 0);
 	lv_obj_set_style_bg_color(veil, lv_color_black(), 0);
@@ -239,14 +240,14 @@ static lv_obj_t *veil_create(bool dismissable) {
 	lv_obj_set_style_radius(veil, 0, 0);
 	lv_obj_set_style_shadow_width(veil, 0, 0);
 	lv_obj_set_style_pad_all(veil, 0, 0);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(veil, false);
+	lv_obj_set_clickable(veil, true);
 	return veil;
 }
 
 static void popup_dismiss(void) {
 	if (popup_veil) {
-		lv_obj_add_flag(popup_veil, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(popup_veil, true);
 	}
 
 	lv_timer_reset(popup_timer);
@@ -283,9 +284,9 @@ static void popup_show_icon(const char *text, const lv_image_dsc_t *icon, lv_col
 			lv_image_set_src(popup_icon, icon);
 			lv_obj_set_style_image_recolor(popup_icon, color, 0);
 			lv_obj_set_style_image_recolor_opa(popup_icon, LV_OPA_COVER, 0);
-			lv_obj_remove_flag(popup_icon, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(popup_icon, false);
 		} else {
-			lv_obj_add_flag(popup_icon, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(popup_icon, true);
 		}
 	}
 
@@ -295,7 +296,7 @@ static void popup_show_icon(const char *text, const lv_image_dsc_t *icon, lv_col
 	lv_obj_update_layout(popup);
 	lv_obj_center(popup);
 	lv_obj_move_foreground(popup_veil);
-	lv_obj_remove_flag(popup_veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(popup_veil, false);
 	lv_timer_reset(popup_timer);
 	lv_timer_resume(popup_timer);
 }
@@ -368,18 +369,18 @@ void gui_modal_show(const lv_image_dsc_t *icon, lv_color_t color, const char *ti
 		lv_image_set_src(modal_icon, icon);
 		lv_obj_set_style_image_recolor(modal_icon, color, 0);
 		lv_obj_set_style_image_recolor_opa(modal_icon, LV_OPA_COVER, 0);
-		lv_obj_remove_flag(modal_icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(modal_icon, false);
 	} else {
-		lv_obj_add_flag(modal_icon, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(modal_icon, true);
 	}
 
 	lv_label_set_text(modal_title, title ? tr(title) : "");
 
 	if (subtitle && subtitle[0]) {
 		lv_label_set_text(modal_subtitle, tr(subtitle));
-		lv_obj_remove_flag(modal_subtitle, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(modal_subtitle, false);
 	} else {
-		lv_obj_add_flag(modal_subtitle, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(modal_subtitle, true);
 	}
 
 	// Every modal starts without one: a bar left over from the last job would
@@ -387,7 +388,7 @@ void gui_modal_show(const lv_image_dsc_t *icon, lv_color_t color, const char *ti
 	gui_modal_progress(-1);
 
 	lv_obj_move_foreground(modal_backdrop);
-	lv_obj_remove_flag(modal_backdrop, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(modal_backdrop, false);
 }
 
 void gui_modal_progress(int percent) {
@@ -395,10 +396,10 @@ void gui_modal_progress(int percent) {
 		return;
 	}
 	if (percent < 0) {
-		lv_obj_add_flag(modal_bar, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(modal_bar, true);
 		return;
 	}
-	lv_obj_remove_flag(modal_bar, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(modal_bar, false);
 	// No animation: the value arrives several times a second already, and an
 	// animation between two of them only makes the bar lag behind the work.
 	lv_bar_set_value(modal_bar, percent > 100 ? 100 : percent, LV_ANIM_OFF);
@@ -406,12 +407,39 @@ void gui_modal_progress(int percent) {
 
 void gui_modal_hide(void) {
 	if (modal_backdrop) {
-		lv_obj_add_flag(modal_backdrop, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(modal_backdrop, true);
 	}
 }
 
 bool gui_modal_visible(void) {
-	return modal_backdrop && !lv_obj_has_flag(modal_backdrop, LV_OBJ_FLAG_HIDDEN);
+	return modal_backdrop && !lv_obj_is_hidden(modal_backdrop);
+}
+
+static bool tree_holds(const lv_obj_t *parent, const lv_obj_t *obj) {
+	uint32_t count = lv_obj_get_child_count(parent);
+	for (uint32_t i = 0; i < count; i++) {
+		lv_obj_t *child = lv_obj_get_child(parent, (int32_t)i);
+		if (child == obj || tree_holds(child, obj)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// The screens, which include the top, system and bottom layers, are reached
+// through the private display struct: LVGL has no public way to list them.
+bool gui_obj_alive(const lv_obj_t *obj) {
+	if (!obj) {
+		return false;
+	}
+	for (lv_display_t *disp = lv_display_get_next(NULL); disp; disp = lv_display_get_next(disp)) {
+		for (uint32_t i = 0; i < disp->screen_cnt; i++) {
+			if (disp->screens[i] == obj || tree_holds(disp->screens[i], obj)) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 static void modal_init(gui_config_t *cfg) {
@@ -428,7 +456,7 @@ static void modal_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 26, 0);
 	lv_obj_set_style_pad_row(card, 14, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_center(card);
@@ -461,7 +489,7 @@ static void modal_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(modal_bar, 4, 0);
 	lv_obj_set_style_radius(modal_bar, 4, LV_PART_INDICATOR);
 	lv_obj_set_style_bg_color(modal_bar, theme()->accent, LV_PART_INDICATOR);
-	lv_obj_add_flag(modal_bar, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(modal_bar, true);
 }
 
 // --- notifications from the button threads ---
@@ -546,7 +574,7 @@ void gui_init(gui_config_t *cfg) {
 	// makes that layer scrollable unless told otherwise -- and then a sideways
 	// drag scrolls the whole layer, taking the status bar and the floating back
 	// button along with it.
-	lv_obj_remove_flag(lv_layer_top(), LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(lv_layer_top(), false);
 	lv_obj_set_scrollbar_mode(lv_layer_top(), LV_SCROLLBAR_MODE_OFF);
 
 	main_menu_screen = lv_obj_create(NULL);
@@ -748,8 +776,8 @@ void gui_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(popup, 0, 0);
 	lv_obj_set_style_shadow_width(popup, 0, 0);
 	lv_obj_set_style_pad_all(popup, 22, 0);
-	lv_obj_remove_flag(popup, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(popup, LV_OBJ_FLAG_CLICKABLE); // so a tap on the card is not a tap outside
+	lv_obj_set_scrollable(popup, false);
+	lv_obj_set_clickable(popup, true); // so a tap on the card is not a tap outside
 	lv_obj_set_flex_flow(popup, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(popup, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_row(popup, 12, 0);
@@ -758,7 +786,7 @@ void gui_init(gui_config_t *cfg) {
 	popup_icon = lv_image_create(popup);
 	lv_image_set_src(popup_icon, &icon_headphones_big);
 	lv_obj_add_style(popup_icon, &theme_style_icon, 0);
-	lv_obj_add_flag(popup_icon, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(popup_icon, true);
 
 	popup_label = lv_label_create(popup);
 	lv_obj_set_width(popup_label, lv_pct(100));

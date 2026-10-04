@@ -84,10 +84,10 @@ static void screensaver_refresh(void) {
 	bool on = screensaver_get_enabled();
 	if (on) {
 		lv_obj_add_state(screensaver_switch, LV_STATE_CHECKED);
-		lv_obj_remove_flag(screensaver_pills, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(screensaver_pills, false);
 	} else {
 		lv_obj_remove_state(screensaver_switch, LV_STATE_CHECKED);
-		lv_obj_add_flag(screensaver_pills, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(screensaver_pills, true);
 	}
 	screensaver_source_t source = screensaver_source();
 	settingsrow_pill_active(screensaver_album_pill, source == SCREENSAVER_SOURCE_ALBUM);
@@ -249,7 +249,7 @@ static void build_screen_page(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_hor(card, 20, 0);
 	lv_obj_set_style_pad_ver(card, 14, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 
 	lv_obj_t *label = lv_label_create(card);
 	lv_label_set_text(label, tr("brightness"));
@@ -346,9 +346,9 @@ void settings_refresh_devoptions(void) {
 		return;
 	}
 	if (systempage_devoptions_unlocked()) {
-		lv_obj_remove_flag(devoptions_row, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(devoptions_row, false);
 	} else {
-		lv_obj_add_flag(devoptions_row, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(devoptions_row, true);
 	}
 }
 
@@ -436,7 +436,7 @@ static void build_other_page(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(kb_card, 0, 0);
 	lv_obj_set_style_pad_all(kb_card, 16, 0);
 	lv_obj_set_style_pad_row(kb_card, 12, 0);
-	lv_obj_remove_flag(kb_card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(kb_card, false);
 	lv_obj_set_flex_flow(kb_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(kb_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -452,7 +452,7 @@ static void build_other_page(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(kb_pills, 0, 0);
 	lv_obj_set_style_pad_all(kb_pills, 0, 0);
 	lv_obj_set_style_pad_column(kb_pills, 8, 0);
-	lv_obj_remove_flag(kb_pills, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(kb_pills, false);
 	lv_obj_set_flex_flow(kb_pills, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(kb_pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -484,7 +484,7 @@ static void build_other_page(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(shot_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(shot_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 	lv_obj_set_style_pad_row(shot_card, 2, 0);
-	lv_obj_add_flag(shot_toggle, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(shot_toggle, true);
 
 	if (screenshot_enabled()) {
 		lv_obj_add_state(screenshot_switch, LV_STATE_CHECKED);

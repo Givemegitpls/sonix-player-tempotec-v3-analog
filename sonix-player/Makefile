@@ -22,10 +22,11 @@ CXX = g++
 CROSS_CC ?= $(ROCKBOX_TOOLCHAIN_DIR)/bin/mipsel-rockbox-linux-gnu-gcc
 CROSS_CXX ?= $(ROCKBOX_TOOLCHAIN_DIR)/bin/mipsel-rockbox-linux-gnu-g++
 
-# The interface includes three of LVGL's private headers
-# (lv_timer_private.h, lv_event_private.h, lv_roller_private.h) and calls
-# lv_span_get_style() and lv_spangroup_refresh(). None of them exist before 9.5.
-LVGL_VER = 9.5.0
+# The interface uses the per-flag object API (lv_obj_set_hidden() and the
+# rest) and lv_text_ap_strlen(), neither of which exists before 9.6. It also
+# includes some of LVGL's private headers (lv_timer_private.h,
+# lv_event_private.h, lv_roller_private.h and others) from src/.
+LVGL_VER = 9.6.0
 
 # Self-bootstrap: clone LVGL if it doesn't exist yet before evaluating variables
 ifeq ($(wildcard $(LVGL_DIR)),)
@@ -34,10 +35,11 @@ $(shell git clone --depth 1 -b v$(LVGL_VER) https://github.com/lvgl/lvgl.git)
 endif
 
 # Read out of the headers, so a checkout with no git history still answers.
-# Both names are tried: the macros sit in lvgl.h up to 9.1 and in lv_version.h
-# from 9.2.
+# All three places are tried: the macros sit in lvgl.h up to 9.1, in
+# lv_version.h from 9.2 and in include/lvgl/lv_version.h from 9.6.
 LVGL_VER_FOUND := $(shell sed -n 's/^\#define LVGL_VERSION_\(MAJOR\|MINOR\|PATCH\) *\([0-9]*\).*/\2/p' \
-					$(LVGL_DIR)/lv_version.h $(LVGL_DIR)/lvgl.h 2>/dev/null | head -3 | paste -sd. -)
+					$(LVGL_DIR)/include/lvgl/lv_version.h $(LVGL_DIR)/lv_version.h $(LVGL_DIR)/lvgl.h \
+					2>/dev/null | head -3 | paste -sd. -)
 ifneq ($(LVGL_VER_FOUND),)
 ifneq ($(LVGL_VER_FOUND),$(LVGL_VER))
 $(warning lvgl/ holds $(LVGL_VER_FOUND) and this player needs $(LVGL_VER).)

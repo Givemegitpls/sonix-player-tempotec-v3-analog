@@ -112,7 +112,7 @@ static void sd_refresh(void) {
 	sysinfo_storage_t usage;
 	if (!sysinfo_sd_usage(&usage) || !usage.present) {
 		lv_label_set_text(sd_value, tr("system_no_card"));
-		lv_obj_add_flag(sd_bar, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(sd_bar, true);
 		return;
 	}
 
@@ -128,7 +128,7 @@ static void sd_refresh(void) {
 	}
 	lv_label_set_text(sd_value, text);
 
-	lv_obj_remove_flag(sd_bar, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(sd_bar, false);
 	lv_bar_set_value(sd_bar, usage.used_percent, LV_ANIM_OFF);
 
 	// Red once free space drops below the threshold. The comparison is integer
@@ -194,7 +194,7 @@ static void build_tapped_cb(lv_event_t *e) {
 // commands. `value_out` receives the right-hand label.
 static lv_obj_t *info_row(lv_obj_t *parent, const char *name, lv_obj_t **value_out) {
 	lv_obj_t *row = settingsrow_add(parent, name, value_out, NULL, NULL);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(row, false);
 	return row;
 }
 
@@ -245,8 +245,8 @@ static void build_sysinfo_page(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(sd_card, 0, 0);
 	lv_obj_set_style_pad_hor(sd_card, 20, 0);
 	lv_obj_set_style_pad_ver(sd_card, 16, 0);
-	lv_obj_remove_flag(sd_card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(sd_card, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(sd_card, false);
+	lv_obj_set_clickable(sd_card, false);
 
 	lv_obj_t *sd_name = lv_label_create(sd_card);
 	lv_label_set_text(sd_name, tr("system_sd_card"));

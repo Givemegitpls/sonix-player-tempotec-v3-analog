@@ -168,11 +168,11 @@ static void reset_button_enabled(lv_obj_t *btn, bool enabled) {
 	}
 	if (enabled) {
 		lv_obj_remove_state(btn, LV_STATE_DISABLED);
-		lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_clickable(btn, true);
 		lv_obj_set_style_opa(btn, LV_OPA_COVER, 0);
 	} else {
 		lv_obj_add_state(btn, LV_STATE_DISABLED);
-		lv_obj_remove_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_clickable(btn, false);
 		lv_obj_set_style_opa(btn, LV_OPA_40, 0);
 	}
 }
@@ -403,11 +403,11 @@ static void crossfeed_refresh(void) {
 	// that affect nothing, and leaving them there to be dragged is worse than
 	// hiding them.
 	if (on) {
-		lv_obj_remove_flag(crossfeed_detail_card, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_remove_flag(crossfeed_delay_card, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(crossfeed_detail_card, false);
+		lv_obj_set_hidden(crossfeed_delay_card, false);
 	} else {
-		lv_obj_add_flag(crossfeed_detail_card, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(crossfeed_delay_card, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(crossfeed_detail_card, true);
+		lv_obj_set_hidden(crossfeed_delay_card, true);
 	}
 }
 
@@ -563,10 +563,10 @@ static void rg_refresh(void) {
 
 	if (on) {
 		lv_obj_add_state(rg_switch, LV_STATE_CHECKED);
-		lv_obj_remove_flag(rg_pills, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(rg_pills, false);
 	} else {
 		lv_obj_remove_state(rg_switch, LV_STATE_CHECKED);
-		lv_obj_add_flag(rg_pills, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(rg_pills, true);
 	}
 	settingsrow_pill_active(rg_track_pill, mode == REPLAYGAIN_TRACK);
 	settingsrow_pill_active(rg_album_pill, mode == REPLAYGAIN_ALBUM);
@@ -627,10 +627,10 @@ static void dsd_gain_refresh(void) {
 
 	if (on) {
 		lv_obj_add_state(dsd_gain_switch, LV_STATE_CHECKED);
-		lv_obj_remove_flag(dsd_gain_pills, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(dsd_gain_pills, false);
 	} else {
 		lv_obj_remove_state(dsd_gain_switch, LV_STATE_CHECKED);
-		lv_obj_add_flag(dsd_gain_pills, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(dsd_gain_pills, true);
 	}
 	for (int i = 0; i < DSD_GAIN_MAX_DB; i++) {
 		settingsrow_pill_active(dsd_gain_pill[i], i + 1 == index);
@@ -755,8 +755,8 @@ static void build_mseb_page(gui_config_t *cfg) {
 		lv_obj_set_style_shadow_width(card, 0, 0);
 		lv_obj_set_style_pad_hor(card, 20, 0);
 		lv_obj_set_style_pad_ver(card, 12, 0);
-		lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_set_scrollable(card, false);
+		lv_obj_set_event_bubble(card, true);
 
 		lv_obj_t *name = lv_label_create(card);
 		lv_label_set_text(name, tr(mseb_band_name[i]));
@@ -799,7 +799,7 @@ static void build_mseb_page(gui_config_t *cfg) {
 		// would move a band. With ADV_HITTEST the slider only answers a press
 		// that begins on the knob; anywhere else on the track the press goes to
 		// the card behind it and scrolls the page.
-		lv_obj_add_flag(slider, LV_OBJ_FLAG_ADV_HITTEST);
+		lv_obj_set_adv_hittest(slider, true);
 		// The knob is 24 px across, and with ADV_HITTEST the extended click area
 		// belongs to the knob alone rather than padding the whole track.
 		lv_obj_set_ext_click_area(slider, 18);
@@ -939,7 +939,7 @@ static void build_eq_page(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 14, 0);
 	lv_obj_set_style_pad_gap(card, 0, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -950,7 +950,7 @@ static void build_eq_page(gui_config_t *cfg) {
 		lv_obj_set_style_border_width(column, 0, 0);
 		lv_obj_set_style_pad_all(column, 0, 0);
 		lv_obj_set_style_pad_gap(column, 8, 0);
-		lv_obj_remove_flag(column, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_scrollable(column, false);
 		lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_flex_align(column, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -1172,8 +1172,8 @@ static lv_obj_t *retagged_row, *retagged_note;
 
 static void retagged_show(void) {
 	bool on = library_detect_changes();
-	lv_obj_set_flag(retagged_row, LV_OBJ_FLAG_HIDDEN, !on);
-	lv_obj_set_flag(retagged_note, LV_OBJ_FLAG_HIDDEN, !on);
+	lv_obj_set_hidden(retagged_row, !on);
+	lv_obj_set_hidden(retagged_note, !on);
 }
 
 static void detect_changes_cb(lv_event_t *e) {
@@ -1227,13 +1227,13 @@ static void organize_refresh(void) {
 	unsigned g = library_genre_separators();
 
 	lv_obj_set_state(split_artists_switch, LV_STATE_CHECKED, artists);
-	lv_obj_set_flag(split_artists_pills, LV_OBJ_FLAG_HIDDEN, !artists);
-	lv_obj_set_flag(unsplit_row, LV_OBJ_FLAG_HIDDEN, !artists);
+	lv_obj_set_hidden(split_artists_pills, !artists);
+	lv_obj_set_hidden(unsplit_row, !artists);
 	for (int i = 0; i < SPLIT_ARTIST_COUNT; i++) {
 		settingsrow_pill_active(split_artist_pill[i], (a & SPLIT_ARTIST_PILLS[i].bit) != 0);
 	}
 	lv_obj_set_state(split_genres_switch, LV_STATE_CHECKED, genres);
-	lv_obj_set_flag(split_genres_pills, LV_OBJ_FLAG_HIDDEN, !genres);
+	lv_obj_set_hidden(split_genres_pills, !genres);
 	for (int i = 0; i < SPLIT_GENRE_COUNT; i++) {
 		settingsrow_pill_active(split_genre_pill[i], (g & SPLIT_GENRE_PILLS[i].bit) != 0);
 	}
@@ -1403,10 +1403,10 @@ static void artist_refresh(void) {
 	int lists = medialist_artist_lists();
 	if (on) {
 		lv_obj_add_state(artist_switch, LV_STATE_CHECKED);
-		lv_obj_remove_flag(artist_pills, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(artist_pills, false);
 	} else {
 		lv_obj_remove_state(artist_switch, LV_STATE_CHECKED);
-		lv_obj_add_flag(artist_pills, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(artist_pills, true);
 	}
 	for (int i = 0; i < ARTIST_PILLS; i++) {
 		settingsrow_pill_active(artist_pill[i], (lists & ARTIST_PILL_BITS[i]) != 0);

@@ -145,13 +145,13 @@ static void refresh_status_label(void) {
 
 	if (!wifi_available()) {
 		lv_label_set_text(status_label, tr("wifi_no_hardware"));
-		lv_obj_remove_flag(status_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(status_label, false);
 		return;
 	}
 
 	if (wifi_busy()) {
 		lv_label_set_text(status_label, wifi_get_enabled() ? tr("turning_on") : tr("wifi_turning_off_2"));
-		lv_obj_remove_flag(status_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(status_label, false);
 		return;
 	}
 
@@ -165,7 +165,7 @@ static void refresh_status_label(void) {
 	switch (status.state) {
 	case WIFI_STATE_CONNECTED:
 	case WIFI_STATE_ON:
-		lv_obj_add_flag(status_label, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(status_label, true);
 		return;
 	case WIFI_STATE_CONNECTING:
 		lv_label_set_text(status_label, tr("connecting"));
@@ -175,7 +175,7 @@ static void refresh_status_label(void) {
 		lv_label_set_text(status_label, tr("wifi_wi_fi_off"));
 		break;
 	}
-	lv_obj_remove_flag(status_label, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(status_label, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -370,8 +370,8 @@ static void add_row(lv_obj_t *parent, const wifi_network_t *net, bool with_menu)
 	// The button default carries vertical padding of its own, which cuts the
 	// second line of text off along the bottom edge of the row.
 	lv_obj_set_style_pad_ver(row, 0, 0);
-	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_event_bubble(row, true);
+	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(row, 14, 0);
@@ -403,8 +403,8 @@ static void add_row(lv_obj_t *parent, const wifi_network_t *net, bool with_menu)
 	lv_obj_set_style_bg_opa(text, 0, 0);
 	lv_obj_set_style_border_width(text, 0, 0);
 	lv_obj_set_style_pad_all(text, 0, 0);
-	lv_obj_remove_flag(text, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(text, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(text, false);
+	lv_obj_set_event_bubble(text, true);
 
 	lv_obj_t *name = lv_label_create(text);
 	lv_label_set_text(name, net->ssid);
@@ -466,14 +466,14 @@ static void rebuild_list(void) {
 
 	bool on = wifi_get_enabled() && wifi_available();
 	if (!on) {
-		lv_obj_add_flag(current_label, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(current_list, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(section_label, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(list, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(current_label, true);
+		lv_obj_set_hidden(current_list, true);
+		lv_obj_set_hidden(section_label, true);
+		lv_obj_set_hidden(list, true);
 		return;
 	}
-	lv_obj_remove_flag(section_label, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(list, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(section_label, false);
+	lv_obj_set_hidden(list, false);
 
 	wifi_network_t networks[WIFI_MAX_NETWORKS];
 	int count = wifi_get_networks(networks, WIFI_MAX_NETWORKS);
@@ -489,12 +489,12 @@ static void rebuild_list(void) {
 	}
 
 	if (current >= 0) {
-		lv_obj_remove_flag(current_label, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_remove_flag(current_list, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(current_label, false);
+		lv_obj_set_hidden(current_list, false);
 		add_row(current_list, &networks[current], true);
 	} else {
-		lv_obj_add_flag(current_label, LV_OBJ_FLAG_HIDDEN);
-		lv_obj_add_flag(current_list, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(current_label, true);
+		lv_obj_set_hidden(current_list, true);
 	}
 
 	// A sweep replaces the list rather than sitting under it: the rows are the
@@ -507,7 +507,7 @@ static void rebuild_list(void) {
 		lv_obj_set_height(row, LV_SIZE_CONTENT);
 		lv_obj_set_style_pad_top(row, 10, 0);
 		lv_obj_set_style_pad_column(row, 10, 0);
-		lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_scrollable(row, false);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -818,8 +818,8 @@ static lv_obj_t *make_rows(lv_obj_t *parent) {
 	lv_obj_set_style_pad_all(box, 0, 0);
 	lv_obj_set_style_pad_bottom(box, 12, 0);
 	lv_obj_set_style_pad_gap(box, 8, 0);
-	lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(box, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(box, false);
+	lv_obj_set_event_bubble(box, true);
 	lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
 	return box;
 }

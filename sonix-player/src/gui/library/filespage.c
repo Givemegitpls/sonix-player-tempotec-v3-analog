@@ -646,12 +646,12 @@ static void name_layer_show(const char *heading, const char *initial) {
 	lv_textarea_set_text(name_field, initial ? initial : "");
 	keyboard_reset(name_keyboard);
 	keyboard_set_field(name_keyboard, name_field);
-	lv_obj_remove_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(name_layer, false);
 	lv_obj_move_foreground(name_layer);
 }
 
 static void name_layer_hide(void) {
-	lv_obj_add_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(name_layer, true);
 	acting_on[0] = '\0';
 	naming_new_folder = false;
 }
@@ -769,7 +769,7 @@ static void pick_rebuild(void) {
 }
 
 static void pick_hide(void) {
-	lv_obj_add_flag(pick_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(pick_layer, true);
 	pending_op = OP_NONE;
 	acting_on[0] = '\0';
 }
@@ -821,7 +821,7 @@ static void pick_here_cb(lv_event_t *e) {
 	snprintf(op_source, sizeof(op_source), "%s", source);
 	snprintf(op_target, sizeof(op_target), "%s", target);
 
-	lv_obj_add_flag(pick_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(pick_layer, true);
 	acting_on[0] = '\0';
 	op_start();
 }
@@ -831,7 +831,7 @@ static void pick_show(op_t op) {
 	snprintf(pick_path, sizeof(pick_path), "%s", root_path);
 	pick_rebuild();
 	lv_obj_scroll_to_y(pick_list, 0, LV_ANIM_OFF);
-	lv_obj_remove_flag(pick_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(pick_layer, false);
 	lv_obj_move_foreground(pick_layer);
 }
 
@@ -989,7 +989,7 @@ static void build_row(int index) {
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_hor(row, 16, 0);
 	lv_obj_set_style_pad_column(row, 14, 0);
-	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(row, true);
 	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1114,11 +1114,11 @@ static void rebuild(void) {
 // from the card's root -- which is the same thing the music browser does, and
 // the only way up that does not need a second control.
 static bool back_guard(void) {
-	if (!name_layer || !lv_obj_has_flag(name_layer, LV_OBJ_FLAG_HIDDEN)) {
+	if (!name_layer || !lv_obj_is_hidden(name_layer)) {
 		name_layer_hide();
 		return true;
 	}
-	if (pick_layer && !lv_obj_has_flag(pick_layer, LV_OBJ_FLAG_HIDDEN)) {
+	if (pick_layer && !lv_obj_is_hidden(pick_layer)) {
 		// Inside the picker the chevron walks back up it, and closes it from the
 		// card's root -- the same rule as the page underneath.
 		if (strcmp(pick_path, root_path) != 0) {
@@ -1148,8 +1148,8 @@ static bool back_guard(void) {
 }
 
 static bool back_guard_peek(void) {
-	return (name_layer && !lv_obj_has_flag(name_layer, LV_OBJ_FLAG_HIDDEN)) ||
-		   (pick_layer && !lv_obj_has_flag(pick_layer, LV_OBJ_FLAG_HIDDEN)) || strcmp(path, root_path) != 0;
+	return (name_layer && !lv_obj_is_hidden(name_layer)) ||
+		   (pick_layer && !lv_obj_is_hidden(pick_layer)) || strcmp(path, root_path) != 0;
 }
 
 static void loaded_cb(lv_event_t *e) {
@@ -1202,7 +1202,7 @@ void filespage_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(file_list, LV_FLEX_FLOW_COLUMN);
 	// Set here and not in the row builder: an empty folder creates no rows, and
 	// the page still has to answer the swipe back.
-	lv_obj_add_flag(file_list, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(file_list, true);
 	lv_obj_add_event_cb(file_list, list_scrolled_cb, LV_EVENT_SCROLL, NULL);
 
 	// --- the naming dialog, in the shape the playlist page uses
@@ -1214,8 +1214,8 @@ void filespage_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(name_layer, 0, 0);
 	lv_obj_set_style_radius(name_layer, 0, 0);
 	lv_obj_set_style_pad_all(name_layer, 0, 0);
-	lv_obj_remove_flag(name_layer, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(name_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(name_layer, false);
+	lv_obj_set_hidden(name_layer, true);
 
 	name_heading = lv_label_create(name_layer);
 	lv_label_set_text(name_heading, tr("files_new_folder"));
@@ -1264,8 +1264,8 @@ void filespage_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(pick_layer, 0, 0);
 	lv_obj_set_style_radius(pick_layer, 0, 0);
 	lv_obj_set_style_pad_all(pick_layer, 0, 0);
-	lv_obj_remove_flag(pick_layer, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(pick_layer, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(pick_layer, false);
+	lv_obj_set_hidden(pick_layer, true);
 
 	pick_title = lv_label_create(pick_layer);
 	lv_label_set_text(pick_title, tr("file_explorer"));

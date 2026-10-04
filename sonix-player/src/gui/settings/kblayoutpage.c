@@ -93,10 +93,10 @@ static void refresh(void) {
 
 	for (int i = 0; i < KB_LAYOUT_COUNT; i++) {
 		if (i >= row_count) {
-			lv_obj_add_flag(entries[i].row, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(entries[i].row, true);
 			continue;
 		}
-		lv_obj_remove_flag(entries[i].row, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(entries[i].row, false);
 		lv_label_set_text(entries[i].name, kblayout_name(row_layout[i]));
 
 		// The first of the ones in use is the one every keyboard opens in, and
@@ -193,7 +193,7 @@ static void drag_cb(lv_event_t *e) {
 		lv_obj_set_style_border_color(drag_ghost, theme()->accent, 0);
 		lv_obj_set_style_shadow_width(drag_ghost, 0, 0);
 		lv_obj_set_style_pad_hor(drag_ghost, 20, 0);
-		lv_obj_remove_flag(drag_ghost, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_scrollable(drag_ghost, false);
 
 		lv_obj_t *label = lv_label_create(drag_ghost);
 		lv_label_set_text(label, kblayout_name(drag_layout));
@@ -251,7 +251,7 @@ void kblayoutpage_init(gui_config_t *cfg) {
 	lv_obj_add_style(kblayoutpage_screen, &theme_style_screen, 0);
 
 	lv_obj_t *container = settingsrow_page(kblayoutpage_screen, cfg, "keyboard_layout");
-	lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(container, false);
 
 	int width = cfg->screen_width - 2 * cfg->padding;
 
@@ -261,7 +261,7 @@ void kblayoutpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(body, 0, 0);
 	lv_obj_set_style_border_width(body, 0, 0);
 	lv_obj_set_style_pad_all(body, 0, 0);
-	lv_obj_remove_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(body, false);
 
 	make_heading(body, "in_use", 0);
 	others_heading = make_heading(body, "kblayout_others", 0);
@@ -275,7 +275,7 @@ void kblayoutpage_init(gui_config_t *cfg) {
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
 		lv_obj_set_style_pad_hor(row, 20, 0);
-		lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_scrollable(row, false);
 
 		entries[i].row = row;
 
@@ -293,8 +293,8 @@ void kblayoutpage_init(gui_config_t *cfg) {
 		lv_obj_set_style_bg_opa(entries[i].grip, 0, 0);
 		lv_obj_set_style_border_width(entries[i].grip, 0, 0);
 		lv_obj_set_style_pad_all(entries[i].grip, 0, 0);
-		lv_obj_remove_flag(entries[i].grip, LV_OBJ_FLAG_SCROLLABLE);
-		lv_obj_add_flag(entries[i].grip, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_scrollable(entries[i].grip, false);
+		lv_obj_set_clickable(entries[i].grip, true);
 
 		lv_obj_t *grip_icon = lv_image_create(entries[i].grip);
 		lv_image_set_src(grip_icon, &icon_grip);
@@ -316,9 +316,9 @@ void kblayoutpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(drag_layer, 0, 0);
 	lv_obj_set_style_border_width(drag_layer, 0, 0);
 	lv_obj_set_style_pad_all(drag_layer, 0, 0);
-	lv_obj_remove_flag(drag_layer, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(drag_layer, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_add_flag(drag_layer, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_scrollable(drag_layer, false);
+	lv_obj_set_clickable(drag_layer, false);
+	lv_obj_set_ignore_layout(drag_layer, true);
 
 	lv_obj_add_event_cb(kblayoutpage_screen, loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	switcher_attach_back_gesture(kblayoutpage_screen);

@@ -285,9 +285,9 @@ static void refresh_now_playing_card(void) {
 		}
 		bool steps = station_steps && only_for_tracks[i] != np_repeat_btn;
 		if (state.live && !steps) {
-			lv_obj_add_flag(only_for_tracks[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(only_for_tracks[i], true);
 		} else {
-			lv_obj_remove_flag(only_for_tracks[i], LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(only_for_tracks[i], false);
 		}
 	}
 
@@ -328,16 +328,16 @@ static void refresh_now_playing_card(void) {
 	// follows the feed (see star_cb).
 	if (np_repeat_btn) {
 		if (book || podcast) {
-			lv_obj_add_flag(np_repeat_btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(np_repeat_btn, true);
 		} else {
-			lv_obj_remove_flag(np_repeat_btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(np_repeat_btn, false);
 		}
 	}
 	if (np_star_btn) {
 		if (book) {
-			lv_obj_add_flag(np_star_btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(np_star_btn, true);
 		} else {
-			lv_obj_remove_flag(np_star_btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(np_star_btn, false);
 		}
 	}
 
@@ -443,7 +443,7 @@ static void restore_topbar(void) {
 static void hide_when_parked_cb(lv_anim_t *a) {
 	(void)a;
 	if (!panel_open) {
-		lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(veil, true);
 		restore_topbar();
 	}
 }
@@ -453,7 +453,7 @@ static void panel_slide_to(int y, bool animate) {
 	if (!animate) {
 		lv_obj_set_y(panel, y);
 		if (!panel_open) {
-			lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(veil, true);
 			restore_topbar();
 		}
 		return;
@@ -492,7 +492,7 @@ static void panel_prepare(void) {
 	refresh_now_playing_card();
 	refresh_audio_buttons();
 
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(veil, false);
 	lv_obj_move_foreground(veil);
 
 	// The player hides the status bar so artwork can run to the top edge. The
@@ -1012,14 +1012,14 @@ static void order_apply(void) {
 		}
 		lv_obj_t *btn = button_widget((quickpanel_button_t)slots[i]);
 		if (btn) {
-			lv_obj_remove_flag(btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(btn, false);
 			lv_obj_move_to_index(btn, at++);
 		}
 	}
 	for (int i = 0; i < hidden_n; i++) {
 		lv_obj_t *btn = button_widget((quickpanel_button_t)hidden[i]);
 		if (btn) {
-			lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(btn, true);
 		}
 	}
 }
@@ -1627,7 +1627,7 @@ static lv_obj_t *make_flat_button(lv_obj_t *parent, int size, lv_event_cb_t cb) 
 // together they fill the screen instead of floating in the middle of it.
 static lv_obj_t *make_card(lv_obj_t *parent, int width, int height, int top_y) {
 	lv_obj_t *card = lv_obj_create(parent);
-	lv_obj_add_flag(card, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(card, true);
 	lv_obj_set_size(card, width, height);
 	lv_obj_align(card, LV_ALIGN_TOP_MID, 0, top_y);
 	lv_obj_add_style(card, &theme_style_card, 0);
@@ -1635,10 +1635,10 @@ static lv_obj_t *make_card(lv_obj_t *parent, int width, int height, int top_y) {
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, CARD_PADDING, 0);
-	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(card, false);
 	// Presses bubble to the sheet, whose drag handler carries the panel back out
 	// from anywhere on it.
-	lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_event_bubble(card, true);
 	return card;
 }
 
@@ -1652,8 +1652,8 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(veil, 0, 0);
 	lv_obj_set_style_radius(veil, 0, 0);
 	lv_obj_set_style_pad_all(veil, 0, 0);
-	lv_obj_remove_flag(veil, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(veil, false);
+	lv_obj_set_hidden(veil, true);
 	lv_obj_add_event_cb(veil, veil_clicked_cb, LV_EVENT_CLICKED, NULL);
 
 	// The sheet fills the whole screen, iOS-control-centre style.
@@ -1667,9 +1667,9 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_top(panel, PANEL_PAD_TOP(cfg), 0);
 	lv_obj_set_style_pad_bottom(panel, PANEL_PAD_BOTTOM, 0);
 	lv_obj_set_style_pad_gap(panel, 14, 0);
-	lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(panel, LV_OBJ_FLAG_EVENT_BUBBLE);
-	lv_obj_add_flag(panel, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(panel, false);
+	lv_obj_set_event_bubble(panel, false);
+	lv_obj_set_clickable(panel, true);
 	lv_obj_add_event_cb(panel, panel_drag_cb, LV_EVENT_PRESSED, NULL);
 	lv_obj_add_event_cb(panel, panel_drag_cb, LV_EVENT_PRESSING, NULL);
 	lv_obj_add_event_cb(panel, panel_drag_cb, LV_EVENT_RELEASED, NULL);
@@ -1708,8 +1708,8 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
 	lv_obj_set_style_pad_gap(row, CIRCLE_BUTTON_GAP, 0);
-	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(row, false);
+	lv_obj_set_event_bubble(row, true);
 	lv_obj_set_style_pad_row(row, CIRCLE_BUTTON_GAP, 0);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1810,8 +1810,8 @@ void quickpanel_init(gui_config_t *cfg) {
 	// right edge gives it room.
 	lv_obj_set_style_pad_right(bright_row, 13, 0);
 	lv_obj_set_style_pad_gap(bright_row, 18, 0);
-	lv_obj_remove_flag(bright_row, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(bright_row, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(bright_row, false);
+	lv_obj_set_event_bubble(bright_row, true);
 	lv_obj_set_flex_flow(bright_row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(bright_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -1872,8 +1872,8 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(transport, 0, 0);
 	lv_obj_set_style_border_width(transport, 0, 0);
 	lv_obj_set_style_pad_all(transport, 0, 0);
-	lv_obj_remove_flag(transport, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(transport, LV_OBJ_FLAG_EVENT_BUBBLE);
+	lv_obj_set_scrollable(transport, false);
+	lv_obj_set_event_bubble(transport, true);
 	lv_obj_set_flex_flow(transport, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(transport, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(transport, 4, 0);
@@ -1883,7 +1883,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	// between them: the player's arrangement.
 	lv_obj_t *repeat_btn = make_flat_button(transport, 56, repeat_cb);
 	np_repeat_btn = repeat_btn;
-	lv_obj_add_flag(repeat_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(repeat_btn, true);
 	lv_obj_align(repeat_btn, LV_ALIGN_LEFT_MID, 0, 0);
 	np_repeat_icon = lv_image_create(repeat_btn);
 	lv_obj_center(np_repeat_icon);
@@ -1924,7 +1924,7 @@ void quickpanel_init(gui_config_t *cfg) {
 
 	lv_obj_t *star_btn = make_flat_button(transport, 56, star_cb);
 	np_star_btn = star_btn;
-	lv_obj_add_flag(star_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(star_btn, true);
 	lv_obj_align(star_btn, LV_ALIGN_RIGHT_MID, 0, 0);
 	np_star_icon = lv_image_create(star_btn);
 	lv_obj_center(np_star_icon);
@@ -1934,7 +1934,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	// is what actually closes the panel. The line is not clickable: a finger
 	// landing on it talks to the surface underneath, where the gesture lives.
 	lv_obj_t *close_btn = lv_obj_create(panel);
-	lv_obj_add_flag(close_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
+	lv_obj_set_ignore_layout(close_btn, true);
 	lv_obj_set_size(close_btn, 140, HINT_STRIP_H - 8);
 	// Flush with the bottom of the sheet's content box, which centres the line in
 	// the band between the last card and the screen edge: the band is
@@ -1946,8 +1946,8 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(close_btn, 0, 0);
 	lv_obj_set_style_border_width(close_btn, 0, 0);
 	lv_obj_set_style_pad_all(close_btn, 0, 0);
-	lv_obj_remove_flag(close_btn, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_remove_flag(close_btn, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_clickable(close_btn, false);
+	lv_obj_set_scrollable(close_btn, false);
 
 	lv_obj_t *hint = lv_image_create(close_btn);
 	lv_image_set_src(hint, &icon_control_center_line);

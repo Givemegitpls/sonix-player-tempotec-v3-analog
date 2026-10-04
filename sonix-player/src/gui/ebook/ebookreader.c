@@ -328,7 +328,7 @@ static lv_obj_t *build_image(lv_obj_t *parent, const ebook_block_t *b, int width
 
 	lv_obj_t *obj = lv_image_create(parent);
 	lv_image_set_src(obj, &img->dsc);
-	lv_obj_remove_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(obj, false);
 	lv_obj_set_style_margin_top(obj, block_margin_top(b), 0);
 	lv_obj_set_style_margin_bottom(obj, block_margin_bottom(b), 0);
 	lv_obj_add_event_cb(obj, image_deleted_cb, LV_EVENT_DELETE, img);
@@ -408,7 +408,7 @@ static lv_obj_t *build_block(lv_obj_t *parent, const ebook_block_t *b, uint32_t 
 		lv_obj_set_size(rule, width / 3, 2);
 		lv_obj_set_style_bg_color(rule, ink_colour(), 0);
 		lv_obj_set_style_bg_opa(rule, LV_OPA_30, 0);
-		lv_obj_remove_flag(rule, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_set_clickable(rule, false);
 		lv_obj_set_style_margin_top(rule, block_margin_top(b), 0);
 		lv_obj_set_style_margin_bottom(rule, block_margin_bottom(b), 0);
 		return rule;
@@ -425,7 +425,7 @@ static lv_obj_t *build_block(lv_obj_t *parent, const ebook_block_t *b, uint32_t 
 	// A spangroup is clickable like any other object, and a page is nothing but
 	// spangroups: left that way they take every press themselves and the page
 	// underneath -- which is what turns -- never hears a tap at all.
-	lv_obj_remove_flag(group, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(group, false);
 	// A fixed width and the height of the content: the lines wrap at the width.
 	lv_spangroup_set_overflow(group, LV_SPAN_OVERFLOW_CLIP);
 	lv_obj_set_size(group, width - b->indent * opt_size, LV_SIZE_CONTENT);
@@ -1494,7 +1494,7 @@ static void build_theme(void);
 
 static void menu_close(void) {
 	if (menu_veil) {
-		lv_obj_add_flag(menu_veil, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_set_hidden(menu_veil, true);
 	}
 	if (menu_body) {
 		// The rows of a long chapter list are the one thing in here worth not
@@ -1508,9 +1508,9 @@ static void menu_open(void) {
 	if (!menu_veil || !book) {
 		return;
 	}
-	lv_obj_add_flag(menu_card, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(menu_bar, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(menu_veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(menu_card, true);
+	lv_obj_set_hidden(menu_bar, false);
+	lv_obj_set_hidden(menu_veil, false);
 	lv_obj_move_foreground(menu_veil);
 }
 
@@ -1539,16 +1539,16 @@ static void section_open(lv_event_t *e) {
 		break;
 	}
 	lv_obj_scroll_to_y(menu_body, 0, LV_ANIM_OFF);
-	lv_obj_add_flag(menu_bar, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(menu_card, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(menu_bar, true);
+	lv_obj_set_hidden(menu_card, false);
 }
 
 static void section_back_cb(lv_event_t *e) {
 	(void)e;
 	lv_obj_clean(menu_body);
 	chapters_built = 0;
-	lv_obj_add_flag(menu_card, LV_OBJ_FLAG_HIDDEN);
-	lv_obj_remove_flag(menu_bar, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(menu_card, true);
+	lv_obj_set_hidden(menu_bar, false);
 }
 
 // The way out of the book. It has to be in here and not on the screen edge: a
@@ -1894,9 +1894,9 @@ static void turn_cb(lv_event_t *e) {
 	page_stack_depth = 0;
 	page_offset = 0;
 	if (now_list) {
-		lv_obj_add_flag(page_box, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_scrollable(page_box, true);
 	} else {
-		lv_obj_remove_flag(page_box, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_scrollable(page_box, false);
 		lv_obj_scroll_to_y(page_box, 0, LV_ANIM_OFF);
 	}
 	// One long list has no pages; going back to pages means counting again.
@@ -2001,10 +2001,10 @@ static void build_menu(gui_config_t *cfg) {
 	lv_obj_set_size(menu_veil, cfg->screen_width, cfg->screen_height);
 	lv_obj_set_style_bg_color(menu_veil, lv_color_black(), 0);
 	lv_obj_set_style_bg_opa(menu_veil, LV_OPA_60, 0);
-	lv_obj_add_flag(menu_veil, LV_OBJ_FLAG_CLICKABLE);
-	lv_obj_remove_flag(menu_veil, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_clickable(menu_veil, true);
+	lv_obj_set_scrollable(menu_veil, false);
 	lv_obj_add_event_cb(menu_veil, menu_veil_cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_add_flag(menu_veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_hidden(menu_veil, true);
 
 	// --- the bar along the bottom
 	menu_bar = lv_obj_create(menu_veil);
@@ -2017,13 +2017,13 @@ static void build_menu(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(menu_bar, 10, 0);
 	lv_obj_set_flex_flow(menu_bar, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_style_pad_row(menu_bar, 8, 0);
-	lv_obj_remove_flag(menu_bar, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(menu_bar, false);
 
 	lv_obj_t *icons = lv_obj_create(menu_bar);
 	lv_obj_remove_style_all(icons);
 	lv_obj_set_size(icons, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_flex_flow(icons, LV_FLEX_FLOW_ROW);
-	lv_obj_remove_flag(icons, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(icons, false);
 	bar_button(icons, &icon_ebook_chapter, "chapters", SECTION_CHAPTERS);
 	bar_button(icons, &icon_ebook_font, "ebookreader_font_settings", SECTION_FONT);
 	bar_button(icons, &icon_ebook_theme, "ebookreader_book_theme", SECTION_THEME);
@@ -2067,8 +2067,8 @@ static void build_menu(gui_config_t *cfg) {
 	lv_obj_set_style_pad_row(menu_card, 10, 0);
 	// Only the body scrolls. Left scrollable the card scrolls too, and the
 	// heading -- which carries the way back to the bar -- slides off the top.
-	lv_obj_remove_flag(menu_card, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_add_flag(menu_card, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_set_scrollable(menu_card, false);
+	lv_obj_set_hidden(menu_card, true);
 
 	lv_obj_t *header = lv_obj_create(menu_card);
 	lv_obj_remove_style_all(header);
@@ -2076,7 +2076,7 @@ static void build_menu(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(header, 10, 0);
-	lv_obj_remove_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(header, false);
 
 	lv_obj_t *back = lv_btn_create(header);
 	lv_obj_set_size(back, 56, 56);
@@ -2221,9 +2221,9 @@ void ebookreader_open(const char *path) {
 	lv_obj_set_x(page_spare, (int32_t)g_cfg->screen_width);
 	turning = false;
 	if (opt_turn == TURN_VERTICAL) {
-		lv_obj_add_flag(page_box, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_scrollable(page_box, true);
 	} else {
-		lv_obj_remove_flag(page_box, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_set_scrollable(page_box, false);
 	}
 
 	uint32_t spine, block, offset;
@@ -2259,9 +2259,9 @@ static lv_obj_t *make_page_box(gui_config_t *cfg) {
 	lv_obj_set_size(box, cfg->screen_width, cfg->screen_height - bar_space());
 	lv_obj_set_pos(box, 0, 0);
 	lv_obj_set_style_pad_all(box, opt_margin, 0);
-	lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(box, false);
 	lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
-	lv_obj_add_flag(box, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_clickable(box, true);
 	lv_obj_add_event_cb(box, page_pressed_cb, LV_EVENT_PRESSED, NULL);
 	lv_obj_add_event_cb(box, page_pressed_cb, LV_EVENT_PRESSING, NULL);
 	lv_obj_add_event_cb(box, page_pressed_cb, LV_EVENT_RELEASED, NULL);
@@ -2276,7 +2276,7 @@ void ebookreader_init(gui_config_t *cfg) {
 	ebookreader_screen = lv_obj_create(NULL);
 	lv_obj_remove_style_all(ebookreader_screen);
 	lv_obj_set_size(ebookreader_screen, cfg->screen_width, cfg->screen_height);
-	lv_obj_remove_flag(ebookreader_screen, LV_OBJ_FLAG_SCROLLABLE);
+	lv_obj_set_scrollable(ebookreader_screen, false);
 
 	page_box = make_page_box(cfg);
 	page_spare = make_page_box(cfg);
@@ -2288,8 +2288,8 @@ void ebookreader_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(count_box);
 	lv_obj_set_size(count_box, cfg->screen_width, cfg->screen_height - bar_space());
 	lv_obj_set_pos(count_box, -2 * (int32_t)cfg->screen_width, 0);
-	lv_obj_remove_flag(count_box, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(count_box, LV_OBJ_FLAG_CLICKABLE);
+	lv_obj_set_scrollable(count_box, false);
+	lv_obj_set_clickable(count_box, false);
 	lv_obj_set_flex_flow(count_box, LV_FLEX_FLOW_COLUMN);
 	count_timer = lv_timer_create(count_timer_cb, 1, NULL);
 	lv_timer_pause(count_timer);

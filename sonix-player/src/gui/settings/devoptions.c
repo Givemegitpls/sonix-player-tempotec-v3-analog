@@ -83,10 +83,10 @@ static void show_path(lv_obj_t *toggle, lv_obj_t *name_label, lv_obj_t *path_lab
 	if (path_label && name_label) {
 		if (on) {
 			lv_label_set_text(path_label, path);
-			lv_obj_remove_flag(path_label, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(path_label, false);
 			lv_obj_align(name_label, LV_ALIGN_TOP_LEFT, 0, 0);
 		} else {
-			lv_obj_add_flag(path_label, LV_OBJ_FLAG_HIDDEN);
+			lv_obj_set_hidden(path_label, true);
 			lv_obj_align(name_label, LV_ALIGN_LEFT_MID, 0, 0);
 		}
 	}
