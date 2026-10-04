@@ -2695,6 +2695,8 @@ static void build_settings_page(gui_config_t *cfg) {
 	refresh_settings_rows();
 	theme_register_refresh(refresh_settings_rows);
 	lv_obj_add_event_cb(settings_screen, settings_rows_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	// And when the control centre switches the timer with the page under it.
+	lv_obj_add_event_cb(settings_screen, settings_rows_loaded_cb, LV_EVENT_REFRESH, NULL);
 	switcher_attach_back_gesture(settings_screen);
 }
 

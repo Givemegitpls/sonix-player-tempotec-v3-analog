@@ -584,6 +584,15 @@ static void poll_cb(lv_timer_t *timer) {
 	}
 }
 
+// The control centre switched the radio with the page open under it. The poll
+// already follows the radio; this only saves waiting for its next round.
+static void switched_elsewhere_cb(lv_event_t *e) {
+	(void)e;
+	if (poll_timer) {
+		lv_timer_ready(poll_timer);
+	}
+}
+
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
 	drawn_serial = 0xFFFFFFFFu;
@@ -695,6 +704,7 @@ void btsettings_init(gui_config_t *cfg) {
 	lv_timer_pause(poll_timer);
 
 	lv_obj_add_event_cb(btsettings_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	lv_obj_add_event_cb(btsettings_screen, switched_elsewhere_cb, LV_EVENT_REFRESH, NULL);
 	lv_obj_add_event_cb(btsettings_screen, screen_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
 	switcher_attach_back_gesture(btsettings_screen);
 

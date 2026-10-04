@@ -1077,6 +1077,7 @@ void musicsettings_set_eq_enabled(bool enabled) {
 		}
 	}
 	eq_apply_sliders_enabled(enabled);
+	reset_button_enabled(eq_reset_btn, enabled);
 	refresh_active_chevrons();
 }
 
@@ -1090,6 +1091,7 @@ void musicsettings_set_mseb_enabled(bool enabled) {
 		}
 	}
 	mseb_apply_sliders_enabled(enabled);
+	reset_button_enabled(mseb_reset_btn, enabled);
 	refresh_active_chevrons();
 }
 
@@ -1711,6 +1713,9 @@ static void build_playback_page(gui_config_t *cfg) {
 	sleep_refresh();
 	theme_register_refresh(sleep_refresh);
 	lv_obj_add_event_cb(playback_screen, playback_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	// And again whenever the control centre switches something while the page
+	// is the one under it.
+	lv_obj_add_event_cb(playback_screen, playback_loaded_cb, LV_EVENT_REFRESH, NULL);
 
 	// One record into the next, instead of the queue simply running out.
 	settingsrow_toggle(container, "musicsettings_play_albums_back_to_back", &album_chain_switch, album_chain_cb);
@@ -1849,4 +1854,7 @@ void musicsettings_init(gui_config_t *cfg) {
 
 
 	lv_obj_add_event_cb(musicsettings_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	// The parametric equaliser's chevron, which no setter on this page repaints,
+	// follows the control centre's button while the page is under it.
+	lv_obj_add_event_cb(musicsettings_screen, screen_loaded_cb, LV_EVENT_REFRESH, NULL);
 }

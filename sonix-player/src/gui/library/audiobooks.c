@@ -1317,6 +1317,8 @@ static void build_settings_page(gui_config_t *cfg) {
 	refresh_settings_page();
 	theme_register_refresh(refresh_settings_page);
 	lv_obj_add_event_cb(audiobooksettings_screen, settings_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	// And when the control centre switches the timer with the page under it.
+	lv_obj_add_event_cb(audiobooksettings_screen, settings_loaded_cb, LV_EVENT_REFRESH, NULL);
 }
 
 // ---------------------------------------------------------------------------

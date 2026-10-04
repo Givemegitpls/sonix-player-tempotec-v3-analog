@@ -747,6 +747,18 @@ static void toggle_changed_cb(lv_event_t *e) {
 	refresh();
 }
 
+// The control centre switched the service with the page open under it: the
+// switch and the lines under it follow, and nothing else is touched.
+static void switched_elsewhere_cb(lv_event_t *e) {
+	(void)e;
+	if (sonixlink_get_enabled()) {
+		lv_obj_add_state(toggle, LV_STATE_CHECKED);
+	} else {
+		lv_obj_remove_state(toggle, LV_STATE_CHECKED);
+	}
+	refresh();
+}
+
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
 
@@ -829,6 +841,7 @@ void sonixlink_page_init(gui_config_t *cfg) {
 	pump_pace();
 
 	lv_obj_add_event_cb(sonixlink_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	lv_obj_add_event_cb(sonixlink_screen, switched_elsewhere_cb, LV_EVENT_REFRESH, NULL);
 	lv_obj_add_event_cb(sonixlink_screen, screen_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
 
 	refresh();

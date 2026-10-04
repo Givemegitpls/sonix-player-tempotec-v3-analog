@@ -768,6 +768,9 @@ void peqpage_init(gui_config_t *cfg) {
 	graph_refresh();
 
 	lv_obj_add_event_cb(main_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	// The same reading when the control centre switches the equaliser with the
+	// page open under it.
+	lv_obj_add_event_cb(main_screen, screen_loaded_cb, LV_EVENT_REFRESH, NULL);
 	switcher_attach_back_gesture(main_screen);
 	theme_register_refresh(refresh_theme);
 }

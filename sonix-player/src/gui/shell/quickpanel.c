@@ -1489,6 +1489,18 @@ static void refresh_audio_buttons(void) {
 	circle_button_set_on(gapless_btn, gapless);
 }
 
+// After a button has switched something: the circles repaint, and the page
+// under the sheet is told, since it may be the very page that setting lives on
+// and must not go on showing the old state. Pages that carry one of these
+// settings answer LV_EVENT_REFRESH by reading it again; the rest ignore it.
+static void toggled(void) {
+	refresh_audio_buttons();
+	lv_obj_t *page = lv_screen_active();
+	if (page) {
+		lv_obj_send_event(page, LV_EVENT_REFRESH, NULL);
+	}
+}
+
 // Line out: the jack driven for an amplifier, at the fixed level the stock
 // player uses. Switching it on is worth a word first -- the output goes to full
 // scale, and a pair of headphones still in the socket would say so loudly --
@@ -1542,7 +1554,7 @@ static void wifi_clicked_cb(lv_event_t *e) {
 		return; // no radio to switch; the settings page explains why
 	}
 	wifi_set_enabled(!wifi_get_enabled());
-	refresh_audio_buttons();
+	toggled();
 	topbar_refresh_radios();
 }
 
@@ -1556,7 +1568,7 @@ static void bt_clicked_cb(lv_event_t *e) {
 		return;
 	}
 	bluetooth_set_enabled(!bluetooth_get_enabled());
-	refresh_audio_buttons();
+	toggled();
 	topbar_refresh_radios();
 }
 
@@ -1608,7 +1620,7 @@ static void airplay_clicked_cb(lv_event_t *e) {
 	}
 
 	airplay_set_enabled(want);
-	refresh_audio_buttons();
+	toggled();
 }
 
 static void mseb_clicked_cb(lv_event_t *e) {
@@ -1618,7 +1630,7 @@ static void mseb_clicked_cb(lv_event_t *e) {
 		return; // the long press that opened the page must not also toggle
 	}
 	musicsettings_set_mseb_enabled(!mseb_get_enabled());
-	refresh_audio_buttons();
+	toggled();
 }
 
 static void eq_clicked_cb(lv_event_t *e) {
@@ -1628,7 +1640,7 @@ static void eq_clicked_cb(lv_event_t *e) {
 		return;
 	}
 	musicsettings_set_eq_enabled(!eq_get_enabled());
-	refresh_audio_buttons();
+	toggled();
 }
 
 static void fade_clicked_cb(lv_event_t *e) {
@@ -1638,7 +1650,7 @@ static void fade_clicked_cb(lv_event_t *e) {
 		return;
 	}
 	musicsettings_set_fade_enabled(!musicsettings_fade_enabled());
-	refresh_audio_buttons();
+	toggled();
 }
 
 // SonixLink, same contract as the radios: a tap switches the server on or off,
@@ -1660,7 +1672,7 @@ static void sonixlink_clicked_cb(lv_event_t *e) {
 	}
 
 	sonixlink_set_enabled(want);
-	refresh_audio_buttons();
+	toggled();
 }
 
 // ---------------------------------------------------------------------------
@@ -1695,7 +1707,7 @@ static void sleep_timer_clicked(sleeptimer_kind_t kind) {
 		gui_notify_popup("quickpanel_sleep_no_length");
 		return;
 	}
-	refresh_audio_buttons();
+	toggled();
 }
 
 static void sleep_music_clicked_cb(lv_event_t *e) {
@@ -1749,7 +1761,7 @@ static void dlna_clicked_cb(lv_event_t *e) {
 	}
 
 	dlna_set_enabled(want);
-	refresh_audio_buttons();
+	toggled();
 }
 
 // Wi-Fi transfer. The server lives only as long as its page is open (see
@@ -1765,7 +1777,7 @@ static void wifi_transfer_clicked_cb(lv_event_t *e) {
 
 	if (wifitransfer_get_enabled()) {
 		wifitransfer_page_stop();
-		refresh_audio_buttons();
+		toggled();
 		return;
 	}
 	if (!wifitransfer_available()) {
@@ -1796,7 +1808,7 @@ static void peq_clicked_cb(lv_event_t *e) {
 		return;
 	}
 	peq_set_enabled(!peq_get_enabled());
-	refresh_audio_buttons();
+	toggled();
 }
 
 // Gapless, the switch on the playback options page: a tap flips it, a hold
@@ -1808,7 +1820,7 @@ static void gapless_clicked_cb(lv_event_t *e) {
 		return;
 	}
 	musicsettings_set_gapless_enabled(!musicsettings_gapless_enabled());
-	refresh_audio_buttons();
+	toggled();
 }
 
 static void gapless_page_cb(lv_event_t *e) {
@@ -1823,7 +1835,7 @@ static void gain_clicked_cb(lv_event_t *e) {
 		return;
 	}
 	musicsettings_set_high_gain(!musicsettings_high_gain());
-	refresh_audio_buttons();
+	toggled();
 }
 
 static void open_page(lv_obj_t *screen) {
