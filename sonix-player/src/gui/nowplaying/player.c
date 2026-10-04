@@ -4304,6 +4304,9 @@ void player_sheet_close(bool animate) {
 	if (was_open && sheet_under && lv_screen_active() != sheet_under) {
 		switch_screen_no_history(sheet_under);
 	}
+	// The page underneath stays loaded while the sheet covers it, so nothing
+	// tells it to look at its list again.
+	medialist_refresh_visible();
 
 	if (!animate) {
 		lv_obj_set_x(player_screen, sheet_width);

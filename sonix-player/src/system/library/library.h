@@ -514,18 +514,17 @@ int library_search(const char *query, int per_category, library_search_cb_t cb, 
 // written, quoted, because SQLite takes anything between double quotes and a
 // mangled name would no longer be the name the user typed.
 //
-// A table answers a name, a track count and which entries are still there from
-// the index, which is one file the card has open already; reading them off .m3u
-// files meant opening every file and a card lookup per entry. The .m3u form is
-// what Backup writes and what Import reads.
+// A table answers a name, a track count and which entries are there from the
+// index, which is one file the card has open already: opening a playlist reads
+// nothing off the card. The .m3u form is what Backup writes and what Import
+// reads.
 //
-// Each row carries what a row on screen needs -- the path, the title and artist
-// to show, the duration -- so opening a playlist does not read tags off the
-// card either. `present` is whether the file was there the last time it was
-// looked for, and `mount` says which mounting of the card that was: a row
-// checked on this mount is trusted, an older one is looked at again. That holds
-// because the player cannot delete a track, so what changes underneath a
-// playlist is the card going somewhere else and coming back.
+// Each row carries the path, the duration, and a title and artist written down
+// when it went in. A row on screen shows the library's title and artist for
+// the track when the library has it, and the written-down ones otherwise. A
+// track the library has is shown; one it does not have is shown when `present`
+// says its file was on the card -- set when the entry goes in, and cleared by
+// a scan or a Detect changes run that walked its folder without finding it.
 // ---------------------------------------------------------------------------
 
 #define LIBRARY_PLAYLIST_PREFIX "M3U_"
@@ -535,8 +534,7 @@ typedef struct {
 	char title[512];
 	char artist[256];
 	long seconds; // -1 when it could not be worked out, as in M3U
-	bool present; // whether the file was there at the last look
-	bool checked; // whether that look happened on the mount in the reader now
+	bool present; // whether the file was on the card (see above)
 } library_playlist_row_t;
 
 // How big one of these is: a path, a title and an artist at full length, near
@@ -560,8 +558,7 @@ bool library_playlist_drop(const char *name);
 // does nothing.
 bool library_playlist_rename(const char *name, const char *new_name);
 
-// Appends a row, creating the playlist if it is not there. `present` and
-// `checked` in `row` are ignored: an entry being added has just been looked at.
+// Appends a row, creating the playlist if it is not there.
 bool library_playlist_append(const char *name, const library_playlist_row_t *row);
 
 // Appending many, one at a time, under one transaction: an import writes
@@ -580,29 +577,19 @@ bool library_playlist_write_end(library_playlist_writer_t *writer, bool keep);
 // them: see the note on the size of one.
 bool library_playlist_append_all(const char *name, const library_playlist_row_t *rows, int count);
 
-// Rows [offset, offset+count) in order, into a buffer the caller owns. Returns
-// how many were written: fewer than asked means the end of the playlist. Read
+// Rows [offset, offset+count) in order, every entry including the hidden ones,
+// with the title and artist a row shows (see above), into a buffer the caller
+// owns. Returns how many were written: fewer than asked means the end of the
+// playlist. Read
 // in pages, so that nothing holds more than a pageful and the index lock is
 // released between them.
 int library_playlist_page(const char *name, int offset, int count, library_playlist_row_t *out);
-
-// Whether any entry has not been looked for on the card since it was last
-// mounted. One indexed question, no rows read.
-bool library_playlist_has_unchecked(const char *name);
 
 // Every row, in order, in one malloc'd array; free() it when done. Two
 // kilobytes a row -- see above -- so this is for a caller that knows the
 // playlist is small. Nothing in the player uses it; the readers all go through
 // library_playlist_page().
 int library_playlist_rows(const char *name, library_playlist_row_t **rows_out);
-
-// Records what a presence walk found, for the rows it got to, against the
-// mount in the reader now. One transaction.
-typedef struct {
-	int index; // the row's position in the array library_playlist_rows() gave
-	bool present;
-} library_playlist_presence_t;
-bool library_playlist_set_presence(const char *name, const library_playlist_presence_t *marks, int count);
 
 // The first row naming this path, gone.
 bool library_playlist_remove_path(const char *name, const char *path);
@@ -611,8 +598,7 @@ bool library_playlist_remove_path(const char *name, const char *path);
 bool library_playlist_contains(const char *name, const char *path);
 
 // Removes the entries at `positions` -- counted as the page shows the list,
-// entries whose file is missing left out -- in one transaction. Returns how
-// many went.
+// hidden entries left out -- in one transaction. Returns how many went.
 int library_playlist_remove_positions(const char *name, const int *positions, int count);
 
 // One entry moved from one position to another, the rest closing up behind it.
@@ -623,8 +609,7 @@ int library_playlist_remove_positions(const char *name, const int *positions, in
 // playlist generation, so a page holding a handle over this list notices.
 bool library_playlist_move(const char *name, int from, int to);
 
-// How many of its tracks are there, from the `present` column alone: no card is
-// touched and no rows are read.
+// How many entries are shown (see above). No card is touched.
 int library_playlist_count(const char *name);
 
 // True once per card: whether the .m3u files that were the playlists have

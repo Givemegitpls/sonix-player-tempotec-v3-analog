@@ -66,6 +66,14 @@ void back_btn_sync_visibility(void);
 // drawn, since the screen belongs to the emulator at that moment.
 void back_btn_force_hidden(bool hidden);
 
+// Hides the chevron while `screen` is the page on screen, for a page that puts
+// up a full-screen dialog with its own close button: two ways out drawn side by
+// side, one of them leaving the page rather than the dialog. Scoped to the
+// page, so the player sheet slid over it and every other page still show the
+// chevron. Pass false with the same screen to put it back; a call naming a
+// different screen than the one recorded leaves the record alone.
+void back_btn_hide_on_screen(lv_obj_t *screen, bool hidden);
+
 // Suspends the drag-to-go-back gesture. For a page that owns the whole panel
 // and needs horizontal touch for itself: a Lua app running full screen, where
 // a sideways drag is the app's input, not a request to leave.

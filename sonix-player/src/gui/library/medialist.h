@@ -77,6 +77,11 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 // to call on a track that has not (it walks two dozen pool rows).
 void medialist_notify_now_playing(void);
 
+// The list on screen brought up to date with the index, for a page that comes
+// back into view without being loaded again: the player sheet sliding off it.
+// Nothing happens when the list has not changed or no list is on screen.
+void medialist_refresh_visible(void);
+
 // The same track list, filled from an explicit set of paths rather than from
 // the index: what a playlist's contents are. There is no query behind it, so
 // this is the one list still held whole in RAM -- a playlist file is a few

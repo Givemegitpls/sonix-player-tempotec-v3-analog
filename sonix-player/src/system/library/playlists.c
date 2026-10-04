@@ -111,7 +111,9 @@ static bool file_for(const char *name, char *out, size_t out_size) {
 // ---------------------------------------------------------------------------
 
 static void strip_eol(char *line);
-static void resolve_entry(const char *line, char *out, size_t out_size);
+static bool read_line(FILE *f, char *line, size_t size);
+static char *line_body(char *line);
+static void resolve_entry(const char *line, const char *base, char *out, size_t out_size);
 
 // What playlists_create() and a fresh playlists_add_track() put at the top.
 #define MARKER_HEADER "#EXTM3U\n#" PLAYLISTS_MARKER "\n"
@@ -150,16 +152,8 @@ static bool file_is_marked(const char *path) {
 
 	bool marked = false;
 	char line[1024];
-	for (int i = 0; i < MARKER_SEARCH_LINES && fgets(line, sizeof(line), f); i++) {
-		char *text = line;
-		if (i == 0 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB &&
-			(unsigned char)text[2] == 0xBF) {
-			text += 3;
-		}
-		while (*text == ' ' || *text == '\t') {
-			text++;
-		}
-		strip_eol(text);
+	for (int i = 0; i < MARKER_SEARCH_LINES && read_line(f, line, sizeof(line)); i++) {
+		char *text = line_body(line);
 		if (!text[0]) {
 			continue;
 		}
@@ -337,7 +331,7 @@ bool playlists_add_track(const char *name, const char *track_path) {
 
 	// Title and artist are written down with the entry, so that drawing the
 	// playlist later is a read of one table and nothing else.
-	library_playlist_row_t row = {{0}, {0}, {0}, -1, true, true};
+	library_playlist_row_t row = {{0}, {0}, {0}, -1, true};
 	copy_capped(row.path, sizeof(row.path), track_path);
 	playlists_track_names(track_path, row.title, sizeof(row.title), row.artist, sizeof(row.artist));
 	row.seconds = track_seconds(track_path);
@@ -386,6 +380,36 @@ static void strip_eol(char *line) {
 	}
 }
 
+// One line of a playlist file, without its end of line. A line longer than the
+// buffer is cut, and the rest of it read past, so its tail does not come back
+// as a line of its own -- a long comment would otherwise turn into an entry.
+static bool read_line(FILE *f, char *line, size_t size) {
+	if (!fgets(line, (int)size, f)) {
+		return false;
+	}
+	size_t len = strlen(line);
+	if (len > 0 && line[len - 1] != '\n') {
+		int c;
+		while ((c = fgetc(f)) != EOF && c != '\n') {
+		}
+	}
+	strip_eol(line);
+	return true;
+}
+
+// Where a line's content starts: past a UTF-8 byte order mark, which some
+// editors put on the first line, and past the blanks in front. A comment is a
+// line whose content starts with '#', wherever the '#' sits.
+static char *line_body(char *line) {
+	if ((unsigned char)line[0] == 0xEF && (unsigned char)line[1] == 0xBB && (unsigned char)line[2] == 0xBF) {
+		line += 3;
+	}
+	while (*line == ' ' || *line == '\t') {
+		line++;
+	}
+	return line;
+}
+
 // Turns one line of a playlist into a path this player can open.
 //
 // The stock HiBy player writes its own playlists the Windows way, with a drive
@@ -396,8 +420,9 @@ static void strip_eol(char *line) {
 // There is no drive `a:` here, so the letter is dropped and the card's mount
 // point put in its place; backslashes become separators. A plain relative path
 // is resolved against the folder the playlist itself is in, which is what every
-// other M3U reader does. An absolute path is already usable and passes through.
-static void resolve_entry(const char *line, char *out, size_t out_size) {
+// other M3U reader does: `base`, or the Playlist folder when it is NULL. An
+// absolute path is already usable and passes through.
+static void resolve_entry(const char *line, const char *base, char *out, size_t out_size) {
 	// Skip a UTF-8 byte order mark: some editors put one on the first line and
 	// it would otherwise become part of the first path.
 	if ((unsigned char)line[0] == 0xEF && (unsigned char)line[1] == 0xBB && (unsigned char)line[2] == 0xBF) {
@@ -421,7 +446,10 @@ static void resolve_entry(const char *line, char *out, size_t out_size) {
 		copy_capped(out, out_size, card_root[0] ? card_root : "");
 		copy_capped(out + strlen(out), out_size - strlen(out), line);
 	} else {
-		copy_capped(out, out_size, dir_path[0] ? dir_path : ".");
+		if (!base) {
+			base = dir_path[0] ? dir_path : ".";
+		}
+		copy_capped(out, out_size, base);
 		copy_capped(out + strlen(out), out_size - strlen(out), "/");
 		copy_capped(out + strlen(out), out_size - strlen(out), line);
 	}
@@ -433,15 +461,9 @@ static void resolve_entry(const char *line, char *out, size_t out_size) {
 	}
 }
 
-// Whether the file an entry points at is actually there.
-//
-// A playlist is a text file and survives the tracks it names, so a dead entry
-// is a row that does nothing when tapped and a hole in the queue when the list
-// is played. Entries whose file is gone are left out of what the player shows.
-//
-// Only out of what is SHOWN. The .m3u on the card is never rewritten for this:
-// a card mounted somewhere else for one boot would otherwise silently delete
-// the user's list.
+// Whether the file an entry points at is actually there. Asked once, when the
+// entry goes in (import, and the move off the card's .m3u files); from then on
+// the library says (see library.h).
 //
 // A CUE track is named by its sheet plus a track number, so it is the sheet
 // that has to exist.
@@ -459,14 +481,6 @@ static bool entry_is_present(const char *path) {
 // How long a single playlist may spend reading tags off the card for entries the
 // library does not know about. See name_entry().
 #define PLAYLIST_TAG_BUDGET_MS 250
-
-// And how long it may spend asking the card whether the files it names are
-// still there. One path lookup an entry is nothing on a warm cache and
-// milliseconds on a cold one, and a stock playlist carries several hundred deep
-// paths: past this the remaining entries are taken on trust, which shows a row
-// that may be dead rather than making the whole list wait. Generous on purpose
-// -- a list that matches its card is checked in full.
-#define PLAYLIST_PRESENCE_BUDGET_MS 1500
 
 // A monotonic millisecond reading. Only ever used as a difference, to bound the
 // work above.
@@ -555,29 +569,28 @@ static int rows_from_file(const char *name, const char *file_path) {
 	bool tags_budget_spent = false;
 	bool ok = true;
 
-	while (ok && fgets(line, sizeof(line), f)) {
-		strip_eol(line);
-		if (!line[0]) {
+	while (ok && read_line(f, line, sizeof(line))) {
+		char *text = line_body(line);
+		if (!text[0]) {
 			continue;
 		}
-		if (line[0] == '#') {
-			if (strncmp(line, "#EXTINF:", 8) == 0) {
-				pending_seconds = strtol(line + 8, NULL, 10);
-				const char *comma = strchr(line + 8, ',');
+		if (text[0] == '#') {
+			if (strncmp(text, "#EXTINF:", 8) == 0) {
+				pending_seconds = strtol(text + 8, NULL, 10);
+				const char *comma = strchr(text + 8, ',');
 				snprintf(pending_title, sizeof(pending_title), "%s", comma ? comma + 1 : "");
 			}
 			continue;
 		}
-		if (is_marker_line(line)) {
+		if (is_marker_line(text)) {
 			continue;
 		}
 
 		library_playlist_row_t row;
 		memset(&row, 0, sizeof(row));
-		resolve_entry(line, row.path, sizeof(row.path));
+		resolve_entry(text, NULL, row.path, sizeof(row.path));
 		row.seconds = pending_seconds;
 		row.present = entry_is_present(row.path);
-		row.checked = true;
 		name_entry(row.path, pending_title, row.title, sizeof(row.title), row.artist, sizeof(row.artist),
 				   &tags_started_ms, &tags_budget_spent);
 		pending_title[0] = '\0';
@@ -596,93 +609,17 @@ static int rows_from_file(const char *name, const char *file_path) {
 	return count;
 }
 
-// ---------------------------------------------------------------------------
-// Is it still there?
-//
-// A row remembers whether its file was on the card the last time anybody
-// looked, and which mounting of the card that was. The list is drawn from what
-// is written down -- instantly, off one table -- and the looking is done
-// afterwards, on a thread, for the rows whose answer predates this mounting.
-//
-// That is what lets a playlist open like the rest of the library instead of
-// after a lookup per entry. The bargain holds because the player cannot delete
-// a track: what changes underneath a playlist is the card being taken somewhere
-// else and brought back.
-// ---------------------------------------------------------------------------
-
 // A pageful at a time, everywhere. See library.h: a row is near enough two
 // kilobytes, so an array of a big playlist's worth of them is megabytes this
 // device does not have.
 #define PLAYLIST_PAGE 32
 
-bool playlists_needs_verify(const char *name) {
-	return name_is_usable(name) && library_playlist_has_unchecked(name);
-}
-
-bool playlists_verify(const char *name) {
-	if (!name_is_usable(name)) {
-		return false;
-	}
-
-	library_playlist_row_t page[PLAYLIST_PAGE];
-	library_playlist_presence_t marks[PLAYLIST_PAGE];
-	int changed = 0, unchecked = 0;
-	uint32_t started_ms = elapsed_ms();
-	bool budget_spent = false;
-
-	for (int offset = 0;; offset += PLAYLIST_PAGE) {
-		int got = library_playlist_page(name, offset, PLAYLIST_PAGE, page);
-		if (got <= 0) {
-			break;
-		}
-		int marked = 0;
-		for (int i = 0; i < got; i++) {
-			if (page[i].checked) {
-				continue;
-			}
-			if (budget_spent) {
-				unchecked++;
-				continue;
-			}
-			bool present = entry_is_present(page[i].path);
-			if (present != page[i].present) {
-				changed++;
-			}
-			marks[marked].index = offset + i;
-			marks[marked].present = present;
-			marked++;
-			// Bounded, and nothing is waiting for it: the rest keep the
-			// answer they carry and are looked at the next time the playlist
-			// is opened.
-			if (elapsed_ms() - started_ms >= PLAYLIST_PRESENCE_BUDGET_MS) {
-				budget_spent = true;
-			}
-		}
-		if (marked > 0) {
-			library_playlist_set_presence(name, marks, marked);
-		}
-		if (got < PLAYLIST_PAGE) {
-			break;
-		}
-	}
-
-	if (unchecked > 0) {
-		fprintf(stderr, "playlists: '%s' took too long to check against the card; %d entr%s left for next time\n", name,
-				unchecked, unchecked == 1 ? "y" : "ies");
-	}
-	if (changed > 0) {
-		fprintf(stderr, "playlists: '%s': %d entr%s no longer say%s what they did about the card\n", name, changed,
-				changed == 1 ? "y" : "ies", changed == 1 ? "s" : "");
-	}
-	return changed > 0;
-}
-
 // ---------------------------------------------------------------------------
 // Opening a playlist, whole
 //
-// One read of one table, and no card at all: the title and the artist were
-// written down when the entry was added, and whether the file is there is a
-// column. The page itself does not use this -- it opens the playlist's table as
+// One read of one table, and no card at all: the title and the artist come
+// from the library or were written down when the entry was added, and whether
+// the file is there is a column. The page itself does not use this -- it opens the playlist's table as
 // a windowed list, the same way Tutti i brani opens the library -- but a caller
 // that wants the lot in one go has it.
 // ---------------------------------------------------------------------------
@@ -988,30 +925,55 @@ bool playlists_import(const char *source_path, playlists_import_result_t *out) {
 	}
 	int count = 0;
 
+	// Relative entries are read against the folder the file is in.
+	char source_dir[512];
+	copy_capped(source_dir, sizeof(source_dir), source_path);
+	char *last_slash = strrchr(source_dir, '/');
+	if (last_slash && last_slash != source_dir) {
+		*last_slash = '\0';
+	} else {
+		copy_capped(source_dir, sizeof(source_dir), last_slash ? "/" : ".");
+	}
+
 	// --- what the file says -------------------------------------------------
 	char line[1024];
 	char pending_title[512] = {0};
 	long pending_seconds = -1;
 
-	while (count < IMPORT_MAX_ENTRIES && fgets(line, sizeof(line), f)) {
-		strip_eol(line);
-		if (!line[0] || is_marker_line(line)) {
+	while (count < IMPORT_MAX_ENTRIES && read_line(f, line, sizeof(line))) {
+		char *text = line_body(line);
+		if (!text[0] || is_marker_line(text)) {
 			continue;
 		}
-		if (line[0] == '#') {
-			if (strncmp(line, "#EXTINF:", 8) == 0) {
-				pending_seconds = strtol(line + 8, NULL, 10);
-				const char *comma = strchr(line + 8, ',');
+		if (text[0] == '#') {
+			if (strncmp(text, "#EXTINF:", 8) == 0) {
+				pending_seconds = strtol(text + 8, NULL, 10);
+				const char *comma = strchr(text + 8, ',');
 				snprintf(pending_title, sizeof(pending_title), "%s", comma ? comma + 1 : "");
 			}
 			continue;
 		}
 
 		char resolved[1024];
-		resolve_entry(line, resolved, sizeof(resolved));
+		resolve_entry(text, source_dir, resolved, sizeof(resolved));
+		bool found = entry_is_present(resolved);
+
+		// A list copied into the Playlist folder often keeps paths written from
+		// the card's root ("Music/..."); one more look there before the entry
+		// goes to the by-name search, which cannot tell two 01.flac apart.
+		if (!found && text[0] != '/' && text[0] != '\\' && card_root[0] && strcmp(source_dir, card_root) != 0 &&
+			!(text[1] == ':' && (text[2] == '\\' || text[2] == '/'))) {
+			char from_root[1024];
+			resolve_entry(text, card_root, from_root, sizeof(from_root));
+			if (entry_is_present(from_root)) {
+				copy_capped(resolved, sizeof(resolved), from_root);
+				found = true;
+			}
+		}
 
 		import_entry_t *entry = &entries[count];
 		entry->path = strdup(resolved);
+		entry->found = found;
 		entry->title = pending_title[0] ? strdup(pending_title) : NULL;
 		entry->seconds = pending_seconds;
 		pending_title[0] = '\0';
@@ -1027,11 +989,6 @@ bool playlists_import(const char *source_path, playlists_import_result_t *out) {
 	if (count == 0) {
 		import_entries_free(entries, count);
 		return false;
-	}
-
-	// --- the ones the card still has where the list says ---------------------
-	for (int i = 0; i < count; i++) {
-		entries[i].found = entry_is_present(entries[i].path);
 	}
 
 	// --- the rest, by file name, in one pass over the index -------------------
@@ -1136,6 +1093,7 @@ bool playlists_import(const char *source_path, playlists_import_result_t *out) {
 		memset(&row, 0, sizeof(row));
 		copy_capped(row.path, sizeof(row.path), entries[i].path);
 		row.seconds = entries[i].seconds;
+		row.present = true; // only the entries found on the card are written
 		name_entry(entries[i].path, entries[i].title, row.title, sizeof(row.title), row.artist, sizeof(row.artist),
 				   &tags_started_ms, &tags_budget_spent);
 		ok = library_playlist_write_row(writer, &row);

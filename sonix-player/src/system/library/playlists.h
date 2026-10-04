@@ -96,17 +96,6 @@ int playlists_count_lines(const char *name);
 // backup.
 bool playlists_file_stamp(const char *name, char *path_out, size_t path_size, long *mtime_out, long *size_out);
 
-// Whether any of a playlist's entries have not been looked for on the card
-// since it was last mounted. The list draws from what is written down either
-// way; this says whether playlists_verify() has anything to do.
-bool playlists_needs_verify(const char *name);
-
-// Looks for the entries above and writes down what it found. One card lookup
-// each, bounded, so this belongs on a thread and not in front of a user: what
-// it is for is the page opening at once and correcting itself a moment later.
-// True when something changed, which is also when the open list reloads.
-bool playlists_verify(const char *name);
-
 // Writes the playlist out as <card>/Playlist/<name>.m3u, replacing an earlier
 // backup of the same name. Every entry goes in, missing files included: a
 // backup is what the playlist holds, and a track off the card today can be back

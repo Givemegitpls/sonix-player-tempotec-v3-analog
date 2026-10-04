@@ -451,6 +451,18 @@ void switch_screen(lv_obj_t *target_screen) {
 	load_screen(target_screen);
 }
 
+// A page with its own close button up -- a full-screen dialog drawn on the page
+// itself -- names its screen here; see back_btn_hide_on_screen().
+static lv_obj_t *chevron_hidden_on;
+
+// The pages the chevron is never drawn on: the main menu has nowhere to go
+// back to, the scan pages exit through their own buttons, and a page showing
+// a dialog with a close button already has its way out.
+static bool page_has_no_chevron(lv_obj_t *screen) {
+	return screen == main_menu_screen || screen == libraryscan_screen || screen == audiobookscan_screen ||
+		   (screen && screen == chevron_hidden_on);
+}
+
 static void load_screen(lv_obj_t *target_screen) {
 	// Every page keeps the status bar. The player is not a page -- it slides
 	// over the top of one -- so nothing here has to make room for it.
@@ -459,8 +471,7 @@ static void load_screen(lv_obj_t *target_screen) {
 	if (back_btn) {
 		// The scan pages have their own way out (cancel / OK) and must not be
 		// left halfway through by the chevron.
-		if (target_screen == main_menu_screen || target_screen == libraryscan_screen ||
-			target_screen == audiobookscan_screen) {
+		if (page_has_no_chevron(target_screen)) {
 			lv_obj_set_hidden(back_btn, true);
 		} else {
 			lv_obj_set_hidden(back_btn, false);
@@ -660,11 +671,20 @@ void back_btn_force_hidden(bool hidden) {
 	back_btn_sync_visibility();
 }
 
+void back_btn_hide_on_screen(lv_obj_t *screen, bool hidden) {
+	if (hidden) {
+		chevron_hidden_on = screen;
+	} else if (chevron_hidden_on == screen) {
+		chevron_hidden_on = NULL;
+	}
+	back_btn_sync_visibility();
+}
+
 // The one rule for the chevron's visibility, re-applied after any animation
-// completes: the open player always shows it, the main menu and the scan pages
-// never do, every other page keeps it. Keeping this idempotent and running it
-// last means no unlucky ordering inside a transition can leave a stray chevron
-// painted on the menu, even for a single frame.
+// completes: the open player always shows it, the pages in
+// page_has_no_chevron() never do, every other page keeps it. Keeping this
+// idempotent and running it last means no unlucky ordering inside a transition
+// can leave a stray chevron painted on the menu, even for a single frame.
 void back_btn_sync_visibility(void) {
 	if (!back_btn) {
 		return;
@@ -677,8 +697,7 @@ void back_btn_sync_visibility(void) {
 		lv_obj_set_hidden(back_btn, false);
 		return;
 	}
-	lv_obj_t *screen = lv_screen_active();
-	if (screen == main_menu_screen || screen == libraryscan_screen || screen == audiobookscan_screen) {
+	if (page_has_no_chevron(lv_screen_active())) {
 		lv_obj_set_hidden(back_btn, true);
 		lv_obj_set_style_translate_x(back_btn, 0, 0);
 	} else {
@@ -700,11 +719,8 @@ void back_btn_player_mode(bool in_player) {
 		lv_obj_set_hidden(back_btn, true);
 	} else if (in_player) {
 		lv_obj_set_hidden(back_btn, false);
-	} else {
-		lv_obj_t *screen = lv_screen_active();
-		if (screen == main_menu_screen || screen == libraryscan_screen || screen == audiobookscan_screen) {
-			lv_obj_set_hidden(back_btn, true);
-		}
+	} else if (page_has_no_chevron(lv_screen_active())) {
+		lv_obj_set_hidden(back_btn, true);
 	}
 	chevron_in_player = in_player;
 	chevron_apply_color();

@@ -243,10 +243,24 @@ static void screen_power(bool on) {
 // Enable/disable every LVGL input device (i.e. the touchscreen). Physical
 // buttons live in their own threads and are unaffected, so volume/power keys
 // keep working while the screen is off -- only stray touches are ignored.
+//
+// On the way back, a finger already on the panel is not a tap on the page.
+// A double-tap wake fires on the second tap's touch-down, and that tap is
+// usually still down when the panel comes back 60 ms later: LVGL would see it
+// as a fresh press and click whatever lies under it on release. The position
+// it reports is not to be trusted either: one the controller sent in doze, or
+// the last touch before the blank, which is often the switch that was just
+// turned on (the Wi-Fi transfer page's own, for one), which the wake would
+// then turn straight off. lv_indev_wait_release() drops that press up to its
+// release; with no finger down it clears on the first read and the next tap
+// goes through as usual.
 static void set_indevs_enabled(bool enable) {
 	lv_indev_t *indev = lv_indev_get_next(NULL);
 	while (indev) {
 		lv_indev_enable(indev, enable);
+		if (enable && lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+			lv_indev_wait_release(indev);
+		}
 		indev = lv_indev_get_next(indev);
 	}
 }

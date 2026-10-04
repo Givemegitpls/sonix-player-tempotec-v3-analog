@@ -1,7 +1,6 @@
 #include "playlistpage.h"
 
 #include <pthread.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -289,24 +288,9 @@ static void name_layer_show(const char *initial);
 //
 // The same windowed list the rest of the library uses: a handle over the
 // playlist's own table, four bytes a row, a bandful of rows read back as the
-// viewport moves. Nothing is read off the card before the first row appears.
-//
-// What is left of the card lookup runs behind the list: verify_worker() looks
-// for the entries nobody has looked for since the card was mounted and writes
-// down what it finds, and if that changes the list, the handle the page is
-// holding goes stale and rebuilds itself. Nothing waits for it.
+// viewport moves. Nothing is read off the card: which entries are shown, and
+// under which names, is the library's to say (library.h).
 // ---------------------------------------------------------------------------
-
-static char verify_name[NAME_MAX + 1];
-static volatile bool verify_running;
-
-static void *verify_worker(void *arg) {
-	(void)arg;
-	thread_be_background("playlistcheck");
-	playlists_verify(verify_name);
-	verify_running = false;
-	return NULL;
-}
 
 static void open_playlist(const char *name) {
 	if (playlists_count_tracks(name) <= 0) {
@@ -315,20 +299,6 @@ static void open_playlist(const char *name) {
 	}
 
 	medialist_open(name, LIBRARY_LIST_PLAYLIST, LIBRARY_FILTER_NONE, name);
-
-	// And only then the card, on a thread, and only when there is anything to
-	// ask it. One at a time: a second playlist opened while the first is still
-	// being checked simply waits for the next visit.
-	if (!verify_running && playlists_needs_verify(name)) {
-		snprintf(verify_name, sizeof(verify_name), "%s", name);
-		verify_running = true;
-		pthread_t thread;
-		if (pthread_create(&thread, NULL, verify_worker, NULL) == 0) {
-			pthread_detach(thread);
-		} else {
-			verify_running = false;
-		}
-	}
 }
 
 static void row_clicked_cb(lv_event_t *e) {
@@ -650,7 +620,6 @@ static bool collect_row_cb(const char *name, void *user) {
 // ---------------------------------------------------------------------------
 
 #define IMPORT_MAX_CANDIDATES 24
-#define IMPORT_REPORT_MAX 3072
 
 static lv_obj_t *import_layer;
 static lv_obj_t *import_heading;
@@ -678,43 +647,114 @@ typedef struct {
 	uint32_t generation;
 } import_job_t;
 
+// One playlist's outcome. The worker only counts; the words are put together
+// on the interface thread, where the report is drawn.
+typedef struct {
+	bool imported; // false: nothing in the file could be used
+	playlists_import_result_t got; // got.name is the file's name when !imported
+} import_entry_t;
+
 typedef struct {
 	uint32_t generation;
 	int imported;
-	char text[IMPORT_REPORT_MAX];
+	int count;
+	import_entry_t entries[IMPORT_MAX_CANDIDATES];
 } import_result_t;
 
 static void import_layer_hide(void);
 
-// Appends to a report that has a fixed size: what does not fit is dropped
-// rather than grown for, because the report is read on a 480-pixel screen.
-static void report_add(char *buf, size_t size, const char *fmt, ...) {
-	size_t len = strlen(buf);
-	if (len + 1 >= size) {
-		return;
+// --- the heading -------------------------------------------------------------
+
+// The heading takes the page title's place, and its size: the chevron is put
+// away while the dialog is up (the close button is the way out), so the text
+// starts at the left margin and runs up to the close button. A translation too
+// long for 32 px steps down rather than being cut.
+static void import_heading_set(const char *key) {
+	static lv_font_t *const STEPS[] = {&font_ui_32, &font_ui_28, &font_ui_26, &font_ui_24};
+	const char *text = tr(key);
+	int width = lv_obj_get_style_width(import_heading, LV_PART_MAIN);
+
+	lv_label_set_text(import_heading, text);
+	for (size_t i = 0; i < sizeof(STEPS) / sizeof(STEPS[0]); i++) {
+		lv_point_t size;
+		lv_text_get_size(&size, text, STEPS[i], 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+		if (size.x <= width || i + 1 == sizeof(STEPS) / sizeof(STEPS[0])) {
+			lv_obj_set_style_text_font(import_heading, STEPS[i], 0);
+			lv_obj_set_height(import_heading, lv_font_get_line_height(STEPS[i]));
+			break;
+		}
 	}
-	va_list args;
-	va_start(args, fmt);
-	vsnprintf(buf + len, size - len, fmt, args);
-	va_end(args);
 }
 
 // --- the report, on the interface thread -----------------------------------
 
-static void import_show_report(const char *text) {
+static lv_obj_t *report_line(lv_obj_t *parent, const char *text, lv_font_t *font, bool dim) {
+	lv_obj_t *label = lv_label_create(parent);
+	lv_label_set_text(label, text);
+	lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(label, lv_pct(100));
+	lv_obj_add_style(label, dim ? &theme_style_text_dim : &theme_style_text, 0);
+	lv_obj_set_style_text_font(label, font, 0);
+	return label;
+}
+
+// One card per playlist: its name at the size of a list row, then what became
+// of its entries, then the names of the ones that were not found.
+static void report_add_entry(const import_entry_t *entry) {
+	lv_obj_t *card = lv_obj_create(import_body);
+	lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_add_style(card, &theme_style_card, 0);
+	lv_obj_set_style_radius(card, ROW_RADIUS, 0);
+	lv_obj_set_style_border_width(card, 0, 0);
+	lv_obj_set_style_shadow_width(card, 0, 0);
+	lv_obj_set_style_pad_hor(card, 16, 0);
+	lv_obj_set_style_pad_ver(card, 14, 0);
+	lv_obj_set_style_pad_row(card, 6, 0);
+	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_scrollable(card, false);
+	lv_obj_set_clickable(card, false);
+
+	const playlists_import_result_t *got = &entry->got;
+	report_line(card, got->name, &font_ui_28, false);
+
+	if (!entry->imported) {
+		report_line(card, tr("playlist_import_nothing_usable"), &font_ui_22, true);
+		return;
+	}
+
+	char line[192];
+	snprintf(line, sizeof(line), tr("playlist_found_d_missing_d"), got->found, got->missing);
+	report_line(card, line, &font_ui_24, false);
+	if (got->by_name > 0) {
+		snprintf(line, sizeof(line), tr("playlist_d_found_again_by_file_name"), got->by_name);
+		report_line(card, line, &font_ui_22, true);
+	}
+	if (got->missing > 0) {
+		report_line(card, tr("playlist_not_found_2"), &font_ui_22, true);
+		for (int m = 0; m < got->missing_listed; m++) {
+			lv_obj_t *name = report_line(card, got->missing_names[m], &font_ui_20, true);
+			lv_obj_set_style_pad_left(name, 14, 0);
+		}
+		if (got->missing > got->missing_listed) {
+			snprintf(line, sizeof(line), tr("playlist_not_listed_d"), got->missing - got->missing_listed);
+			lv_obj_t *more = report_line(card, line, &font_ui_20, true);
+			lv_obj_set_style_pad_left(more, 14, 0);
+		}
+	}
+}
+
+static void import_show_report(const import_result_t *result) {
 	lv_obj_clean(import_body);
 	for (int i = 0; i < IMPORT_MAX_CANDIDATES; i++) {
 		import_ticks[i] = NULL;
 	}
 
-	lv_obj_t *label = lv_label_create(import_body);
-	lv_label_set_text(label, text);
-	lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-	lv_obj_set_width(label, lv_pct(100));
-	lv_obj_add_style(label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(label, &font_ui_16, 0);
+	for (int i = 0; i < result->count; i++) {
+		report_add_entry(&result->entries[i]);
+	}
+	lv_obj_scroll_to_y(import_body, 0, LV_ANIM_OFF);
 
-	lv_label_set_text(import_heading, tr("playlist_import_finished"));
+	import_heading_set("playlist_import_finished");
 	lv_label_set_text(import_action_label, tr("ok"));
 	lv_obj_set_hidden(import_action, false);
 }
@@ -724,7 +764,7 @@ static void import_finished(void *user) {
 	import_running = false;
 
 	if (result->generation == import_generation && import_layer && !lv_obj_is_hidden(import_layer)) {
-		import_show_report(result->text);
+		import_show_report(result);
 	}
 	if (result->imported > 0) {
 		rebuild_rows(); // the page has playlists it did not have a moment ago
@@ -746,35 +786,14 @@ static void *import_worker(void *arg) {
 	result->generation = job->generation;
 
 	for (int i = 0; i < job->count; i++) {
-		playlists_import_result_t got;
-		if (!playlists_import(job->items[i].path, &got)) {
-			report_add(result->text, sizeof(result->text), "%s\n", job->items[i].name);
-			report_add(result->text, sizeof(result->text), "  %s\n\n", tr("playlist_import_nothing_usable"));
+		import_entry_t *entry = &result->entries[result->count++];
+		entry->imported = playlists_import(job->items[i].path, &entry->got);
+		if (!entry->imported) {
+			memset(&entry->got, 0, sizeof(entry->got));
+			snprintf(entry->got.name, sizeof(entry->got.name), "%s", job->items[i].name);
 			continue;
 		}
 		result->imported++;
-
-		// The indentation belongs to the report, not to the translations: a
-		// leading space is the kind of thing a translated line loses.
-		char line[192];
-		report_add(result->text, sizeof(result->text), "%s\n", got.name);
-		snprintf(line, sizeof(line), tr("playlist_found_d_missing_d"), got.found, got.missing);
-		report_add(result->text, sizeof(result->text), "  %s\n", line);
-		if (got.by_name > 0) {
-			snprintf(line, sizeof(line), tr("playlist_d_found_again_by_file_name"), got.by_name);
-			report_add(result->text, sizeof(result->text), "  %s\n", line);
-		}
-		if (got.missing > 0) {
-			report_add(result->text, sizeof(result->text), "  %s\n", tr("playlist_not_found_2"));
-			for (int m = 0; m < got.missing_listed; m++) {
-				report_add(result->text, sizeof(result->text), "   %s\n", got.missing_names[m]);
-			}
-			if (got.missing > got.missing_listed) {
-				snprintf(line, sizeof(line), tr("playlist_not_listed_d"), got.missing - got.missing_listed);
-				report_add(result->text, sizeof(result->text), "   %s\n", line);
-			}
-		}
-		report_add(result->text, sizeof(result->text), "\n");
 	}
 
 	free(job);
@@ -815,10 +834,12 @@ static void import_row_clicked_cb(lv_event_t *e) {
 	import_tick_paint(index);
 }
 
-static void import_start(void) {
+// False when nothing was started -- no playlist ticked, or no thread -- and the
+// rows are still there to choose from.
+static bool import_start(void) {
 	import_job_t *job = calloc(1, sizeof(*job));
 	if (!job) {
-		return;
+		return false;
 	}
 	for (int i = 0; i < import_count; i++) {
 		if (import_selected[i]) {
@@ -828,7 +849,7 @@ static void import_start(void) {
 	if (job->count == 0) {
 		free(job);
 		gui_notify_popup("playlist_choose_at_least_one_playlist");
-		return;
+		return false;
 	}
 	job->generation = import_generation;
 
@@ -836,7 +857,7 @@ static void import_start(void) {
 	if (pthread_create(&thread, NULL, import_worker, job) != 0) {
 		free(job);
 		gui_notify_popup("playlist_cannot_import_the_playlists");
-		return;
+		return false;
 	}
 	pthread_detach(thread);
 	import_running = true;
@@ -854,6 +875,7 @@ static void import_start(void) {
 	lv_obj_add_style(label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(label, &font_ui_24, 0);
 	lv_obj_set_hidden(import_action, true);
+	return true;
 }
 
 static void import_action_cb(lv_event_t *e) {
@@ -867,8 +889,9 @@ static void import_action_cb(lv_event_t *e) {
 	// The same button finishes both states: it starts the import while there
 	// are rows to choose from, and closes the report afterwards.
 	if (import_count > 0) {
-		import_start();
-		import_count = 0; // the rows are gone; the next press closes
+		if (import_start()) {
+			import_count = 0; // the rows are gone; the next press closes
+		}
 		return;
 	}
 	import_layer_hide();
@@ -878,6 +901,7 @@ static void import_layer_hide(void) {
 	if (import_layer) {
 		lv_obj_set_hidden(import_layer, true);
 	}
+	back_btn_hide_on_screen(playlistpage_screen, false);
 	import_generation++;
 	import_count = 0;
 	for (int i = 0; i < IMPORT_MAX_CANDIDATES; i++) {
@@ -902,6 +926,7 @@ char* get_playlist_location_tr(playlists_candidate_t candidate) {
 	case PLAYLIST_LOCATION_PLAYLIST_DATA:
 		return "playlist_in_the_playlist_data_folder";
 	}
+	return "playlist_in_the_root_of_the_card";
 }
 
 static void import_add_candidate_row(int index) {
@@ -975,11 +1000,13 @@ static void import_btn_cb(lv_event_t *e) {
 		import_add_candidate_row(i);
 	}
 
-	lv_label_set_text(import_heading, tr("playlist_import_playlists"));
+	import_heading_set("playlist_import_playlists");
 	lv_label_set_text(import_action_label, tr("playlist_import"));
 	lv_obj_set_hidden(import_action, false);
 	lv_obj_set_hidden(import_layer, false);
 	lv_obj_move_foreground(import_layer);
+	lv_obj_scroll_to_y(import_body, 0, LV_ANIM_OFF);
+	back_btn_hide_on_screen(playlistpage_screen, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1376,11 +1403,14 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_scrollable(import_layer, false);
 	lv_obj_set_hidden(import_layer, true);
 
+	// No chevron while this layer is up, so the heading starts at the margin
+	// and stops short of the close button.
 	import_heading = lv_label_create(import_layer);
-	lv_label_set_text(import_heading, tr("playlist_import_playlists"));
 	lv_obj_add_style(import_heading, &theme_style_text, 0);
-	lv_obj_set_style_text_font(import_heading, &font_ui_24, 0);
-	lv_obj_align(import_heading, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
+	lv_label_set_long_mode(import_heading, LV_LABEL_LONG_DOT);
+	lv_obj_set_width(import_heading, cfg->screen_width - 2 * cfg->padding - 56 - 14);
+	lv_obj_align(import_heading, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 10);
+	import_heading_set("playlist_import_playlists");
 
 	lv_obj_t *import_close = lv_btn_create(import_layer);
 	lv_obj_set_size(import_close, 56, 56);

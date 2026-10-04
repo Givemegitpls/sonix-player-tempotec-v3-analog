@@ -297,6 +297,8 @@ static pthread_mutex_t db_lock = PTHREAD_MUTEX_INITIALIZER;
 // track starred from a list is stored with no artist at all.
 #define FAV_ARTIST \
 	"COALESCE(NULLIF((SELECT m.artist FROM MEDIA_TABLE m WHERE m.path = FAVOURITES.path LIMIT 1), ''), artist)"
+// The title the same way: the library's, then the one written down at starring.
+#define FAV_NAME "COALESCE(NULLIF((SELECT m.name FROM MEDIA_TABLE m WHERE m.path = FAVOURITES.path LIMIT 1), ''), name)"
 
 typedef enum {
 	GEN_MEDIA = 0, // MEDIA_TABLE and the four lookup tables the scan fills
@@ -2119,6 +2121,19 @@ static bool playlist_table(const char *name, char *out, size_t out_size) {
 
 #define PLAYLIST_TABLE_MAX 512
 
+// Which of a playlist's entries are shown, for a query that names the
+// playlist's table `p`: the tracks the library has, and the entries it does not
+// have that were on the card when they went in (`present`). The scans keep
+// `present` for the rest (playlists_follow_library).
+#define PLAYLIST_SHOWN "(p.present<>0 OR EXISTS(SELECT 1 FROM MEDIA_TABLE m WHERE m.path = p.path))"
+
+// The title and artist a playlist row shows: the library's, which follow the
+// tags as they are now, and the ones written down with the entry for a track
+// the library does not have.
+#define PLAYLIST_TITLE "COALESCE(NULLIF((SELECT m.name FROM MEDIA_TABLE m WHERE m.path = p.path LIMIT 1), ''), p.title)"
+#define PLAYLIST_ARTIST                                                                                        \
+	"COALESCE(NULLIF((SELECT m.artist FROM MEDIA_TABLE m WHERE m.path = p.path LIMIT 1), ''), p.artist)"
+
 // The ordered query behind a list, as SQL. `select` is what to ask for, so the
 // same builder serves both the row-id pass and the streaming reader.
 static void list_sql(char *sql, size_t size, const char *select, library_list_t kind, library_filter_t filter,
@@ -2132,7 +2147,7 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 
 	// A playlist is a table of its own, so the name of the table is the value
 	// the caller passed. It runs in the order it was built -- `idx` -- and
-	// leaves out the entries whose file was not there at the last look.
+	// shows what PLAYLIST_SHOWN lets through.
 	if (kind == LIBRARY_LIST_PLAYLIST) {
 		char quoted[PLAYLIST_TABLE_MAX];
 		if (!playlist_table(value, quoted, sizeof(quoted))) {
@@ -2141,7 +2156,8 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 		}
 		// A truncated statement is not a slower statement, it is a different
 		// one, so it is refused rather than run.
-		if (snprintf(sql, size, "SELECT %s FROM %s WHERE present<>0 ORDER BY idx", select, quoted) >= (int)size) {
+		if (snprintf(sql, size, "SELECT %s FROM %s p WHERE " PLAYLIST_SHOWN " ORDER BY p.idx", select, quoted) >=
+			(int)size) {
 			sql[0] = '\0';
 		}
 		return;
@@ -2256,7 +2272,8 @@ static const char *row_by_id_sql(library_list_t kind, const char *value, char *o
 		if (!playlist_table(value, quoted, sizeof(quoted))) {
 			return NULL;
 		}
-		if (snprintf(out, out_size, "SELECT title, path, artist FROM %s WHERE rowid=?", quoted) >= (int)out_size) {
+		if (snprintf(out, out_size, "SELECT " PLAYLIST_TITLE ", p.path, " PLAYLIST_ARTIST " FROM %s p WHERE p.rowid=?",
+					 quoted) >= (int)out_size) {
 			return NULL;
 		}
 		return out;
@@ -2283,7 +2300,7 @@ static const char *row_by_id_sql(library_list_t kind, const char *value, char *o
 	case LIBRARY_LIST_GENRES:
 		return "SELECT genre, NULL, NULL FROM GENRE_TABLE WHERE rowid=?";
 	case LIBRARY_LIST_FAVOURITES:
-		return "SELECT name, path, " FAV_ARTIST " FROM FAVOURITES WHERE rowid=?";
+		return "SELECT " FAV_NAME ", path, " FAV_ARTIST " FROM FAVOURITES WHERE rowid=?";
 	default:
 		return NULL;
 	}
@@ -2327,8 +2344,8 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 				  (kind == LIBRARY_LIST_ALBUMS && (filter == LIBRARY_FILTER_ARTIST ||
 												   filter == LIBRARY_FILTER_ALBUM_ARTIST || filter == LIBRARY_FILTER_GENRE)));
 
-	char count_sql[512];
-	char rows_sql[512];
+	char count_sql[PLAYLIST_TABLE_MAX + 256];
+	char rows_sql[PLAYLIST_TABLE_MAX + 256];
 	char rows_select[64];
 	// A second column, for the A-Z buckets counted in this same pass.
 	//
@@ -2498,7 +2515,7 @@ int library_index_window(const library_index_t *ix, int offset, int count, libra
 		count = ix->count - offset;
 	}
 
-	char sql_buf[PLAYLIST_TABLE_MAX + 96];
+	char sql_buf[PLAYLIST_TABLE_MAX + 384];
 	const char *sql = row_by_id_sql(ix->kind, ix->value, sql_buf, sizeof(sql_buf));
 	if (!sql) {
 		return 0;
@@ -2608,13 +2625,13 @@ int library_index_find_path(const library_index_t *ix, const char *path) {
 	// playlist's own table: looking the path up in MEDIA_TABLE and comparing
 	// that row id against them matches by coincidence, and the queue then jumps
 	// to whatever track happens to sit at that number.
-	char sql[PLAYLIST_TABLE_MAX + 64];
+	char sql[PLAYLIST_TABLE_MAX + 160];
 	if (ix->kind == LIBRARY_LIST_PLAYLIST) {
 		char quoted[PLAYLIST_TABLE_MAX];
 		if (!playlist_table(ix->value, quoted, sizeof(quoted))) {
 			return -1;
 		}
-		if (snprintf(sql, sizeof(sql), "SELECT rowid FROM %s WHERE path = ? AND present<>0", quoted) >=
+		if (snprintf(sql, sizeof(sql), "SELECT p.rowid FROM %s p WHERE p.path = ? AND " PLAYLIST_SHOWN, quoted) >=
 			(int)sizeof(sql)) {
 			return -1;
 		}
@@ -4933,6 +4950,78 @@ static bool in_walked_folders(const char *path) {
 	return false;
 }
 
+// Keeps `present` (PLAYLIST_SHOWN) in step with the library, after a scan or a
+// Detect changes run that went to the end. An entry inside the walked folders
+// that the library does not have is a file that is not on the card, or not one
+// the player plays, and is hidden; one outside them is left as it is, since
+// nothing here has looked. A track the library has is shown whatever `present`
+// says. On the scan thread, with nothing locked.
+static void playlists_follow_library(void) {
+	char **names = NULL;
+	int count = library_playlist_names(&names);
+	int hidden = 0;
+
+	for (int i = 0; i < count && !scan_cancel; i++) {
+		char quoted[PLAYLIST_TABLE_MAX];
+		if (!playlist_table(names[i], quoted, sizeof(quoted))) {
+			continue;
+		}
+		char read_sql[PLAYLIST_TABLE_MAX + 160];
+		char write_sql[PLAYLIST_TABLE_MAX + 64];
+		snprintf(read_sql, sizeof(read_sql),
+				 "SELECT p.rowid, p.path FROM %s p WHERE p.present<>0"
+				 " AND NOT EXISTS(SELECT 1 FROM MEDIA_TABLE m WHERE m.path = p.path)",
+				 quoted);
+		snprintf(write_sql, sizeof(write_sql), "UPDATE %s SET present=0 WHERE rowid=?", quoted);
+
+		pthread_mutex_lock(&db_lock);
+		sqlite3_int64 *ids = NULL;
+		int found = 0, capacity = 0;
+		sqlite3_stmt *stmt = NULL;
+		if (db && sqlite3_prepare_v2(db, read_sql, -1, &stmt, NULL) == SQLITE_OK) {
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				const char *path = (const char *)sqlite3_column_text(stmt, 1);
+				if (!path || !in_walked_folders(path)) {
+					continue;
+				}
+				if (found == capacity) {
+					int wanted = capacity ? capacity * 2 : 64;
+					sqlite3_int64 *grown = realloc(ids, (size_t)wanted * sizeof(*ids));
+					if (!grown) {
+						break;
+					}
+					ids = grown;
+					capacity = wanted;
+				}
+				ids[found++] = sqlite3_column_int64(stmt, 0);
+			}
+			sqlite3_finalize(stmt);
+		}
+		if (found > 0 && exec("BEGIN")) {
+			stmt = NULL;
+			bool ok = sqlite3_prepare_v2(db, write_sql, -1, &stmt, NULL) == SQLITE_OK;
+			for (int k = 0; k < found && ok; k++) {
+				sqlite3_bind_int64(stmt, 1, ids[k]);
+				ok = sqlite3_step(stmt) == SQLITE_DONE;
+				sqlite3_reset(stmt);
+			}
+			sqlite3_finalize(stmt);
+			exec(ok ? "COMMIT" : "ROLLBACK");
+			if (ok) {
+				hidden += found;
+				bump_generation(GEN_PLAYLISTS);
+			}
+		}
+		pthread_mutex_unlock(&db_lock);
+		free(ids);
+	}
+
+	library_playlist_names_free(names, count);
+	if (hidden > 0) {
+		printf("library: %d playlist entr%s no longer on the card\n", hidden, hidden == 1 ? "y is" : "ies are");
+	}
+}
+
 static int id_cmp(const void *a, const void *b) {
 	sqlite3_int64 x = *(const sqlite3_int64 *)a, y = *(const sqlite3_int64 *)b;
 	return (x > y) - (x < y);
@@ -5514,12 +5603,18 @@ static void *scan_thread_func(void *arg) {
 	switch (scan_mode) {
 	case SCAN_FULL:
 		full_scan_run();
-		if (!scan_cancel && !scan_db_failed && update_listener) {
-			update_listener(LIBRARY_UPDATE_SCANNED, 0, 0, 0);
+		if (!scan_cancel && !scan_db_failed) {
+			playlists_follow_library();
+			if (update_listener) {
+				update_listener(LIBRARY_UPDATE_SCANNED, 0, 0, 0);
+			}
 		}
 		break;
 	case SCAN_UPDATE:
 		update_run();
+		if (update_outcome == LIBRARY_UPDATE_FINISHED && !scan_cancel && !scan_db_failed) {
+			playlists_follow_library();
+		}
 		break;
 	case SCAN_REORGANIZE:
 		break;
@@ -5904,7 +5999,8 @@ static void next_mount_serial(void) {
 
 
 // The statement a playlist's table is made with. `idx` orders the rows and is
-// what the user sees as the order of the list.
+// what the user sees as the order of the list. `mount` is neither read nor
+// written; it stays so every playlist table has the one shape.
 static bool playlist_create_locked(const char *quoted) {
 	char sql[PLAYLIST_TABLE_MAX + 200];
 	snprintf(sql, sizeof(sql),
@@ -6061,7 +6157,7 @@ bool library_playlist_rename(const char *name, const char *new_name) {
 // One row in, with the table already made and the lock already held.
 static bool playlist_append_locked(const char *quoted, const library_playlist_row_t *row) {
 	char sql[PLAYLIST_TABLE_MAX + 160];
-	snprintf(sql, sizeof(sql), "INSERT INTO %s(path,title,artist,seconds,present,mount) VALUES(?,?,?,?,1,?)", quoted);
+	snprintf(sql, sizeof(sql), "INSERT INTO %s(path,title,artist,seconds,present) VALUES(?,?,?,?,?)", quoted);
 
 	sqlite3_stmt *stmt = NULL;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -6071,7 +6167,7 @@ static bool playlist_append_locked(const char *quoted, const library_playlist_ro
 	sqlite3_bind_text(stmt, 2, row->title, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, row->artist, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 4, row->seconds);
-	sqlite3_bind_int64(stmt, 5, mount_serial);
+	sqlite3_bind_int(stmt, 5, row->present ? 1 : 0);
 	bool ok = sqlite3_step(stmt) == SQLITE_DONE;
 	sqlite3_finalize(stmt);
 	return ok;
@@ -6091,7 +6187,7 @@ bool library_playlist_append(const char *name, const library_playlist_row_t *row
 	return ok;
 }
 
-// One row out of a statement that selected path,title,artist,seconds,present,mount.
+// One row out of a statement that selected path,title,artist,seconds,present.
 static void playlist_row_read(sqlite3_stmt *stmt, library_playlist_row_t *row) {
 	const char *text = (const char *)sqlite3_column_text(stmt, 0);
 	snprintf(row->path, sizeof(row->path), "%s", text ? text : "");
@@ -6101,7 +6197,6 @@ static void playlist_row_read(sqlite3_stmt *stmt, library_playlist_row_t *row) {
 	snprintf(row->artist, sizeof(row->artist), "%s", text ? text : "");
 	row->seconds = (long)sqlite3_column_int64(stmt, 3);
 	row->present = sqlite3_column_int(stmt, 4) != 0;
-	row->checked = sqlite3_column_int64(stmt, 5) == mount_serial;
 }
 
 int library_playlist_page(const char *name, int offset, int count, library_playlist_row_t *out) {
@@ -6110,9 +6205,10 @@ int library_playlist_page(const char *name, int offset, int count, library_playl
 		return 0;
 	}
 
-	char sql[PLAYLIST_TABLE_MAX + 128];
+	char sql[PLAYLIST_TABLE_MAX + 384];
 	if (snprintf(sql, sizeof(sql),
-				 "SELECT path,title,artist,seconds,present,mount FROM %s ORDER BY idx LIMIT ? OFFSET ?",
+				 "SELECT p.path, " PLAYLIST_TITLE ", " PLAYLIST_ARTIST ", p.seconds, p.present FROM %s p"
+				 " ORDER BY p.idx LIMIT ? OFFSET ?",
 				 quoted) >= (int)sizeof(sql)) {
 		return 0;
 	}
@@ -6133,33 +6229,6 @@ int library_playlist_page(const char *name, int offset, int count, library_playl
 	}
 	pthread_mutex_unlock(&db_lock);
 	return got;
-}
-
-bool library_playlist_has_unchecked(const char *name) {
-	char quoted[PLAYLIST_TABLE_MAX];
-	if (!playlist_table(name, quoted, sizeof(quoted))) {
-		return false;
-	}
-	char sql[PLAYLIST_TABLE_MAX + 96];
-	// "IS NOT" and not "<>": a row written before the column existed holds
-	// NULL, and NULL <> anything is NULL, which is not true and would leave
-	// those rows never looked at.
-	if (snprintf(sql, sizeof(sql), "SELECT 1 FROM %s WHERE mount IS NOT ? LIMIT 1", quoted) >= (int)sizeof(sql)) {
-		return false;
-	}
-
-	bool any = false;
-	pthread_mutex_lock(&db_lock);
-	if (db && playlist_table_exists_locked(name)) {
-		sqlite3_stmt *stmt = NULL;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
-			sqlite3_bind_int64(stmt, 1, mount_serial);
-			any = sqlite3_step(stmt) == SQLITE_ROW;
-			sqlite3_finalize(stmt);
-		}
-	}
-	pthread_mutex_unlock(&db_lock);
-	return any;
 }
 
 // How many rows there are at all, present or not: what a full read has to make
@@ -6245,7 +6314,7 @@ library_playlist_writer_t *library_playlist_write_begin(const char *name) {
 	}
 
 	char sql[PLAYLIST_TABLE_MAX + 160];
-	snprintf(sql, sizeof(sql), "INSERT INTO %s(path,title,artist,seconds,present,mount) VALUES(?,?,?,?,1,?)", quoted);
+	snprintf(sql, sizeof(sql), "INSERT INTO %s(path,title,artist,seconds,present) VALUES(?,?,?,?,?)", quoted);
 
 	pthread_mutex_lock(&db_lock);
 	if (!db || !playlist_create_locked(quoted) || sqlite3_prepare_v2(db, sql, -1, &writer->stmt, NULL) != SQLITE_OK) {
@@ -6268,7 +6337,7 @@ bool library_playlist_write_row(library_playlist_writer_t *writer, const library
 	sqlite3_bind_text(writer->stmt, 2, row->title, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(writer->stmt, 3, row->artist, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(writer->stmt, 4, row->seconds);
-	sqlite3_bind_int64(writer->stmt, 5, mount_serial);
+	sqlite3_bind_int(writer->stmt, 5, row->present ? 1 : 0);
 	bool ok = sqlite3_step(writer->stmt) == SQLITE_DONE;
 	pthread_mutex_unlock(&db_lock);
 
@@ -6314,42 +6383,6 @@ bool library_playlist_append_all(const char *name, const library_playlist_row_t 
 	return library_playlist_write_end(writer, ok);
 }
 
-bool library_playlist_set_presence(const char *name, const library_playlist_presence_t *marks, int count) {
-	char quoted[PLAYLIST_TABLE_MAX];
-	if (!marks || count <= 0 || !playlist_table(name, quoted, sizeof(quoted))) {
-		return false;
-	}
-
-	// By position in the ordered read, which is what the caller walked, turned
-	// back into the row's own idx by the same ORDER BY.
-	char sql[PLAYLIST_TABLE_MAX * 2 + 200];
-	snprintf(sql, sizeof(sql),
-			 "UPDATE %s SET present=?, mount=? WHERE idx=(SELECT idx FROM %s ORDER BY idx LIMIT 1 OFFSET ?)", quoted,
-			 quoted);
-
-	pthread_mutex_lock(&db_lock);
-	bool ok = db != NULL;
-	if (ok) {
-		exec("BEGIN");
-		sqlite3_stmt *stmt = NULL;
-		ok = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK;
-		for (int i = 0; i < count && ok; i++) {
-			sqlite3_bind_int(stmt, 1, marks[i].present ? 1 : 0);
-			sqlite3_bind_int64(stmt, 2, mount_serial);
-			sqlite3_bind_int(stmt, 3, marks[i].index);
-			ok = sqlite3_step(stmt) == SQLITE_DONE;
-			sqlite3_reset(stmt);
-		}
-		sqlite3_finalize(stmt);
-		exec(ok ? "COMMIT" : "ROLLBACK");
-		// The list a page is showing leaves out what is not there, so a row
-		// that has just changed its mind about that changes the list.
-		bump_generation(GEN_PLAYLISTS);
-	}
-	pthread_mutex_unlock(&db_lock);
-	return ok;
-}
-
 // Moves one entry of a playlist from one position to another.
 //
 // Positions, not row ids: `idx` is the primary key and orders the table, but it
@@ -6369,19 +6402,19 @@ bool library_playlist_move(const char *name, int from, int to) {
 		return false;
 	}
 
-	char read_sql[PLAYLIST_TABLE_MAX + 80];
+	char read_sql[PLAYLIST_TABLE_MAX + 160];
 	char write_sql[PLAYLIST_TABLE_MAX + 80];
-	// present<>0, exactly as the list the user is dragging on is built
-	// (library_list_sql). The page leaves out entries whose file is not on the
-	// card, so its positions count only those; reading them back unfiltered
-	// would count the missing ones too and move the wrong row.
+	// PLAYLIST_SHOWN, exactly as the list the user is dragging on is built
+	// (list_sql). The page leaves out entries whose file is not on the card, so
+	// its positions count only those; reading them back unfiltered would count
+	// the missing ones too and move the wrong row.
 	//
 	// An entry that is not shown keeps its idx, so it is never moved and never
 	// lost -- but it does not keep its neighbours either, because the shown ones
 	// are permuted among the idx values they occupied and a hidden entry between
 	// two of them can end up on the other side. There is no better answer: it is
 	// an order between rows nobody is looking at.
-	snprintf(read_sql, sizeof(read_sql), "SELECT idx FROM %s WHERE present<>0 ORDER BY idx LIMIT ? OFFSET ?",
+	snprintf(read_sql, sizeof(read_sql), "SELECT p.idx FROM %s p WHERE " PLAYLIST_SHOWN " ORDER BY p.idx LIMIT ? OFFSET ?",
 			 quoted);
 	snprintf(write_sql, sizeof(write_sql), "UPDATE %s SET idx=? WHERE idx=?", quoted);
 
@@ -6516,12 +6549,13 @@ int library_playlist_remove_positions(const char *name, const int *positions, in
 	if (!positions || count <= 0 || !playlist_table(name, quoted, sizeof(quoted))) {
 		return 0;
 	}
-	// Positions counted as the page counts them, present<>0 (see
+	// Positions counted as the page counts them, PLAYLIST_SHOWN (see
 	// library_playlist_move). Every idx is read before anything is deleted,
 	// since each deletion moves the positions after it.
-	char read_sql[PLAYLIST_TABLE_MAX + 80];
+	char read_sql[PLAYLIST_TABLE_MAX + 160];
 	char delete_sql[PLAYLIST_TABLE_MAX + 40];
-	snprintf(read_sql, sizeof(read_sql), "SELECT idx FROM %s WHERE present<>0 ORDER BY idx LIMIT 1 OFFSET ?", quoted);
+	snprintf(read_sql, sizeof(read_sql), "SELECT p.idx FROM %s p WHERE " PLAYLIST_SHOWN " ORDER BY p.idx LIMIT 1 OFFSET ?",
+			 quoted);
 	snprintf(delete_sql, sizeof(delete_sql), "DELETE FROM %s WHERE idx=?", quoted);
 
 	int64_t *keys = calloc((size_t)count, sizeof(*keys));
@@ -6578,8 +6612,8 @@ int library_playlist_count(const char *name) {
 	pthread_mutex_lock(&db_lock);
 	int count = 0;
 	if (db && playlist_table_exists_locked(name)) {
-		char sql[PLAYLIST_TABLE_MAX + 64];
-		snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s WHERE present<>0", quoted);
+		char sql[PLAYLIST_TABLE_MAX + 160];
+		snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s p WHERE " PLAYLIST_SHOWN, quoted);
 		sqlite3_stmt *stmt = NULL;
 		if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
 			if (sqlite3_step(stmt) == SQLITE_ROW) {

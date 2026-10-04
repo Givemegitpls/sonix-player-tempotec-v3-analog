@@ -877,6 +877,12 @@ static void refresh_stale_source(void) {
 	// of an array of ints, not the bounded outward search playlist_locate does
 	// -- after a rescan the track can have moved anywhere.
 	int start = playing[0] ? library_index_find_path(fresh, playing) : -1;
+	// Nothing could be read of the old list, not even the track the queue was
+	// just started on: the same entry of the list read again, which is the
+	// track that was asked for when the list itself has not changed.
+	if (start < 0 && !playing[0] && order && entry_count && order[pos] < (size_t)fresh_count) {
+		start = (int)order[pos];
+	}
 
 	size_t appended = appended_count();
 	library_index_close(source_ix);

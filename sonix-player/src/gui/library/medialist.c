@@ -144,6 +144,7 @@ typedef struct {
 	bool thumb_requested;
 	bool thumb_settled;
 	cover_image_t thumb;
+	char thumb_path[512]; // the file the picture, or the request for it, is of
 } row_t;
 
 // Everything one of the two screens owns.
@@ -447,10 +448,10 @@ static void panel_refresh_stale(panel_t *p) {
 	p->window_first = -1;
 	p->window_count = 0;
 
-	// The rows underneath have moved, so every pooled row has to be bound
-	// again, and the letters have to be counted again.
+	// The rows underneath may have moved, so every pooled row has to be bound
+	// again, and the letters have to be counted again. A row that comes back
+	// with the same file keeps its picture (row_bind).
 	for (int i = 0; i < ROW_POOL; i++) {
-		row_drop_thumb(p, &p->rows[i]);
 		p->rows[i].index = -2;
 	}
 	lv_obj_set_height(p->body, p->count ? p->count * ROW_PITCH : ROW_PITCH);
@@ -654,6 +655,7 @@ static void row_drop_thumb(panel_t *p, row_t *row) {
 
 	row->thumb_requested = false;
 	row->thumb_settled = false;
+	row->thumb_path[0] = '\0';
 }
 
 // ---------------------------------------------------------------------------
@@ -1381,20 +1383,22 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 		return;
 	}
 
-	row_drop_thumb(p, row);
-	row->index = index;
-
-	if (index < 0 || index >= p->count) {
-		lv_obj_set_hidden(row->button, true);
-		return;
-	}
-
 	const char *name = NULL;
 	const char *path = NULL;
-	if (!row_at(p, index, &name, &path)) {
-		// The handle went stale under the list, or the row is gone. Hiding the
-		// row is what a reload will fix; drawing a neighbour's name would not
-		// look like a fault at all.
+	bool found = index >= 0 && index < p->count && row_at(p, index, &name, &path);
+
+	// The same file as before -- the list read again under the row, or the row
+	// back where it was -- keeps its picture, or the request already made for
+	// it, rather than being emptied and loaded again.
+	if (!found || !path || !row->thumb_path[0] || strcmp(path, row->thumb_path) != 0) {
+		row_drop_thumb(p, row);
+	}
+	row->index = index;
+
+	if (!found) {
+		// Past the end, or the handle went stale under the list, or the row is
+		// gone. Hiding the row is what a reload will fix; drawing a neighbour's
+		// name would not look like a fault at all.
 		lv_obj_set_hidden(row->button, true);
 		return;
 	}
@@ -1411,7 +1415,11 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 	// loaded right now.
 	if (panel_shows_icons(p)) {
 		lv_obj_set_hidden(row->icon, false);
-		row_show_glyph(p, row);
+		if (row->has_thumb) {
+			row_show_cover(row, &row->thumb.dsc);
+		} else {
+			row_show_glyph(p, row);
+		}
 	} else {
 		lv_obj_set_hidden(row->icon, true);
 	}
@@ -1438,7 +1446,17 @@ static void thumbs_update(panel_t *p) {
 		}
 
 		const char *source = NULL;
-		if (!row_at(p, row->index, NULL, &source) || !source) {
+		if (!row_at(p, row->index, NULL, &source)) {
+			// The list went stale under the row: the next window_update() reads
+			// it again and binds the row anew. Not "no artwork".
+			if (!p->from_paths && library_index_stale(p->ix)) {
+				anything_pending = true;
+				continue;
+			}
+			row->thumb_settled = true;
+			continue;
+		}
+		if (!source) {
 			row->thumb_settled = true; // nothing to load art from
 			continue;
 		}
@@ -1446,6 +1464,7 @@ static void thumbs_update(panel_t *p) {
 		if (!row->thumb_requested) {
 			coverloader_request(row_slot(p, row), source, THUMB_SIZE);
 			row->thumb_requested = true;
+			snprintf(row->thumb_path, sizeof(row->thumb_path), "%s", source);
 		}
 
 		bool finished = false;
@@ -1474,11 +1493,14 @@ static void thumb_timer_cb(lv_timer_t *timer) {
 	// left out of this list asks the worker for its jackets and has nobody to
 	// collect them, so its covers only appear when something else calls
 	// window_update() by hand.
+	//
+	// window_update() rather than thumbs_update() alone, so a list that went
+	// stale while its covers were loading is read again and finishes them.
 	panel_t *const panels[] = {&panel_names, &panel_tracks, &panel_artist_albums};
 	lv_obj_t *active = lv_screen_active();
 	for (size_t i = 0; i < sizeof(panels) / sizeof(panels[0]); i++) {
 		if (active == panels[i]->screen) {
-			thumbs_update(panels[i]);
+			window_update(panels[i]);
 			return;
 		}
 	}
@@ -1522,6 +1544,17 @@ static void window_update(panel_t *p) {
 	panel_refresh_playmarks(p);
 
 	thumbs_update(p);
+}
+
+void medialist_refresh_visible(void) {
+	panel_t *const panels[] = {&panel_names, &panel_tracks, &panel_artist_albums};
+	lv_obj_t *active = lv_screen_active();
+	for (size_t i = 0; i < sizeof(panels) / sizeof(panels[0]); i++) {
+		if (panels[i]->rows[0].button && active == panels[i]->screen) {
+			window_update(panels[i]);
+			return;
+		}
+	}
 }
 
 // Every row of every panel bound again, for a setting that changes what a row
@@ -2151,17 +2184,16 @@ static void row_clicked_cb(lv_event_t *e) {
 		bool queued = false;
 		if (!p->from_paths) {
 			// The same refresh menu_tracks_open() does, and for the same reason:
-			// a clone of a stale handle is stale too, the queue cannot read the
-			// path of the row it was told to start on, and it falls back to the
-			// first entry of the list. On a playlist the handle is stale almost
-			// always -- opening one starts a background pass over its files that
-			// bumps the generation.
+			// a clone of a stale handle is stale too, and the queue cannot read
+			// the path of the row it was told to start on. The rows are bound
+			// again with it, so the list the player sheet slides back over is
+			// the one the handle holds.
 			//
 			// It also keeps the reopen off the audio thread's back: done here,
 			// the index is current before playback is asked for, instead of
 			// being rebuilt inside playlist_current_path() while the playback
 			// thread is trying to take the Bluetooth transport again.
-			panel_refresh_stale(p);
+			window_update(p);
 			if (index >= p->count) {
 				return; // the list got shorter under the finger
 			}
@@ -2638,14 +2670,10 @@ static library_index_t *menu_tracks_open(panel_t *p) {
 
 	// The handle the queue is about to be built from has to be the current one.
 	// Row ids are only a promise, and a stale handle hands out a clone that is
-	// stale too: library_index_window() refuses it, the queue cannot read the
-	// path of the track it was told to start on, and it falls back to entry 0.
-	//
-	// This is not a theoretical window: opening a playlist starts a background
-	// pass that checks whether its files are still on the card, and that pass
-	// bumps the playlist generation a fraction of a second after the page
-	// appears, so the page is stale almost immediately, every time.
-	panel_refresh_stale(p);
+	// stale too: library_index_window() refuses it and the queue cannot read the
+	// path of the track it was told to start on. The rows are bound again with
+	// it.
+	window_update(p);
 
 	library_index_t *ix = NULL;
 	if (p->kind == LIBRARY_LIST_TRACKS || p->kind == LIBRARY_LIST_FAVOURITES || p->kind == LIBRARY_LIST_PLAYLIST) {
