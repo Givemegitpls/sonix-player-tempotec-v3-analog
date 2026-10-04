@@ -66,9 +66,11 @@ void led_set_on_charger(bool present);
 
 // Picks the pattern for what is playing (shown when not charging). `playing`
 // false or rate 0 falls back to the idle aqua. `podcast` true paints the
-// purple (pattern 10) instead of the sample-rate colour. Cheap to call
-// repeatedly: only writes on change.
-void led_update_playback(bool playing, int sample_rate, bool podcast);
+// purple (pattern 10) instead of the sample-rate colour, and `dsd` true the
+// white (pattern 11): a DSD file goes to the DAC over DoP, at a PCM carrier
+// rate of 176.4 kHz and up that would otherwise read as hi-res PCM. Cheap to
+// call repeatedly: only writes on change.
+void led_update_playback(bool playing, int sample_rate, bool podcast, bool dsd);
 
 // Wi-Fi transfer active: pattern 12 (a register added by hand to the driver
 // script). Stays lit with the screen off, since it indicates the server is

@@ -62,6 +62,7 @@ static bool s_charging;
 static bool s_playing;
 static int s_rate;
 static bool s_podcast;		 // what is playing is a podcast episode
+static bool s_dsd;			 // ...or a DSD file, whatever its carrier rate
 static bool s_wifi_transfer; // a Wi-Fi transfer is active
 static bool s_bt_receiver;	 // Bluetooth receiver mode is on
 static bool s_dac_active;	 // DAC mode is on: the gadget is up
@@ -106,8 +107,9 @@ static void set_pattern(int pattern) {
 }
 
 static int rate_pattern(int sample_rate) {
-	// The same rate thresholds the stock player uses. DSD would enter as its
-	// PCM-equivalent rate (2822400 and up) if a DSD decoder ever lands.
+	// The same rate thresholds the stock player uses. A DSD file is told apart
+	// by its own flag (see led_update_playback): over DoP its rate is that of
+	// the PCM carrying it. A source at a DSD bit rate is white all the same.
 	if (sample_rate >= 2822400) {
 		return PATTERN_DSD_WHITE;
 	}
@@ -155,7 +157,10 @@ static void apply(void) {
 		// Playback always shows its colour (red while actually charging, the
 		// stock priority). A podcast has its own colour, purple, whatever the
 		// sample rate: it says what is being listened to, not how it is sampled.
-		pattern = charging_now ? PATTERN_CHARGING_RED : s_podcast ? PATTERN_PODCAST_PURPLE : rate_pattern(s_rate);
+		pattern = charging_now ? PATTERN_CHARGING_RED
+				  : s_podcast  ? PATTERN_PODCAST_PURPLE
+				  : s_dsd	   ? PATTERN_DSD_WHITE
+							   : rate_pattern(s_rate);
 	} else if (s_dac_streaming && s_dac_rate > 0) {
 		// In DAC mode nothing plays through audio.c, so s_playing is false and
 		// the LED went dark twenty seconds after the screen did -- with the
@@ -249,10 +254,11 @@ void led_set_on_charger(bool present) {
 	apply();
 }
 
-void led_update_playback(bool playing, int sample_rate, bool podcast) {
+void led_update_playback(bool playing, int sample_rate, bool podcast, bool dsd) {
 	s_playing = playing && sample_rate > 0;
 	s_rate = sample_rate;
 	s_podcast = podcast;
+	s_dsd = dsd;
 	if (s_playing) {
 		s_last_playing = time(NULL);
 	}
