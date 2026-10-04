@@ -801,11 +801,9 @@ static void card_databases_detach(void) {
 	printf("storage: card databases closed for removal\n");
 }
 
-// True when it started a Detect changes run, whose notice then speaks for the
-// card (see library_card_returned).
-static bool card_databases_attach(const char *root) {
+static void card_databases_attach(const char *root) {
 	if (card_attached) {
-		return false;
+		return;
 	}
 	card_attached = true;
 
@@ -821,10 +819,9 @@ static bool card_databases_attach(const char *root) {
 	snprintf(path, sizeof(path), "%.*s/.local/audiobooks.db", room, root);
 	audiobookdb_open(path);
 
-	// The card may have been written somewhere else while it was out. Asked
-	// for here, as soon as the index is open, so the notice is up while the
-	// rest below is still being reopened.
-	bool checking = library_card_returned(root);
+	// The card may have been written somewhere else while it was out: looked
+	// over in the background, as soon as the index is open.
+	library_card_returned(root);
 
 	// Everything else that keeps a path on the card. These only cache a
 	// directory and open files on demand, but the directory is derived once, so
@@ -850,7 +847,6 @@ static bool card_databases_attach(const char *root) {
 	btlog_card_attach(root);
 
 	printf("storage: card databases reopened on %s\n", root);
-	return checking;
 }
 
 void storage_card_files_recheck(void) {
@@ -1056,12 +1052,8 @@ void *sd_hotplug_thread(void *arg) {
 				}
 
 				if (mounted) {
-					// "microSD inserted" only when nothing else says so: a
-					// Detect changes notice is already up about this card, and
-					// this one arriving on top would hide it.
-					if (!card_databases_attach(sd_root)) {
-						send_notification(runtime, "sd_card_inserted");
-					}
+					card_databases_attach(sd_root);
+					send_notification(runtime, "sd_card_inserted");
 				} else {
 					fprintf(stderr, "storage: the card would not mount after the insert\n");
 				}

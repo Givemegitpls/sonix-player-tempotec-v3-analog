@@ -1176,6 +1176,14 @@ static void retagged_show(void) {
 	lv_obj_set_hidden(retagged_note, !on);
 }
 
+// Detect changes can be turned on behind the page's back, by the first scan
+// (libraryscan.c), so the switch is read again each time the page comes up.
+static void scan_page_loading_cb(lv_event_t *e) {
+	(void)e;
+	lv_obj_set_state(detect_changes_switch, LV_STATE_CHECKED, library_detect_changes());
+	retagged_show();
+}
+
 static void detect_changes_cb(lv_event_t *e) {
 	library_set_detect_changes(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 	retagged_show();
@@ -1336,6 +1344,7 @@ static void build_scan_page(gui_config_t *cfg) {
 	option_note(container, "musicsettings_join_albums_note");
 
 	organize_refresh();
+	lv_obj_add_event_cb(scan_screen, scan_page_loading_cb, LV_EVENT_SCREEN_LOAD_START, NULL);
 	lv_obj_add_event_cb(scan_screen, organize_leave_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
 	lv_obj_add_event_cb(artistexceptions_screen, organize_leave_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
 

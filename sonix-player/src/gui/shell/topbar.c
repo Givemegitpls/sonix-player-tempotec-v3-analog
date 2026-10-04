@@ -90,6 +90,8 @@ static lv_obj_t *vol_label;
 static lv_obj_t *vol_icon;
 static lv_obj_t *hp_icon; // headphone jack indicator: hidden / theme / gold
 static lv_obj_t *play_icon;		 // play/pause indicator: hidden when nothing is loaded
+static lv_obj_t *library_icon;	 // Detect changes at work, or just done
+static lv_timer_t *library_timer; // takes the check glyph away
 static lv_obj_t *sonixlink_icon; // shown while a phone is driving the player
 static void refresh_play_icon(const device_state_t *state);
 static void refresh_sonixlink_icon(void);
@@ -453,6 +455,40 @@ static void refresh_sonixlink_icon(void) {
 		lv_obj_set_hidden(sonixlink_icon, false);
 	} else {
 		lv_obj_set_hidden(sonixlink_icon, true);
+	}
+}
+
+// How long the check glyph stays once a Detect changes run is over.
+#define LIBRARY_CHECKED_MS 4000
+
+static void library_timer_cb(lv_timer_t *timer) {
+	(void)timer;
+	library_timer = NULL; // a one-shot timer, deleted by LVGL after this call
+	lv_obj_set_hidden(library_icon, true);
+}
+
+void topbar_set_library_check(topbar_library_t state) {
+	if (!library_icon) {
+		return;
+	}
+	if (library_timer) {
+		lv_timer_delete(library_timer);
+		library_timer = NULL;
+	}
+	switch (state) {
+	case TOPBAR_LIBRARY_IDLE:
+		lv_obj_set_hidden(library_icon, true);
+		break;
+	case TOPBAR_LIBRARY_CHECKING:
+		lv_image_set_src(library_icon, &icon_library_checking);
+		lv_obj_set_hidden(library_icon, false);
+		break;
+	case TOPBAR_LIBRARY_CHECKED:
+		lv_image_set_src(library_icon, &icon_library_checked);
+		lv_obj_set_hidden(library_icon, false);
+		library_timer = lv_timer_create(library_timer_cb, LIBRARY_CHECKED_MS, NULL);
+		lv_timer_set_repeat_count(library_timer, 1);
+		break;
 	}
 }
 
@@ -840,6 +876,13 @@ void topbar_init(gui_config_t *cfg) {
 	lv_image_set_src(play_icon, &icon_play_status);
 	lv_obj_add_style(play_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(play_icon, true);
+
+	// Right of it, Detect changes while it runs and briefly once it is done
+	// (topbar_set_library_check).
+	library_icon = lv_image_create(container_left);
+	lv_image_set_src(library_icon, &icon_library_checking);
+	lv_obj_add_style(library_icon, &theme_style_icon, 0);
+	lv_obj_set_hidden(library_icon, true);
 
 	// And right of that, the SonixLink logo while a phone is on the other end.
 	// Alongside play/pause rather than in place of it: the phone is driving this

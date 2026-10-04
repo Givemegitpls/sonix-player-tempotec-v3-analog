@@ -17,6 +17,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/topbar.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/library/audiobookdb.h"
 #include "src/system/playback/playlist.h"
@@ -444,12 +445,13 @@ static lv_obj_t *make_button(lv_obj_t *parent, const char *text, lv_color_t colo
 }
 
 // ---------------------------------------------------------------------------
-// Detect changes: what the user is told about a run (see library_card_returned)
+// What the user is told about the runs on the scan thread
 //
-// A card with a spinner for as long as the run lasts -- the walk takes a while
-// on a full card, and a notice that turned up minutes after the card came back
-// would be a surprise -- then the outcome. A tap off the card puts it away; the
-// run carries on and the outcome still comes.
+// Detect changes works in the background: a glyph in the status bar while it
+// looks over the card, a check mark for a few seconds when it is done, and no
+// notice either way. Filing the index again after the scan options changed was
+// asked for on that page, so it keeps its notice and its outcome; filed again
+// on its own, at the end of a Detect changes run, it says nothing.
 // ---------------------------------------------------------------------------
 
 typedef struct {
@@ -459,71 +461,54 @@ typedef struct {
 	int updated;
 } update_note_t;
 
+static bool checking;	   // a Detect changes run is under way
+static bool reorganizing;  // library_reorganize() put its notice up
+
 static void update_note_cb(void *user) {
 	update_note_t *note = user;
-	char text[160];
 
 	switch (note->event) {
 	case LIBRARY_UPDATE_LOOKING:
-		toast_busy_dismissable("libraryscan_looking_for_changes");
+		checking = true;
+		topbar_set_library_check(TOPBAR_LIBRARY_CHECKING);
 		break;
 
 	case LIBRARY_UPDATE_ADDING:
-		if (toast_busy_showing()) {
-			// The new files when there are some, the changed ones otherwise.
-			if (note->added == 1) {
-				toast_busy_dismissable("libraryscan_adding_one_track");
-			} else if (note->added > 1) {
-				snprintf(text, sizeof(text), tr("libraryscan_adding_d_tracks"), note->added);
-				toast_busy_dismissable(text);
-			} else if (note->updated == 1) {
-				toast_busy_dismissable("libraryscan_updating_one_track");
-			} else {
-				snprintf(text, sizeof(text), tr("libraryscan_updating_d_tracks"), note->updated);
-				toast_busy_dismissable(text);
-			}
-		}
+		break;
+
+	case LIBRARY_UPDATE_FINISHED:
+		checking = false;
+		topbar_set_library_check(TOPBAR_LIBRARY_CHECKED);
 		break;
 
 	case LIBRARY_UPDATE_STOPPED:
-		toast_busy_end();
+		if (reorganizing) {
+			reorganizing = false;
+			toast_busy_end();
+		} else if (checking) {
+			checking = false;
+			topbar_set_library_check(TOPBAR_LIBRARY_IDLE);
+		}
 		break;
 
 	case LIBRARY_UPDATE_REORGANIZING:
+		reorganizing = true;
 		toast_busy_dismissable("libraryscan_reorganizing");
 		break;
 
 	case LIBRARY_UPDATE_REORGANIZED:
-		toast_busy_end();
-		toast_success("libraryscan_reorganized");
+		if (reorganizing) {
+			reorganizing = false;
+			toast_busy_end();
+			toast_success("libraryscan_reorganized");
+		}
 		break;
 
-	case LIBRARY_UPDATE_FINISHED:
-		toast_busy_end();
-		if (note->updated > 0 && (note->added > 0 || note->removed > 0)) {
-			snprintf(text, sizeof(text), tr("libraryscan_d_added_d_removed_d_updated"), note->added, note->removed,
-					 note->updated);
-			toast_success(text);
-		} else if (note->updated == 1) {
-			toast_success("libraryscan_one_track_updated");
-		} else if (note->updated > 1) {
-			snprintf(text, sizeof(text), tr("libraryscan_d_tracks_updated"), note->updated);
-			toast_success(text);
-		} else if (note->added > 0 && note->removed > 0) {
-			snprintf(text, sizeof(text), tr("libraryscan_d_added_d_removed"), note->added, note->removed);
-			toast_success(text);
-		} else if (note->added == 1) {
-			toast_success("libraryscan_one_track_added");
-		} else if (note->added > 1) {
-			snprintf(text, sizeof(text), tr("libraryscan_d_tracks_added"), note->added);
-			toast_success(text);
-		} else if (note->removed == 1) {
-			toast_success("libraryscan_one_track_removed");
-		} else if (note->removed > 1) {
-			snprintf(text, sizeof(text), tr("libraryscan_d_tracks_removed"), note->removed);
-			toast_success(text);
-		} else {
-			toast_success("libraryscan_no_changes");
+	case LIBRARY_UPDATE_SCANNED:
+		// The first scan there has ever been turns Detect changes on, unless it
+		// was already set either way.
+		if (!library_detect_changes_chosen()) {
+			library_set_detect_changes(true);
 		}
 		break;
 	}
@@ -543,6 +528,24 @@ static void update_listener(library_update_event_t event, int added, int removed
 	if (!gui_post(update_note_cb, note)) {
 		free(note);
 	}
+}
+
+// How long after startup the card is looked over: past the first screen and
+// the track being restored, which want the card first.
+#define BOOT_CHECK_DELAY_MS 5000
+
+// What library_card_returned() does for a card that comes back: Detect changes
+// when it is on, and the index filed again if it was filed under other
+// settings. A card mounted only after startup goes through it when it is
+// attached instead (storage), and finds the library closed here.
+static void boot_check_cb(lv_timer_t *timer) {
+	(void)timer;
+	// A library scanned before Detect changes came on by itself gets it the
+	// same way, unless it was set either way since.
+	if (!library_detect_changes_chosen() && library_is_open() && library_track_count() > 0) {
+		library_set_detect_changes(true);
+	}
+	library_card_returned(sd_root);
 }
 
 void libraryscan_init(gui_config_t *cfg) {
@@ -597,7 +600,7 @@ void libraryscan_init(gui_config_t *cfg) {
 	poll_timer = lv_timer_create(poll_cb, SCAN_POLL_MS, NULL);
 	lv_timer_pause(poll_timer);
 
-	// The index opened at boot may have been filed under settings changed
-	// since; the listener is in place now to say so.
-	library_organize_check();
+	// The card may have been written while the player was off.
+	lv_timer_t *boot_check = lv_timer_create(boot_check_cb, BOOT_CHECK_DELAY_MS, NULL);
+	lv_timer_set_repeat_count(boot_check, 1);
 }

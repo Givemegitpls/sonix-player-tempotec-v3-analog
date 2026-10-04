@@ -35,6 +35,8 @@ extern const lv_image_dsc_t icon_play_status;
 extern const lv_image_dsc_t icon_pause_status;
 extern const lv_image_dsc_t icon_airplay_status;
 extern const lv_image_dsc_t icon_sonixlink_status;
+extern const lv_image_dsc_t icon_library_checking;
+extern const lv_image_dsc_t icon_library_checked;
 extern const lv_image_dsc_t icon_skip_back;
 extern const lv_image_dsc_t icon_skip_forward;
 extern const lv_image_dsc_t icon_play_large;
