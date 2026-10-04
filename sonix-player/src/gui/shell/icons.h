@@ -68,6 +68,8 @@ extern const lv_image_dsc_t icon_sort_az;
 extern const lv_image_dsc_t icon_sort_za;
 extern const lv_image_dsc_t icon_sort_date_old;
 extern const lv_image_dsc_t icon_sort_date_new;
+extern const lv_image_dsc_t icon_sort_year_asc;
+extern const lv_image_dsc_t icon_sort_year_desc;
 extern const lv_image_dsc_t icon_sort_played;
 extern const lv_image_dsc_t icon_sort_series;
 extern const lv_image_dsc_t icon_album_corner;

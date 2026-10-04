@@ -130,6 +130,10 @@ ICONS = [
     # the arrow points the way the list reads, as it does on A-Z and Z-A.
     ("calendar-arrow-up.svg", "sort_date_old", 34),
     ("calendar-arrow-down.svg", "sort_date_new", 34),
+    # By release year, the same size: arrow down while the years go up, arrow
+    # up while they come down.
+    ("year-arrow-down.svg", "sort_year_asc", 34),
+    ("year-arrow-up.svg", "sort_year_desc", 34),
     # The audiobook lists also run by when a book was last listened to, and a
     # series by the number of each book in it.
     ("history.svg", "sort_played", 34),

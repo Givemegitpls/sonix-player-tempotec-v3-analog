@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "src/system/audio/audio.h"
+#include "src/system/audio/eq.h"
 #include "src/system/core/config.h"
 #include "src/system/decode/aacdec.h"
 #include "src/system/net/hls.h"
@@ -2028,13 +2029,19 @@ static bool radio_push_pcm(radio_out_t *out, short *pcm, short *stereo, int fram
 		pthread_mutex_unlock(&now_lock);
 	}
 
+	// The equaliser, the parametric one and MSEB, on the stereo pair about to
+	// be written -- the same chain a track from the card goes through, and a
+	// no-op when all three are off. A station is not a file, but what the
+	// listener has tuned is for the headphones, not for the source.
 	if (channels == 1) {
 		for (int i = frames - 1; i >= 0; i--) {
 			stereo[2 * i] = pcm[i];
 			stereo[2 * i + 1] = pcm[i];
 		}
+		eq_process(stereo, frames, 2, rate);
 		audio_external_write(stereo, frames);
 	} else if (channels == 2) {
+		eq_process(pcm, frames, 2, rate);
 		audio_external_write(pcm, frames);
 	} else {
 		// More than two channels, which on a radio station is AAC carrying 5.1.
@@ -2052,6 +2059,7 @@ static bool radio_push_pcm(radio_out_t *out, short *pcm, short *stereo, int fram
 			stereo[2 * i] = (short)(left / pairs);
 			stereo[2 * i + 1] = (short)(right / pairs);
 		}
+		eq_process(stereo, frames, 2, rate);
 		audio_external_write(stereo, frames);
 	}
 	return true;

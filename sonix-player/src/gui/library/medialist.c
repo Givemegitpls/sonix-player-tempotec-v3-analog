@@ -2056,16 +2056,18 @@ static bool sort_by_date(const panel_t *p) { return sort_can_date(p->kind, p->fi
 // Whether it runs by release year.
 static bool sort_by_year(const panel_t *p) { return sort_can_year(p->kind, p->filter) && sort_is_year(p->kind); }
 
-// The sort button's glyph says how the list runs now: by name or by date, and
-// which way. The arrow points the way the list reads in both.
+// The sort button's glyph says how the list runs now: by name, by date or by
+// year, and which way. By name and by date the arrow points the way the list
+// reads; the year glyphs have theirs the other way round, down for the years
+// going up.
 static void sort_icon_paint(panel_t *p) {
 	if (!p->sort_icon) {
 		return;
 	}
 	bool desc = sort_is_desc(p->kind);
-	// By year it wears the date glyphs too: the arrow is what tells the two
-	// directions apart, and the menu says which kind of date it is.
-	if (sort_by_date(p) || sort_by_year(p)) {
+	if (sort_by_year(p)) {
+		lv_image_set_src(p->sort_icon, desc ? &icon_sort_year_desc : &icon_sort_year_asc);
+	} else if (sort_by_date(p)) {
 		lv_image_set_src(p->sort_icon, desc ? &icon_sort_date_new : &icon_sort_date_old);
 	} else {
 		lv_image_set_src(p->sort_icon, desc ? &icon_sort_za : &icon_sort_az);
@@ -2564,10 +2566,14 @@ static void screen_unloaded_cb(lv_event_t *e) {
 	selection_stop(lv_event_get_user_data(e));
 }
 
+// Set while a list is reopened under a new ordering: it comes back at the top,
+// not on what is playing. A new order is something to read from the start of;
+// the next time the list is entered, it opens on the current track again.
+static bool reopening_resorted;
+
 // Reopens whatever this panel is showing, under whatever the ordering now is.
-// The signature is cleared first so the list comes back at the top, or on what
-// is playing (see current_row): after a re-sort the old scroll position points
-// at nothing in particular.
+// The signature is cleared first so the list comes back at the top: after a
+// re-sort the old scroll position points at nothing in particular.
 static void reload_current(panel_t *p) {
 	if (p->from_paths) {
 		return;
@@ -2578,7 +2584,9 @@ static void reload_current(panel_t *p) {
 	snprintf(value, sizeof(value), "%s", p->filter_value);
 
 	p->signature[0] = '\0';
+	reopening_resorted = true;
 	medialist_open(title, p->kind, p->filter, value[0] ? value : NULL);
+	reopening_resorted = false;
 }
 
 // The ways a datable list can run, as the menu offers them -- the last two only
@@ -3471,7 +3479,7 @@ static void show_corner(lv_obj_t *btn, bool shown) {
 // the option is off, the list is not one of those five, or nothing in it is
 // playing.
 static int current_row(panel_t *p) {
-	if (!medialist_go_to_current() || !p->ix) {
+	if (!medialist_go_to_current() || !p->ix || reopening_resorted) {
 		return -1;
 	}
 	np_cache_refresh();
