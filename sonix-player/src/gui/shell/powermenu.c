@@ -98,53 +98,7 @@ void powermenu_request_show(void) { gui_post(async_show_cb, NULL); }
 // than one that takes an extra moment to stop.
 static void do_power_off(void) {
 	printf("power: shutting down\n");
-
-	// Where the music had got to, before anything else stops. The player's own
-	// poll writes this only every ten seconds while playing and on a change of
-	// state, so without this flush a power-off loses up to ten seconds -- and a
-	// position seeked to while paused, which changes no state at all, would
-	// never be written.
-	device_state_remember_flush();
-
-	// The time goes into the RTC before anything else, exactly as the stock
-	// player does on its way out: whatever the clock has learned since it was
-	// last set is otherwise lost the moment the power goes.
-	clock_shutdown();
-
-	// The radio database is on the card: close it so its journal is tidied
-	// away before the power goes, rather than left for the next boot to find.
-	radio_store_close();
-
-	// Streamed and downloaded tracks are transient and must not survive a
-	// power cycle: without this the hidden folders carry a gigabyte of files
-	// the user never put there and will not listen to again.
-	qobuzcache_clear_on_exit();
-	tidalcache_clear_on_exit();
-	podcastcache_clear_on_exit();
-	dlna_clear_on_exit();
-
-	// Dark the panel *first*: `poweroff` goes through init's shutdown hooks,
-	// which it must -- the raw syscall with USB attached leaves the PMIC to
-	// boot the device straight back up -- and those take a few seconds. With
-	// the screen already off the wait is invisible; without it the menu sits
-	// frozen on-screen until init gets around to cutting power.
-	power_screen_off();
-
-	// The charger back on before the power goes: the driver keeps that bit
-	// across a shutdown, and a device put away at its charge limit would meet
-	// the next cable with a charger that does nothing.
-	power_charging_release();
-
-	// Last, after everything above that writes to the card.
-	storage_release_for_shutdown();
-	sync();
-
-	int rc = system("poweroff");
-	(void)rc;
-	sleep(8);
-
-	// Last resort if init never got there.
-	reboot(RB_POWER_OFF);
+	power_shutdown();
 }
 
 static void do_reboot(void) {
@@ -160,7 +114,7 @@ static void do_reboot(void) {
 	storage_release_for_shutdown();
 	sync();
 
-	// Through init, the same way down as the shutdown above. `reboot(RB_AUTOBOOT)`
+	// Through init, the same way down as power_shutdown(). `reboot(RB_AUTOBOOT)`
 	// restarts the machine from inside this process: init's shutdown hooks never
 	// run, so the daemons are not stopped and nothing is remounted read-only or
 	// unmounted, apart from the card, which is released above either way.

@@ -40,6 +40,8 @@ struct ebook {
 	char *path;	 // the .epub on the card
 	char *title;
 	char *author;
+	char *language; // dc:language as the OPF gives it, or NULL
+	bool rtl;		// the spine runs right to left (page-progression-direction)
 	char *opf_dir; // "OEBPS/" or "" -- what hrefs in the OPF are relative to
 	// The folder the CURRENT chapter is in, which is what its own hrefs -- a
 	// picture, a stylesheet -- are relative to. Not the same as opf_dir: books

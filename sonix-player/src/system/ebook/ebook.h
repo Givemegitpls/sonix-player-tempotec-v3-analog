@@ -100,6 +100,16 @@ const char *ebook_title(const ebook_t *book);
 const char *ebook_author(const ebook_t *book);
 const char *ebook_path(const ebook_t *book);
 
+// A book whose dc:language is Japanese ("ja", "ja-JP"). It is set in the
+// Japanese face rather than Bookerly, which has no kana or kanji.
+bool ebook_is_japanese(const ebook_t *book);
+
+// A Japanese book whose spine runs right to left: set in vertical columns, read
+// from the right, and turned towards the left. The spine's
+// page-progression-direction is what says so; a Japanese book without it is
+// horizontal.
+bool ebook_is_vertical(const ebook_t *book);
+
 uint32_t ebook_spine_count(const ebook_t *book);
 
 uint32_t ebook_toc_count(const ebook_t *book);

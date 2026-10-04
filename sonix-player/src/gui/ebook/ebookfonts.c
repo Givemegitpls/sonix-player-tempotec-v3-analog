@@ -9,6 +9,8 @@
 
 // The firmware's own copy, then the card's.
 #define EBOOK_FONT_DIR SONIX_RESOURCE_DIR "/fonts/ebook"
+// The interface's Japanese faces, which a Japanese book is set in.
+#define JAPANESE_FONT_DIR SONIX_RESOURCE_DIR "/fonts"
 
 // The four files, in the order ebookfonts_face() falls back through.
 typedef enum {
@@ -26,6 +28,17 @@ static const char *const FACE_FILES[FACE_COUNT] = {
 	"Bookerly-BoldItalic.ttf",
 };
 
+// Rodin has no italic: the slanted styles come back as missing and fall back
+// to the upright ones.
+static const char *const JAPANESE_FILES[FACE_COUNT] = {
+	"japanese.otf",
+	NULL,
+	"japanese-bold.otf",
+	NULL,
+};
+
+static const char *const *face_files = FACE_FILES;
+
 static char font_dir[512];
 static lv_font_t *faces[FACE_COUNT];
 // Which faces have already been looked for and not found, so a book full of
@@ -37,8 +50,11 @@ static int current_size = 20;
 static bool have_regular;
 
 static lv_font_t *open_face(face_t which, int size) {
+	if (!face_files[which]) {
+		return NULL;
+	}
 	char path[640];
-	snprintf(path, sizeof(path), "%s/%s", font_dir, FACE_FILES[which]);
+	snprintf(path, sizeof(path), "%s/%s", font_dir, face_files[which]);
 	if (access(path, R_OK) != 0) {
 		return NULL;
 	}
@@ -46,8 +62,18 @@ static lv_font_t *open_face(face_t which, int size) {
 	// are in the file, which is the whole point of shipping four of them. Asking
 	// FreeType to slant Bookerly Regular would produce a fifth thing that is
 	// neither the publisher's italic nor the designer's.
-	return lv_freetype_font_create(path, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, (uint32_t)size,
-								   LV_FREETYPE_FONT_STYLE_NORMAL);
+	lv_font_t *font = lv_freetype_font_create(path, LV_FREETYPE_FONT_RENDER_MODE_BITMAP, (uint32_t)size,
+											  LV_FREETYPE_FONT_STYLE_NORMAL);
+	// Rodin's line is two ems tall -- its hhea line gap is a whole em -- which
+	// sets a book double-spaced. A line of one and a half ems, the em box (0.12
+	// below the baseline to 0.88 above) in the middle of it, is how Japanese
+	// prose is usually leaded; the spacing setting adds to it as it does to
+	// Bookerly's.
+	if (font && face_files == JAPANESE_FILES) {
+		font->line_height = size * 3 / 2;
+		font->base_line = size * 37 / 100;
+	}
+	return font;
 }
 
 static void close_faces(void) {
@@ -61,12 +87,13 @@ static void close_faces(void) {
 	have_regular = false;
 }
 
-bool ebookfonts_open(const char *sd_root, int size) {
+bool ebookfonts_open(const char *sd_root, int size, bool japanese) {
 	ebookfonts_close();
 
 	current_size = size > 0 ? size : 20;
+	face_files = japanese ? JAPANESE_FILES : FACE_FILES;
 
-	snprintf(font_dir, sizeof(font_dir), "%s", EBOOK_FONT_DIR);
+	snprintf(font_dir, sizeof(font_dir), "%s", japanese ? JAPANESE_FONT_DIR : EBOOK_FONT_DIR);
 	faces[FACE_REGULAR] = open_face(FACE_REGULAR, current_size);
 	if (!faces[FACE_REGULAR]) {
 		snprintf(font_dir, sizeof(font_dir), "%s/.local/fonts", sd_root ? sd_root : "");
@@ -74,8 +101,8 @@ bool ebookfonts_open(const char *sd_root, int size) {
 	}
 	have_regular = faces[FACE_REGULAR] != NULL;
 	if (!have_regular) {
-		fprintf(stderr, "ebook: no Bookerly in %s or %s; reading with the interface font\n", EBOOK_FONT_DIR,
-				font_dir);
+		fprintf(stderr, "ebook: no %s in %s or %s; reading with the interface font\n", face_files[FACE_REGULAR],
+				japanese ? JAPANESE_FONT_DIR : EBOOK_FONT_DIR, font_dir);
 	}
 	return have_regular;
 }

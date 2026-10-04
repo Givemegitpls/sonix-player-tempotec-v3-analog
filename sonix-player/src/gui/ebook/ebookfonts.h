@@ -26,7 +26,11 @@
 // Opens the regular face at `size` pixels. False when neither folder has
 // Bookerly -- the reader then falls back to the interface font, which is
 // a worse book but still a book.
-bool ebookfonts_open(const char *sd_root, int size);
+//
+// `japanese` sets the book in the interface's Japanese faces (Rodin, regular
+// and bold, from the firmware's fonts folder or the card's .local/fonts)
+// instead: Bookerly has no kana or kanji.
+bool ebookfonts_open(const char *sd_root, int size, bool japanese);
 
 // Everything above, undone. Safe when nothing was opened.
 void ebookfonts_close(void);

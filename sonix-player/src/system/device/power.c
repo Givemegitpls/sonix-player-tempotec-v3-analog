@@ -924,27 +924,63 @@ static void rtc_alarm_arm_for_auto_off(void) {
 	printf("power: mem: RTC wake in %ld s for the automatic shutdown\n", remaining_s);
 }
 
-// The actual shutdown, shared by the normal awake tick and the RTC alarm path
-// just after a resume.
-static void power_auto_off_now(const char *why) {
-	printf("power: automatic shutdown: %s\n", why);
-	fflush(stdout);
-	// The charger goes back on before the power goes off. The driver keeps this
-	// bit across a shutdown -- mp2731_shutdown writes it from the property it
-	// has stored -- so a player that switched it off at the limit would leave a
-	// device that will not charge until it is booted again.
-	power_charging_release();
-	// Where the music had got to: this path never goes through the interface,
-	// which is what normally writes it.
+void power_shutdown(void) {
+	// Where the music had got to, before anything else stops. The player's own
+	// poll writes this only every ten seconds while playing and on a change of
+	// state, so without this flush a power-off loses up to ten seconds -- and a
+	// position seeked to while paused, which changes no state at all, would
+	// never be written.
 	device_state_remember_flush();
-	clock_shutdown(); // the RTC gets the time before the power goes
-	qobuzcache_clear_on_exit(); // the cache does not survive a shutdown
+
+	// The time goes into the RTC before anything else, exactly as the stock
+	// player does on its way out: whatever the clock has learned since it was
+	// last set is otherwise lost the moment the power goes.
+	clock_shutdown();
+
+	// The radio database is on the card: close it so its journal is tidied
+	// away before the power goes, rather than left for the next boot to find.
+	radio_store_close();
+
+	// Streamed and downloaded tracks are transient and must not survive a
+	// power cycle: without this the hidden folders carry a gigabyte of files
+	// the user never put there and will not listen to again.
+	qobuzcache_clear_on_exit();
 	tidalcache_clear_on_exit();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
-	logging_flush();
+
+	// Dark the panel first: `poweroff` goes through init's shutdown hooks,
+	// which it must -- the raw syscall with USB attached leaves the PMIC to
+	// boot the device straight back up -- and those take a few seconds. With
+	// the screen already off the wait is invisible.
+	power_screen_off();
+
+	// The charger back on before the power goes: the driver keeps that bit
+	// across a shutdown -- mp2731_shutdown writes it from the property it has
+	// stored -- and a device put away at its charge limit would meet the next
+	// cable with a charger that does nothing.
+	power_charging_release();
+
+	// Last, after everything above that writes to the card: a library check
+	// running in the background is stopped, the databases closed and the card
+	// unmounted.
+	storage_release_for_shutdown();
 	sync();
+
+	int rc = system("poweroff");
+	(void)rc;
+	sleep(8);
+
+	// Last resort if init never got there.
 	reboot(RB_POWER_OFF);
+}
+
+// The automatic shutdown, from the normal awake tick and from the RTC alarm
+// path just after a resume: the same way down as the power menu's.
+static void power_auto_off_now(const char *why) {
+	printf("power: automatic shutdown: %s\n", why);
+	fflush(stdout);
+	power_shutdown();
 }
 
 static void suspend_to_ram(void) {

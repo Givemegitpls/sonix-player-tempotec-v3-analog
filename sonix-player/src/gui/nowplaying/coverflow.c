@@ -1437,6 +1437,22 @@ static bool buffers_alloc(void) {
 
 // Everything the sheet has to have in hand before it becomes visible, whether
 // it is being animated in or dragged in a pixel at a time.
+// The record in the middle when the crate was last put away, by its value
+// rather than its place, so albums added or removed in between do not move it.
+// Kept in [library] coverflow_album across restarts.
+static char remembered[256];
+static bool remembered_loaded;
+
+static void remember_centre(void) {
+	const cf_row_t *row = album_at(centre);
+	if (!row || !row->name[0] || strcmp(row->name, remembered) == 0) {
+		return;
+	}
+	snprintf(remembered, sizeof(remembered), "%s", row->name);
+	config_set("library", "coverflow_album", remembered);
+	config_save();
+}
+
 static bool sheet_prepare(void) {
 	if (sheet_ready) {
 		return true;
@@ -1456,6 +1472,15 @@ static bool sheet_prepare(void) {
 	window_count = 0;
 	scroll = 0;
 	centre = 0;
+	if (!remembered_loaded) {
+		remembered_loaded = true;
+		snprintf(remembered, sizeof(remembered), "%s", config_get("library", "coverflow_album", ""));
+	}
+	int at = remembered[0] ? library_index_find_name(albums, remembered) : -1;
+	if (at > 0 && at < album_count) {
+		scroll = (int32_t)at << 16;
+		centre = at;
+	}
 	layout_base = INT32_MIN;
 	sheet_ready = true;
 
@@ -1483,6 +1508,7 @@ static void sheet_park(void) {
 	}
 	flip_close(false);
 	back_close_index();
+	remember_centre();
 	lv_timer_pause(poll_timer);
 	buffers_free();
 	if (albums) {

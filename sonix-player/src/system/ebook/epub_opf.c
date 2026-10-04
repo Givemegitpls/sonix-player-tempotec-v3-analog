@@ -448,6 +448,10 @@ bool epub_read_structure(ebook_t *book) {
 			book->author = element_text(book, &x);
 			continue;
 		}
+		if (epub_xml_is(&x, "language") && !book->language) {
+			book->language = element_text(book, &x);
+			continue;
+		}
 		if (epub_xml_is(&x, "meta")) {
 			const char *name, *content;
 			size_t name_len, content_len;
@@ -482,6 +486,8 @@ bool epub_read_structure(ebook_t *book) {
 				memcpy(ncx_id, value, len);
 				ncx_id[len] = '\0';
 			}
+			book->rtl = epub_xml_attr(&x, "page-progression-direction", &value, &len) && len == 3 &&
+						strncmp(value, "rtl", 3) == 0;
 			continue;
 		}
 		if (epub_xml_is(&x, "itemref") && order_count < EPUB_MAX_SPINE) {

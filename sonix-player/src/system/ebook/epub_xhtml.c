@@ -20,7 +20,8 @@
 // emitting. A reader that only renders a whitelist shows a blank page for a
 // book that every other reader opens.
 //
-// What is skipped entirely, contents and all: <head>, <title> and <script>.
+// What is skipped entirely, contents and all: <head>, <title>, <script> and
+// the ruby annotations <rt>, <rp> and <rtc>.
 // The text of <style> is read too, but as a stylesheet rather than as prose.
 // ---------------------------------------------------------------------------
 
@@ -481,7 +482,10 @@ bool epub_parse_chapter(ebook_t *book, const char *xhtml) {
 				continue;
 			}
 
-			bool skip = tag_is(&x, "script") || tag_is(&x, "head") || tag_is(&x, "title");
+			// Ruby text too: the reading of a word, printed small beside it, would
+			// otherwise land in the line as a second copy of the word.
+			bool skip = tag_is(&x, "script") || tag_is(&x, "head") || tag_is(&x, "title") || tag_is(&x, "rt") ||
+						tag_is(&x, "rp") || tag_is(&x, "rtc");
 			if (skip && !x.self_closing) {
 				p.skip_depth++;
 				push(&p, &x, 0, false, false, false, true, EBOOK_ALIGN_DEFAULT, false);

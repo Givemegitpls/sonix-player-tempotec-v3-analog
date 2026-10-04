@@ -60,6 +60,14 @@ void ebook_close(ebook_t *book) {
 const char *ebook_title(const ebook_t *book) { return book && book->title ? book->title : ""; }
 const char *ebook_author(const ebook_t *book) { return book && book->author ? book->author : ""; }
 const char *ebook_path(const ebook_t *book) { return book && book->path ? book->path : ""; }
+
+bool ebook_is_japanese(const ebook_t *book) {
+	const char *lang = book && book->language ? book->language : "";
+	return (lang[0] == 'j' || lang[0] == 'J') && (lang[1] == 'a' || lang[1] == 'A') &&
+		   (lang[2] == '\0' || lang[2] == '-' || lang[2] == '_');
+}
+
+bool ebook_is_vertical(const ebook_t *book) { return book && book->rtl && ebook_is_japanese(book); }
 uint32_t ebook_spine_count(const ebook_t *book) { return book ? book->spine_count : 0; }
 uint32_t ebook_toc_count(const ebook_t *book) { return book ? book->toc_count : 0; }
 

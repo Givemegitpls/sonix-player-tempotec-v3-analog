@@ -417,7 +417,7 @@ static lv_obj_t *build_block(lv_obj_t *parent, const ebook_block_t *b, uint32_t 
 	if (b->type == EBOOK_BLOCK_IMAGE) {
 		// The picture ignores `from` and `chars`: it is all there or it is on
 		// the next page, and chars_that_fit() never asks it to be cut because
-		// lay_out() gives an image block its own branch.
+		// lay_out_rows() gives an image block its own branch.
 		return build_image(parent, b, width);
 	}
 
@@ -551,12 +551,30 @@ static uint32_t chars_that_fit(lv_obj_t *parent, const ebook_block_t *b, uint32_
 				seen += sp->length;
 				continue;
 			}
-			// The character at the cut, inside this span.
+			// The character at the cut, inside this span. A line may also end
+			// after any kana or kanji, which have no spaces between them -- and
+			// never inside a character's bytes.
 			uint32_t within = from + low - seen;
+			const unsigned char *t = (const unsigned char *)pool + sp->offset;
 			for (uint32_t k = within; k > 0; k--) {
-				if (pool[sp->offset + k - 1] == ' ' || pool[sp->offset + k - 1] == '\n') {
+				if (t[k - 1] == ' ' || t[k - 1] == '\n') {
 					return low - (within - k);
 				}
+				if (k < sp->length && (t[k] & 0xC0u) == 0x80u) {
+					continue; // inside a character
+				}
+				uint32_t lead = k - 1;
+				while (lead > 0 && (t[lead] & 0xC0u) == 0x80u) {
+					lead--;
+				}
+				if (t[lead] >= 0xE3u) {
+					return low - (within - k); // after a CJK character
+				}
+			}
+			// No place to break: at least not inside a character.
+			while (within > 0 && within < sp->length && (t[within] & 0xC0u) == 0x80u) {
+				within--;
+				low--;
 			}
 			break;
 		}
@@ -570,8 +588,8 @@ static uint32_t chars_that_fit(lv_obj_t *parent, const ebook_block_t *b, uint32_
 //
 // Parameterised rather than working on page_box directly because the slide lays
 // the arriving page out in the other box while this one is still being read.
-static void lay_out(lv_obj_t *box, uint32_t block, uint32_t offset, uint32_t *end_block, uint32_t *end_offset,
-					bool *ended) {
+static void lay_out_rows(lv_obj_t *box, uint32_t block, uint32_t offset, uint32_t *end_block, uint32_t *end_offset,
+						 bool *ended) {
 	lv_obj_clean(box);
 
 	int width = (int)g_cfg->screen_width - 2 * opt_margin;
@@ -660,6 +678,463 @@ static void lay_out(lv_obj_t *box, uint32_t block, uint32_t offset, uint32_t *en
 	*end_block = block;
 	*end_offset = offset;
 	*ended = block >= ebook_block_count(book);
+}
+
+
+// ---------------------------------------------------------------------------
+// Vertical pages
+//
+// A Japanese book whose spine runs right to left (ebook_is_vertical) is set the
+// way it was printed: in columns read top to bottom, the first column on the
+// right, and the pages turned towards the left.
+//
+// LVGL lays text out in lines only, so a vertical page is one object that
+// draws its letters itself, one lv_draw_letter() each, at places worked out
+// here. A letter sits upright in a square cell one em tall; what is drawn on
+// its side or moved in its cell follows what the font's own vertical forms do:
+//
+//   - Latin letters, digits and the dashes and dots that run along a line
+//     (ー, …, ―, 〜) are turned a quarter clockwise;
+//   - brackets use their vertical presentation forms (U+FE35 and on) when the
+//     face has them, and are turned when it does not;
+//   - 、。，． move to the top right of their cell, small kana a little up and
+//     to the right.
+//
+// The position is the same block and byte offset the horizontal pages keep,
+// so bookmarks, the strip and the saved place work unchanged. Offsets always
+// fall on the start of a character.
+// ---------------------------------------------------------------------------
+
+// The book open is set in vertical columns.
+static bool tategaki;
+
+// The way pages are turned, as the reader asked, except that a vertical book
+// is never one scrolling list: the columns run sideways.
+static turn_mode_t turn_mode(void) { return tategaki && opt_turn == TURN_VERTICAL ? TURN_INSTANT : opt_turn; }
+
+typedef struct {
+	int16_t x, y;	  // the middle of the letter's baseline, from the page's top left corner
+	int16_t rotation; // 0, or 900 for a letter on its side
+	uint8_t bold;
+	uint32_t cp;
+} vglyph_t;
+
+typedef struct {
+	vglyph_t *glyphs;
+	int count;
+	int capacity;
+} vpage_t;
+
+static bool vpage_add(vpage_t *page, int32_t x, int32_t y, int16_t rotation, bool bold, uint32_t cp) {
+	if (page->count == page->capacity) {
+		int grown = page->capacity ? page->capacity * 2 : 512;
+		vglyph_t *more = realloc(page->glyphs, (size_t)grown * sizeof(*more));
+		if (!more) {
+			return false;
+		}
+		page->glyphs = more;
+		page->capacity = grown;
+	}
+	vglyph_t *g = &page->glyphs[page->count++];
+	g->x = (int16_t)x;
+	g->y = (int16_t)y;
+	g->rotation = rotation;
+	g->bold = bold ? 1 : 0;
+	g->cp = cp;
+	return true;
+}
+
+static void vpage_draw_cb(lv_event_t *e) {
+	lv_obj_t *obj = lv_event_get_current_target(e);
+	vpage_t *page = lv_event_get_user_data(e);
+	lv_layer_t *layer = lv_event_get_layer(e);
+	if (!page || !layer) {
+		return;
+	}
+	lv_area_t area;
+	lv_obj_get_coords(obj, &area);
+	lv_color_t ink = ink_colour();
+	for (int i = 0; i < page->count; i++) {
+		const vglyph_t *g = &page->glyphs[i];
+		lv_draw_letter_dsc_t dsc;
+		lv_draw_letter_dsc_init(&dsc);
+		dsc.font = ebookfonts_face(g->bold != 0, false);
+		dsc.color = ink;
+		dsc.unicode = g->cp;
+		dsc.rotation = g->rotation;
+		lv_point_t at = {area.x1 + g->x, area.y1 + g->y};
+		lv_draw_letter(layer, &dsc, &at);
+	}
+}
+
+static void vpage_deleted_cb(lv_event_t *e) {
+	vpage_t *page = lv_event_get_user_data(e);
+	if (page) {
+		free(page->glyphs);
+		free(page);
+	}
+}
+
+// One UTF-8 character of `text` (`len` bytes) at `*at`, which is moved past it.
+// A broken sequence reads as one byte, so the walk always moves forward.
+static uint32_t utf8_take(const char *text, uint32_t len, uint32_t *at) {
+	const unsigned char *s = (const unsigned char *)text + *at;
+	uint32_t left = len - *at;
+	uint32_t cp = s[0];
+	uint32_t n = 1;
+	if (cp >= 0xF0 && left >= 4) {
+		cp = ((cp & 0x07u) << 18) | ((s[1] & 0x3Fu) << 12) | ((s[2] & 0x3Fu) << 6) | (s[3] & 0x3Fu);
+		n = 4;
+	} else if (cp >= 0xE0 && left >= 3) {
+		cp = ((cp & 0x0Fu) << 12) | ((s[1] & 0x3Fu) << 6) | (s[2] & 0x3Fu);
+		n = 3;
+	} else if (cp >= 0xC0 && left >= 2) {
+		cp = ((cp & 0x1Fu) << 6) | (s[1] & 0x3Fu);
+		n = 2;
+	}
+	*at += n;
+	return cp;
+}
+
+// The presentation form a bracket takes in a column, or 0.
+static uint32_t vertical_form(uint32_t cp) {
+	switch (cp) {
+	case 0x300C: // 「
+		return 0xFE41;
+	case 0x300D: // 」
+		return 0xFE42;
+	case 0x300E: // 『
+		return 0xFE43;
+	case 0x300F: // 』
+		return 0xFE44;
+	case 0xFF08: // （
+		return 0xFE35;
+	case 0xFF09: // ）
+		return 0xFE36;
+	case 0xFF5B: // ｛
+		return 0xFE37;
+	case 0xFF5D: // ｝
+		return 0xFE38;
+	case 0x3014: // 〔
+		return 0xFE39;
+	case 0x3015: // 〕
+		return 0xFE3A;
+	case 0x3010: // 【
+		return 0xFE3B;
+	case 0x3011: // 】
+		return 0xFE3C;
+	case 0x300A: // 《
+		return 0xFE3D;
+	case 0x300B: // 》
+		return 0xFE3E;
+	case 0x3008: // 〈
+		return 0xFE3F;
+	case 0x3009: // 〉
+		return 0xFE40;
+	case 0xFF3B: // ［
+		return 0xFE47;
+	case 0xFF3D: // ］
+		return 0xFE48;
+	default:
+		return 0;
+	}
+}
+
+// Drawn on its side: Western text, and the marks that run along a line.
+static bool turns_sideways(uint32_t cp) {
+	if (cp < 0x2000) {
+		return true; // Latin, Greek, Cyrillic, digits, ASCII punctuation
+	}
+	switch (cp) {
+	case 0x2010: // the dashes
+	case 0x2011:
+	case 0x2012:
+	case 0x2013:
+	case 0x2014:
+	case 0x2015:
+	case 0x2025: // ‥
+	case 0x2026: // …
+	case 0x2E3A: // two- and three-em dash
+	case 0x2E3B:
+	case 0x301C: // 〜
+	case 0x3030: // 〰
+	case 0x30FC: // ー
+	case 0xFF0D: // －
+	case 0xFF1A: // ：
+	case 0xFF1B: // ；
+	case 0xFF1C: // ＜
+	case 0xFF1D: // ＝
+	case 0xFF1E: // ＞
+	case 0xFF3F: // ＿
+	case 0xFF5E: // ～
+		return true;
+	default:
+		return false;
+	}
+}
+
+// Moved to the top right of the cell, in thousandths of an em, from where the
+// horizontal glyph sits. The offsets are Rodin's own vertical forms.
+static bool corner_shift(uint32_t cp, int *dx, int *dy) {
+	switch (cp) {
+	case 0x3001: // 、
+	case 0x3002: // 。
+		*dx = 650;
+		*dy = -680;
+		return true;
+	case 0xFF0C: // ，
+	case 0xFF0E: // ．
+		*dx = 760;
+		*dy = -690;
+		return true;
+	case 0x3041: // the small kana
+	case 0x3043:
+	case 0x3045:
+	case 0x3047:
+	case 0x3049:
+	case 0x3063:
+	case 0x3083:
+	case 0x3085:
+	case 0x3087:
+	case 0x308E:
+	case 0x3095:
+	case 0x3096:
+	case 0x30A1:
+	case 0x30A3:
+	case 0x30A5:
+	case 0x30A7:
+	case 0x30A9:
+	case 0x30C3:
+	case 0x30E3:
+	case 0x30E5:
+	case 0x30E7:
+	case 0x30EE:
+	case 0x30F5:
+	case 0x30F6:
+		*dx = 70;
+		*dy = -70;
+		return true;
+	default:
+		return false;
+	}
+}
+
+// Allowed to hang below the last cell of a column rather than start the next
+// one: a column never begins with these.
+static bool hangs(uint32_t cp) {
+	return cp == 0x3001 || cp == 0x3002 || cp == 0xFF0C || cp == 0xFF0E || cp == 0x300D || cp == 0x300F ||
+		   cp == 0xFF09;
+}
+
+// Never the last letter of a column: an opening bracket goes with what it opens.
+static bool opens(uint32_t cp) {
+	return cp == 0x300C || cp == 0x300E || cp == 0xFF08 || cp == 0x3010 || cp == 0x3008 || cp == 0x300A ||
+		   cp == 0x3014 || cp == 0xFF3B || cp == 0xFF5B;
+}
+
+// The space between two columns: half an em plus the line spacing setting.
+static int32_t column_pitch(int32_t em) { return em + em / 2 + opt_line; }
+
+// Where a letter goes in its cell, whose top is `y` on the column centred on
+// `centre_x`: the point lv_draw_letter() is given -- the middle of the
+// letter's baseline, which is also what it turns a letter about -- and how far
+// down the column the letter takes.
+static void place_letter(const lv_font_t *font, uint32_t cp, int32_t em, int32_t centre_x, int32_t y, bool sideways,
+						 int32_t *x_out, int32_t *y_out, int32_t *advance) {
+	lv_font_glyph_dsc_t g;
+	memset(&g, 0, sizeof(g));
+	lv_font_get_glyph_dsc(font, &g, cp, 0);
+
+	if (sideways) {
+		// Turned a quarter clockwise, the letter runs down the column as long
+		// as it was wide, and the middle of its em box -- 0.38 em above the
+		// baseline, the em box spanning 0.12 below to 0.88 above -- comes to
+		// the column's centre line.
+		int32_t adv = g.adv_w > 0 ? (int32_t)g.adv_w : em / 2;
+		*x_out = centre_x - em * 38 / 100;
+		*y_out = y + adv / 2;
+		*advance = adv;
+		return;
+	}
+
+	int dx = 0, dy = 0;
+	corner_shift(cp, &dx, &dy);
+	*x_out = centre_x + em * dx / 1000;
+	*y_out = y + em * 88 / 100 + em * dy / 1000;
+	*advance = em;
+}
+
+static void lay_out_columns(lv_obj_t *box, uint32_t block, uint32_t offset, uint32_t *end_block, uint32_t *end_offset,
+							bool *ended) {
+	lv_obj_clean(box);
+
+	int32_t width = (int32_t)g_cfg->screen_width - 2 * opt_margin;
+	int32_t height = (int32_t)g_cfg->screen_height - 2 * opt_margin - bar_space();
+	int32_t em = ebookfonts_size();
+	int32_t pitch = column_pitch(em);
+	int columns = width >= em ? (int)((width - em) / pitch) + 1 : 1;
+
+	vpage_t *page = calloc(1, sizeof(*page));
+	lv_obj_t *obj = page ? lv_obj_create(box) : NULL;
+	if (obj) {
+		lv_obj_remove_style_all(obj);
+		lv_obj_set_size(obj, width, height);
+		lv_obj_set_clickable(obj, false);
+		lv_obj_add_event_cb(obj, vpage_draw_cb, LV_EVENT_DRAW_MAIN, page);
+		lv_obj_add_event_cb(obj, vpage_deleted_cb, LV_EVENT_DELETE, page);
+	} else {
+		free(page);
+		page = NULL;
+	}
+
+	const char *pool = ebook_chapter_text(book);
+	uint32_t count = ebook_block_count(book);
+	uint32_t start_block = block, start_offset = offset;
+	int col = 0;
+	int32_t y = 0;
+	bool col_used = false;
+	bool page_used = false;
+	bool full = false;
+
+	while (block < count && !full) {
+		const ebook_block_t *b = ebook_block(book, block);
+
+		if (b->type == EBOOK_BLOCK_IMAGE) {
+			// A picture is a page of its own.
+			if (page_used) {
+				break;
+			}
+			if (obj) {
+				lv_obj_delete(obj); // frees `page` too
+				obj = NULL;
+				page = NULL;
+			}
+			build_image(box, b, (int)width);
+			block++;
+			offset = 0;
+			page_used = true;
+			break;
+		}
+		if (b->type == EBOOK_BLOCK_RULE) {
+			block++;
+			offset = 0;
+			continue;
+		}
+
+		// Every block begins a column of its own; a heading sits one em lower.
+		int32_t top = b->indent * em + (b->type == EBOOK_BLOCK_HEADING ? em : 0);
+		if (col_used) {
+			col++;
+			col_used = false;
+		}
+		if (col >= columns) {
+			break;
+		}
+		y = top;
+
+		uint32_t seen = 0;
+		bool cut = false;
+		for (uint32_t s = 0; s < b->span_count && !cut; s++) {
+			const ebook_span_t *sp = ebook_span(book, b->first_span + s);
+			const char *text = pool + sp->offset;
+			if (seen + sp->length <= offset) {
+				seen += sp->length;
+				continue;
+			}
+			uint32_t at = offset > seen ? offset - seen : 0;
+			bool bold = (sp->style & EBOOK_STYLE_BOLD) || b->type == EBOOK_BLOCK_HEADING;
+			const lv_font_t *font = ebookfonts_face(bold, false);
+
+			while (at < sp->length) {
+				uint32_t here = seen + at; // where this letter starts in the block
+				uint32_t cp = utf8_take(text, sp->length, &at);
+
+				if (cp == '\n') {
+					col++;
+					y = top;
+					col_used = false;
+					if (col >= columns) {
+						*end_block = block;
+						*end_offset = seen + at;
+						full = cut = true;
+						break;
+					}
+					continue;
+				}
+				if ((cp == ' ' || cp == '\t' || cp == '\r') && !col_used) {
+					continue; // no blank at the head of a column
+				}
+
+				bool sideways = false;
+				uint32_t drawn = cp;
+				uint32_t form = vertical_form(cp);
+				if (form) {
+					lv_font_glyph_dsc_t probe;
+					if (lv_font_get_glyph_dsc(font, &probe, form, 0) && probe.adv_w > 0) {
+						drawn = form;
+					} else {
+						sideways = true;
+					}
+				} else {
+					sideways = turns_sideways(cp);
+				}
+
+				int32_t centre_x = width - em / 2 - col * pitch;
+				int32_t gx = 0, gy = 0, adv = 0;
+				place_letter(font, drawn, em, centre_x, y, sideways, &gx, &gy, &adv);
+
+				bool overflows = y + adv > height;
+				bool lonely_opener = opens(cp) && col_used && y + adv + em > height;
+				if ((overflows && !(hangs(cp) && col_used)) || lonely_opener) {
+					col++;
+					col_used = false;
+					y = b->indent * em;
+					if (col >= columns) {
+						*end_block = block;
+						*end_offset = here;
+						full = cut = true;
+						break;
+					}
+					centre_x = width - em / 2 - col * pitch;
+					place_letter(font, drawn, em, centre_x, y, sideways, &gx, &gy, &adv);
+				}
+
+				if (page) {
+					vpage_add(page, gx, gy, sideways ? 900 : 0, bold, drawn);
+				}
+				y += adv;
+				col_used = true;
+				page_used = true;
+			}
+			seen += sp->length;
+		}
+		if (cut) {
+			break;
+		}
+		block++;
+		offset = 0;
+	}
+
+	if (!full) {
+		*end_block = block;
+		*end_offset = 0;
+	}
+	// A page must move the reading on, or the next turn shows it again.
+	if (*end_block == start_block && *end_offset == start_offset && start_block < count) {
+		*end_block = start_block + 1;
+		*end_offset = 0;
+	}
+	*ended = *end_block >= count;
+}
+
+// The page layout for the book open: lines across, or columns down.
+static void lay_out(lv_obj_t *box, uint32_t block, uint32_t offset, uint32_t *end_block, uint32_t *end_offset,
+					bool *ended) {
+	if (tategaki) {
+		lay_out_columns(box, block, offset, end_block, end_offset, ended);
+	} else {
+		lay_out_rows(box, block, offset, end_block, end_offset, ended);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -889,7 +1364,7 @@ static void page_number_recount(void) {
 	page_number = 0;
 	pages_before = 0;
 	walk_reset();
-	if (!book || !ebookbar_option(EBOOKBAR_PAGE) || opt_turn == TURN_VERTICAL) {
+	if (!book || !ebookbar_option(EBOOKBAR_PAGE) || turn_mode() == TURN_VERTICAL) {
 		return;
 	}
 	walk_wanted = true;
@@ -1003,7 +1478,7 @@ static void render_vertical(void) {
 // when the chapter is one long list.
 static void vertical_scrolled_cb(lv_event_t *e) {
 	(void)e;
-	if (!book || opt_turn != TURN_VERTICAL) {
+	if (!book || turn_mode() != TURN_VERTICAL) {
 		return;
 	}
 	int32_t top = lv_obj_get_scroll_y(page_box);
@@ -1029,7 +1504,7 @@ static void vertical_scrolled_cb(lv_event_t *e) {
 // ---------------------------------------------------------------------------
 
 static void show_page(void) {
-	if (opt_turn == TURN_VERTICAL) {
+	if (turn_mode() == TURN_VERTICAL) {
 		render_vertical();
 	} else {
 		render_page();
@@ -1109,7 +1584,7 @@ static bool load_chapter_at_end(uint32_t spine) {
 	// already known and costs nothing more. Going back over a boundary, what lies
 	// before the chapter just entered is what lay before the one just left, less
 	// this chapter -- again a number really counted and not guessed.
-	if (ebookbar_option(EBOOKBAR_PAGE) && opt_turn != TURN_VERTICAL) {
+	if (ebookbar_option(EBOOKBAR_PAGE) && turn_mode() != TURN_VERTICAL) {
 		page_number = page_stack_depth + 1;
 		pages_before -= page_number;
 		if (pages_before < 0) {
@@ -1142,7 +1617,11 @@ static void slide_done(lv_anim_t *anim) {
 static void slide_in(int direction) {
 	// The arriving page is already laid out in the spare; from here it is two
 	// objects moving. `direction` is +1 when reading forward, so the new page
-	// comes from the right.
+	// comes from the right -- from the left in a vertical book, which is read
+	// towards the left.
+	if (tategaki) {
+		direction = -direction;
+	}
 	int32_t width = (int32_t)g_cfg->screen_width;
 	lv_obj_set_x(page_spare, direction > 0 ? width : -width);
 
@@ -1181,7 +1660,7 @@ static void slide_in(int direction) {
 // bookmark, the book being opened. Only the slide cares, and only a move has a
 // direction to slide in.
 static void present(int direction) {
-	if (opt_turn != TURN_SLIDE || direction == 0) {
+	if (turn_mode() != TURN_SLIDE || direction == 0) {
 		show_page();
 		return;
 	}
@@ -1402,16 +1881,18 @@ static void page_pressed_cb(lv_event_t *e) {
 	// From here on it is about turning pages, which the vertical mode does not
 	// do: there a finger that moved was scrolling and a finger that did not was
 	// nothing at all.
-	if (opt_turn == TURN_VERTICAL) {
+	if (turn_mode() == TURN_VERTICAL) {
 		return;
 	}
 
-	// A sideways drag turns the page the way it is dragged.
-	if (dx < -40 && LV_ABS(dx) > LV_ABS(dy)) {
+	// A sideways drag turns the page the way it is dragged. A vertical book is
+	// read towards the left, so there the drag to the right is the next page.
+	int forward_dx = tategaki ? -dx : dx;
+	if (forward_dx < -40 && LV_ABS(dx) > LV_ABS(dy)) {
 		page_next();
 		return;
 	}
-	if (dx > 40 && LV_ABS(dx) > LV_ABS(dy)) {
+	if (forward_dx > 40 && LV_ABS(dx) > LV_ABS(dy)) {
 		page_prev();
 		return;
 	}
@@ -1422,11 +1903,20 @@ static void page_pressed_cb(lv_event_t *e) {
 	// A tap: left edge back, right edge forward, and a band down the middle
 	// that does nothing. The two edges are more than a third of the width each,
 	// so neither has to be aimed at.
+	// Mirrored in a vertical book: the next page is on the left.
 	int32_t w = (int32_t)g_cfg->screen_width;
 	if (end.x < w * TAP_BACK_UNTIL_PCT / 100) {
-		page_prev();
+		if (tategaki) {
+			page_next();
+		} else {
+			page_prev();
+		}
 	} else if (end.x > w * TAP_NEXT_FROM_PCT / 100) {
-		page_next();
+		if (tategaki) {
+			page_prev();
+		} else {
+			page_next();
+		}
 	}
 }
 
@@ -1864,10 +2354,10 @@ static void turn_cb(lv_event_t *e) {
 	if (want == opt_turn) {
 		return;
 	}
-	bool was_list = opt_turn == TURN_VERTICAL;
-	bool now_list = want == TURN_VERTICAL;
-
+	bool was_list = turn_mode() == TURN_VERTICAL;
 	opt_turn = want;
+	bool now_list = turn_mode() == TURN_VERTICAL;
+
 	config_store_set_int(config_ebook_store(), "ebook", "turn", (int)opt_turn);
 	config_store_save(config_ebook_store());
 	turn_refresh();
@@ -2206,7 +2696,8 @@ void ebookreader_open(const char *path) {
 		opt_turn = TURN_INSTANT;
 	}
 
-	ebookfonts_open(g_cfg->sd_root_path, opt_size);
+	tategaki = ebook_is_vertical(book);
+	ebookfonts_open(g_cfg->sd_root_path, opt_size, ebook_is_japanese(book));
 	choose_word_gap();
 
 	// The strip may have grown or shrunk since the last book: its options live
@@ -2220,7 +2711,7 @@ void ebookreader_open(const char *path) {
 	lv_obj_set_x(page_box, 0);
 	lv_obj_set_x(page_spare, (int32_t)g_cfg->screen_width);
 	turning = false;
-	if (opt_turn == TURN_VERTICAL) {
+	if (turn_mode() == TURN_VERTICAL) {
 		lv_obj_set_scrollable(page_box, true);
 	} else {
 		lv_obj_set_scrollable(page_box, false);
