@@ -26,7 +26,7 @@ typedef struct {
 	const char *language; // the interface language whose default this is
 } layout_info_t;
 
-// The Latin keypad, which three of the four Latin layouts share exactly: T9
+// The plain Latin keypad, for the layouts whose keypad adds no letters: T9
 // groups letters by alphabet, and AZERTY rearranges keys rather than letters.
 #define T9_LATIN_LOWER ".,?!\'", "abc", "def", "ghi", "jkl", "mno", "pqrs", "tuv", "wxyz"
 #define T9_LATIN_UPPER ".,?!\'", "ABC", "DEF", "GHI", "JKL", "MNO", "PQRS", "TUV", "WXYZ"
@@ -60,8 +60,7 @@ static const layout_info_t layouts[KB_LAYOUT_COUNT] = {
 	[KB_LAYOUT_SPANISH] = {"Espa\xc3\xb1ol",
 						   {"qwertyuiop", "asdfghjkl\xc3\xb1", "zxcvbnm"},
 						   {"QWERTYUIOP", "ASDFGHJKL\xc3\x91", "ZXCVBNM"},
-						   // The only Latin keypad that differs: the enye rides
-						   // the key its neighbours are on.
+						   // The enye rides the key its neighbours are on.
 						   {".,?!\'", "abc", "def", "ghi", "jkl", "mno\xc3\xb1", "pqrs", "tuv", "wxyz"},
 						   {".,?!\'", "ABC", "DEF", "GHI", "JKL", "MNO\xc3\x91", "PQRS", "TUV", "WXYZ"},
 						   "Espa\xc3\xb1ol"},
@@ -96,11 +95,70 @@ static const layout_info_t layouts[KB_LAYOUT_COUNT] = {
 							"\xd0\xa0\xd0\xa1\xd0\xa2\xd0\xa3", "\xd0\xa4\xd0\xa5\xd0\xa6\xd0\xa7",
 							"\xd0\xa8\xd0\xa9\xd0\xaa\xd0\xab", "\xd0\xac\xd0\xad\xd0\xae\xd0\xaf"},
 						   "Russian"},
+	[KB_LAYOUT_DUTCH] = {"Nederlands",
+						 {"qwertyuiop", "asdfghjkl", "zxcvbnm"},
+						 {"QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"},
+						 {T9_LATIN_LOWER},
+						 {T9_LATIN_UPPER},
+						 "Nederlands"},
+	// The letter rows of a Polish keyboard, which is QWERTY with the
+	// diacritics behind AltGr; here they come from holding the base letter. A
+	// Polish phone keypad puts each of them on the key of its base letter.
+	[KB_LAYOUT_POLISH] = {"Polski",
+						  {"qwertyuiop", "asdfghjkl", "zxcvbnm"},
+						  {"QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"},
+						  {".,?!\'", "abc\xc4\x85\xc4\x87", "def\xc4\x99", "ghi", "jkl\xc5\x82", "mno\xc5\x84\xc3\xb3",
+						   "pqrs\xc5\x9b", "tuv", "wxyz\xc5\xba\xc5\xbc"},
+						  {".,?!\'", "ABC\xc4\x84\xc4\x86", "DEF\xc4\x98", "GHI", "JKL\xc5\x81", "MNO\xc5\x83\xc3\x93",
+						   "PQRS\xc5\x9a", "TUV", "WXYZ\xc5\xb9\xc5\xbb"},
+						  "Polski"},
+	// ABNT2, the Brazilian keyboard: the c-cedilla has its own key after L, and
+	// the accented vowels, dead keys there, come from holding the vowel.
+	[KB_LAYOUT_PORTUGUESE] = {"Portugu\xc3\xaas",
+							  {"qwertyuiop", "asdfghjkl\xc3\xa7", "zxcvbnm"},
+							  {"QWERTYUIOP", "ASDFGHJKL\xc3\x87", "ZXCVBNM"},
+							  {".,?!\'", "abc\xc3\xa7", "def", "ghi", "jkl", "mno", "pqrs", "tuv", "wxyz"},
+							  {".,?!\'", "ABC\xc3\x87", "DEF", "GHI", "JKL", "MNO", "PQRS", "TUV", "WXYZ"},
+							  "Portugu\xc3\xaas BR"},
+};
+
+// The letters a held key offers, the way a phone keyboard does: one entry per
+// key cap, upper and lower case written out separately for the same reason the
+// rows are. The same list for every Latin layout, so a word in another
+// language can be typed on any of them.
+static const struct {
+	const char *key;
+	const char *variants;
+} VARIANTS[] = {
+	{"a", "\xc3\xa0\xc3\xa1\xc3\xa2\xc3\xa4\xc3\xa6\xc3\xa3\xc3\xa5\xc4\x81\xc4\x85"}, // à á â ä æ ã å ā ą
+	{"A", "\xc3\x80\xc3\x81\xc3\x82\xc3\x84\xc3\x86\xc3\x83\xc3\x85\xc4\x80\xc4\x84"}, // À Á Â Ä Æ Ã Å Ā Ą
+	{"c", "\xc3\xa7\xc4\x87\xc4\x8d"},												   // ç ć č
+	{"C", "\xc3\x87\xc4\x86\xc4\x8c"},												   // Ç Ć Č
+	{"e", "\xc3\xa8\xc3\xa9\xc3\xaa\xc3\xab\xc4\x93\xc4\x97\xc4\x99"},				   // è é ê ë ē ė ę
+	{"E", "\xc3\x88\xc3\x89\xc3\x8a\xc3\x8b\xc4\x92\xc4\x96\xc4\x98"},				   // È É Ê Ë Ē Ė Ę
+	{"i", "\xc3\xac\xc3\xad\xc3\xae\xc3\xaf\xc4\xab\xc4\xaf"},						   // ì í î ï ī į
+	{"I", "\xc3\x8c\xc3\x8d\xc3\x8e\xc3\x8f\xc4\xaa\xc4\xae"},						   // Ì Í Î Ï Ī Į
+	{"l", "\xc5\x82"},																   // ł
+	{"L", "\xc5\x81"},																   // Ł
+	{"n", "\xc3\xb1\xc5\x84"},														   // ñ ń
+	{"N", "\xc3\x91\xc5\x83"},														   // Ñ Ń
+	{"o", "\xc3\xb2\xc3\xb3\xc3\xb4\xc3\xb6\xc3\xb5\xc3\xb8\xc5\x8d\xc5\x93"},		   // ò ó ô ö õ ø ō œ
+	{"O", "\xc3\x92\xc3\x93\xc3\x94\xc3\x96\xc3\x95\xc3\x98\xc5\x8c\xc5\x92"},		   // Ò Ó Ô Ö Õ Ø Ō Œ
+	{"s", "\xc3\x9f\xc5\x9b\xc5\xa1"},												   // ß ś š
+	{"S", "\xc5\x9a\xc5\xa0"},														   // Ś Š
+	{"u", "\xc3\xb9\xc3\xba\xc3\xbb\xc3\xbc\xc5\xab"},								   // ù ú û ü ū
+	{"U", "\xc3\x99\xc3\x9a\xc3\x9b\xc3\x9c\xc5\xaa"},								   // Ù Ú Û Ü Ū
+	{"y", "\xc3\xbf\xc3\xbd"},														   // ÿ ý
+	{"Y", "\xc5\xb8\xc3\x9d"},														   // Ÿ Ý
+	{"z", "\xc5\xbe\xc5\xba\xc5\xbc"},												   // ž ź ż
+	{"Z", "\xc5\xbd\xc5\xb9\xc5\xbb"},												   // Ž Ź Ż
+	{"\xd0\xb5", "\xd1\x91"},														   // е: ё
+	{"\xd0\x95", "\xd0\x81"},														   // Е: Ё
 };
 
 // The config file keeps names, not indices.
-static const char *const layout_keys[KB_LAYOUT_COUNT] = {"english", "italian", "german",
-														 "spanish", "french",  "russian"};
+static const char *const layout_keys[KB_LAYOUT_COUNT] = {"english", "italian", "german", "spanish",   "french",
+														 "russian", "dutch",   "polish", "portuguese"};
 
 static uint8_t in_use[KB_LAYOUT_COUNT];
 static uint8_t in_use_n;
@@ -204,6 +262,45 @@ const char *kblayout_t9_letter(kblayout_t layout, int key, int index, bool upper
 	return out;
 }
 
+static const char *variants_of(const char *key) {
+	for (size_t i = 0; key && i < sizeof(VARIANTS) / sizeof(VARIANTS[0]); i++) {
+		if (strcmp(VARIANTS[i].key, key) == 0) {
+			return VARIANTS[i].variants;
+		}
+	}
+	return "";
+}
+
+int kblayout_variant_count(const char *key) {
+	const char *p = variants_of(key);
+	int n = 0;
+	while (*p) {
+		p += utf8_len(p);
+		n++;
+	}
+	return n;
+}
+
+const char *kblayout_variant(const char *key, int index) {
+	static char slots[4][8];
+	static int at;
+
+	const char *p = variants_of(key);
+	for (int i = 0; i < index && *p; i++) {
+		p += utf8_len(p);
+	}
+	if (index < 0 || !*p) {
+		return "";
+	}
+
+	int len = utf8_len(p);
+	char *out = slots[at];
+	at = (at + 1) % 4;
+	memcpy(out, p, (size_t)len);
+	out[len] = '\0';
+	return out;
+}
+
 const char *kblayout_name(kblayout_t layout) {
 	if (layout < 0 || layout >= KB_LAYOUT_COUNT) {
 		return "";
@@ -267,8 +364,8 @@ static void load(void) {
 
 	// Nothing saved, or a layout that did not exist when it was saved. The
 	// interface language's own goes in front of the ones in use; everything
-	// else waits in the other list, because five alphabets on one page is a
-	// list to choose from, not a default.
+	// else waits in the other list, because a page of alphabets is a list to
+	// choose from, not a default.
 	kblayout_t mine = layout_for_language();
 	if (!placed[mine] && in_use_n == 0) {
 		placed[mine] = true;

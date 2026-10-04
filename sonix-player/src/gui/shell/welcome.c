@@ -31,8 +31,9 @@ static const char *const WELCOME_WORDS[] = {
 	"Willkommen", // German
 	"Bienvenue",  // French
 	"Bienvenido", // Spanish
-	"Welkom", 	  // Dutch
-	"Witamy",     // Polish
+	"Welkom",	  // Dutch
+	"Witamy",	  // Polish
+	"Bem-vindo",  // Portuguese
 	// The default face draws Cyrillic, kana and the CJK block, as the whole
 	// interface does in Russian, Chinese and Japanese, so none of these needs
 	// a font of its own.

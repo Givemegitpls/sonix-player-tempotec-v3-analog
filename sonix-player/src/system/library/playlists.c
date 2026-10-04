@@ -410,6 +410,42 @@ static char *line_body(char *line) {
 	return line;
 }
 
+// Takes the "." and ".." segments and doubled separators out of an absolute
+// path, in place and without touching the disk: the library stores paths in
+// this form, and "Playlist/../Music/a.flac" has to match its "Music/a.flac".
+// ".." at the root stays at the root.
+static void collapse_dots(char *path) {
+	if (path[0] != '/') {
+		return;
+	}
+	size_t len = 1; // the result so far, always starting with '/'
+	const char *seg = path + 1;
+	while (*seg) {
+		const char *end = strchr(seg, '/');
+		size_t n = end ? (size_t)(end - seg) : strlen(seg);
+		bool dot = n == 1 && seg[0] == '.';
+		if (n == 2 && seg[0] == '.' && seg[1] == '.') {
+			while (len > 1 && path[len - 1] != '/') {
+				len--;
+			}
+			if (len > 1) {
+				len--; // the separator in front of the segment dropped
+			}
+		} else if (n > 0 && !dot) {
+			if (len > 1) {
+				path[len++] = '/';
+			}
+			memmove(path + len, seg, n);
+			len += n;
+		}
+		if (!end) {
+			break;
+		}
+		seg = end + 1;
+	}
+	path[len] = '\0';
+}
+
 // Turns one line of a playlist into a path this player can open.
 //
 // The stock HiBy player writes its own playlists the Windows way, with a drive
@@ -459,6 +495,7 @@ static void resolve_entry(const char *line, const char *base, char *out, size_t 
 			*c = '/';
 		}
 	}
+	collapse_dots(out);
 }
 
 // Whether the file an entry points at is actually there. Asked once, when the

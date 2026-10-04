@@ -10,6 +10,7 @@
 #include "src/system/device/axpcharge.h"
 #include "src/system/device/led.h"
 #include "src/system/device/power.h"
+#include "src/system/device/system.h"
 
 lv_obj_t *powersettings_screen;
 
@@ -30,6 +31,7 @@ static const struct {
 static lv_obj_t *charge_value, *charge_slider;
 static lv_obj_t *auto_off_switch, *auto_off_value, *auto_off_slider, *auto_off_card;
 static lv_obj_t *led_on_switch, *led_off_switch, *led_off_card;
+static lv_obj_t *key_lock_switch;
 static lv_obj_t *standby_switch;
 static lv_obj_t *charge_note;
 static lv_obj_t *axp_limit_switch, *axp_current_switch; // the R1's two, instead of the slider
@@ -88,6 +90,8 @@ void powersettings_apply(void) {
 	// on its own regardless.
 	led_set_enabled(config_get_bool("power", "led_on", true));
 	led_set_idle_off(config_get_bool("power", "led_off_standby", true));
+
+	input_set_key_lock(config_get_bool("power", "lock_keys_screen_off", false));
 }
 
 static void refresh_labels(void) {
@@ -123,6 +127,8 @@ static void refresh_labels(void) {
 		lv_obj_add_state(led_off_switch, LV_STATE_DISABLED);
 		lv_obj_set_style_opa(led_off_card, LV_OPA_40, 0);
 	}
+
+	set_checked(key_lock_switch, config_get_bool("power", "lock_keys_screen_off", false));
 
 	if (config_get_bool("power", "standby_mem", true)) {
 		lv_obj_add_state(standby_switch, LV_STATE_CHECKED);
@@ -193,6 +199,14 @@ static void led_on_toggled_cb(lv_event_t *e) {
 	refresh_labels();
 }
 
+static void key_lock_toggled_cb(lv_event_t *e) {
+	(void)e;
+	config_set_bool("power", "lock_keys_screen_off", lv_obj_has_state(key_lock_switch, LV_STATE_CHECKED));
+	config_save();
+	powersettings_apply();
+	refresh_labels();
+}
+
 static void auto_off_toggled_cb(lv_event_t *e) {
 	(void)e;
 	config_set_bool("power", "auto_off", lv_obj_has_state(auto_off_switch, LV_STATE_CHECKED));
@@ -249,6 +263,15 @@ void powersettings_init(gui_config_t *cfg) {
 	// No "turn Wi-Fi off in standby" entry: parking the radio is automatic, and
 	// wifi_in_use() in power.c knows on its own when not to turn it off --
 	// Qobuz, Tidal, podcasts, radio, AirPlay, DLNA, transfers.
+
+	// The buttons on the case, ignored while the screen is off (system.c).
+	settingsrow_toggle(container, "power_lock_keys_screen_off", &key_lock_switch, key_lock_toggled_cb);
+	lv_obj_t *key_lock_note = lv_label_create(container);
+	lv_label_set_long_mode(key_lock_note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(key_lock_note, lv_pct(100));
+	lv_obj_add_style(key_lock_note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(key_lock_note, &font_ui_22, 0);
+	lv_label_set_text(key_lock_note, tr("power_lock_keys_screen_off_note"));
 
 	// Toggle and "after how long" on one card: the slider is only there while
 	// the option is on.

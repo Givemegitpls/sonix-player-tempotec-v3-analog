@@ -135,6 +135,19 @@ struct keyboard_s {
 	lv_obj_t *preview_label;
 	lv_obj_t *host; // what the bubble is positioned within
 
+	// The strip of accented letters a held key opens (kblayout_variant), and
+	// which of them the finger is on. `variant_key` is the cap the strip was
+	// opened for; `variant_swallow` eats the click that ends the hold, since
+	// the letter is written on release instead.
+	lv_obj_t *variants;
+	lv_obj_t *variant_cell[KB_LAYOUT_MAX_VARIANTS];
+	lv_obj_t *variant_label[KB_LAYOUT_MAX_VARIANTS];
+	char variant_key[8];
+	lv_obj_t *variant_btn;
+	int variant_count;
+	int variant_sel; // -1 while the strip is closed
+	bool variant_swallow;
+
 	bool mode_long_pressed; // the "123" key opened the layout menu; eat its click
 	bool shift;
 	bool caps; // set by a shift double-tap: upper case until shift is pressed again
@@ -511,6 +524,18 @@ static void kb_t9_shift_cb(lv_event_t *e) {
 // keys
 // ---------------------------------------------------------------------------
 
+// Writes one letter and consumes a one-shot shift.
+static void kb_type(keyboard_t *kb, const char *text) {
+	lv_textarea_add_text(kb->field, text);
+	if (kb->symbols) {
+		return; // on the symbol pages shift picks the page and stays
+	}
+	if (kb->shift && !kb->caps) {
+		kb->shift = false; // one-shot, like every phone keyboard, unless caps lock
+		kb_refresh_caps(kb);
+	}
+}
+
 static void kb_letter_cb(lv_event_t *e) {
 	key_ref_t *ref = lv_event_get_user_data(e);
 	if (!ref || !ref->kb->field) {
@@ -522,14 +547,11 @@ static void kb_letter_cb(lv_event_t *e) {
 		return;
 	}
 
-	lv_textarea_add_text(kb->field, kb_key_text(kb, kb->key_row[index], kb->key_col[index]));
-	if (kb->symbols) {
-		return; // on the symbol pages shift picks the page and stays
+	if (kb->variant_swallow) {
+		kb->variant_swallow = false; // the hold wrote its letter on release
+		return;
 	}
-	if (kb->shift && !kb->caps) {
-		kb->shift = false; // one-shot, like every phone keyboard, unless caps lock
-		kb_refresh_caps(kb);
-	}
+	kb_type(kb, kb_key_text(kb, kb->key_row[index], kb->key_col[index]));
 }
 
 // A second shift tap within this window turns caps lock on.
@@ -663,6 +685,166 @@ static void kb_preview_cb(lv_event_t *e) {
 		return;
 	}
 	kb_preview_show(kb, kb->letter_btn[ref->index], lv_label_get_text(kb->letter_label[ref->index]));
+}
+
+// ---------------------------------------------------------------------------
+// accented letters
+//
+// Holding a letter opens a strip of its accented forms above the key, as on a
+// phone: the finger slides along it, the cell under it lights up, and letting
+// go writes that letter. The strip opens with the cell nearest the finger lit,
+// so a hold and release without sliding writes the first form offered there.
+// ---------------------------------------------------------------------------
+
+#define KB_VARIANT_PAD 6
+
+// The key the strip was opened from. While it is open a slide along the strip
+// must not scroll whatever page holds the keyboard.
+static void kb_variant_hold(lv_obj_t *key, bool holding) {
+	lv_obj_set_scroll_chain_hor(key, !holding);
+	lv_obj_set_scroll_chain_ver(key, !holding);
+}
+
+static void kb_variants_close(keyboard_t *kb) {
+	if (kb->variants) {
+		lv_obj_set_hidden(kb->variants, true);
+	}
+	if (kb->variant_sel >= 0 && kb->variant_btn) {
+		kb_variant_hold(kb->variant_btn, false);
+	}
+	kb->variant_btn = NULL;
+	kb->variant_sel = -1;
+}
+
+static void kb_variants_paint(keyboard_t *kb) {
+	for (int i = 0; i < kb->variant_count; i++) {
+		bool on = i == kb->variant_sel;
+		if (on) {
+			lv_obj_set_style_bg_color(kb->variant_cell[i], theme()->accent, 0);
+			lv_obj_set_style_bg_opa(kb->variant_cell[i], LV_OPA_COVER, 0);
+			lv_obj_set_style_text_color(kb->variant_label[i], lv_color_white(), 0);
+		} else {
+			lv_obj_set_style_bg_opa(kb->variant_cell[i], LV_OPA_TRANSP, 0);
+			lv_obj_set_style_text_color(kb->variant_label[i], theme()->text_primary, 0);
+		}
+	}
+}
+
+// The cell under screen x, clamped to the ends of the strip.
+static int kb_variant_at(keyboard_t *kb, int32_t x) {
+	lv_area_t first, last;
+	lv_obj_get_coords(kb->variant_cell[0], &first);
+	lv_obj_get_coords(kb->variant_cell[kb->variant_count - 1], &last);
+	if (x <= first.x2) {
+		return 0;
+	}
+	if (x >= last.x1) {
+		return kb->variant_count - 1;
+	}
+	int pitch = lv_area_get_width(&first) + KB_VARIANT_PAD;
+	int at = (int)(x - first.x1) / pitch;
+	return at < 0 ? 0 : (at >= kb->variant_count ? kb->variant_count - 1 : at);
+}
+
+static void kb_variants_open(keyboard_t *kb, lv_obj_t *key, const char *cap) {
+	int count = kblayout_variant_count(cap);
+	if (!kb->variants || count <= 0) {
+		return;
+	}
+	if (count > KB_LAYOUT_MAX_VARIANTS) {
+		count = KB_LAYOUT_MAX_VARIANTS;
+	}
+	snprintf(kb->variant_key, sizeof(kb->variant_key), "%s", cap);
+	kb->variant_count = count;
+	for (int i = 0; i < KB_LAYOUT_MAX_VARIANTS; i++) {
+		if (i < count) {
+			lv_label_set_text(kb->variant_label[i], kblayout_variant(cap, i));
+			lv_obj_set_hidden(kb->variant_cell[i], false);
+		} else {
+			lv_obj_set_hidden(kb->variant_cell[i], true);
+		}
+	}
+
+	kb_preview_hide(kb);
+	lv_obj_set_hidden(kb->variants, false);
+	lv_obj_move_foreground(kb->variants);
+	lv_obj_update_layout(kb->variants);
+
+	// The first cell over the key, the strip running on towards the middle of
+	// the screen, and the whole of it kept inside the host.
+	int w = lv_obj_get_width(kb->variants);
+	int h = lv_obj_get_height(kb->variants);
+	int cell_w = lv_obj_get_width(kb->variant_cell[0]);
+
+	lv_area_t coords;
+	lv_obj_get_coords(key, &coords);
+	lv_area_t host_coords;
+	lv_obj_get_coords(kb->host, &host_coords);
+	int host_w = lv_obj_get_width(kb->host);
+	int key_x = (coords.x1 + coords.x2) / 2 - host_coords.x1;
+
+	int x;
+	if (key_x < host_w / 2) {
+		x = key_x - cell_w / 2 - KB_VARIANT_PAD;
+	} else {
+		x = key_x + cell_w / 2 + KB_VARIANT_PAD - w;
+	}
+	if (x > host_w - w - 2) {
+		x = host_w - w - 2;
+	}
+	if (x < 2) {
+		x = 2;
+	}
+	lv_obj_set_pos(kb->variants, x, coords.y1 - host_coords.y1 - h - 6);
+	lv_obj_update_layout(kb->variants);
+
+	kb->variant_sel = kb_variant_at(kb, (coords.x1 + coords.x2) / 2);
+	kb->variant_btn = key;
+	kb_variant_hold(key, true);
+	kb->variant_swallow = true;
+	kb_variants_paint(kb);
+}
+
+static void kb_variants_cb(lv_event_t *e) {
+	key_ref_t *ref = lv_event_get_user_data(e);
+	if (!ref || !ref->kb) {
+		return;
+	}
+	keyboard_t *kb = ref->kb;
+	lv_event_code_t code = lv_event_get_code(e);
+
+	if (code == LV_EVENT_PRESSED) {
+		kb->variant_swallow = false; // a fresh press, whatever the last one left
+		return;
+	}
+	if (code == LV_EVENT_LONG_PRESSED) {
+		if (kb->symbols || ref->index < 0 || ref->index >= kb->key_count) {
+			return;
+		}
+		kb_variants_open(kb, kb->letter_btn[ref->index], lv_label_get_text(kb->letter_label[ref->index]));
+		return;
+	}
+	if (kb->variant_sel < 0) {
+		return;
+	}
+
+	lv_indev_t *indev = lv_indev_active();
+	if (code == LV_EVENT_PRESSING) {
+		if (indev) {
+			lv_point_t point;
+			lv_indev_get_point(indev, &point);
+			int sel = kb_variant_at(kb, point.x);
+			if (sel != kb->variant_sel) {
+				kb->variant_sel = sel;
+				kb_variants_paint(kb);
+			}
+		}
+		return;
+	}
+	if (code == LV_EVENT_RELEASED && kb->field) {
+		kb_type(kb, kblayout_variant(kb->variant_key, kb->variant_sel));
+	}
+	kb_variants_close(kb); // RELEASED or PRESS_LOST
 }
 
 // ---------------------------------------------------------------------------
@@ -813,6 +995,11 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 		kb->letter_btn[index] = kb_make_key(kb->rows[0], 0, kb_letter_cb, &kb->refs[index]);
 		kb->letter_label[index] = kb_key_label(kb->letter_btn[index]);
 		kb_attach_preview(kb->letter_btn[index], &kb->refs[index]);
+		lv_obj_add_event_cb(kb->letter_btn[index], kb_variants_cb, LV_EVENT_PRESSED, &kb->refs[index]);
+		lv_obj_add_event_cb(kb->letter_btn[index], kb_variants_cb, LV_EVENT_LONG_PRESSED, &kb->refs[index]);
+		lv_obj_add_event_cb(kb->letter_btn[index], kb_variants_cb, LV_EVENT_PRESSING, &kb->refs[index]);
+		lv_obj_add_event_cb(kb->letter_btn[index], kb_variants_cb, LV_EVENT_RELEASED, &kb->refs[index]);
+		lv_obj_add_event_cb(kb->letter_btn[index], kb_variants_cb, LV_EVENT_PRESS_LOST, &kb->refs[index]);
 	}
 
 	kb->delete_btn = kb_make_key(kb->rows[2], key_w + 14, kb_delete_cb, kb);
@@ -925,6 +1112,40 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	lv_obj_set_style_text_font(kb->preview_label, &font_ui_32, 0);
 	lv_obj_center(kb->preview_label);
 
+	// The accented-letter strip, beside the bubble and in the same style: one
+	// cell per letter, as wide as a key.
+	kb->variant_sel = -1;
+	kb->variants = lv_obj_create(parent);
+	lv_obj_set_size(kb->variants, LV_SIZE_CONTENT, row_h + 12);
+	lv_obj_add_style(kb->variants, &theme_style_card, 0);
+	lv_obj_set_style_radius(kb->variants, 12, 0);
+	lv_obj_set_style_border_width(kb->variants, 0, 0);
+	lv_obj_set_style_shadow_width(kb->variants, 14, 0);
+	lv_obj_set_style_shadow_opa(kb->variants, LV_OPA_30, 0);
+	lv_obj_set_style_shadow_color(kb->variants, lv_color_black(), 0);
+	lv_obj_set_style_shadow_offset_y(kb->variants, 3, 0);
+	lv_obj_set_style_pad_all(kb->variants, KB_VARIANT_PAD, 0);
+	lv_obj_set_style_pad_gap(kb->variants, KB_VARIANT_PAD, 0);
+	lv_obj_set_flex_flow(kb->variants, LV_FLEX_FLOW_ROW);
+	lv_obj_set_scrollable(kb->variants, false);
+	lv_obj_set_clickable(kb->variants, false);
+	lv_obj_set_hidden(kb->variants, true);
+	for (int i = 0; i < KB_LAYOUT_MAX_VARIANTS; i++) {
+		kb->variant_cell[i] = lv_obj_create(kb->variants);
+		lv_obj_set_size(kb->variant_cell[i], key_w, lv_pct(100));
+		lv_obj_set_style_radius(kb->variant_cell[i], 8, 0);
+		lv_obj_set_style_border_width(kb->variant_cell[i], 0, 0);
+		lv_obj_set_style_bg_opa(kb->variant_cell[i], LV_OPA_TRANSP, 0);
+		lv_obj_set_style_pad_all(kb->variant_cell[i], 0, 0);
+		lv_obj_set_scrollable(kb->variant_cell[i], false);
+		lv_obj_set_clickable(kb->variant_cell[i], false);
+
+		kb->variant_label[i] = lv_label_create(kb->variant_cell[i]);
+		lv_obj_add_style(kb->variant_label[i], &theme_style_text, 0);
+		lv_obj_set_style_text_font(kb->variant_label[i], &font_ui_28, 0);
+		lv_obj_center(kb->variant_label[i]);
+	}
+
 	kb->next = kb_list;
 	kb_list = kb;
 	kb_register_refresh();
@@ -954,6 +1175,7 @@ void keyboard_set_visible(keyboard_t *kb, bool visible) {
 	} else {
 		lv_obj_set_hidden(kb->tray, true);
 		kb_preview_hide(kb);
+		kb_variants_close(kb);
 	}
 }
 

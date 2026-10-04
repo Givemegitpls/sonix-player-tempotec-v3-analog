@@ -104,6 +104,11 @@ void storage_recheck_card(void);
 // Call it last, after anything that still writes to the card.
 void storage_release_for_shutdown(void);
 
+// "Lock keys while the screen is off": with it on, the volume and transport
+// buttons on the case are ignored while the screen is off. The power key and
+// the headphone remote keep working. Off until set.
+void input_set_key_lock(bool on);
+
 #ifdef HOST_BUILD
 // Feeds one key press or release to the button thread, as if it had come off
 // an evdev node. `code` is a KEY_* from linux/input.h.

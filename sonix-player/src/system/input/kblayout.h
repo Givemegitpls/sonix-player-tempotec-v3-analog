@@ -17,9 +17,11 @@
 // first time round there is nothing saved and the interface language decides:
 // its own layout is the one in use and the rest wait in the other list.
 //
-// The letters are the layouts real keyboards have. English and Italian carry
-// the same ones, as they do on a phone; what differs is German (QWERTZ and the
-// umlauts), Spanish (the ñ), French (AZERTY) and Russian (ЙЦУКЕН).
+// The letters are the layouts real keyboards have. English, Italian, Dutch and
+// Polish carry the same ones, as they do on a phone; what differs is German
+// (QWERTZ and the umlauts), Spanish (the ñ), French (AZERTY), Brazilian
+// Portuguese (the ç) and Russian (ЙЦУКЕН). Accented letters come from holding
+// a key (kblayout_variant), on every layout.
 
 typedef enum {
 	KB_LAYOUT_ENGLISH = 0,
@@ -28,6 +30,9 @@ typedef enum {
 	KB_LAYOUT_SPANISH,
 	KB_LAYOUT_FRENCH,
 	KB_LAYOUT_RUSSIAN,
+	KB_LAYOUT_DUTCH,
+	KB_LAYOUT_POLISH,
+	KB_LAYOUT_PORTUGUESE,
 	KB_LAYOUT_COUNT,
 } kblayout_t;
 
@@ -43,6 +48,14 @@ const char *kblayout_name(kblayout_t layout);
 // upper case, as a NUL-terminated UTF-8 string.
 int kblayout_row_len(kblayout_t layout, int row);
 const char *kblayout_letter(kblayout_t layout, int row, int index, bool upper);
+
+// The letters a held key offers in place of its own, for the key cap `key` (a
+// single letter, lower or upper case): how many, and letter `index` of them as
+// a NUL-terminated UTF-8 string. 0 and "" for a key that has none. The returned
+// string is valid until four more calls.
+#define KB_LAYOUT_MAX_VARIANTS 9
+int kblayout_variant_count(const char *key);
+const char *kblayout_variant(const char *key, int index);
 
 // The nine-key phone keypad, for the same alphabet. Key 0 is the punctuation
 // key; the rest carry the letters, four or five to a key.

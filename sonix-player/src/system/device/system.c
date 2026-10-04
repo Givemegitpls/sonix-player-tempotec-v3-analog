@@ -1416,6 +1416,12 @@ static void run_mapped_action(keymap_button_t button) {
 	}
 }
 
+static volatile bool key_lock_when_off;
+
+void input_set_key_lock(bool on) { key_lock_when_off = on; }
+
+static bool keys_locked(void) { return key_lock_when_off && !power_screen_is_on(); }
+
 static void handle_key_press(const char *node, int code, bool headset) {
 	// The side buttons, translated from kernel code to the button as held (see
 	// keymap_button_for_code() for the R3 Pro II's swapped media keys).
@@ -1653,6 +1659,14 @@ static void *input_thread_func(void *arg) {
 			if (ev.value == 1) {
 				printf("input: %s key %d ignored, the device is waking\n", node, ev.code);
 			}
+			continue;
+		}
+
+		// "Lock keys while the screen is off": the buttons on the case do
+		// nothing while the panel is dark. The power key is not one of them. A
+		// release still closes a press that went down with the screen on.
+		if (!info->headset && keymap_button_for_code(ev.code) != KEYMAP_BTN_COUNT && keys_locked() &&
+			(ev.value != 0 || ev.code != held)) {
 			continue;
 		}
 

@@ -292,8 +292,7 @@ static bool go_to_current;
 // artist_lists (MEDIALIST_ARTIST_* bits). Off by default, with all of them
 // picked so that switching it on shows something at once.
 static bool show_artist;
-static int artist_lists =
-	MEDIALIST_ARTIST_TRACKS | MEDIALIST_ARTIST_ALBUMS | MEDIALIST_ARTIST_GENRES | MEDIALIST_ARTIST_FAVOURITES;
+static int artist_lists = MEDIALIST_ARTIST_ALL;
 
 // Both are read on first use rather than in medialist_init(): the music
 // settings page is built before it (see gui_init), so a switch built from these
@@ -806,9 +805,9 @@ static void row_update_quality(panel_t *p, row_t *row, const char *path) {
 }
 
 // Whether this list is one "Show artist" is on for: all the tracks, the albums
-// and the tracks inside one, a genre's albums and tracks, or the favourites. Not an artist's own
-// lists, where the name is the page's title already, and not the name lists,
-// whose rows are artists or genres themselves.
+// and the tracks inside one, a genre's albums and tracks, the favourites, or a
+// playlist. Not an artist's own lists, where the name is the page's title
+// already, and not the name lists, whose rows are artists or genres themselves.
 static bool panel_shows_artist(const panel_t *p) {
 	if (!show_artist || p->from_paths) {
 		return false;
@@ -825,6 +824,9 @@ static bool panel_shows_artist(const panel_t *p) {
 	}
 	if (p->kind == LIBRARY_LIST_FAVOURITES) {
 		return (artist_lists & MEDIALIST_ARTIST_FAVOURITES) != 0;
+	}
+	if (p->kind == LIBRARY_LIST_PLAYLIST) {
+		return (artist_lists & MEDIALIST_ARTIST_PLAYLISTS) != 0;
 	}
 	return false;
 }

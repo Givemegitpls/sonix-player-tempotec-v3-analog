@@ -15,8 +15,8 @@
 
 lv_obj_t *language_screen;
 
-// However many .ini files the folder holds, plus Italian, which needs none.
-#define MAX_LANGUAGES 12
+// However many .ini files the folder holds, up to the 16 lang_list() reads.
+#define MAX_LANGUAGES 16
 
 // The same green the settings rows use to mark a page whose feature is on.
 #define CHECK_GREEN lv_color_make(46, 194, 126)

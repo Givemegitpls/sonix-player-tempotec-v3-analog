@@ -1399,10 +1399,11 @@ static void quality_badges_cb(lv_event_t *e) {
 // on: a switch that is on and shows nothing anywhere is one nobody can read.
 static lv_obj_t *artist_switch;
 static lv_obj_t *artist_pills;
-#define ARTIST_PILLS 4
+#define ARTIST_PILLS 5
 static lv_obj_t *artist_pill[ARTIST_PILLS];
 static const int ARTIST_PILL_BITS[ARTIST_PILLS] = {MEDIALIST_ARTIST_TRACKS, MEDIALIST_ARTIST_ALBUMS,
-												   MEDIALIST_ARTIST_GENRES, MEDIALIST_ARTIST_FAVOURITES};
+												   MEDIALIST_ARTIST_GENRES, MEDIALIST_ARTIST_FAVOURITES,
+												   MEDIALIST_ARTIST_PLAYLISTS};
 
 static void artist_refresh(void) {
 	if (!artist_switch) {
@@ -1433,8 +1434,7 @@ static void artist_pick_cb(lv_event_t *e) {
 		return;
 	}
 	int lists = medialist_artist_lists() ^ (int)(intptr_t)lv_event_get_user_data(e);
-	if ((lists & (MEDIALIST_ARTIST_TRACKS | MEDIALIST_ARTIST_ALBUMS | MEDIALIST_ARTIST_GENRES |
-				  MEDIALIST_ARTIST_FAVOURITES)) == 0) {
+	if ((lists & MEDIALIST_ARTIST_ALL) == 0) {
 		return; // the last one stays on
 	}
 	medialist_set_show_artist(medialist_show_artist(), lists);
@@ -1513,6 +1513,7 @@ static void build_library_page(gui_config_t *cfg) {
 	artist_pill[1] = settingsrow_pill(artist_pills, "albums", MEDIALIST_ARTIST_ALBUMS, artist_pick_cb);
 	artist_pill[2] = settingsrow_pill(artist_pills, "music_genres", MEDIALIST_ARTIST_GENRES, artist_pick_cb);
 	artist_pill[3] = settingsrow_pill(artist_pills, "favourites", MEDIALIST_ARTIST_FAVOURITES, artist_pick_cb);
+	artist_pill[4] = settingsrow_pill(artist_pills, "playlists", MEDIALIST_ARTIST_PLAYLISTS, artist_pick_cb);
 	option_note(container, "musicsettings_show_artist_note");
 	artist_refresh();
 	theme_register_refresh(artist_refresh);
