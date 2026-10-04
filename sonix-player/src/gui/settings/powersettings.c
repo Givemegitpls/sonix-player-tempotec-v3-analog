@@ -264,7 +264,7 @@ void powersettings_init(gui_config_t *cfg) {
 	// wifi_in_use() in power.c knows on its own when not to turn it off --
 	// Qobuz, Tidal, podcasts, radio, AirPlay, DLNA, transfers.
 
-	// The buttons on the case, ignored while the screen is off (system.c).
+	// The lock gesture for the buttons on the case (system.c).
 	settingsrow_toggle(container, "power_lock_keys_screen_off", &key_lock_switch, key_lock_toggled_cb);
 	lv_obj_t *key_lock_note = lv_label_create(container);
 	lv_label_set_long_mode(key_lock_note, LV_LABEL_LONG_WRAP);

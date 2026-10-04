@@ -104,9 +104,11 @@ void storage_recheck_card(void);
 // Call it last, after anything that still writes to the card.
 void storage_release_for_shutdown(void);
 
-// "Lock keys while the screen is off": with it on, the volume and transport
-// buttons on the case are ignored while the screen is off. The power key and
-// the headphone remote keep working. Off until set.
+// "Lock keys while the screen is off": with it on, volume down + power pressed
+// with the screen off locks the buttons on the case, and pressed again unlocks
+// them. Locked, they are ignored while the screen is off; the power key and the
+// headphone remote keep working. Turning the option off drops the lock. Off
+// until set.
 void input_set_key_lock(bool on);
 
 #ifdef HOST_BUILD

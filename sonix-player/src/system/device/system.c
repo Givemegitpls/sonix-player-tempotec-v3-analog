@@ -1162,21 +1162,54 @@ static void apply_volume_step(int code) {
 }
 
 // ---------------------------------------------------------------------------
-// Screenshot: volume up + power
+// Key lock: volume down + power, with the screen off
 //
-// The state lives out here under a lock because the two keys can arrive on
+// The option in Power settings does not lock anything by itself: it arms the
+// gesture. With the screen off, volume down + power locks the buttons on the
+// case, and the same gesture unlocks them. Locked, they do nothing while the
+// screen is off; the power key and the headphone remote are never locked, and
+// with the screen on everything works as usual.
+//
+// The lock stays engaged across screen-on and screen-off until the gesture
+// releases it, and is dropped with the option. It is not saved: a restart
+// starts unlocked.
+// ---------------------------------------------------------------------------
+
+static volatile bool key_lock_when_off; // the option: the gesture is armed
+static volatile bool key_lock_engaged;	// the gesture's state
+
+void input_set_key_lock(bool on) {
+	key_lock_when_off = on;
+	if (!on) {
+		key_lock_engaged = false;
+	}
+}
+
+// Whether volume down + power, pressed now, is the lock gesture.
+static bool key_lock_gesture_armed(void) { return key_lock_when_off && !power_screen_is_on(); }
+
+static bool keys_locked(void) { return key_lock_when_off && key_lock_engaged && !power_screen_is_on(); }
+
+// ---------------------------------------------------------------------------
+// Key combinations: volume up + power (screenshot), volume down + power (key
+// lock, see above)
+//
+// The state lives out here under a lock because the keys can arrive on
 // different input nodes, and each node has its own thread: the one seeing the
 // volume key would never see the other's power key.
 //
-// When the combination fires both keys must be consumed: the volume must not go
-// up and power must not blank the screen on release. It rearms only once both
-// are back up -- otherwise holding them down would fire a burst of screenshots.
+// When a combination fires its keys must be consumed: the volume must not move
+// and power must not toggle the screen on release. It rearms only once all of
+// them are back up -- otherwise holding them down would fire a burst.
 // ---------------------------------------------------------------------------
 
 static pthread_mutex_t combo_lock = PTHREAD_MUTEX_INITIALIZER;
-static bool combo_vol_down;
-static bool combo_power_down;
+static bool combo_up_held;
+static bool combo_down_held;
+static bool combo_power_held;
 static bool combo_fired;
+
+static bool combo_key(int code) { return code == KEY_VOLUMEUP || code == KEY_VOLUMEDOWN || code == KEY_POWER; }
 
 static bool combo_active(void) {
 	pthread_mutex_lock(&combo_lock);
@@ -1188,51 +1221,66 @@ static bool combo_active(void) {
 // True when this key is part of a fired combination and so must not do what it
 // would do on its own.
 static bool combo_press(int code) {
-	if (code != KEY_VOLUMEUP && code != KEY_POWER) {
+	if (!combo_key(code)) {
 		return false;
 	}
 
-	// Read outside the lock: it reads the configuration, and the option does not
-	// change a thousand times a second.
-	bool enabled = screenshot_enabled();
+	// Read outside the lock: they read the configuration and the screen state,
+	// and neither changes a thousand times a second.
+	bool screenshot = screenshot_enabled();
+	bool lock = key_lock_gesture_armed();
 
-	bool fire = false;
+	bool fire_screenshot = false;
+	bool fire_lock = false;
 	pthread_mutex_lock(&combo_lock);
 	if (code == KEY_VOLUMEUP) {
-		combo_vol_down = true;
+		combo_up_held = true;
+	} else if (code == KEY_VOLUMEDOWN) {
+		combo_down_held = true;
 	} else {
-		combo_power_down = true;
+		combo_power_held = true;
 	}
-	if (combo_vol_down && combo_power_down && !combo_fired && enabled) {
-		combo_fired = true;
-		fire = true;
+	if (combo_power_held && !combo_fired) {
+		if (combo_up_held && screenshot) {
+			combo_fired = true;
+			fire_screenshot = true;
+		} else if (combo_down_held && lock) {
+			combo_fired = true;
+			fire_lock = true;
+		}
 	}
 	bool active = combo_fired;
 	pthread_mutex_unlock(&combo_lock);
 
-	if (fire) {
+	if (fire_screenshot) {
 		printf("input: volume up + power -> screenshot\n");
 		screenshot_request();
+	}
+	if (fire_lock) {
+		key_lock_engaged = !key_lock_engaged;
+		printf("input: volume down + power -> keys %s\n", key_lock_engaged ? "locked" : "unlocked");
 	}
 	return active;
 }
 
 // True when the release must be ignored.
 static bool combo_release(int code) {
-	if (code != KEY_VOLUMEUP && code != KEY_POWER) {
+	if (!combo_key(code)) {
 		return false;
 	}
 
 	pthread_mutex_lock(&combo_lock);
 	if (code == KEY_VOLUMEUP) {
-		combo_vol_down = false;
+		combo_up_held = false;
+	} else if (code == KEY_VOLUMEDOWN) {
+		combo_down_held = false;
 	} else {
-		combo_power_down = false;
+		combo_power_held = false;
 	}
 	bool consumed = combo_fired;
-	// Rearm only with both back up: releasing one and pressing it again must not
-	// fire the combination by itself.
-	if (!combo_vol_down && !combo_power_down) {
+	// Rearm only with all of them back up: releasing one and pressing it again
+	// must not fire the combination by itself.
+	if (!combo_up_held && !combo_down_held && !combo_power_held) {
 		combo_fired = false;
 	}
 	pthread_mutex_unlock(&combo_lock);
@@ -1415,12 +1463,6 @@ static void run_mapped_action(keymap_button_t button) {
 		break;
 	}
 }
-
-static volatile bool key_lock_when_off;
-
-void input_set_key_lock(bool on) { key_lock_when_off = on; }
-
-static bool keys_locked(void) { return key_lock_when_off && !power_screen_is_on(); }
 
 static void handle_key_press(const char *node, int code, bool headset) {
 	// The side buttons, translated from kernel code to the button as held (see
@@ -1606,11 +1648,11 @@ static void *input_thread_func(void *arg) {
 				run_mapped_action(keymap_button_for_code(code));
 			}
 
-			// While the screenshot combination is active these two keys are no
-			// longer themselves: the volume does not rise and the power menu
-			// does not open. The check is here and not only on press because the
-			// combination can complete LATER, on the other node's thread, while
-			// this one is already repeating.
+			// While a combination is active its keys are no longer themselves:
+			// the volume does not move and the power menu does not open. The
+			// check is here and not only on press because the combination can
+			// complete LATER, on the other node's thread, while this one is
+			// already repeating.
 			bool suppressed = combo_active();
 
 			// The wait may have ended for another deadline than the held key's.
@@ -1662,22 +1704,30 @@ static void *input_thread_func(void *arg) {
 			continue;
 		}
 
-		// "Lock keys while the screen is off": the buttons on the case do
-		// nothing while the panel is dark. The power key is not one of them. A
-		// release still closes a press that went down with the screen on.
+		// Keys locked by the gesture: the buttons on the case do nothing while
+		// the panel is dark. The power key is not one of them. A release still
+		// closes a press that went down before the lock. Volume down is still
+		// counted towards the combination, or the lock could not be undone.
 		if (!info->headset && keymap_button_for_code(ev.code) != KEYMAP_BTN_COUNT && keys_locked() &&
 			(ev.value != 0 || ev.code != held)) {
+			if (ev.code == KEY_VOLUMEDOWN) {
+				if (ev.value == 1) {
+					combo_press(ev.code);
+				} else if (ev.value == 0) {
+					combo_release(ev.code);
+				}
+			}
 			continue;
 		}
 
 		if (ev.value == 1) {
 			power_notify_activity(); // any physical button counts as use
 
-			// Volume up + power: if the combination has fired -- now, or because
-			// the other key was already down -- this key belongs to it. The
-			// volume key on the case only: the remote's is not under the thumb
-			// that presses power, and one stuck down would turn every later
-			// press of power into a screenshot.
+			// Volume + power: if a combination has fired -- now, or because the
+			// other key was already down -- this key belongs to it. The volume
+			// keys on the case only: the remote's are not under the thumb that
+			// presses power, and one stuck down would turn every later press of
+			// power into a screenshot or a lock.
 			bool combo = !info->headset && combo_press(ev.code);
 
 			// A scrub still open from a button whose release never arrived --
@@ -1730,6 +1780,11 @@ static void *input_thread_func(void *arg) {
 				deferred = true;
 			} else if (seeks) {
 				deferred = true;
+			} else if (!info->headset && ev.code == KEY_VOLUMEDOWN && key_lock_gesture_armed()) {
+				// Possibly the first half of the lock gesture, with power to
+				// follow: what it does on its own waits for the release, or
+				// for the hold to start repeating it.
+				deferred = true;
 			} else if (info->headset && ev.code == KEY_PLAYPAUSE) {
 				// Counted, not acted on: see hookclicks.h.
 				hook_clicks_press(&hook, held_since);
@@ -1763,9 +1818,10 @@ static void *input_thread_func(void *arg) {
 						dbl_code = ev.code;
 						dbl_until = now_ms() + DOUBLE_CLICK_MS;
 					}
-				} else if (deferred && !seeked && !combo) {
+				} else if (deferred && !seeked && !held_repeated && !combo) {
 					// A skip button let go before it became a seek: now it
-					// skips.
+					// skips. Likewise a deferred volume down let go before it
+					// started repeating.
 					run_mapped_action(keymap_button_for_code(ev.code));
 				}
 				// And one that did become a seek: this is where the music moves
