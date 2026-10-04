@@ -23,9 +23,9 @@ lv_obj_t *ccsettings_screen;
 // taken by its grip and nowhere else, it wears the accent border while it is
 // carried, and an accent rule shows where it would land. Both lists live on one
 // canvas, so a row crossing from one to the other is one coordinate and not a
-// change of parent. Fourteen rows do not fit on the screen, so the page
-// scrolls, and it scrolls by itself while a row is held near its top or bottom
-// edge.
+// change of parent. Every button has a row, more than fit on the screen, so
+// the page scrolls, and it scrolls by itself while a row is held near its top
+// or bottom edge.
 // ---------------------------------------------------------------------------
 
 #define ROW_HEIGHT 72
@@ -369,7 +369,7 @@ void ccsettings_init(gui_config_t *cfg) {
 	make_heading(body, "in_use", 0);
 	others_heading = make_heading(body, "controlcentre_not_in_use", 0);
 
-	// How many of the eight places are taken, level with the first heading.
+	// How many of the sixteen places are taken, level with the first heading.
 	in_use_count = lv_label_create(body);
 	lv_obj_add_style(in_use_count, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(in_use_count, &font_ui_22, 0);

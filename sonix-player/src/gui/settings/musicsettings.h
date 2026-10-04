@@ -46,4 +46,9 @@ bool musicsettings_endless_shuffle(void);
 bool musicsettings_high_gain(void);
 void musicsettings_set_high_gain(bool enabled);
 
+// Gapless playback, which the control centre also switches. The getter answers
+// with what the audio engine is doing, the one state both places draw.
+bool musicsettings_gapless_enabled(void);
+void musicsettings_set_gapless_enabled(bool enabled);
+
 #endif /* MUSICSETTINGS_H */

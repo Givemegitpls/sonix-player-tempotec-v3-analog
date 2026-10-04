@@ -31,8 +31,10 @@ void quickpanel_drag_end(void);
 // ---------------------------------------------------------------------------
 // Which round buttons the panel carries, and where
 //
-// The panel holds eight, in a grid of eight places. A place can also be empty:
-// the panel simply draws one button fewer.
+// The panel holds up to sixteen, in a grid of sixteen places. A place can also
+// be empty: the panel simply draws one button fewer. The card shows the first
+// eight; past them a handle appears under the brightness slider, and dragging
+// the sheet down stretches the card over the now-playing one to show the rest.
 //
 // Both the grid and the buttons left out of it live in [quickpanel] as lists of
 // names -- `order`, with "-" for an empty place, and `hidden`. Names and not
@@ -41,7 +43,8 @@ void quickpanel_drag_end(void);
 // as two lists (see quickpanel_move_in_use).
 // ---------------------------------------------------------------------------
 
-#define QP_SLOT_COUNT 8
+#define QP_SLOT_COUNT 16
+#define QP_SLOT_VISIBLE 8 // the ones the card shows before it is stretched
 
 typedef enum {
 	QP_BTN_WIFI = 0,
@@ -63,20 +66,22 @@ typedef enum {
 	QP_BTN_SLEEP_AUDIOBOOK,
 	QP_BTN_SLEEP_PODCAST,
 	QP_BTN_WIFI_TRANSFER,
+	QP_BTN_GAPLESS,
 	QP_BTN_COUNT,
 	QP_BTN_NONE = QP_BTN_COUNT, // an empty place in the grid
 } quickpanel_button_t;
 
-// The row's name (a translation tag) and the glyph it carries. The gain button
-// draws whichever of the two glyphs matches the current setting; this is the
-// low one, which is what the list should show.
+// The row's name (a translation tag) and the glyph it carries. The gain and
+// gapless buttons draw whichever of their two glyphs matches the current
+// setting; the list shows low gain and gapless on, the drawings that say what
+// the button is for.
 const char *quickpanel_button_tag(quickpanel_button_t button);
 const lv_image_dsc_t *quickpanel_button_icon(quickpanel_button_t button);
 
 // The layout as two lists, the way the settings page shows it: the buttons in
 // the panel, in order with the empty places left out, and the ones left out of
 // it. Moving a button to a position in either list saves the layout and closes
-// the gaps in the panel; a ninth button in the panel pushes the last one out,
+// the gaps in the panel; a button past the last place pushes the last one out,
 // to the top of the other list.
 int quickpanel_in_use_count(void);
 quickpanel_button_t quickpanel_in_use_at(int position);

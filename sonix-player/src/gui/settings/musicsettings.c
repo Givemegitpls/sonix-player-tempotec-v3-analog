@@ -106,12 +106,24 @@ static lv_obj_t *dre_switch;
 // that does not go through them is unaffected.
 static lv_obj_t *gapless_switch;
 
+bool musicsettings_gapless_enabled(void) { return audio_get_gapless(); }
+
+void musicsettings_set_gapless_enabled(bool enabled) {
+	config_set_int("audio", "gapless", enabled ? 1 : 0);
+	config_save();
+	audio_set_gapless(enabled);
+	if (gapless_switch) {
+		if (enabled) {
+			lv_obj_add_state(gapless_switch, LV_STATE_CHECKED);
+		} else {
+			lv_obj_remove_state(gapless_switch, LV_STATE_CHECKED);
+		}
+	}
+}
+
 static void gapless_toggle_cb(lv_event_t *e) {
 	(void)e;
-	bool on = lv_obj_has_state(gapless_switch, LV_STATE_CHECKED);
-	config_set_int("audio", "gapless", on ? 1 : 0);
-	config_save();
-	audio_set_gapless(on);
+	musicsettings_set_gapless_enabled(lv_obj_has_state(gapless_switch, LV_STATE_CHECKED));
 }
 
 static void dre_toggle_cb(lv_event_t *e) {
@@ -1657,8 +1669,10 @@ static void build_playback_page(gui_config_t *cfg) {
 	// No gaps between tracks. Underneath it is a PCM that stays open (see
 	// audio.h): it works only for music on the card, and only between tracks of
 	// the same format.
+	// The engine's state and not the file's: with nothing saved the engine
+	// starts with gapless off (see main.c), and the switch has to say so.
 	settingsrow_toggle(container, "musicsettings_gapless_playback", &gapless_switch, gapless_toggle_cb);
-	if (config_get_int("audio", "gapless", 1)) {
+	if (musicsettings_gapless_enabled()) {
 		lv_obj_add_state(gapless_switch, LV_STATE_CHECKED);
 	}
 
