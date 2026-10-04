@@ -79,6 +79,9 @@ ICONS = [
     # replaces play/pause instead of joining them, and shares their size.
     ("airplay-status.svg", "airplay_status", 26),
     ("sonixlink-status.svg", "sonixlink_status", 26),
+    # Detect changes, beside play/pause: looking over the card, then done.
+    ("database-search.svg", "library_checking", 26),
+    ("database-check.svg", "library_checked", 26),
     ("skip-back.svg", "skip_back", 34),
     ("skip-forward.svg", "skip_forward", 34),
     # The control centre's transport, a size up from the player's: the sheet is

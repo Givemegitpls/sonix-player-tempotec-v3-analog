@@ -27,6 +27,16 @@ void topbar_refresh_playback(void);
 // timer, and straight away by the pages that switch a radio.
 void topbar_refresh_radios(void);
 
+// Detect changes, right of play/pause: the search glyph while the card is being
+// looked over, the check glyph for a few seconds once the run is over, then
+// nothing. IDLE takes the glyph away at once.
+typedef enum {
+	TOPBAR_LIBRARY_IDLE,
+	TOPBAR_LIBRARY_CHECKING,
+	TOPBAR_LIBRARY_CHECKED,
+} topbar_library_t;
+void topbar_set_library_check(topbar_library_t state);
+
 // Shows or hides the status bar. Pages that want the full screen height (the
 // player, with its artwork flush to the top) hide it on entry.
 void topbar_set_hidden(bool hidden);

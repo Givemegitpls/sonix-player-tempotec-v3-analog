@@ -5259,6 +5259,11 @@ static int update_index(const namelist_t *files, bool replace) {
 	return replaced;
 }
 
+// How the last Detect changes run ended, told by the scan thread as its last
+// word (see scan_thread_func).
+static library_update_event_t update_outcome;
+static int update_added, update_removed, update_replaced;
+
 static void update_run(void) {
 	uint32_t started_ms = now_ms();
 	printf("library: looking for changes in %s%s\n", scan_root,
@@ -5386,12 +5391,13 @@ static void update_run(void) {
 	printf("library: %d new track(s), %d removed, %d read again, %d folder(s) noted, in %u ms%s\n", added, removed,
 		   replaced, folders_noted, now_ms() - started_ms,
 		   scan_db_failed ? " (database error)" : scan_cancel ? " (stopped early)" : "");
-	if (update_listener) {
-		// Stopped with nothing done -- the card pulled again, a scan asked for
-		// -- is not "no changes": nothing was looked at to the end.
-		bool stopped = (scan_cancel || scan_db_failed) && !changed;
-		update_listener(stopped ? LIBRARY_UPDATE_STOPPED : LIBRARY_UPDATE_FINISHED, added, removed, replaced);
-	}
+	// Stopped with nothing done -- the card pulled again, a scan asked for --
+	// is not "no changes": nothing was looked at to the end.
+	bool stopped = (scan_cancel || scan_db_failed) && !changed;
+	update_outcome = stopped ? LIBRARY_UPDATE_STOPPED : LIBRARY_UPDATE_FINISHED;
+	update_added = added;
+	update_removed = removed;
+	update_replaced = replaced;
 }
 
 // ---------------------------------------------------------------------------
@@ -5496,11 +5502,9 @@ static void *scan_thread_func(void *arg) {
 	(void)arg;
 
 	// One core: the scan reads thousands of files; at normal priority it
-	// would starve the interface for its whole duration. Detect changes runs a
-	// level higher: somebody is looking at its notice, and the spinner on it
-	// keeps the interface busy enough that an idle-class thread would barely
-	// move until the notice went away. Filing the index again is the same:
-	// its notice is up.
+	// would starve the interface for its whole duration. Detect changes and
+	// filing the index again run a level higher: they run while the player is
+	// in use, and under a busy interface an idle-class thread would barely move.
 	if (scan_mode == SCAN_FULL) {
 		thread_be_background("library scan");
 	} else {
@@ -5510,6 +5514,9 @@ static void *scan_thread_func(void *arg) {
 	switch (scan_mode) {
 	case SCAN_FULL:
 		full_scan_run();
+		if (!scan_cancel && !scan_db_failed && update_listener) {
+			update_listener(LIBRARY_UPDATE_SCANNED, 0, 0, 0);
+		}
 		break;
 	case SCAN_UPDATE:
 		update_run();
@@ -5542,6 +5549,11 @@ static void *scan_thread_func(void *arg) {
 			// The notice that went up for it comes down either way.
 			if ((wanted || attempted) && update_listener) {
 				update_listener(done && !wanted ? LIBRARY_UPDATE_REORGANIZED : LIBRARY_UPDATE_STOPPED, 0, 0, 0);
+			}
+			// A Detect changes run ends here rather than where it stopped
+			// reading, so its outcome covers the filing done after it.
+			if (scan_mode == SCAN_UPDATE && update_listener) {
+				update_listener(update_outcome, update_added, update_removed, update_replaced);
 			}
 			scan_running = false;
 			pthread_mutex_unlock(&rules_lock);
@@ -5646,6 +5658,8 @@ bool library_organize_check(void) {
 }
 
 bool library_detect_changes(void) { return config_get_bool("library", "detect_changes", false); }
+
+bool library_detect_changes_chosen(void) { return config_get("library", "detect_changes", NULL) != NULL; }
 
 void library_set_detect_changes(bool on) {
 	config_set_bool("library", "detect_changes", on);

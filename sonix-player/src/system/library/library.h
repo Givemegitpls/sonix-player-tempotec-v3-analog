@@ -54,17 +54,20 @@ void library_scan_folders_set(const char *const *names, int count);
 // run in progress is stopped first: the scan does everything it would.
 bool library_scan_start(const char *root);
 
-// "Detect changes": when the card comes back -- put in again, returned by a
-// computer, or left by the Wi-Fi transfer -- the index is brought up to date
-// without emptying it. The folders chosen for the scan are walked, and only a
+// "Detect changes": at startup and whenever the card comes back -- put in
+// again, returned by a computer, or left by the Wi-Fi transfer -- the index is
+// brought up to date without emptying it. The folders chosen for the scan are walked, and only a
 // folder whose names differ from what the index noted of it is looked into:
 // the tracks whose file is gone are taken out, and the files the index does not
 // have are read and added.
 //
-// Off by default, remembered in [library] detect_changes. Nothing happens on a
-// library that was never scanned: building it is the scan's job.
+// Remembered in [library] detect_changes. Off until the first scan completes,
+// when the interface turns it on unless it was already set either way
+// (library_detect_changes_chosen). Nothing happens on a library that was never
+// scanned: building it is the scan's job.
 bool library_detect_changes(void);
 void library_set_detect_changes(bool on);
+bool library_detect_changes_chosen(void);
 
 // Whether Detect changes also reads again every indexed file whose
 // modification time differs from the one the index holds: a file retagged,
@@ -137,26 +140,30 @@ void library_set_join_albums(bool on);
 bool library_reorganize(void);
 
 // library_reorganize() when the index open now was filed under other settings.
-// Called once the interface is up. Returns whether it started.
+// Returns whether it started.
 bool library_organize_check(void);
 
-// Called wherever the card is back and the index reopened. Starts the run above
-// on the scan thread when the setting is on and nothing is scanning, and says
-// whether it did: its notice is then about the card too, and the caller's own
-// "card is back" notice would only cover it. An index filed under other
-// settings than the current ones (library_reorganize) is filed again as well:
-// after the run, or on its own when the setting is off.
+// Called a few seconds after startup, and wherever the card is back and the
+// index reopened. Starts the run above on the scan thread when the setting is
+// on and nothing is scanning, and says whether it did. An index filed under
+// other settings than the current ones (library_reorganize) is filed again as
+// well: after the run, or on its own when the setting is off.
 bool library_card_returned(const char *root);
 
 // Told about a Detect changes run: LOOKING as soon as it is asked for, on the
 // thread that asked; then, on the scan thread, ADDING with the number of new
 // files (`added`) and of changed ones (`updated`) when there are some and they
-// are about to be read, and at the end either FINISHED with the tracks that
-// went in, came out and were read again (all zero when nothing changed) or
-// STOPPED when it was cut short with nothing done.
+// are about to be read, and as the thread's last word either FINISHED with the
+// tracks that went in, came out and were read again (all zero when nothing
+// changed) or STOPPED when it was cut short with nothing done. The index filed
+// again on the same thread afterwards (library_card_returned) comes before
+// that last word, as a REORGANIZED or STOPPED of its own.
 //
-// And about library_reorganize(): REORGANIZING on the thread that asked,
+// About library_reorganize(): REORGANIZING on the thread that asked,
 // REORGANIZED on the scan thread when it is done, or STOPPED when it was not.
+//
+// And SCANNED on the scan thread when a library_scan_start() scan has gone
+// through to the end.
 typedef enum {
 	LIBRARY_UPDATE_LOOKING,
 	LIBRARY_UPDATE_ADDING,
@@ -164,6 +171,7 @@ typedef enum {
 	LIBRARY_UPDATE_STOPPED,
 	LIBRARY_UPDATE_REORGANIZING,
 	LIBRARY_UPDATE_REORGANIZED,
+	LIBRARY_UPDATE_SCANNED,
 } library_update_event_t;
 typedef void (*library_update_listener_t)(library_update_event_t event, int added, int removed, int updated);
 void library_set_update_listener(library_update_listener_t listener);
