@@ -1398,6 +1398,15 @@ static lv_indev_t *fb_touch;	   // so the calibration can be flipped with the sc
 static bool fb_rotated;
 static uint8_t *rot_page;		   // the RAM page LVGL draws into while rotated
 
+// 2/3 scaling, for a panel exactly two thirds of the model's layout (the V3
+// Blaze: 320x480 glass, 480x720 interface). LVGL draws the full layout into
+// one RAM page and every flush shrinks what changed into the framebuffer page,
+// using the same per-page bookkeeping as the rotation. The touch panel follows
+// by itself: evdev maps its raw range onto the display's (logical) resolution.
+static bool fb_scaled;
+static uint8_t *scale_page;
+static int32_t log_w, log_h; // the resolution LVGL renders at; the panel's unless scaled
+
 // What this frame touched, and what each framebuffer page has not been given
 // yet (a bounding box each -- cheap, and a frame's damage is one region in
 // practice). Empty is x1 > x2.
@@ -1435,11 +1444,63 @@ static void area_merge(lv_area_t *into, const lv_area_t *add) {
 	}
 }
 
+// In the coordinates LVGL renders in (the panel's, unless scaled).
 static void area_set_full(lv_area_t *a) {
 	a->x1 = 0;
 	a->y1 = 0;
-	a->x2 = (int32_t)fb_var.xres - 1;
-	a->y2 = (int32_t)fb_var.yres - 1;
+	a->x2 = log_w - 1;
+	a->y2 = log_h - 1;
+}
+
+// Shrinks a dirty rectangle of the 3:2-larger layout `src` into `dst` (a whole
+// framebuffer page), turned through 180 degrees when `rotated`. Each panel
+// pixel covers 1.5 layout pixels per axis: the nearer one weighs 2, the
+// shared one 1, so every 3x3 block of the layout becomes a 2x2 block.
+static void blit_scaled_2_3(uint16_t *dst, const uint16_t *src, const lv_area_t *area, bool rotated) {
+	int32_t pw = (int32_t)fb_var.xres, ph = (int32_t)fb_var.yres;
+	int32_t x1 = area->x1 < 0 ? 0 : area->x1;
+	int32_t y1 = area->y1 < 0 ? 0 : area->y1;
+	int32_t x2 = area->x2 >= log_w ? log_w - 1 : area->x2;
+	int32_t y2 = area->y2 >= log_h ? log_h - 1 : area->y2;
+	if (x1 > x2 || y1 > y2) {
+		return;
+	}
+
+	// Every panel pixel that reads any layout pixel of the rectangle.
+	int32_t px1 = x1 * 2 / 3, px2 = (x2 * 2 + 1) / 3;
+	int32_t py1 = y1 * 2 / 3, py2 = (y2 * 2 + 1) / 3;
+	if (px2 >= pw) {
+		px2 = pw - 1;
+	}
+	if (py2 >= ph) {
+		py2 = ph - 1;
+	}
+
+	for (int32_t py = py1; py <= py2; py++) {
+		int32_t k = py / 2 * 3;
+		int32_t ya = (py & 1) ? k + 2 : k; // weight 2
+		int32_t yb = k + 1;				   // weight 1
+		const uint16_t *ra = src + (size_t)ya * log_w;
+		const uint16_t *rb = src + (size_t)yb * log_w;
+		uint16_t *out = dst + (size_t)(rotated ? ph - 1 - py : py) * pw;
+
+		for (int32_t px = px1; px <= px2; px++) {
+			int32_t j = px / 2 * 3;
+			int32_t xa = (px & 1) ? j + 2 : j;
+			int32_t xb = j + 1;
+			uint32_t p4 = ra[xa], p2a = ra[xb], p2b = rb[xa], p1 = rb[xb];
+
+			uint32_t r = ((p4 >> 11) * 4) + (((p2a >> 11) + (p2b >> 11)) * 2) + (p1 >> 11);
+			uint32_t g = (((p4 >> 5) & 63) * 4) + ((((p2a >> 5) & 63) + ((p2b >> 5) & 63)) * 2) + ((p1 >> 5) & 63);
+			uint32_t b = ((p4 & 31) * 4) + (((p2a & 31) + (p2b & 31)) * 2) + (p1 & 31);
+			// Divide by the total weight, 9, rounding: x * 7282 >> 16 is x / 9.
+			r = (r * 7282 + 32768) >> 16;
+			g = (g * 7282 + 32768) >> 16;
+			b = (b * 7282 + 32768) >> 16;
+
+			out[rotated ? pw - 1 - px : px] = (uint16_t)((r << 11) | (g << 5) | b);
+		}
+	}
 }
 
 // Copies one dirty rectangle into `dst` (a whole framebuffer page) rotated by
@@ -1463,7 +1524,7 @@ static void blit_rotated_180(uint16_t *dst, const uint16_t *src, const lv_area_t
 static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
 	bool second_page;
 
-	if (fb_rotated) {
+	if (fb_rotated || fb_scaled) {
 		// Collect this frame's damage; the copy happens once, on the last
 		// area, into the page that is NOT on screen.
 		area_merge(&rot_frame_dirty, area);
@@ -1480,8 +1541,12 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 		area_merge(&redraw, &rot_frame_dirty);
 
 		if (!area_is_empty(&redraw)) {
-			blit_rotated_180((uint16_t *)(fb_mem + (second_page ? fb_page_size : 0)), (const uint16_t *)px, &redraw,
-							 (int32_t)fb_var.xres, (int32_t)fb_var.yres);
+			uint16_t *page = (uint16_t *)(fb_mem + (second_page ? fb_page_size : 0));
+			if (fb_scaled) {
+				blit_scaled_2_3(page, (const uint16_t *)px, &redraw, fb_rotated);
+			} else {
+				blit_rotated_180(page, (const uint16_t *)px, &redraw, (int32_t)fb_var.xres, (int32_t)fb_var.yres);
+			}
 		}
 
 		area_clear(&rot_page_pending[target]);
@@ -1564,7 +1629,25 @@ static lv_display_t *try_panned_display(void) {
 		return NULL;
 	}
 
-	lv_display_t *disp = lv_display_create((int32_t)fb_var.xres, (int32_t)fb_var.yres);
+	// A panel two thirds the size of the model's layout is drawn at the
+	// layout's size and shrunk on the way out (see blit_scaled_2_3).
+	log_w = (int32_t)fb_var.xres;
+	log_h = (int32_t)fb_var.yres;
+	const sysinfo_model_t *model = sysinfo_model();
+	if (model && model->panel_width * 2 == log_w * 3 && model->panel_height * 2 == log_h * 3) {
+		size_t size = (size_t)model->panel_width * (size_t)model->panel_height * 2;
+		scale_page = malloc(size);
+		if (scale_page) {
+			memset(scale_page, 0, size);
+			log_w = model->panel_width;
+			log_h = model->panel_height;
+			fb_scaled = true;
+		} else {
+			fprintf(stderr, "fb: no memory for the %zu-byte layout page, drawing at the panel's size\n", size);
+		}
+	}
+
+	lv_display_t *disp = lv_display_create(log_w, log_h);
 	if (!disp) {
 		munmap(fb_mem, fb_page_size * 2);
 		close(fb_fd);
@@ -1573,8 +1656,18 @@ static lv_display_t *try_panned_display(void) {
 	}
 
 	lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
-	lv_display_set_buffers(disp, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
-						   LV_DISPLAY_RENDER_MODE_DIRECT);
+	if (fb_scaled) {
+		// Both framebuffer pages owe a full frame.
+		area_clear(&rot_frame_dirty);
+		area_set_full(&rot_page_pending[0]);
+		area_set_full(&rot_page_pending[1]);
+		lv_display_set_buffers(disp, scale_page, NULL, (uint32_t)(log_w * log_h * 2), LV_DISPLAY_RENDER_MODE_DIRECT);
+		printf("fb: interface at %dx%d, shrunk 2/3 onto the %ux%u panel\n", (int)log_w, (int)log_h, fb_var.xres,
+			   fb_var.yres);
+	} else {
+		lv_display_set_buffers(disp, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
+							   LV_DISPLAY_RENDER_MODE_DIRECT);
+	}
 	lv_display_set_flush_cb(disp, fb_pan_flush_cb);
 	fb_display = disp;
 
@@ -1698,7 +1791,14 @@ void display_set_rotated(bool rotated) {
 		return;
 	}
 
-	if (rotated) {
+	if (fb_scaled) {
+		// Already drawing into a RAM page: only the copy turns, and both
+		// framebuffer pages owe a full frame the new way round.
+		fb_rotated = rotated;
+		area_clear(&rot_frame_dirty);
+		area_set_full(&rot_page_pending[0]);
+		area_set_full(&rot_page_pending[1]);
+	} else if (rotated) {
 		if (!rot_page) {
 			rot_page = malloc(fb_page_size);
 		}
