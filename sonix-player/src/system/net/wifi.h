@@ -82,8 +82,9 @@ typedef enum {
 // back up. Cheap and non-blocking: the actual bring-up happens on the worker.
 void wifi_init(void);
 
-// False when there is no wlan0 at all (host build, or a device without the
-// module loaded). The page says so instead of pretending.
+// False when there is no Wi-Fi at all: no wlan0 and no bcm_wlbt_power to bring
+// one up (host build, or a device without the driver). The page says so
+// instead of pretending.
 bool wifi_available(void);
 
 // The switch, as the user left it. Persisted under [wireless] wifi.

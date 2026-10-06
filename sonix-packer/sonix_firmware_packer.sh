@@ -11,6 +11,9 @@
 #   sonix_player               the binary to install, the same one for both
 #   sonix_launch               waits for the player and reboots when it exits
 #                              (optional: without it the launcher's shell does)
+#   kernel/xImage-R3PII        a kernel to install instead of the stock one
+#   kernel/xImage-R1           (optional, per model: without it the stock
+#                              kernel stays, untouched)
 #   assets/
 #       R3PII/
 #       R1/
@@ -60,6 +63,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
 PLAYER_BIN="$SCRIPT_DIR/sonix_player"
 LAUNCH_BIN="$SCRIPT_DIR/sonix_launch"
+
+# Kernels to install, one per model folder name: kernel/xImage-R3PII and so on.
+# Not under assets/, which is copied into the rootfs.
+KERNEL_DIR="$SCRIPT_DIR/kernel"
 
 # The models, one line each: the assets folder, the stock firmware to start
 # from, the image to write, and the device-name the player will read out of
@@ -152,6 +159,35 @@ rename_player_in() {
 	fi
 	say "    $label: $before occurrence(s) of hiby_player replaced"
 	grep -n "sonix_player" "$file" | sed 's/^/        /'
+}
+
+# Writes an image into the OTA folder the way the updater reads it: 512 KiB
+# chunks named NAME.NNNN.<md5 of the previous chunk>, the first one named after
+# the md5 of the whole image, and ota_md5_NAME.<md5 of the whole image> listing
+# the md5 of every chunk in order. The image itself is consumed.
+write_chunks() {
+	local name="$1" image="$2"
+	local whole_sum current_sum md5_file count suffix chunk f
+
+	whole_sum="$(get_md5 "$image")"
+	split -b 524288 -a 4 "$image" "$OTA_DIR/temp_chunk_"
+	rm -f "$image"
+
+	md5_file="$OTA_DIR/ota_md5_$name.$whole_sum"
+	: > "$md5_file"
+
+	count=0
+	current_sum="$whole_sum"
+	for f in "$OTA_DIR/temp_chunk_"*; do
+		[ -e "$f" ] || continue
+		suffix="$(printf "%04d" $count)"
+		chunk="$OTA_DIR/$name.$suffix.$current_sum"
+		mv "$f" "$chunk"
+		current_sum="$(get_md5 "$chunk")"
+		echo "$current_sum" >> "$md5_file"
+		count=$((count + 1))
+	done
+	say "    $name: $count chunks"
 }
 
 # ==========================================================================
@@ -334,6 +370,20 @@ build_one() {
 		warn "no streaming-keys.bin in $MODEL_DIR: Tidal, Qobuz and podcasts will be off"
 	fi
 
+	# The stock Wi-Fi/Bluetooth driver goes once bcm_wlbt_power and brcmfmac
+	# have taken its place: only when the module list no longer loads it.
+	DRIVER_LIST="$SQUASH_DIR/module_driver/driver_default_init_script.sh"
+	if [ -f "$ASSETS_DIR/$MODEL_DIR/module_driver/bcm_wlbt_power.ko" ] &&
+		grep -q '^sh bcm_wlbt_power\.sh' "$DRIVER_LIST" 2>/dev/null &&
+		! grep -q 'cywdhd' "$DRIVER_LIST"; then
+		for rel in module_driver/cywdhd.ko module_driver/cywdhd.sh; do
+			if [ -f "$SQUASH_DIR/$rel" ]; then
+				rm -f "$SQUASH_DIR/$rel"
+				say "    $rel removed (bcm_wlbt_power and brcmfmac replace it)"
+			fi
+		done
+	fi
+
 	# What the other model's tree carries and this one does not. Nothing is
 	# copied across and nothing fails: whatever the stock firmware had at that
 	# path is left alone, which for a boot logo is this model's own at its own
@@ -379,9 +429,9 @@ build_one() {
 		fi
 	done
 
-	# Anything else the overlay put in a directory of executables, and the
-	# kernel-module scripts with it.
-	for rel in $(cd "$ASSETS_DIR/$MODEL_DIR" && find usr/bin module_driver -type f 2>/dev/null); do
+	# Anything else the overlay put in a directory of executables, the
+	# kernel-module scripts and the init scripts with it.
+	for rel in $(cd "$ASSETS_DIR/$MODEL_DIR" && find usr/bin module_driver etc/init.d -type f 2>/dev/null); do
 		[ -f "$SQUASH_DIR/$rel" ] || continue
 		chmod 755 "$SQUASH_DIR/$rel"
 	done
@@ -496,6 +546,7 @@ build_one() {
 	find "$SQUASH_DIR" -name '*.packer.tmp' -type f -delete 2>/dev/null || true
 
 	ROOTFS_NEW="$OTA_DIR/rootfs.squashfs"
+	KERNEL_NEW="$KERNEL_DIR/xImage-$MODEL_DIR"
 
 	step "[$MODEL_NAME] building the filesystem"
 	mksquashfs "$SQUASH_DIR" "$ROOTFS_NEW" -comp lzo -all-root > /dev/null
@@ -505,13 +556,26 @@ build_one() {
 	say "    rootfs.squashfs: $SIZE bytes, md5 $ORIGINAL_SUM"
 
 	step "[$MODEL_NAME] updating ota_update.in"
-	# The kernel is not touched, so its two lines are carried over exactly as they
-	# were: recomputing them from a file this script never writes would be a way of
-	# getting them wrong.
-	X_SIZE="$(grep -A 3 'img_name=xImage' "$OTA_DIR/ota_update.in" | grep 'img_size' | cut -d= -f2 | tr -d '\r ')"
-	X_MD5="$(grep -A 3 'img_name=xImage' "$OTA_DIR/ota_update.in" | grep 'img_md5' | cut -d= -f2 | tr -d '\r ')"
-
-	[ -n "$X_SIZE" ] && [ -n "$X_MD5" ] || die "cannot read the kernel entry from ota_update.in."
+	if [ -f "$KERNEL_NEW" ]; then
+		# A kernel of our own: it replaces the stock one, chunks and md5 chain
+		# alike. It may not be bigger than the stock one -- that is all the
+		# room the kernel partition is known to have.
+		STOCK_X_SIZE="$(grep -A 3 'img_name=xImage' "$OTA_DIR/ota_update.in" | grep 'img_size' | cut -d= -f2 | tr -d '\r ')"
+		X_SIZE="$(get_size "$KERNEL_NEW")"
+		X_MD5="$(get_md5 "$KERNEL_NEW")"
+		[ -n "$STOCK_X_SIZE" ] || die "cannot read the kernel entry from ota_update.in."
+		[ "$X_SIZE" -le "$STOCK_X_SIZE" ] ||
+			die "kernel/xImage-$MODEL_DIR is $X_SIZE bytes, the stock kernel $STOCK_X_SIZE: it may not fit."
+		say "    xImage: kernel/xImage-$MODEL_DIR, $X_SIZE bytes, md5 $X_MD5 (stock: $STOCK_X_SIZE bytes)"
+	else
+		# The stock kernel stays, so its two lines are carried over exactly as
+		# they were: recomputing them from a file this script never writes
+		# would be a way of getting them wrong.
+		X_SIZE="$(grep -A 3 'img_name=xImage' "$OTA_DIR/ota_update.in" | grep 'img_size' | cut -d= -f2 | tr -d '\r ')"
+		X_MD5="$(grep -A 3 'img_name=xImage' "$OTA_DIR/ota_update.in" | grep 'img_md5' | cut -d= -f2 | tr -d '\r ')"
+		[ -n "$X_SIZE" ] && [ -n "$X_MD5" ] || die "cannot read the kernel entry from ota_update.in."
+		say "    xImage: the stock kernel, unchanged"
+	fi
 
 	cat > "$OTA_DIR/ota_update.in" <<-EOF
 	ota_version=0
@@ -527,25 +591,13 @@ build_one() {
 	img_md5=$ORIGINAL_SUM
 	EOF
 
-	step "[$MODEL_NAME] splitting into chunks and building the md5 chain"
-	split -b 524288 -a 4 "$ROOTFS_NEW" "$OTA_DIR/temp_chunk_"
-	rm -f "$ROOTFS_NEW"
-
-	MD5_FILE="$OTA_DIR/ota_md5_rootfs.squashfs.$ORIGINAL_SUM"
-	: > "$MD5_FILE"
-
-	count=0
-	CURRENT_SUM="$ORIGINAL_SUM"
-	for f in "$OTA_DIR/temp_chunk_"*; do
-		[ -e "$f" ] || continue
-		suffix="$(printf "%04d" $count)"
-		NEW_FILENAME="$OTA_DIR/rootfs.squashfs.$suffix.$CURRENT_SUM"
-		mv "$f" "$NEW_FILENAME"
-		CURRENT_SUM="$(get_md5 "$NEW_FILENAME")"
-		echo "$CURRENT_SUM" >> "$MD5_FILE"
-		count=$((count + 1))
-	done
-	say "    $count chunks"
+	step "[$MODEL_NAME] splitting into chunks and building the md5 chains"
+	write_chunks rootfs.squashfs "$ROOTFS_NEW"
+	if [ -f "$KERNEL_NEW" ]; then
+		rm -f "$OTA_DIR/ota_md5_xImage."* "$OTA_DIR/xImage."*
+		cp "$KERNEL_NEW" "$OTA_DIR/xImage"
+		write_chunks xImage "$OTA_DIR/xImage"
+	fi
 	say ""
 
 	# ==========================================================================

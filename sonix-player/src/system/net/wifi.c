@@ -275,7 +275,13 @@ static uint32_t now_ms(void) {
 	return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
 }
 
-bool wifi_available(void) { return access("/sys/class/net/" WIFI_IFACE, F_OK) == 0; }
+// With bcm_wlbt_power (brcmfmac in place of cywdhd) wlan0 exists only while Wi-Fi
+// is on: wifi_on.sh powers the chip and loads the driver.
+#define WIFI_RADIO_POWER "/sys/devices/platform/bcm_wlbt_power/wifi_power"
+
+bool wifi_available(void) {
+	return access("/sys/class/net/" WIFI_IFACE, F_OK) == 0 || access(WIFI_RADIO_POWER, F_OK) == 0;
+}
 
 // ---------------------------------------------------------------------------
 // parsing what wpa_supplicant says
