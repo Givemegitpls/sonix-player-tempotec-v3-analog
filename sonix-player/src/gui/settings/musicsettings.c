@@ -582,7 +582,10 @@ static const volume_output_t VLIMIT_OUTPUTS[VLIMIT_OUTPUT_COUNT] = {VOLUME_OUTPU
 
 #define VLIMIT_STEPS (100 - VOLUME_LIMIT_MIN + 1)
 
-static bool vlimit_has_balanced(void) { return !sysinfo_model()->cs43131; }
+static bool vlimit_has_balanced(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	return !model || !model->cs43131;
+}
 
 static void vlimit_refresh(void) {
 	bool on = volume_limit_enabled();

@@ -97,6 +97,13 @@ static void *write_thread(void *arg) {
 	job_t *job = arg;
 
 	const char *root = storage_sd_root();
+#ifdef HOST_BUILD
+	// The simulator's card is the folder the library reads, not the device path.
+	const char *forced = getenv("SONIX_SD_ROOT");
+	if (forced && *forced) {
+		root = forced;
+	}
+#endif
 	if (!root || !*root) {
 		printf("screenshot: no card to write to\n");
 		gui_notify_popup("screenshot_failed_no_card");
