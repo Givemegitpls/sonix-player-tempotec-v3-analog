@@ -305,8 +305,13 @@ It runs through without asking anything, once for each model:
    chain the recovery kernel checks
 9. writes `r3proii.upt` or `r1.upt`
 
-The kernel is carried across untouched, size and md5 copied from the original
-rather than recomputed.
+With `kernel/xImage-R3PII` or `kernel/xImage-R1` present, that kernel replaces
+the stock one: it may not be bigger than the stock kernel, and its size and md5
+go into `ota_update.in`. Without it the stock kernel is carried across
+untouched, size and md5 copied from the original rather than recomputed. The
+kernels in `kernel/` are built from
+[hiby-custom-kernel](https://github.com/Jepl4r/hiby-custom-kernel), and the
+modules in `assets/<model>/module_driver/` are built against them.
 
 ### Patches
 
