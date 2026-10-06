@@ -75,8 +75,71 @@ static volatile sig_atomic_t running = 1;
 // Screenshot trigger on the simulator. The device uses volume-up plus power,
 // physical keys that do not exist here, so creating /tmp/sonix/shot takes their
 // place and runs the same screenshot path (copy, flash, PNG writer).
+// Scripted touches on the simulator: "x y" in /tmp/sonix/tap taps there,
+// "drag x1 y1 x2 y2" swipes. A second pointer, read alongside the mouse.
+#define HOST_TAP_STEPS 64
+static struct {
+	int16_t x, y;
+	bool pressed;
+} host_tap_queue[HOST_TAP_STEPS];
+static int host_tap_len, host_tap_pos;
+static lv_point_t host_tap_last;
+
+static void host_tap_push(int x, int y, bool pressed) {
+	if (host_tap_len < HOST_TAP_STEPS) {
+		host_tap_queue[host_tap_len].x = (int16_t)x;
+		host_tap_queue[host_tap_len].y = (int16_t)y;
+		host_tap_queue[host_tap_len].pressed = pressed;
+		host_tap_len++;
+	}
+}
+
+static void host_tap_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
+	(void)indev;
+	if (host_tap_pos < host_tap_len) {
+		host_tap_last.x = host_tap_queue[host_tap_pos].x;
+		host_tap_last.y = host_tap_queue[host_tap_pos].y;
+		data->state = host_tap_queue[host_tap_pos].pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+		if (++host_tap_pos == host_tap_len) {
+			host_tap_pos = host_tap_len = 0;
+		}
+	} else {
+		data->state = LV_INDEV_STATE_RELEASED;
+	}
+	data->point = host_tap_last;
+}
+
+static void host_tap_poll(void) {
+	if (host_tap_len) {
+		return; // still playing the previous gesture
+	}
+	FILE *f = fopen("/tmp/sonix/tap", "r");
+	if (!f) {
+		return;
+	}
+	char line[128] = "";
+	if (!fgets(line, sizeof(line), f)) {
+		line[0] = '\0';
+	}
+	fclose(f);
+	remove("/tmp/sonix/tap");
+	int x1, y1, x2, y2;
+	if (sscanf(line, "drag %d %d %d %d", &x1, &y1, &x2, &y2) == 4) {
+		for (int i = 0; i <= 20; i++) {
+			host_tap_push(x1 + (x2 - x1) * i / 20, y1 + (y2 - y1) * i / 20, true);
+		}
+		host_tap_push(x2, y2, false);
+	} else if (sscanf(line, "%d %d", &x1, &y1) == 2) {
+		for (int i = 0; i < 3; i++) {
+			host_tap_push(x1, y1, true);
+		}
+		host_tap_push(x1, y1, false);
+	}
+}
+
 static void host_shot_poll_cb(lv_timer_t *timer) {
 	(void)timer;
+	host_tap_poll();
 	if (access("/tmp/sonix/shot", F_OK) == 0) {
 		remove("/tmp/sonix/shot");
 		screenshot_request();
@@ -1152,6 +1215,12 @@ static lv_display_t *init_host_display(void) {
 		lv_indev_set_display(mouse, disp);
 		tune_pointer(mouse);
 	}
+
+	lv_indev_t *scripted = lv_indev_create();
+	lv_indev_set_type(scripted, LV_INDEV_TYPE_POINTER);
+	lv_indev_set_read_cb(scripted, host_tap_read_cb);
+	lv_indev_set_display(scripted, disp);
+	tune_pointer(scripted);
 
 	host_display = disp;
 

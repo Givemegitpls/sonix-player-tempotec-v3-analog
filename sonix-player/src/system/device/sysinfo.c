@@ -45,6 +45,19 @@ static const sysinfo_model_t MODELS[] = {
 		.one_flank = true,
 		.media_keys_swapped = false,
 	},
+	{
+		// Charger in the AXP2101 PMIC; AK4493 DAC with 3.5 mm and 4.4 mm.
+		.name = "TempoTec V3 Blaze",
+		.panel_width = 320,
+		.panel_height = 480,
+		.update_stem = "v3_analog_2025",
+		.serial_prefix = "",
+		.pmic_charger = true,
+		.cs43131 = false,
+		.tap_wake = false,
+		.one_flank = false,
+		.media_keys_swapped = false,
+	},
 };
 
 // ---------------------------------------------------------------------------
