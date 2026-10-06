@@ -69,6 +69,7 @@ LAUNCH_BIN="$SCRIPT_DIR/sonix_launch"
 MODELS=(
 	"R3PII|r3proii_original.upt|r3proii.upt|HiBy R3 Pro II"
 	"R1|r1_original.upt|r1.upt|HiBy R1"
+	"BLAZE|v3_analog_2025_original.upt|v3_analog_2025.upt|TempoTec V3 Blaze"
 )
 
 WORK_DIR="$SCRIPT_DIR/temp"
@@ -91,6 +92,29 @@ SYSTEM_INFO="usr/resource/sonix/components/system-info.json"
 # folder lands. The stock fonts and strings live one level above it and go;
 # ours stay.
 STOCK_UI_DIRS=(usr/resource/litegui usr/resource/layout usr/resource/str usr/resource/fonts)
+
+# The V3 Blaze's stock v1.3 LDAC decoder suppresses small spectral
+# coefficients and so corrupts Bluetooth Receiver audio. One byte turns the
+# gate's conditional branch into an unconditional one (0x3b82: 40 -> 00); the
+# library is checked before and after, so only the known file is changed.
+LDAC_LIB="usr/lib/libldacdec.so.1"
+LDAC_SHA_STOCK="0427893de5def29975bc3bdf578fef32bc6e6300b73801d4813f0f918ceedb49"
+LDAC_SHA_FIXED="0f6e179f2e7fd31b5700cd0f0bbfaa4fca25b56201439c0c5b64eee96e14ca2d"
+patch_blaze_ldac() {
+	local lib="$SQUASH_DIR/$LDAC_LIB" sum
+	step "[TempoTec V3 Blaze] correcting the LDAC decoder"
+	[ -f "$lib" ] || die "$LDAC_LIB is not in the stock rootfs."
+	sum="$(sha256sum "$lib" | awk '{print $1}')"
+	if [ "$sum" = "$LDAC_SHA_STOCK" ]; then
+		printf '\000' | dd of="$lib" bs=1 seek=$((0x3b82)) count=1 conv=notrunc 2>/dev/null
+		sum="$(sha256sum "$lib" | awk '{print $1}')"
+	fi
+	[ "$sum" = "$LDAC_SHA_FIXED" ] || die "$LDAC_LIB is not the known v1.3 decoder (sha256 $sum)."
+	say "    $LDAC_LIB: gate bypassed"
+}
+
+# The rootfs partition of the V3 Blaze is 45 MiB (mtd2).
+BLAZE_ROOTFS_MAX=47185920
 
 # The working folders always go, whether the run succeeded or not.
 cleanup() { rm -rf "$WORK_DIR" "$SQUASH_DIR" "$MERGED_SQUASHFS" 2>/dev/null || true; }
@@ -205,7 +229,7 @@ for entry in "${MODELS[@]}"; do
 done
 
 [ -n "$BUILDABLE" ] || die "no stock firmware to start from. Put at least one of
-  r3proii_original.upt / r1_original.upt next to this script."
+  r3proii_original.upt / r1_original.upt / v3_analog_2025_original.upt next to this script."
 
 BUILD_STAMP="$(get_stamp "$PLAYER_BIN")"
 TODAY="$(date +%d%m%Y)"
@@ -321,6 +345,8 @@ build_one() {
 
 	MODEL_N="$(cd "$ASSETS_DIR/$MODEL_DIR" && find . -type f | wc -l | tr -d ' ')"
 	say "    $MODEL_DIR/: $MODEL_N files"
+
+	[ "$MODEL_DIR" != "BLAZE" ] || patch_blaze_ldac
 
 	# The streaming keys go in sealed, as streaming-keys.bin. One left in the
 	# clear in the assets is not shipped: an image is unpacked by anyone who
@@ -502,6 +528,9 @@ build_one() {
 
 	ORIGINAL_SUM="$(get_md5 "$ROOTFS_NEW")"
 	SIZE="$(get_size "$ROOTFS_NEW")"
+	if [ "$MODEL_DIR" = "BLAZE" ] && [ "$SIZE" -gt "$BLAZE_ROOTFS_MAX" ]; then
+		die "rootfs.squashfs is $SIZE bytes, over the $BLAZE_ROOTFS_MAX-byte rootfs partition."
+	fi
 	say "    rootfs.squashfs: $SIZE bytes, md5 $ORIGINAL_SUM"
 
 	step "[$MODEL_NAME] updating ota_update.in"
