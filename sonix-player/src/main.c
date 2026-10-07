@@ -1946,6 +1946,14 @@ static lv_display_t *init_target_display(void) {
 		lv_indev_set_display(touch, disp);
 		tune_pointer(touch);
 		fb_touch = touch;
+		// Scaled, the raw range has to be stretched over the larger layout, and
+		// it cannot come from the device: the Blaze's gt9xx declares only the
+		// ABS_MT axes, so evdev reads an empty ABS_X/ABS_Y range and passes raw
+		// panel coordinates through -- every touch would land at 2/3 of where
+		// it is. The panel's own size is the range, as the rotation uses.
+		if (fb_scaled) {
+			lv_evdev_set_calibration(touch, 0, 0, (int)fb_var.xres - 1, (int)fb_var.yres - 1);
+		}
 		printf("Touch screen input driver successfully registered.\n");
 	} else {
 		fprintf(stderr, "Warning: No touch input device found.\n");
