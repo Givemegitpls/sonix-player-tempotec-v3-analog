@@ -924,6 +924,13 @@ static void rtc_alarm_arm_for_auto_off(void) {
 	printf("power: mem: RTC wake in %ld s for the automatic shutdown\n", remaining_s);
 }
 
+void power_quiet_audio_for_shutdown(void) {
+	if (!audio_suspend_freeze(3000)) {
+		fprintf(stderr, "power: the audio did not stop before the power-off\n");
+	}
+	audio_park_output_before_suspend();
+}
+
 void power_shutdown(void) {
 	// Where the music had got to, before anything else stops. The player's own
 	// poll writes this only every ten seconds while playing and on a change of
@@ -948,6 +955,9 @@ void power_shutdown(void) {
 	tidalcache_clear_on_exit();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
+
+	// After the position is written: the freeze leaves the track paused.
+	power_quiet_audio_for_shutdown();
 
 	// Dark the panel first: `poweroff` goes through init's shutdown hooks,
 	// which it must -- the raw syscall with USB attached leaves the PMIC to
