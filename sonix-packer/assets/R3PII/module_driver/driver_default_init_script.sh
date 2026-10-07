@@ -9,7 +9,6 @@ sh axp2101.sh
 sh cw2015.sh
 sh gpio_aw95016_add.sh
 sh keyboard_gpio_add.sh
-sh soc_gpio.sh
 sh soc_pwm.sh
 sh pwm_backlight.sh
 sh soc_fb.sh
@@ -28,7 +27,6 @@ sh leds_sgm31324_add.sh
 sh mp2731.sh
 sh sa_config.sh
 sh sa_earpods_adc.sh
-sh sa_hgl_dma.sh
 sh sau.sh
 sh soc_efuse.sh
 sh x1600_hiby_r3proii_sound_card.sh
