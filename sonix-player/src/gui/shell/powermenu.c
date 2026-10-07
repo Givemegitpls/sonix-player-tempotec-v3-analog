@@ -110,6 +110,7 @@ static void do_reboot(void) {
 	tidalcache_clear_on_exit();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
+	power_quiet_audio_for_shutdown(); // no pop as the amplifier goes down
 	power_screen_off(); // same instant-feedback trick as the shutdown
 	storage_release_for_shutdown();
 	sync();

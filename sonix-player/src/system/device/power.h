@@ -191,6 +191,13 @@ void power_charging_release(void);
 // menu and the automatic shutdown both end here.
 void power_shutdown(void);
 
+// The analogue output brought down quietly before the power goes: the track
+// stopped, the DAC muted and the route parked on the empty socket, the same
+// sequence as before mem. Without it the amplifier loses its supply still
+// driving the headphones, which is the pop a forced reboot makes on the stock
+// firmware too. Called by power_shutdown() and by the reboot paths.
+void power_quiet_audio_for_shutdown(void);
+
 // Forbids or allows charging outright, on top of the percentage limit. Used by
 // DAC mode, where the point of not charging is to keep the charger's noise off
 // the cable. Stopping the charger takes three writes in a set order -- see
