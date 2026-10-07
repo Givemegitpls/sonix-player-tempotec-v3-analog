@@ -29,6 +29,7 @@
 #include "src/system/bluetooth/btstack.h"
 #include "src/system/bluetooth/btvolume.h"
 #include "src/system/core/config.h"
+#include "src/system/core/logging.h"
 #include "src/system/device/power.h"
 #include "src/system/device/sysserver.h" // only for the notification socket now
 #include "src/system/remote/sonixlink_bt.h"
@@ -408,11 +409,11 @@ static bool stop_process(const char *name) {
 // this process's children: the player must never have to reap a daemon it is
 // not watching, and a daemon must never die because the player restarted.
 //
-// stdout and stderr are deliberately inherited -- that is how bluealsa's own
-// complaints, and anything else a daemon prints, reach the player's log, which
-// is the only place anybody ever reads them from on this device. bluetoothd
-// prints nothing there: it writes to syslog, which only the Bluetooth log
-// (btlog.h) listens to.
+// stdout and stderr go to the player's log through logging_child_stdio() --
+// that is how bluealsa's own complaints, and anything else a daemon prints,
+// reach it, and it is the only place anybody ever reads them from on this
+// device. bluetoothd prints nothing there: it writes to syslog, which only the
+// Bluetooth log (btlog.h) listens to.
 static bool spawn_daemon(const char *path, char *const argv[]) {
 	pid_t pid = fork();
 	if (pid < 0) {
@@ -429,6 +430,7 @@ static bool spawn_daemon(const char *path, char *const argv[]) {
 			dup2(devnull, STDIN_FILENO);
 			close(devnull);
 		}
+		logging_child_stdio();
 		execv(path, argv);
 		_exit(127);
 	}

@@ -15,7 +15,8 @@
 // Every line starts with the local time it was printed, to the millisecond,
 // and a line with the date goes out first and whenever the day changes. Only
 // what goes through stdio is stamped: the crash handler and child processes
-// write to the descriptors directly and come out as they are.
+// write to the descriptors directly and come out as they are. Daemons go
+// through logging_child_stdio() and are stamped a line at a time.
 //
 // Writing to the card can be turned off (Settings > Developer options): it is
 // a constant trickle of writes to the user's music card, worth having only
@@ -78,6 +79,13 @@ void logging_sync(void);
 // Waits, for a second and a half at most, until every line printed so far has
 // been handed to the log's file. Call before powering off or rebooting.
 void logging_flush(void);
+
+// Points stdout and stderr at a pipe the player copies into the log, in place
+// of the log's file. Call in a forked child before exec, for any program that
+// may outlive the next move of the log (a daemon): a descriptor of its own on
+// the card's file keeps the card from being unmounted. Without logging_init()
+// it changes nothing.
+void logging_child_stdio(void);
 
 // Copies the kernel's warnings and errors printed since the last call into the
 // log, as "kernel:" lines. Call about once a second, from one thread.

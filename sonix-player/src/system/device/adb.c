@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "src/system/core/config.h"
+#include "src/system/core/logging.h"
 #include "src/system/device/system.h"
 #include "src/system/device/usb.h"
 
@@ -117,6 +118,7 @@ static bool run_script(const char *script, const char *action) {
 	}
 
 	if (pid == 0) {
+		logging_child_stdio(); // the script leaves adbd running
 		execl("/bin/sh", "sh", script, action, (char *)NULL);
 		_exit(127); // exec failed; nothing here is worth reporting up
 	}
@@ -213,6 +215,7 @@ static bool adb_gadget_start(void) {
 	if (pid == 0) {
 		setsid();
 		if (fork() == 0) {
+			logging_child_stdio();
 			execl("/usr/bin/adbd", "adbd", (char *)NULL);
 			execlp("adbd", "adbd", (char *)NULL);
 			_exit(127);

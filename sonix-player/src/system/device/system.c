@@ -574,7 +574,8 @@ static int mount_ntfs_rw(const char *device, const char *mount_point) {
 		if (pid == 0) {
 			// big_writes and the default uid/gid: the player is the only user of
 			// this card, and the helper otherwise leaves everything owned by
-			// whoever mounted it.
+			// whoever mounted it. The helper stays running as the filesystem.
+			logging_child_stdio();
 			execl(helpers[i], helpers[i], device, mount_point, "-o", "big_writes,noatime", (char *)NULL);
 			_exit(127);
 		}
@@ -916,8 +917,75 @@ void storage_recheck_card(void) {
 	pthread_mutex_unlock(&card_lock);
 }
 
-// Every descriptor of this process that points into the card, for the log
-// when the card cannot be released.
+static bool path_on_card(const char *path, const char *root, size_t root_len) {
+	return strncmp(path, root, root_len) == 0 && (path[root_len] == '/' || path[root_len] == '\0');
+}
+
+// One process's hold on the card: its working directory, its descriptors and
+// its mapped files. The player's own log, reopened to report this, is left out.
+static void log_process_on_card(int pid, const char *root, size_t root_len, const char *log_file) {
+	bool self = pid == (int)getpid();
+	char path[64], target[PATH_MAX], name[32] = "?";
+
+	snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+	FILE *comm = fopen(path, "re");
+	if (comm) {
+		if (fgets(name, sizeof(name), comm)) {
+			name[strcspn(name, "\n")] = '\0';
+		}
+		fclose(comm);
+	}
+
+	snprintf(path, sizeof(path), "/proc/%d/cwd", pid);
+	ssize_t n = readlink(path, target, sizeof(target) - 1);
+	if (n > 0) {
+		target[n] = '\0';
+		if (path_on_card(target, root, root_len)) {
+			fprintf(stderr, "storage:   on the card: %s (%s, pid %d, working directory)\n", target, name, pid);
+		}
+	}
+
+	snprintf(path, sizeof(path), "/proc/%d/fd", pid);
+	DIR *dir = opendir(path);
+	if (dir) {
+		struct dirent *de;
+		while ((de = readdir(dir)) != NULL) {
+			char link[64];
+			snprintf(link, sizeof(link), "/proc/%d/fd/%.16s", pid, de->d_name);
+			n = readlink(link, target, sizeof(target) - 1);
+			if (n <= 0) {
+				continue;
+			}
+			target[n] = '\0';
+			if (!path_on_card(target, root, root_len) || (self && strcmp(target, log_file) == 0)) {
+				continue;
+			}
+			fprintf(stderr, "storage:   on the card: %s (%s, pid %d, fd %s)\n", target, name, pid, de->d_name);
+		}
+		closedir(dir);
+	}
+
+	snprintf(path, sizeof(path), "/proc/%d/maps", pid);
+	FILE *maps = fopen(path, "re");
+	if (maps) {
+		char line[PATH_MAX + 128], last[PATH_MAX] = "";
+		while (fgets(line, sizeof(line), maps)) {
+			char *file = strchr(line, '/');
+			if (!file) {
+				continue;
+			}
+			file[strcspn(file, "\n")] = '\0';
+			if (path_on_card(file, root, root_len) && strcmp(file, last) != 0) {
+				snprintf(last, sizeof(last), "%s", file);
+				fprintf(stderr, "storage:   on the card: %s (%s, pid %d, mapped)\n", file, name, pid);
+			}
+		}
+		fclose(maps);
+	}
+}
+
+// Every process holding something on the card, for the log when the card
+// cannot be released.
 static void log_open_on_card(void) {
 	char root[PATH_MAX];
 	if (!realpath(sd_root, root)) {
@@ -925,24 +993,23 @@ static void log_open_on_card(void) {
 	}
 	size_t root_len = strlen(root);
 
-	DIR *dir = opendir("/proc/self/fd");
-	if (!dir) {
+	char log_file[PATH_MAX];
+	if (!realpath(logging_path(), log_file)) {
+		log_file[0] = '\0';
+	}
+
+	DIR *proc = opendir("/proc");
+	if (!proc) {
 		return;
 	}
-	struct dirent *de;
-	while ((de = readdir(dir)) != NULL) {
-		char link[16 + sizeof(de->d_name)], target[PATH_MAX];
-		snprintf(link, sizeof(link), "/proc/self/fd/%s", de->d_name);
-		ssize_t n = readlink(link, target, sizeof(target) - 1);
-		if (n <= 0) {
-			continue;
-		}
-		target[n] = '\0';
-		if (strncmp(target, root, root_len) == 0 && (target[root_len] == '/' || target[root_len] == '\0')) {
-			fprintf(stderr, "storage:   still open on the card: %s (fd %s)\n", target, de->d_name);
+	struct dirent *pe;
+	while ((pe = readdir(proc)) != NULL) {
+		int pid = atoi(pe->d_name);
+		if (pid > 0) {
+			log_process_on_card(pid, root, root_len, log_file);
 		}
 	}
-	closedir(dir);
+	closedir(proc);
 }
 
 void storage_release_for_shutdown(void) {
