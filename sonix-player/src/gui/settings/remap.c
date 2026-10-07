@@ -604,6 +604,27 @@ static void build_side(side_t *side, gui_config_t *cfg) {
 	}
 }
 
+// A player with no photos here (the V3 Blaze): one row per button, named, with
+// what it does on the right, and the double click under them. The same
+// chooser and dialog as the photo pages.
+static const hit_t LIST_BUTTONS[] = {
+	{KEYMAP_BTN_PLAY, 0, 0},   {KEYMAP_BTN_PREV, 0, 0},		{KEYMAP_BTN_NEXT, 0, 0},
+	{KEYMAP_BTN_VOL_UP, 0, 0}, {KEYMAP_BTN_VOL_DOWN, 0, 0},
+};
+
+static void build_list(gui_config_t *cfg) {
+	lv_obj_t *container = settingsrow_page(remap_screen, cfg, "remap_buttons");
+	int count = (int)(sizeof(LIST_BUTTONS) / sizeof(LIST_BUTTONS[0]));
+	for (int i = 0; i < count; i++) {
+		keymap_button_t button = LIST_BUTTONS[i].button;
+		rows[button] = settingsrow_add(container, BUTTON_NAMES[button], &value_labels[button], pick_clicked_cb,
+									   (void *)(intptr_t)button);
+	}
+	settingsrow_add(container, "remap_double_click", &double_value, double_open_cb, NULL);
+	build_double_dialog(cfg, LIST_BUTTONS, count);
+	refresh_double();
+}
+
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
 	// The theme may have changed since the page was built, and with it both
@@ -637,6 +658,18 @@ void remap_init(gui_config_t *cfg) {
 		model = sysinfo_model_by_panel(cfg->screen_width, cfg->screen_height);
 	}
 	bool one_flank = model && model->one_flank;
+
+	if (model && model->remap_list) {
+		row_h = ROW_H;
+		row_font = &font_ui_22;
+		fonts_register_change(refresh_values);
+		build_list(cfg);
+		refresh_values();
+		lv_obj_add_event_cb(remap_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+		lv_obj_add_event_cb(remap_screen, screen_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
+		switcher_attach_back_gesture(remap_screen);
+		return;
+	}
 
 	lv_obj_t *title = settingsrow_title(remap_screen, cfg, "remap_buttons");
 	settingsrow_title_corner_slots(title, cfg, 0);

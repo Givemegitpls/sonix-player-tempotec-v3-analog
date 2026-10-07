@@ -41,11 +41,14 @@ lv_obj_t *musicsettings_screen;
 
 // ---------------------------------------------------------------------------
 // Filters: the CS43198's four digital filters, the same set the stock player
-// exposes (ALSA "Digital Filter" 0..3, decompile FUN_004803e0).
+// exposes (ALSA "Digital Filter" 0..3, decompile FUN_004803e0), or the
+// AK4493's six on the V3 Blaze (0..5, the order of its codec driver).
 // ---------------------------------------------------------------------------
 
+#define FILTER_MAX 6
+
 static lv_obj_t *dacfilter_screen;
-static lv_obj_t *filter_checks[4];
+static lv_obj_t *filter_checks[FILTER_MAX];
 
 static const char *const FILTER_NAMES[4] = {
 	"musicsettings_fast_roll_off_low_latency",
@@ -54,9 +57,18 @@ static const char *const FILTER_NAMES[4] = {
 	"musicsettings_slow_roll_off_phase_compensated",
 };
 
+static const char *const AK4493_FILTER_NAMES[6] = {
+	"musicsettings_ak_sharp_roll_off",
+	"musicsettings_ak_slow_roll_off",
+	"musicsettings_ak_short_delay_sharp",
+	"musicsettings_ak_short_delay_slow",
+	"musicsettings_ak_super_slow",
+	"musicsettings_ak_low_dispersion",
+};
+
 static void refresh_filter_checks(void) {
 	int active = (int)config_get_int("audio", "dac_filter", 0);
-	for (int i = 0; i < 4; i++) {
+	for (int i = 0; i < FILTER_MAX; i++) {
 		if (filter_checks[i]) {
 			lv_label_set_text(filter_checks[i], i == active ? "\xE2\x9C\x93" : "");
 			lv_obj_set_style_text_color(filter_checks[i], theme()->accent, 0);
@@ -77,8 +89,10 @@ static void build_filter_page(gui_config_t *cfg) {
 	dacfilter_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(dacfilter_screen, cfg, "musicsettings_filters");
 
-	for (int i = 0; i < 4; i++) {
-		settingsrow_add(container, FILTER_NAMES[i], &filter_checks[i], filter_row_cb, (void *)(intptr_t)i);
+	bool ak4493 = alsa_board_is_ak4493();
+	for (int i = 0; i < dac_filter_count(); i++) {
+		const char *name = ak4493 ? AK4493_FILTER_NAMES[i] : FILTER_NAMES[i];
+		settingsrow_add(container, name, &filter_checks[i], filter_row_cb, (void *)(intptr_t)i);
 		lv_obj_set_style_text_font(filter_checks[i], &font_ui_26, 0);
 	}
 
@@ -88,7 +102,9 @@ static void build_filter_page(gui_config_t *cfg) {
 	lv_obj_set_width(note, lv_pct(100));
 	lv_obj_add_style(note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(note, &font_ui_22, 0);
-	lv_label_set_text(note, tr(alsa_board_is_cs43131() ? "musicsettings_filter_note_cs43131" : "musicsettings_filter_note"));
+	lv_label_set_text(note, tr(alsa_board_is_cs43131()  ? "musicsettings_filter_note_cs43131"
+							  : ak4493				  ? "musicsettings_filter_note_ak4493"
+													  : "musicsettings_filter_note"));
 
 	refresh_filter_checks();
 	switcher_attach_back_gesture(dacfilter_screen);
@@ -1931,9 +1947,9 @@ void musicsettings_init(gui_config_t *cfg) {
 	settingsrow_add(container, "musicsettings_filters", NULL, switch_screen_cb, dacfilter_screen);
 
 	// Non-oversampling off and dynamic-range enhancement on by default, like the
-	// stock player. The R1's CS43131 driver has neither: no rows there, and
-	// alsa-controls.c keeps both off.
-	if (!alsa_board_is_cs43131()) {
+	// stock player. The R1's CS43131 driver and the Blaze's AK4493 one have
+	// neither: no rows there, and alsa-controls.c keeps both off.
+	if (!alsa_board_is_cs43131() && !alsa_board_is_ak4493()) {
 		settingsrow_toggle(container, "musicsettings_nos", &nos_switch, nos_toggle_cb);
 		if (config_get_int("audio", "dac_nos", 0)) {
 			lv_obj_add_state(nos_switch, LV_STATE_CHECKED);

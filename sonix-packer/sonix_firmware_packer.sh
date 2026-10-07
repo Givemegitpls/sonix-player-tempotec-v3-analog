@@ -116,6 +116,11 @@ patch_blaze_ldac() {
 # The rootfs partition of the V3 Blaze is 45 MiB (mtd2).
 BLAZE_ROOTFS_MAX=47185920
 
+# What else goes on the V3 Blaze to fit that partition: a debugging tool and
+# the leap-second ("right/") copy of the time zones. Nothing on the device
+# reads either.
+BLAZE_TRIM=(usr/bin/strace usr/share/zoneinfo/right)
+
 # The working folders always go, whether the run succeeded or not.
 cleanup() { rm -rf "$WORK_DIR" "$SQUASH_DIR" "$MERGED_SQUASHFS" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -460,7 +465,9 @@ build_one() {
 	# ==========================================================================
 	step "[$MODEL_NAME] removing the stock interface's folders"
 
-	for dir in "${STOCK_UI_DIRS[@]}"; do
+	TRIM=("${STOCK_UI_DIRS[@]}")
+	[ "$MODEL_DIR" != "BLAZE" ] || TRIM+=("${BLAZE_TRIM[@]}")
+	for dir in "${TRIM[@]}"; do
 		if [ -e "$SQUASH_DIR/$dir" ]; then
 			rm -rf "$SQUASH_DIR/$dir"
 			[ -e "$SQUASH_DIR/$dir" ] && die "could not remove $dir."
