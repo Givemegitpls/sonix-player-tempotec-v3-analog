@@ -125,14 +125,12 @@ bool usbc_port_attached(void) { return usbc_attached(); }
 // value powers it down. So on this board the route is always 2, written once,
 // with none of the HBC3000's re-init around it.
 //
-// Its codec driver (codec_cs43131.ko) has no DRE_EN and no NOS_EN, and the
-// handler of its "Digital Filter" control returns without writing anything.
-// The filter goes through the driver's register node instead: see
-// set_dac_filter().
+// Its codec driver (codec_cs43131.ko, the open one from hiby-custom-kernel)
+// has "Digital Filter" and "NOS_EN" as on the CS43198, and no DRE_EN.
 // ---------------------------------------------------------------------------
 
-// "<register> <value>", both hex. Written to the chip when it is powered, and
-// always into the table the driver replays at every stream start.
+// The codec's register node: its presence names the board when sysinfo does
+// not.
 #define CS43131_REG_NODE "/sys/bus/i2c/devices/3-0030/write_reg_val"
 
 bool alsa_board_is_cs43131(void) {
@@ -369,29 +367,11 @@ static bool want_balance_lineout(void) { return lineout_on && detect_output() ==
 // would leave the stream on the old configuration until the next track.
 int alsa_output_key(void) { return detect_output() * 2 + (want_balance_lineout() ? 1 : 0); }
 
-// The CS43198's four digital interpolation filters, the ALSA "Digital
-// Filter" control the stock player writes (0..3):
+// The DAC's four digital interpolation filters, the ALSA "Digital Filter"
+// control the stock player writes (0..3), on both boards:
 //   0 fast roll-off, low latency      1 fast roll-off, phase compensated
 //   2 slow roll-off, low latency      3 slow roll-off, phase compensated
 static int current_filter = -1;
-
-// The same four on the CS43131, in its PCM filter option register (0x090000):
-// bit 7 slow roll-off, bit 6 phase compensated, bit 5 NOS (kept off), bit 1
-// the high-pass filter the driver's own table turns on, bit 0 de-emphasis
-// (off). The bit positions are those of Linux's cs43130 driver, which covers
-// the CS43131.
-static int write_cs43131_filter(int filter) {
-	unsigned value = 0x02u | ((filter & 2) ? 0x80u : 0) | ((filter & 1) ? 0x40u : 0);
-	FILE *f = fopen(CS43131_REG_NODE, "w");
-	if (!f) {
-		return -1;
-	}
-	bool ok = fprintf(f, "90000 %x", value) > 0;
-	if (fclose(f) != 0) {
-		ok = false;
-	}
-	return ok ? 0 : -1;
-}
 
 void set_dac_filter(int filter) {
 	if (filter < 0 || filter > 3) {
@@ -401,11 +381,6 @@ void set_dac_filter(int filter) {
 		return; // same reasoning as the output switch: never poke it idly
 	}
 	current_filter = filter;
-	if (alsa_board_is_cs43131()) {
-		int rc = write_cs43131_filter(filter);
-		fprintf(stderr, "set dac filter to %d (cs43131 register%s)\n", filter, rc < 0 ? " NOT written" : "");
-		return;
-	}
 	alsa_set_control("Digital Filter", filter);
 	printf("set dac filter to %d\n", filter);
 }
@@ -417,8 +392,8 @@ int get_dac_filter(void) { return current_filter < 0 ? 0 : current_filter; }
 // filter and the output route: never poke the codec idly mid-stream.
 static int current_dre = -1;
 
-// Neither DRE nor NOS exists on the CS43131 board: both stay off there and
-// nothing is written.
+// DRE does not exist on the CS43131 board: it stays off there and nothing is
+// written.
 void set_dac_dre(int enabled) {
 	enabled = enabled && !alsa_board_is_cs43131() ? 1 : 0;
 	if (enabled == current_dre) {
@@ -444,14 +419,11 @@ int get_dac_dre(void) {
 static int current_nos = -1;
 
 void set_dac_nos(int enabled) {
-	enabled = enabled && !alsa_board_is_cs43131() ? 1 : 0;
+	enabled = enabled ? 1 : 0;
 	if (enabled == current_nos) {
 		return;
 	}
 	current_nos = enabled;
-	if (alsa_board_is_cs43131()) {
-		return;
-	}
 	alsa_set_control("NOS_EN", enabled);
 	printf("set dac NOS to %d\n", enabled);
 }

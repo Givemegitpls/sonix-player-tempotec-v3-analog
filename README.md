@@ -14,7 +14,7 @@ into each image.
 | panel | 480x720 | 480x800 |
 | DAC | two Cirrus Logic CS43198 | one Cirrus Logic CS43131 |
 | headphone outputs | 3.5 mm, 4.4 mm balanced | 3.5 mm |
-| DAC controls | digital filters, DRE, NOS | digital filters |
+| DAC controls | digital filters, DRE, NOS | digital filters, NOS |
 | touch | Goodix gt9xx, patched for multitouch | Hynitron CST8xx, open-source driver, two fingers |
 | kernel | custom 4.4.94, see [hiby-custom-kernel](https://github.com/Jepl4r/hiby-custom-kernel) | the same |
 | double tap to wake | yes | no |
