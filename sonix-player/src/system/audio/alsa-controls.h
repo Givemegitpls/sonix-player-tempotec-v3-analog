@@ -79,8 +79,14 @@ int get_dac_dop(void);
 void alsa_set_dsd_gain_index(int index);
 int alsa_dsd_gain_index(void);
 
-// Low/high gain: a 6 dB shift of the whole volume scale, the way the stock
-// player's per-gain volume tables do it. Off (low gain) by default.
+// The gain: a shift of the whole volume scale, the way the stock player's
+// per-gain volume tables do it. gain_level_count() levels, 0 the lowest and the
+// default: two (6 dB apart) on the R3 Pro II and the R1, three on the V3 Blaze
+// (low, mid 6 dB louder, high 3 dB louder still).
+int gain_level_count(void);
+void set_gain_level(int level);
+int get_gain_level(void);
+// The two-level form: on is the highest level, off the lowest.
 void set_high_gain(int enabled);
 int get_high_gain(void);
 

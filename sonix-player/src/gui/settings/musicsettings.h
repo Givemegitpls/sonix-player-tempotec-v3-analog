@@ -45,6 +45,8 @@ bool musicsettings_endless_shuffle(void);
 
 bool musicsettings_high_gain(void);
 void musicsettings_set_high_gain(bool enabled);
+// The next gain, wrapping round to the lowest: the control centre's button.
+void musicsettings_gain_step(void);
 
 // Gapless playback, which the control centre also switches. The getter answers
 // with what the audio engine is doing, the one state both places draw.
