@@ -189,7 +189,10 @@ static int current_balance_lineout = -1; // last value written to "Balance Lineo
 
 static void apply_volume_hw(int percent);
 
-static int high_gain; // 0 = low gain (default, like the stock player)
+// Which of the board's gain tables the index is read from: 0 is the lowest.
+// Two on the R3 Pro II and the R1 (MDB, HDB), three on the V3 Blaze (LDB, MDB,
+// HDB), as the stock players offer them. Low by default, like the stock player.
+static int gain_level;
 
 // The stock firmware's own volume curves, not a computed formula.
 //
@@ -238,8 +241,21 @@ static const int HIBY_HW_HDB[101] = {
 	10,  9,   8,   7,   6,   5,   4,   3,   2,   1,     //
 	0};
 
-// The V3 Blaze's low gain: its stock MDB, which sits 3 dB (6 raw steps) under
-// HDB rather than the R3 Pro II's 6 dB. HDB is the same table on both.
+// The V3 Blaze's three gains, from its ot_devices_2025.json: HDB is the R3 Pro
+// II's table, MDB sits 3 dB (6 raw steps) under it and LDB 9 dB (18 steps).
+static const int BLAZE_HW_LDB[101] = {
+	255, 194, 184, 174, 164, 160, 156, 152, 148, 144, //
+	142, 140, 138, 136, 134, 132, 130, 128, 126, 124, //
+	122, 120, 118, 116, 114, 112, 110, 108, 106, 104, //
+	102, 100, 98,  96,  94,  92,  90,  88,  86,  84,   //
+	82,  80,  78,  76,  74,  73,  72,  71,  70,  69,   //
+	68,  67,  66,  65,  64,  63,  62,  61,  60,  59,   //
+	58,  57,  56,  55,  54,  53,  52,  51,  50,  49,   //
+	48,  47,  46,  45,  44,  43,  42,  41,  40,  39,   //
+	38,  37,  36,  35,  34,  33,  32,  31,  30,  29,   //
+	28,  27,  26,  25,  24,  23,  22,  21,  20,  19,   //
+	18};
+
 static const int BLAZE_HW_MDB[101] = {
 	255, 182, 172, 162, 152, 148, 144, 140, 136, 132, //
 	130, 128, 126, 124, 122, 120, 118, 116, 114, 112, //
@@ -260,10 +276,11 @@ static long percent_to_raw(int percent) {
 	if (percent > 100) {
 		percent = 100;
 	}
-	if (high_gain) {
-		return HIBY_HW_HDB[percent];
+	if (alsa_board_is_ak4493()) {
+		static const int *const BLAZE[3] = {BLAZE_HW_LDB, BLAZE_HW_MDB, HIBY_HW_HDB};
+		return BLAZE[gain_level][percent];
 	}
-	return alsa_board_is_ak4493() ? BLAZE_HW_MDB[percent] : HIBY_HW_MDB[percent];
+	return gain_level ? HIBY_HW_HDB[percent] : HIBY_HW_MDB[percent];
 }
 
 long alsa_volume_gain_db100(int percent) {
@@ -1232,16 +1249,23 @@ void lineout_check_jack(void) {
 	lineout_set(false);
 }
 
-// Switching gain re-applies the current volume so the 6 dB shift takes
-// effect immediately, exactly like flipping the stock player's gain option.
-void set_high_gain(int enabled) {
-	enabled = enabled ? 1 : 0;
-	if (enabled == high_gain) {
+int gain_level_count(void) { return alsa_board_is_ak4493() ? 3 : 2; }
+
+// Switching gain re-applies the current volume so the shift takes effect
+// immediately, exactly like changing the stock player's gain option.
+void set_gain_level(int level) {
+	if (level < 0) {
+		level = 0;
+	}
+	if (level >= gain_level_count()) {
+		level = gain_level_count() - 1;
+	}
+	if (level == gain_level) {
 		return;
 	}
-	high_gain = enabled;
-	printf("set gain to %s\n", enabled ? "high" : "low");
-	// The gain is which of the two tables the index is read from, so the level
+	gain_level = level;
+	printf("set gain to %d of %d\n", level, gain_level_count() - 1);
+	// The gain is which of the tables the index is read from, so the level
 	// has to be applied again either way -- including in line out, where
 	// set_volume_percent refuses and the fixed index is the one to rewrite.
 	if (lineout_on) {
@@ -1251,7 +1275,11 @@ void set_high_gain(int enabled) {
 	}
 }
 
-int get_high_gain(void) { return high_gain; }
+int get_gain_level(void) { return gain_level; }
+
+void set_high_gain(int enabled) { set_gain_level(enabled ? gain_level_count() - 1 : 0); }
+
+int get_high_gain(void) { return gain_level == gain_level_count() - 1; }
 
 
 // Which jack is occupied right now: reads the same switch nodes the output

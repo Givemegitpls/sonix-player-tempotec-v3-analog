@@ -169,13 +169,50 @@ static void nos_toggle_cb(lv_event_t *e) {
 static lv_obj_t *gain_switch;
 static lv_obj_t *album_chain_switch;
 
+// Three gains on the V3 Blaze, as pills instead of the switch; stored as
+// "gain_level" there, so a config carried over from a two-gain player is not
+// read as one of them.
+static lv_obj_t *gain_pill[3];
+
+static int stored_gain_level(void) {
+	if (gain_level_count() == 3) {
+		int level = (int)config_get_int("audio", "gain_level", 0);
+		return level < 0 ? 0 : (level > 2 ? 2 : level);
+	}
+	return config_get_int("audio", "high_gain", 0) ? 1 : 0;
+}
+
+static void gain_refresh(void) {
+	int level = stored_gain_level();
+	if (gain_switch) {
+		if (level > 0) {
+			lv_obj_add_state(gain_switch, LV_STATE_CHECKED);
+		} else {
+			lv_obj_remove_state(gain_switch, LV_STATE_CHECKED);
+		}
+	}
+	for (int i = 0; i < 3; i++) {
+		settingsrow_pill_active(gain_pill[i], i == level);
+	}
+}
+
+static void gain_level_store(int level) {
+	if (gain_level_count() == 3) {
+		config_set_int("audio", "gain_level", level);
+	} else {
+		config_set_int("audio", "high_gain", level ? 1 : 0);
+	}
+	config_save();
+	set_gain_level(level);
+	gain_refresh();
+}
+
 static void gain_toggle_cb(lv_event_t *e) {
 	(void)e;
-	bool on = lv_obj_has_state(gain_switch, LV_STATE_CHECKED);
-	config_set_int("audio", "high_gain", on ? 1 : 0);
-	config_save();
-	set_high_gain(on ? 1 : 0);
+	gain_level_store(lv_obj_has_state(gain_switch, LV_STATE_CHECKED) ? 1 : 0);
 }
+
+static void gain_pick_cb(lv_event_t *e) { gain_level_store((int)(intptr_t)lv_event_get_user_data(e)); }
 
 // ---------------------------------------------------------------------------
 // MSEB: the stock player's MageSound tuning (see eq.c for the engine and the
@@ -1171,20 +1208,11 @@ void musicsettings_set_fade_enabled(bool enabled) {
 	refresh_active_chevrons();
 }
 
-bool musicsettings_high_gain(void) { return config_get_int("audio", "high_gain", 0) != 0; }
+bool musicsettings_high_gain(void) { return stored_gain_level() > 0; }
 
-void musicsettings_set_high_gain(bool enabled) {
-	config_set_int("audio", "high_gain", enabled ? 1 : 0);
-	config_save();
-	set_high_gain(enabled ? 1 : 0);
-	if (gain_switch) {
-		if (enabled) {
-			lv_obj_add_state(gain_switch, LV_STATE_CHECKED);
-		} else {
-			lv_obj_remove_state(gain_switch, LV_STATE_CHECKED);
-		}
-	}
-}
+void musicsettings_set_high_gain(bool enabled) { gain_level_store(enabled ? gain_level_count() - 1 : 0); }
+
+void musicsettings_gain_step(void) { gain_level_store((stored_gain_level() + 1) % gain_level_count()); }
 
 void musicsettings_set_eq_enabled(bool enabled) {
 	eq_set_enabled(enabled);
@@ -1920,11 +1948,21 @@ void musicsettings_init(gui_config_t *cfg) {
 	build_volume_limit_page(cfg);
 	vlimit_row = settingsrow_add(container, "musicsettings_volume_limit", NULL, switch_screen_cb, vlimit_screen);
 
-	// The gain step: off = low gain (the stock default), on = +6 dB.
-	settingsrow_toggle(container, "musicsettings_high_gain", &gain_switch, gain_toggle_cb);
-	if (config_get_int("audio", "high_gain", 0)) {
-		lv_obj_add_state(gain_switch, LV_STATE_CHECKED);
+	// The gain step: off = low gain (the stock default), on = +6 dB. Three
+	// pills where the board has three gains.
+	if (gain_level_count() == 3) {
+		lv_obj_t *pills;
+		static const char *const GAIN_NAMES[3] = {"musicsettings_gain_low", "musicsettings_gain_mid",
+												  "musicsettings_gain_high"};
+		settingsrow_pills(container, "musicsettings_gain", &pills);
+		for (int i = 0; i < 3; i++) {
+			gain_pill[i] = settingsrow_pill(pills, GAIN_NAMES[i], i, gain_pick_cb);
+		}
+	} else {
+		settingsrow_toggle(container, "musicsettings_high_gain", &gain_switch, gain_toggle_cb);
 	}
+	gain_refresh();
+	theme_register_refresh(gain_refresh);
 
 	// How loud DSD comes out. The DAC is the only thing that plays it here, so
 	// this is the only place its level can be touched at all.
@@ -1973,7 +2011,7 @@ void musicsettings_init(gui_config_t *cfg) {
 	set_dac_filter((int)config_get_int("audio", "dac_filter", 0));
 	set_dac_dre((int)config_get_int("audio", "dac_dre", 1));
 	set_dac_nos((int)config_get_int("audio", "dac_nos", 0));
-	set_high_gain((int)config_get_int("audio", "high_gain", 0));
+	set_gain_level(stored_gain_level());
 
 
 	lv_obj_add_event_cb(musicsettings_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);

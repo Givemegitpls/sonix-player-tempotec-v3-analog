@@ -1834,7 +1834,7 @@ static void gain_clicked_cb(lv_event_t *e) {
 		long_press_consumed = false;
 		return;
 	}
-	musicsettings_set_high_gain(!musicsettings_high_gain());
+	musicsettings_gain_step();
 	toggled();
 }
 
