@@ -18,6 +18,11 @@ int detect_output(void); // the "Output Port Switch" value for what is plugged i
 // goes to the chip by another way. See alsa-controls.c.
 bool alsa_board_is_cs43131(void);
 
+// True on the V3 Blaze's audio board: two AK4493s behind the HBC3000, 3.5 mm and
+// 4.4 mm. Six digital filters, no DRE, no NOS, no balanced line-out flag. See
+// alsa-controls.c.
+bool alsa_board_is_ak4493(void);
+
 // The route to pass through on the way to `route` when the driver has to be
 // made to reconfigure: a route on the OTHER physical socket. Routes 1 and 2
 // are the two faces of the 3.5 mm one and the driver runs nothing between
@@ -37,8 +42,9 @@ void auto_set_output(void);
 void alsa_controls_note_output(int value);
 void set_volume(long volume);
 
-// The DAC's digital filter (0..3, see alsa-controls.c). Written only when
-// it changes.
+// The DAC's digital filter (0..dac_filter_count()-1, see alsa-controls.c).
+// Written only when it changes.
+int dac_filter_count(void);
 void set_dac_filter(int filter);
 int get_dac_filter(void);
 

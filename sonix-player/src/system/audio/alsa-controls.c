@@ -44,6 +44,9 @@ static long current_output = -1; // last value written to "Output Port Switch"
 // and is never overwritten in the config.
 // ---------------------------------------------------------------------------
 #define LINEOUT_VOLUME_INDEX 100
+// The V3 Blaze's stock player holds line out at index 95 (LO_VOLUME_INDEX in
+// its ot_devices_2025.json).
+#define LINEOUT_VOLUME_INDEX_AK4493 95
 
 // ---------------------------------------------------------------------------
 // The USB-C digital output
@@ -115,6 +118,41 @@ static bool usbc_attached(void) {
 }
 
 bool usbc_port_attached(void) { return usbc_attached(); }
+
+// ---------------------------------------------------------------------------
+// The V3 Blaze's audio board
+//
+// Two AK4493s (one per channel) behind the same HBC3000 bridge as the R3 Pro
+// II, with a 3.5 mm and a 4.4 mm socket. Its machine driver
+// (x1600_tempotec_v3a_sound_card.ko, codec_board_ot_put) takes the same routes
+// -- 1 and 2 are the 3.5 mm path, 3 and 7 the 4.4 mm one, 4 the S/PDIF -- and
+// has the same "X == current route -> return" shortcut, so the re-init dance
+// below applies unchanged. It has no "Balance Lineout En": 3 and 7 run the very
+// same GPO sequence, so line out on either socket is the fixed level alone.
+//
+// The codec (codec_ak4493_dual.ko) publishes "Left/Right Playback Volume" with
+// the CS43198's sense -- its put writes 255 - value into ATT, so 0 is loudest
+// and 255 mute, 0.5 dB a step -- and keeps a shadow of every register it writes,
+// which ak4493_initial() replays after each route change: volume and filter
+// survive the reconfiguration. "Digital Filter" takes 0..5 (the six AK4493
+// filters, see set_dac_filter()). No DRE_EN and no NOS_EN.
+// ---------------------------------------------------------------------------
+bool alsa_board_is_ak4493(void) {
+	static int answer = -1;
+	if (answer < 0) {
+		const sysinfo_model_t *model = sysinfo_model();
+		answer = model && model->ak4493;
+	}
+	return answer != 0;
+}
+
+// The fixed line-out index on this board.
+static int lineout_volume_index(void) {
+	return alsa_board_is_ak4493() ? LINEOUT_VOLUME_INDEX_AK4493 : LINEOUT_VOLUME_INDEX;
+}
+
+// The DRE and NOS switches exist on the CS43198 board only.
+static bool board_has_dre_nos(void) { return !alsa_board_is_cs43131() && !alsa_board_is_ak4493(); }
 
 // ---------------------------------------------------------------------------
 // The R1's audio board
@@ -200,6 +238,21 @@ static const int HIBY_HW_HDB[101] = {
 	10,  9,   8,   7,   6,   5,   4,   3,   2,   1,     //
 	0};
 
+// The V3 Blaze's low gain: its stock MDB, which sits 3 dB (6 raw steps) under
+// HDB rather than the R3 Pro II's 6 dB. HDB is the same table on both.
+static const int BLAZE_HW_MDB[101] = {
+	255, 182, 172, 162, 152, 148, 144, 140, 136, 132, //
+	130, 128, 126, 124, 122, 120, 118, 116, 114, 112, //
+	110, 108, 106, 104, 102, 100, 98,  96,  94,  92,  //
+	90,  88,  86,  84,  82,  80,  78,  76,  74,  72,   //
+	70,  68,  66,  64,  62,  61,  60,  59,  58,  57,   //
+	56,  55,  54,  53,  52,  51,  50,  49,  48,  47,   //
+	46,  45,  44,  43,  42,  41,  40,  39,  38,  37,   //
+	36,  35,  34,  33,  32,  31,  30,  29,  28,  27,   //
+	26,  25,  24,  23,  22,  21,  20,  19,  18,  17,   //
+	16,  15,  14,  13,  12,  11,  10,  9,   8,   7,    //
+	6};
+
 static long percent_to_raw(int percent) {
 	if (percent < 0) {
 		percent = 0;
@@ -207,7 +260,10 @@ static long percent_to_raw(int percent) {
 	if (percent > 100) {
 		percent = 100;
 	}
-	return high_gain ? HIBY_HW_HDB[percent] : HIBY_HW_MDB[percent];
+	if (high_gain) {
+		return HIBY_HW_HDB[percent];
+	}
+	return alsa_board_is_ak4493() ? BLAZE_HW_MDB[percent] : HIBY_HW_MDB[percent];
 }
 
 long alsa_volume_gain_db100(int percent) {
@@ -360,7 +416,7 @@ int output_reinit_partner(int route) { return route == 3 ? 2 : 3; }
 
 // True when the balanced line out is what the route should be carrying: the
 // flag the machine driver reads while applying route 3.
-static bool want_balance_lineout(void) { return lineout_on && detect_output() == 3; }
+static bool want_balance_lineout(void) { return lineout_on && detect_output() == 3 && !alsa_board_is_ak4493(); }
 
 // What the output configuration is, as one number: the route and the balanced
 // line-out flag together. The playback loop watches this rather than the route
@@ -393,8 +449,15 @@ static int write_cs43131_filter(int filter) {
 	return ok ? 0 : -1;
 }
 
+// The AK4493's six, as its codec driver numbers them (ak4493_set_digital_filter,
+// SD / SLOW / SSLOW bits):
+//   0 sharp roll-off              1 slow roll-off
+//   2 short delay sharp roll-off  3 short delay slow roll-off
+//   4 super slow roll-off         5 low dispersion short delay
+int dac_filter_count(void) { return alsa_board_is_ak4493() ? 6 : 4; }
+
 void set_dac_filter(int filter) {
-	if (filter < 0 || filter > 3) {
+	if (filter < 0 || filter >= dac_filter_count()) {
 		return;
 	}
 	if (filter == current_filter) {
@@ -417,15 +480,15 @@ int get_dac_filter(void) { return current_filter < 0 ? 0 : current_filter; }
 // filter and the output route: never poke the codec idly mid-stream.
 static int current_dre = -1;
 
-// Neither DRE nor NOS exists on the CS43131 board: both stay off there and
-// nothing is written.
+// Neither DRE nor NOS exists on the CS43131 or the AK4493 board: both stay off
+// there and nothing is written.
 void set_dac_dre(int enabled) {
-	enabled = enabled && !alsa_board_is_cs43131() ? 1 : 0;
+	enabled = enabled && board_has_dre_nos() ? 1 : 0;
 	if (enabled == current_dre) {
 		return;
 	}
 	current_dre = enabled;
-	if (alsa_board_is_cs43131()) {
+	if (!board_has_dre_nos()) {
 		return;
 	}
 	alsa_set_control("DRE_EN", enabled);
@@ -433,7 +496,7 @@ void set_dac_dre(int enabled) {
 }
 
 int get_dac_dre(void) {
-	if (alsa_board_is_cs43131()) {
+	if (!board_has_dre_nos()) {
 		return 0;
 	}
 	return current_dre < 0 ? 1 : current_dre;
@@ -444,12 +507,12 @@ int get_dac_dre(void) {
 static int current_nos = -1;
 
 void set_dac_nos(int enabled) {
-	enabled = enabled && !alsa_board_is_cs43131() ? 1 : 0;
+	enabled = enabled && board_has_dre_nos() ? 1 : 0;
 	if (enabled == current_nos) {
 		return;
 	}
 	current_nos = enabled;
-	if (alsa_board_is_cs43131()) {
+	if (!board_has_dre_nos()) {
 		return;
 	}
 	alsa_set_control("NOS_EN", enabled);
@@ -664,7 +727,7 @@ void alsa_controls_reapply(void) {
 	// fixed index and set_volume_percent refuses to move it, so the hardware
 	// write goes through the same path the mode itself uses.
 	if (lineout_on) {
-		apply_volume_hw(LINEOUT_VOLUME_INDEX);
+		apply_volume_hw(lineout_volume_index());
 	} else {
 		set_volume_percent(percent);
 	}
@@ -724,6 +787,13 @@ void auto_set_output(void) {
 	int output = detect_output();
 	int flag = (lineout_on && output == 3) ? 1 : 0;
 	bool flag_changed = flag != current_balance_lineout;
+
+	// The Blaze's driver has no such flag (see alsa_board_is_ak4493()): writing
+	// it would fail on every call and leave the cache never settling.
+	if (alsa_board_is_ak4493()) {
+		flag = 0;
+		flag_changed = false;
+	}
 
 	// The flag first and always, because the driver reads it while applying the
 	// route: on the balanced jack the pair is what decides headphone or line
@@ -1129,8 +1199,8 @@ void lineout_set(bool on) {
 		lineout_jack = jack;
 		lineout_on = true;
 		lineout_apply_route(); // the flag and the route, in that order
-		apply_volume_hw(LINEOUT_VOLUME_INDEX);
-		fprintf(stderr, "alsa: line out on (jack %d, index %d)\n", lineout_jack, LINEOUT_VOLUME_INDEX);
+		apply_volume_hw(lineout_volume_index());
+		fprintf(stderr, "alsa: line out on (jack %d, index %d)\n", lineout_jack, lineout_volume_index());
 		return;
 	}
 
@@ -1175,7 +1245,7 @@ void set_high_gain(int enabled) {
 	// has to be applied again either way -- including in line out, where
 	// set_volume_percent refuses and the fixed index is the one to rewrite.
 	if (lineout_on) {
-		apply_volume_hw(LINEOUT_VOLUME_INDEX);
+		apply_volume_hw(lineout_volume_index());
 	} else {
 		set_volume_percent(current_percent);
 	}
