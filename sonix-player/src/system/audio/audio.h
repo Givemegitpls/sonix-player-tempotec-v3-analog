@@ -71,6 +71,10 @@ void audio_force_output_reinit_after_resume(void);
 // before mem cuts the amplifier's power (R3 Pro II; see audio.c).
 void audio_park_output_before_suspend(void);
 
+// The analogue output brought down before a power-off or reboot: on the Blaze
+// the machine driver's own off sequence (route 5), elsewhere the mem park.
+void audio_quiet_output_for_power_off(void);
+
 // True while the playback thread holds an open PCM handle. The suspend path
 // waits for this to go false: an ALSA stream must never live across a system
 // suspend -- the device comes back powered down and reconfigured, and what

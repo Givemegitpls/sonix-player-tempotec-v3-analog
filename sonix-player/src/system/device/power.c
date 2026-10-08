@@ -928,12 +928,12 @@ void power_quiet_audio_for_shutdown(void) {
 	// The DAC down first, through its own volume ramp: stopping the track and
 	// closing the device with the music still at full level is a cut, and on
 	// the Blaze that cut was the click left once the amplifier went down
-	// quietly. audio_park_output_before_suspend() finds it already muted.
+	// quietly. audio_quiet_output_for_power_off() finds it already muted.
 	alsa_suspend_mute();
 	if (!audio_suspend_freeze(3000)) {
 		fprintf(stderr, "power: the audio did not stop before the power-off\n");
 	}
-	audio_park_output_before_suspend();
+	audio_quiet_output_for_power_off();
 }
 
 void power_shutdown(void) {
