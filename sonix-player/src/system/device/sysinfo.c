@@ -50,7 +50,7 @@ static const sysinfo_model_t MODELS[] = {
 		.media_keys_swapped = false,
 	},
 	{
-		// Charger in the AXP2101 PMIC; AK4493 DAC with 3.5 mm and 4.4 mm.
+		// Charger in the AXP2101 PMIC; AK4493SEQ DAC with 3.5 mm and 4.4 mm.
 		// Laid out at 480x720 and shrunk 2/3 onto the 320x480 glass (main.c).
 		.name = "TempoTec V3 Blaze",
 		.panel_width = 480,
