@@ -655,6 +655,15 @@ static void sd_clicked(void) {
 
 static void show_choice(void) {
 	layout(tr("system_update_firmware"), NULL, false, false);
+	// No "ota-repo" in system-info.json, no online update: a port that nobody
+	// publishes releases for would otherwise ask the default repository, whose
+	// releases are built for other players.
+	if (!sysinfo_ota_repo()[0]) {
+		set_button(0, "system_update_from_sd", true, sd_clicked);
+		set_button(1, "cancel", false, close_card);
+		hide_buttons(2);
+		return;
+	}
 	set_button(0, "system_update_online", true, online_clicked);
 	set_button(1, "system_update_from_sd", false, sd_clicked);
 	set_button(2, "cancel", false, close_card);
