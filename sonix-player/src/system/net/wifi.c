@@ -19,6 +19,7 @@
 
 #include "src/system/device/clock.h"
 #include "src/system/core/config.h"
+#include "src/system/core/logging.h"
 #include "src/system/device/power.h"
 #include "src/system/device/sysserver.h"
 #include "src/system/core/utils.h"
@@ -176,8 +177,10 @@ static int run_argv(char *const argv[], char *out, size_t out_size) {
 	}
 
 	if (pid == 0) {
-		// Child: stdout down the pipe, stderr to the log, nothing on stdin.
+		// Child: stdout down the pipe, stderr to the log through the daemons'
+		// pipe (a script may leave wpa_supplicant running), nothing on stdin.
 		close(pipe_fd[0]);
+		logging_child_stdio();
 		dup2(pipe_fd[1], STDOUT_FILENO);
 		close(pipe_fd[1]);
 		int devnull = open("/dev/null", O_RDONLY);
@@ -275,7 +278,13 @@ static uint32_t now_ms(void) {
 	return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
 }
 
-bool wifi_available(void) { return access("/sys/class/net/" WIFI_IFACE, F_OK) == 0; }
+// With bcm_wlbt_power (brcmfmac in place of cywdhd) wlan0 exists only while Wi-Fi
+// is on: wifi_on.sh powers the chip and loads the driver.
+#define WIFI_RADIO_POWER "/sys/devices/platform/bcm_wlbt_power/wifi_power"
+
+bool wifi_available(void) {
+	return access("/sys/class/net/" WIFI_IFACE, F_OK) == 0 || access(WIFI_RADIO_POWER, F_OK) == 0;
+}
 
 // ---------------------------------------------------------------------------
 // parsing what wpa_supplicant says

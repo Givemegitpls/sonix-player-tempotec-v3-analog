@@ -56,7 +56,8 @@ static bool on_sd;
 // The stream stdout/stderr currently feed. Kept so a switch can close the
 // previous one: dup2 copies the descriptor into 1 and 2, but the original stays
 // open too, and an fd left open on a file on the card keeps the card busy, so
-// the USB export can never unmount it.
+// the USB export can never unmount it. Every log file is opened close-on-exec,
+// so no child process inherits that original.
 static FILE *active_stream;
 
 // The card can go away under the log: the USB export unmounts it, and so does
@@ -98,7 +99,7 @@ bool logging_to_sd(void) { return config_get_bool("system", "log_to_sd", false);
 // tmpfs, unlinked at once so it has a name for nobody. NULL when tmpfs will
 // not take it, and the caller then falls back to /dev/null.
 static FILE *open_held(const char *path) {
-	FILE *file = fopen(path, "w+");
+	FILE *file = fopen(path, "w+e");
 	if (!file) {
 		return NULL;
 	}
@@ -420,6 +421,101 @@ void logging_flush(void) {
 	queue_drain();
 }
 
+// ---------------------------------------------------------------------------
+// The daemons' output
+//
+// A daemon started by the player outlives every move of the log, and its own
+// descriptor on the card's file would keep the card busy through the USB
+// export and the power-off. So the daemons write into a pipe, and a thread
+// copies what comes out of it into the log, a line at a time, stamped like the
+// rest.
+//
+// The write end is non-blocking: with the player stuck or gone, a daemon loses
+// its output, not its time. Each daemon also keeps a descriptor on the read
+// end, so a write never finds the pipe without a reader and never raises
+// SIGPIPE.
+// ---------------------------------------------------------------------------
+
+#define RELAY_LINE_MAX 512
+
+static int relay_read = -1;
+static int relay_write = -1;
+
+static void relay_line(const char *line, size_t len) {
+	if (len > 0) {
+		fprintf(stderr, "%.*s\n", (int)len, line);
+	}
+}
+
+static void *relay_reader(void *arg) {
+	(void)arg;
+	thread_be_background("logrelay");
+	char chunk[256];
+	char line[RELAY_LINE_MAX];
+	size_t used = 0;
+
+	for (;;) {
+		ssize_t got = read(relay_read, chunk, sizeof(chunk));
+		if (got < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			break;
+		}
+		if (got == 0) {
+			break;
+		}
+		for (ssize_t i = 0; i < got; i++) {
+			if (chunk[i] == '\n') {
+				relay_line(line, used);
+				used = 0;
+				continue;
+			}
+			line[used++] = chunk[i];
+			if (used == sizeof(line)) {
+				relay_line(line, used);
+				used = 0;
+			}
+		}
+	}
+	return NULL;
+}
+
+static void relay_start(void) {
+	int fds[2];
+	if (pipe2(fds, O_CLOEXEC) != 0) {
+		return;
+	}
+	int flags = fcntl(fds[1], F_GETFL);
+	if (flags >= 0) {
+		fcntl(fds[1], F_SETFL, flags | O_NONBLOCK);
+	}
+	relay_read = fds[0];
+	relay_write = fds[1];
+
+	pthread_t thread;
+	pthread_attr_t tattr;
+	pthread_attr_init(&tattr);
+	pthread_attr_setdetachstate(&tattr, PTHREAD_CREATE_DETACHED);
+	if (pthread_create(&thread, &tattr, relay_reader, NULL) != 0) {
+		close(fds[0]);
+		close(fds[1]);
+		relay_read = relay_write = -1;
+	}
+	pthread_attr_destroy(&tattr);
+}
+
+void logging_child_stdio(void) {
+	if (relay_write < 0) {
+		return;
+	}
+	dup2(relay_write, STDOUT_FILENO);
+	dup2(relay_write, STDERR_FILENO);
+	// Not close-on-exec, so it lives as long as the program the child becomes.
+	int reader = dup(relay_read);
+	(void)reader;
+}
+
 static void write_all(int fd, const char *data, size_t size) {
 	while (size > 0) {
 		ssize_t done = write(fd, data, size);
@@ -548,10 +644,11 @@ static bool redirect_to(FILE *stream) {
 void logging_init(void) {
 	stamp_install();
 	queue_start();
+	relay_start();
 
 	const char *override = getenv("SONIX_LOG");
 	if (override && override[0]) {
-		FILE *file = fopen(override, "w");
+		FILE *file = fopen(override, "we");
 		if (file && redirect_to(file)) {
 			on_sd = true;
 			snprintf(sd_log_path, sizeof(sd_log_path), "%s", override);
@@ -592,7 +689,7 @@ static bool open_sd_log(void) {
 		return false;
 	}
 
-	FILE *file = fopen(sd_log_path, "a");
+	FILE *file = fopen(sd_log_path, "ae");
 	if (!file) {
 		return false;
 	}
@@ -614,7 +711,7 @@ static bool open_sd_log(void) {
 static void open_null_log(void) {
 	flush_early(NULL);
 
-	FILE *sink = fopen("/dev/null", "w");
+	FILE *sink = fopen("/dev/null", "we");
 	if (sink) {
 		if (redirect_to(sink)) {
 			usb_stream = NULL; // redirect_to has just closed it
@@ -703,7 +800,7 @@ static void logging_resume_after_usb_locked(void) {
 		return;
 	}
 
-	FILE *file = sd_log_path[0] ? fopen(sd_log_path, "a") : NULL;
+	FILE *file = sd_log_path[0] ? fopen(sd_log_path, "ae") : NULL;
 	if (file) {
 		// The held lines go in before the redirect, because draining closes
 		// the stream stdout is still pointing at.

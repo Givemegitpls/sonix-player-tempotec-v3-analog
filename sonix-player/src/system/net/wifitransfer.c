@@ -20,6 +20,7 @@
 #include "src/system/net/webpage.h"
 #include "src/system/net/wifi.h"
 #include "src/system/core/lang.h"
+#include "src/system/core/logging.h"
 
 // The port is the stock player's, and it is not arbitrary: HiBy's phone app
 // looks for the beacon on it, and the address printed on screen has to be the
@@ -76,6 +77,7 @@ static int run(const char *path, char *const argv[]) {
 		return -1;
 	}
 	if (pid == 0) {
+		logging_child_stdio(); // thttpd and the UDP server stay running
 		execv(path, argv);
 		_exit(127);
 	}
