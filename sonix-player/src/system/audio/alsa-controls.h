@@ -31,14 +31,6 @@ bool alsa_board_is_ak4493(void);
 // worth a test.
 int output_reinit_partner(int route);
 
-// The route to leave the card on before its power goes (mem, power-off,
-// reboot). The R3 Pro II has no "off" route, so it is the partner above: a
-// route change is the driver's own mute sequence. The Blaze's machine driver
-// has one -- routes 5 and 6 assert the mute pin (PA08), stop the HBC3000 and
-// only then switch the amplifier's DC-DC (PA12) off -- and the partner there
-// would leave the amplifier powered and unmuted until the supply collapsed,
-// which is the pop.
-int output_park_route(int route);
 
 // The whole output configuration as one number: the route above plus the
 // balanced line-out flag. Two configurations that differ only in the flag share
