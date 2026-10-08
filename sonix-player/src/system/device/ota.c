@@ -19,7 +19,6 @@
 #include "src/system/net/http.h"
 #include "src/system/net/wifi.h"
 
-#define DEFAULT_REPO "Jepl4r/sonix-player"
 
 // The API's own media type and version, as GitHub asks every client to send.
 #define API_HEADERS                                                                                                    \
@@ -332,8 +331,14 @@ bool ota_check_start(void) {
 	}
 	release_valid = false;
 
+	// No repository named, no online update (see fwupdate.c): the default is
+	// not a safe guess for a port.
 	const char *r = sysinfo_ota_repo();
-	snprintf(repo, sizeof(repo), "%s", r[0] ? r : DEFAULT_REPO);
+	if (!r[0]) {
+		finish(OTA_CHECK_FAILED);
+		return true;
+	}
+	snprintf(repo, sizeof(repo), "%s", r);
 	const char *s = firmware_update_stem();
 	snprintf(stem, sizeof(stem), "%s", s ? s : "");
 
