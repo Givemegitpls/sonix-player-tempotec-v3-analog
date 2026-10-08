@@ -213,7 +213,12 @@ static snd_pcm_t *open_capture(const char *mac, unsigned rate, unsigned channels
 		return NULL;
 	}
 
-	snd_pcm_format_t format = (bits == 32) ? SND_PCM_FORMAT_S32_LE : SND_PCM_FORMAT_S16_LE;
+	// 24 bits is aptX HD, which bluealsa decodes into S24_4LE: the sample in the
+	// low three bytes of a 32-bit word. Asked for as 16 bits it is read at the
+	// wrong frame size and comes out as noise.
+	snd_pcm_format_t format = bits == 32   ? SND_PCM_FORMAT_S32_LE
+							  : bits == 24 ? SND_PCM_FORMAT_S24_LE
+										   : SND_PCM_FORMAT_S16_LE;
 	err = snd_pcm_set_params(pcm, format, SND_PCM_ACCESS_RW_INTERLEAVED, (unsigned)channels, (unsigned)rate,
 							 0, // no resampling: the rate is the sender's and has to stay it
 							 (unsigned)capture_ms() * 1000u);
@@ -279,14 +284,17 @@ static session_t capture_session(const char *mac, const char *name, bool may_gue
 	// takes 32-bit words, so 16-bit frames are left-justified into the top half
 	// of one rather than handed over as they came. Asked in that order because
 	// 32 is the path the hardware is known to take.
+	//
+	// 24-bit frames always go out widened: the DAC path is known to take 32-bit
+	// words, and the sample is moved from the bottom of its word to the top.
 	bool widen = false;
 	bool opened = false;
 	int buffer_ms = output_ms();
-	if (in_bits == 16) {
+	if (in_bits == 16 || in_bits == 24) {
 		opened = audio_external_begin_latency((int)rate, (int)channels, 32, buffer_ms);
 		widen = opened;
 	}
-	if (!opened) {
+	if (!opened && in_bits != 24) {
 		opened = audio_external_begin_latency((int)rate, (int)channels, (int)in_bits, buffer_ms);
 	}
 	if (!opened) {
@@ -296,7 +304,7 @@ static session_t capture_session(const char *mac, const char *name, bool may_gue
 		return SESSION_OVER;
 	}
 
-	size_t in_frame = (size_t)channels * (in_bits / 8);
+	size_t in_frame = (size_t)channels * (in_bits == 24 ? 4 : in_bits / 8); // S24_4LE: four bytes a sample
 	void *chunk = malloc(CHUNK_FRAMES * in_frame);
 	int32_t *wide = widen ? malloc(CHUNK_FRAMES * (size_t)channels * sizeof(int32_t)) : NULL;
 	if (!chunk || (widen && !wide)) {
@@ -397,7 +405,15 @@ static session_t capture_session(const char *mac, const char *name, bool may_gue
 		}
 		pthread_mutex_unlock(&lock);
 
-		if (widen) {
+		if (widen && in_bits == 24) {
+			// The top byte of an S24_4LE word is not promised to be anything,
+			// so it is shifted out rather than trusted.
+			const uint32_t *src = chunk;
+			for (snd_pcm_sframes_t i = 0; i < got * (snd_pcm_sframes_t)channels; i++) {
+				wide[i] = (int32_t)(src[i] << 8);
+			}
+			audio_external_write(wide, (int)got);
+		} else if (widen) {
 			const int16_t *src = chunk;
 			for (snd_pcm_sframes_t i = 0; i < got * (snd_pcm_sframes_t)channels; i++) {
 				wide[i] = (int32_t)((uint32_t)(uint16_t)src[i] << 16);
