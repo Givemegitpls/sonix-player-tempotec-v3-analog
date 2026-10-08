@@ -597,14 +597,20 @@ static long with_dsd_gain(long raw) {
 // three things reach it: a volume change, a gain change, and entering or
 // leaving DoP -- and that last one runs on the playback thread, which has no
 // business touching the USB device, the software volume or Bluetooth.
+// The DAC silent through a suspend: see alsa_suspend_mute() in the header.
+static bool suspend_muted;
+
 static void write_dac_attenuation(void) {
 	current_volume = with_dsd_gain(percent_to_raw(current_percent));
+	// Held at mute until alsa_suspend_restore(), which writes this level: the
+	// track being stopped on the way to a power-off (a DSD one leaving DoP, a
+	// volume key) must not bring the music back up under the parked route.
+	if (suspend_muted) {
+		return;
+	}
 	alsa_set_control("Right Playback Volume", current_volume);
 	alsa_set_control("Left Playback Volume", current_volume);
 }
-
-// The DAC silent through a suspend: see alsa_suspend_mute() in the header.
-static bool suspend_muted;
 
 void alsa_suspend_mute(void) {
 	if (alsa_board_is_cs43131() || suspend_muted) {
@@ -613,7 +619,9 @@ void alsa_suspend_mute(void) {
 #ifndef HOST_BUILD
 	alsa_set_control("Right Playback Volume", 255);
 	alsa_set_control("Left Playback Volume", 255);
-	usleep(30 * 1000); // the codec's own volume ramp
+	// The codec's own volume ramp. The AK4493's runs at the sample rate: from
+	// 0 dB to mute is 4080 steps of 1/fs, about 93 ms at 44.1 kHz.
+	usleep((alsa_board_is_ak4493() ? 120 : 30) * 1000);
 #endif
 	suspend_muted = true;
 	fprintf(stderr, "alsa: DAC muted for suspend\n");
