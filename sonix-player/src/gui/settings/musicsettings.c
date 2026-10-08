@@ -1214,6 +1214,8 @@ void musicsettings_set_high_gain(bool enabled) { gain_level_store(enabled ? gain
 
 void musicsettings_gain_step(void) { gain_level_store((stored_gain_level() + 1) % gain_level_count()); }
 
+int musicsettings_gain_level(void) { return stored_gain_level(); }
+
 void musicsettings_set_eq_enabled(bool enabled) {
 	eq_set_enabled(enabled);
 	if (eq_enable_switch) {

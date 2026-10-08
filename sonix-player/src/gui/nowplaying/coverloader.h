@@ -72,6 +72,10 @@ void coverloader_request_player(const char *path, int cover_w, int cover_h, int 
 // even when the cover is not.
 bool coverloader_take_player(cover_image_t *cover, cover_image_t *backdrop, bool *finished);
 
+// The next track's pictures, decoded into the disk cache at the lowest
+// priority so that changing to it is a read. Nothing to collect.
+void coverloader_warm_player(const char *path, int cover_w, int cover_h, int backdrop_w, int backdrop_h);
+
 // Asks only WHAT the artwork of `path` is, without decoding any of it: the
 // answer is cover_source_id()'s number, and the player compares it with the one
 // it already has on screen. A track whose picture is the one already up costs

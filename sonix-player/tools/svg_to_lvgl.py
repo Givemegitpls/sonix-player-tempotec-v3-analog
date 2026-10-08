@@ -192,6 +192,7 @@ ICONS = [
     ("lineout.svg", "lineout", 46),
     ("fade-track.svg", "fade_track", 46),
     ("low-gain.svg", "low_gain", 46),
+    ("mid-gain.svg", "mid_gain", 46),
     ("high-gain.svg", "high_gain", 46),
     # AirPlay and SonixLink carry the same drawing as their status bar glyph at
     # circle size: the toggle and the symbol it raises must read as one thing.

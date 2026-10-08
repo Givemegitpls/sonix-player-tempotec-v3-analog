@@ -109,6 +109,7 @@ extern const lv_image_dsc_t icon_equalizer;
 extern const lv_image_dsc_t icon_lineout;
 extern const lv_image_dsc_t icon_fade_track;
 extern const lv_image_dsc_t icon_low_gain;
+extern const lv_image_dsc_t icon_mid_gain;
 extern const lv_image_dsc_t icon_high_gain;
 extern const lv_image_dsc_t icon_airplay_quick;
 extern const lv_image_dsc_t icon_peq_quick;

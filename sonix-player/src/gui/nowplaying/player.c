@@ -846,6 +846,9 @@ static void set_progress_label(double current_secs, double total_secs) {
 
 // True while a decode is in flight at the worker.
 static bool cover_request_outstanding;
+// The sizes the last request used, which the next track's warm-up repeats so
+// its cache entry is the one that request will look for.
+static int warm_cover_w, warm_cover_h, warm_backdrop_h;
 
 // What the artwork on screen IS, as cover_source_id() reports it, so the next
 // track can be asked "the same picture?" before anything is thrown away. 0 when
@@ -2825,6 +2828,9 @@ static void reload_cover(const char *filepath) {
 		coverloader_request_player(filepath, cover_w, cover_h, backdrop_w,
 								   backdrop_is_studio ? backdrop_studio_h : backdrop_h);
 		cover_request_outstanding = true;
+		warm_cover_w = cover_w;
+		warm_cover_h = cover_h;
+		warm_backdrop_h = backdrop_is_studio ? backdrop_studio_h : backdrop_h;
 
 		// The collector rides on the progress timer; make sure it is ticking
 		// even when nothing is playing (paused player, theme change).
@@ -2864,6 +2870,22 @@ static void refresh_cover(const char *filepath) {
 	reload_cover(filepath);
 }
 
+// This track's pictures are up (or were kept); the next one's go into the disk
+// cache in the background, so that skipping to it is a read rather than a
+// decode. At the sizes of the last request, which is what the next one will
+// ask for.
+static void warm_next_cover(void) {
+	if (warm_cover_w <= 0 || warm_cover_h <= 0) {
+		return;
+	}
+	char next_path[512];
+	int next_index = playlist_current_index() + 1;
+	if (next_index > 0 && next_index < playlist_count() &&
+		playlist_path_at(next_index, next_path, sizeof(next_path))) {
+		coverloader_warm_player(next_path, warm_cover_w, warm_cover_h, backdrop_w, warm_backdrop_h);
+	}
+}
+
 // The answer to whichever question was asked, picked up on the progress poll.
 static void apply_cover_id_result(void) {
 	if (cover_id_state == COVER_ID_IDLE) {
@@ -2887,6 +2909,7 @@ static void apply_cover_id_result(void) {
 	// The same picture: the cover, the backdrop, the sleeve colour and the
 	// chrome all stay exactly as they are. This is the whole point.
 	if (id != 0 && id == cover_shown_id) {
+		warm_next_cover();
 		return;
 	}
 
@@ -2961,6 +2984,8 @@ static void apply_cover_result(void) {
 		lyrics_look(true); // Studio's backdrop has arrived, or there is none
 	}
 	cover_incoming_id = 0;
+
+	warm_next_cover();
 
 	// Studio draws both of these itself -- the sleeve smaller and the blurred
 	// copy across the whole screen -- so it is told here, where they land,

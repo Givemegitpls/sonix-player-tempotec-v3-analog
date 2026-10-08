@@ -1562,6 +1562,114 @@ static float mseb_auto_preamp_db(int rate) {
 	return p;
 }
 
+// ---------------------------------------------------------------------------
+// Clip guard
+//
+// Neither level stage above is a clip guard for the whole chain. MSEB's is a
+// normalisation that balances its curve around the line, so at the top of its
+// range -- bass0 and bass1 together are some +45 dB at 100 -- it leaves the bass
+// tens of decibels over full scale. The graphic equaliser's and the
+// parametric's headroom looks at the single biggest boost, and overlapping
+// bands (a shelf and a peak on the same octave) add up past it. Either way the
+// output stage clamps, and a clamped waveform is the harsh, broken sound of an
+// equaliser pushed hard.
+//
+// So after both, the cascade of every live filter is measured with both levels
+// applied -- on MSEB's 128-point grid widened to 20 kHz, plus each filter's
+// own frequency, where a narrow peak would slip between grid points -- and if
+// its highest point is above CLIP_GUARD_CEILING_DB the difference comes off the
+// level as well. A curve that stays under it is left exactly as before.
+// ---------------------------------------------------------------------------
+
+#define CLIP_GUARD_POINTS 128
+#define CLIP_GUARD_START_HZ 20.0
+#define CLIP_GUARD_DECADES 3.0
+// A little under full scale: a filter rings past its steady-state response on
+// transients, and a master already sitting at 0 dBFS has nowhere to go.
+#define CLIP_GUARD_CEILING_DB (-0.5)
+
+// Every filter the chain would run, MSEB first, on the caller's own biquads.
+// Like mseb_bank_build, usable from the interface thread.
+static int full_bank_build(biquad_t *out, int *freqs, int rate) {
+	int count = 0;
+	if (mseb_enabled) {
+		for (int i = 0; i < MSEB_FILTERS; i++) {
+			double gain = (double)mseb_value[MSEB_DEFS[i].slider] * (double)MSEB_DEFS[i].db_per_step;
+			memset(&out[count], 0, sizeof(out[count]));
+			if (biquad_set_coeffs(&out[count], MSEB_DEFS[i].type, MSEB_DEFS[i].freq, gain, (double)MSEB_DEFS[i].q,
+								  rate)) {
+				freqs[count++] = MSEB_DEFS[i].freq;
+			}
+		}
+	}
+	if (eq_enabled) {
+		for (int i = 0; i < EQ_BANDS; i++) {
+			memset(&out[count], 0, sizeof(out[count]));
+			if (biquad_set_coeffs(&out[count], F_PEAK, eq_band_freq[i], (double)band_gain_db[i], EQ_BAND_Q, rate)) {
+				freqs[count++] = eq_band_freq[i];
+			}
+		}
+	}
+	if (peq_enabled) {
+		for (int i = 0; i < PEQ_BANDS; i++) {
+			const peq_band_t *b = &peq_bands[i];
+			if (!b->on) {
+				continue;
+			}
+			memset(&out[count], 0, sizeof(out[count]));
+			if (biquad_set_coeffs(&out[count], peq_filter_type(b->type), b->freq, (double)b->gain_tenths / 10.0,
+								  (double)b->q_cent / 100.0, rate)) {
+				freqs[count++] = b->freq;
+			}
+		}
+	}
+	return count;
+}
+
+static double cascade_db_at(const biquad_t *bank, int count, double freq, int rate) {
+	double w = 2.0 * M_PI * freq / (double)rate;
+	if (w <= 0.0 || w >= M_PI) {
+		return -INFINITY;
+	}
+	double cos1 = cos(w), sin1 = sin(w);
+	double cos2 = cos(2.0 * w), sin2 = sin(2.0 * w);
+	double power = 1.0;
+	for (int f = 0; f < count; f++) {
+		power *= biquad_power_ratio_at(&bank[f], cos1, sin1, cos2, sin2);
+	}
+	return power > 0.0 ? 10.0 * log10(power) : -INFINITY;
+}
+
+// The extra cut, in dB (zero or negative), that keeps the whole chain under
+// the ceiling with `level_db` -- both pre-gains together -- already applied.
+static double clip_guard_db(int rate, double level_db) {
+	biquad_t bank[CHAIN_SLOTS];
+	int freqs[CHAIN_SLOTS];
+	int count = full_bank_build(bank, freqs, rate);
+	if (count == 0) {
+		return 0.0;
+	}
+
+	double peak = -INFINITY;
+	for (int i = 0; i <= CLIP_GUARD_POINTS; i++) {
+		double freq =
+			pow(10.0, log10(CLIP_GUARD_START_HZ) + CLIP_GUARD_DECADES * (double)i / CLIP_GUARD_POINTS);
+		double db = cascade_db_at(bank, count, freq, rate);
+		if (db > peak) {
+			peak = db;
+		}
+	}
+	for (int f = 0; f < count; f++) {
+		double db = cascade_db_at(bank, count, (double)freqs[f], rate);
+		if (db > peak) {
+			peak = db;
+		}
+	}
+
+	double over = peak + level_db - CLIP_GUARD_CEILING_DB;
+	return over > 0.0 ? -over : 0.0;
+}
+
 static void filters_rebuild(int rate) {
 	bool rate_changed = rate != built_rate;
 	double max_boost = 0;
@@ -1629,7 +1737,13 @@ static void filters_rebuild(int rate) {
 	// already taken; a positive preamp, which guards nothing, is applied on top
 	// of the full headroom.
 	double manual = peq_enabled ? (double)peq_preamp_tenths / 10.0 : 0.0;
-	pregain_target = (float)pow(10.0, headroom_db(max_boost, manual) / 20.0);
+	double level_db = headroom_db(max_boost, manual);
+	// Whatever the two stages still leave over full scale comes off here, in
+	// front of the graphic equaliser and the parametric. The chain is float,
+	// so where in it the cut is made does not matter, only that it is made
+	// before the output clamps.
+	double guard_db = clip_guard_db(rate, (double)mseb_pregain_db + level_db);
+	pregain_target = (float)pow(10.0, (level_db + guard_db) / 20.0);
 	if (rate_changed) {
 		pregain = pregain_target;
 		mseb_pregain = mseb_pregain_target;
@@ -1637,8 +1751,10 @@ static void filters_rebuild(int rate) {
 
 	built_version = settings_version;
 	built_rate = rate;
-	fprintf(stderr, "eq: rebuilt (%d filters at %d Hz, mseb pregain %+.2f dB -> %.4f, geq/peq pregain -> %.3f)\n",
-			active, rate, (double)mseb_pregain_db, (double)mseb_pregain_target, (double)pregain_target);
+	fprintf(stderr,
+			"eq: rebuilt (%d filters at %d Hz, mseb pregain %+.2f dB -> %.4f, geq/peq pregain -> %.3f, clip guard "
+			"%+.2f dB)\n",
+			active, rate, (double)mseb_pregain_db, (double)mseb_pregain_target, (double)pregain_target, guard_db);
 }
 
 // ---------------------------------------------------------------------------
@@ -1726,7 +1842,9 @@ int eq_auto_headroom_tenths(void) {
 	// Only the automatic part: the preamp has its own slider, and the page
 	// shows this beside it.
 	double manual = peq_enabled ? (double)peq_preamp_tenths / 10.0 : 0.0;
-	total += headroom_db(max_boost, manual) - manual;
+	double level_db = headroom_db(max_boost, manual);
+	total += level_db - manual;
+	total += clip_guard_db(EQ_HEADROOM_REFERENCE_RATE, total + manual);
 
 	return (int)(total >= 0 ? total * 10.0 + 0.5 : total * 10.0 - 0.5);
 }
