@@ -431,9 +431,6 @@ int detect_output(void) {
 // See alsa-controls.h. Two sockets: {1, 2} single-ended and {3} balanced.
 int output_reinit_partner(int route) { return route == 3 ? 2 : 3; }
 
-// See alsa-controls.h. 5 is the first of the Blaze driver's two "off" routes.
-int output_park_route(int route) { return alsa_board_is_ak4493() ? 5 : output_reinit_partner(route); }
-
 // True when the balanced line out is what the route should be carrying: the
 // flag the machine driver reads while applying route 3.
 static bool want_balance_lineout(void) { return lineout_on && detect_output() == 3 && !alsa_board_is_ak4493(); }

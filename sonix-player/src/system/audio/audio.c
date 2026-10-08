@@ -292,6 +292,42 @@ static bool restart_fresh_pending = false;
 static char restart_fresh_path[512];
 static double restart_fresh_pos;
 
+// The Blaze's analogue chain left the way its driver leaves it after a stream.
+//
+// A route written with nothing playing runs the driver's whole power-up: the
+// HBC3000 enabled, the amplifier's DC-DC on, the AK4493 initialised and the
+// mute pin released -- and then nothing stops it, because what puts the chain
+// back to sleep is the stream's own trigger stop (AK4493 mute, HBC3000 power
+// down). The stock player only routes on the way into a track, so its chain is
+// never awake and idle; here the boot and the wake both route with nothing
+// playing, and the idle chain is heard as static in sensitive IEMs.
+//
+// So after such a write a few milliseconds of silence are played: the stream
+// starts and stops, and the driver's stop does the rest. Call with no PCM open.
+static void ak4493_settle_idle_chain(void) {
+	if (!alsa_board_is_ak4493()) {
+		return;
+	}
+#ifndef HOST_BUILD
+	snd_pcm_t *pcm = NULL;
+	if (snd_pcm_open(&pcm, AUDIO_DEFAULT_PCM, SND_PCM_STREAM_PLAYBACK, 0) < 0) {
+		fprintf(stderr, "audio: idle settle: the device would not open\n");
+		return;
+	}
+	if (snd_pcm_set_params(pcm, SND_PCM_FORMAT_S32_LE, SND_PCM_ACCESS_RW_INTERLEAVED, 2, 44100, 0, 100000) == 0) {
+		static int32_t zeros[2 * 441]; // 10 ms
+		for (int i = 0; i < 3; i++) {
+			if (snd_pcm_writei(pcm, zeros, 441) < 0) {
+				break;
+			}
+		}
+		snd_pcm_drain(pcm);
+	}
+	snd_pcm_close(pcm);
+	fprintf(stderr, "audio: idle chain settled (stream started and stopped)\n");
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // Re-initialising the output route after waking from mem.
 //
@@ -336,6 +372,7 @@ void audio_force_output_reinit_after_resume(void) {
 	// again with a stream already coming.
 	alsa_controls_note_output(x);
 #endif
+	ak4493_settle_idle_chain();
 	// The DAC back once the real route is live again.
 	alsa_suspend_restore();
 }
@@ -361,11 +398,22 @@ void audio_park_output_before_suspend(void) {
 	if (alsa_board_is_cs43131()) {
 		return; // no HBC3000, and no thump to take away
 	}
+	// The Blaze: the DAC muted and nothing else. Its machine driver has no
+	// route that mutes without also cutting the amplifier's DC-DC, and that cut
+	// is a pop whatever comes before it. The stock player simply stops and
+	// powers off: with the PCM closed the driver's own stop has already muted
+	// the AK4493 and powered the HBC3000 down, and the amplifier going with the
+	// rest of the board then carries nothing.
+	if (alsa_board_is_ak4493()) {
+		alsa_suspend_mute();
+		fprintf(stderr, "audio: DAC muted before the power goes, route left as it is\n");
+		return;
+	}
 	int x = detect_output();
 	if (x < 1 || x > 3) {
 		return; // not one of the analogue sockets
 	}
-	int y = output_park_route(x);
+	int y = output_reinit_partner(x);
 	// The DAC first: the route change mutes the old port, but the DAC feeding
 	// it would still be live when its supply goes. Silent until the wake has
 	// put the real route back (audio_force_output_reinit_after_resume()).
@@ -3892,6 +3940,7 @@ int audio_init(void) {
 
 	set_volume_percent(40); // a sane, audible default on the new dB taper
 	auto_set_output();
+	ak4493_settle_idle_chain();
 
 	pthread_mutex_lock(&audio_mutex);
 	stop_thread = false;
