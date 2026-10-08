@@ -47,6 +47,8 @@ bool musicsettings_high_gain(void);
 void musicsettings_set_high_gain(bool enabled);
 // The next gain, wrapping round to the lowest: the control centre's button.
 void musicsettings_gain_step(void);
+// The stored gain, 0 the lowest, gain_level_count() - 1 the highest.
+int musicsettings_gain_level(void);
 
 // Gapless playback, which the control centre also switches. The getter answers
 // with what the audio engine is doing, the one state both places draw.

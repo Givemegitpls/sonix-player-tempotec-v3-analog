@@ -365,7 +365,7 @@ void audio_park_output_before_suspend(void) {
 	if (x < 1 || x > 3) {
 		return; // not one of the analogue sockets
 	}
-	int y = output_reinit_partner(x);
+	int y = output_park_route(x);
 	// The DAC first: the route change mutes the old port, but the DAC feeding
 	// it would still be live when its supply goes. Silent until the wake has
 	// put the real route back (audio_force_output_reinit_after_resume()).

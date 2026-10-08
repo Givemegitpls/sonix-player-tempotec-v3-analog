@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -1318,6 +1319,11 @@ uint64_t cover_source_id(const char *filepath) {
 	return 0;
 }
 
+static bool playerart_key(char *out, size_t out_size, uint64_t id, int cw, int ch, int bw, int bh);
+static bool playerart_load(const char *key, cover_image_t *cover, cover_image_t *backdrop);
+static void playerart_store(const char *key, const cover_image_t *cover, const cover_image_t *backdrop);
+static bool playerart_has(const char *key);
+
 bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, cover_image_t *cover_out,
 							  int backdrop_w, int backdrop_h, cover_image_t *backdrop_out) {
 	if (cover_out)
@@ -1341,6 +1347,21 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 		reqs[n++] = (image_request_t){.w = backdrop_w, .h = backdrop_h, .fit = COVER_FIT_COVER, .backdrop = true};
 	}
 
+	// Both pictures, the only request the player makes: try the card first.
+	char art_key[96];
+	bool cacheable = cover_out && backdrop_out &&
+					 playerart_key(art_key, sizeof(art_key), cover_source_id(filepath), cover_w, cover_h, backdrop_w,
+								   backdrop_h);
+	struct timespec t0;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	if (cacheable && playerart_load(art_key, cover_out, backdrop_out)) {
+		struct timespec t1;
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		printf("cover: player artwork from the cache in %ld ms\n",
+			   (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000));
+		return true;
+	}
+
 	cover_build_t built = build_from_sources(filepath, false, reqs, n, results);
 	if (built == COVER_BUILD_NONE) {
 		// A podcast episode with no cover file beside it: fetch it now, on the
@@ -1353,6 +1374,13 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 		built = build_from_sources(filepath, false, reqs, n, results);
 	}
 	bool ok = (built == COVER_BUILD_OK);
+	if (ok && cacheable) {
+		struct timespec t1;
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		printf("cover: player artwork decoded in %ld ms, cached\n",
+			   (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000));
+		playerart_store(art_key, &results[cover_index], &results[backdrop_index]);
+	}
 
 	// A missing backdrop is survivable; the controls just stay plain.
 	if (cover_index >= 0)
@@ -1361,6 +1389,26 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 		*backdrop_out = results[backdrop_index];
 
 	return ok;
+}
+
+bool cover_warm_player_images(const char *filepath, int cover_w, int cover_h, cover_image_t *cover_out,
+							  int backdrop_w, int backdrop_h, cover_image_t *backdrop_out) {
+	memset(cover_out, 0, sizeof(*cover_out));
+	memset(backdrop_out, 0, sizeof(*backdrop_out));
+
+	char art_key[96];
+	if (!playerart_key(art_key, sizeof(art_key), cover_source_id(filepath), cover_w, cover_h, backdrop_w,
+					   backdrop_h) ||
+		playerart_has(art_key)) {
+		return false; // no artwork, or already on the card
+	}
+	// The ordinary load decodes and stores it. The pictures themselves are not
+	// wanted now: the track that needs them comes later and reads them back.
+	cover_image_t cover, backdrop;
+	cover_load_player_images(filepath, cover_w, cover_h, &cover, backdrop_w, backdrop_h, &backdrop);
+	cover_free(&cover);
+	cover_free(&backdrop);
+	return false;
 }
 
 void cover_free(cover_image_t *img) {
@@ -1415,6 +1463,14 @@ static file_identity_t thumb_db_identity;
 // directory, so a card ends up with a single .local folder rather than one dot
 // entry per feature.
 #define THUMB_DB_SUBPATH ".local/thumbnails"
+
+// The player's own artwork cache lives beside it (see further down) and opens,
+// closes and reopens with it.
+static sqlite3 *playerart_db;
+static char playerart_path[512];
+static file_identity_t playerart_identity;
+static void playerart_open(const char *base);
+static void playerart_close(void);
 
 // An earlier release kept the cache as a directory at the path the database now
 // wants, so on first open it is emptied and removed. Everything inside it was
@@ -1532,6 +1588,11 @@ void cover_cache_reopen_if_replaced(void) {
 			printf("cover: thumbnail cache disabled\n");
 		}
 	}
+	if (playerart_db && playerart_path[0] && file_identity_changed(playerart_path, &playerart_identity)) {
+		char base[sizeof(thumb_db_base)];
+		snprintf(base, sizeof(base), "%s", thumb_db_base);
+		playerart_open(base);
+	}
 	pthread_mutex_unlock(&thumb_db_lock);
 }
 
@@ -1542,8 +1603,10 @@ void cover_set_cache_dir(const char *sd_root) {
 		sqlite3_close(thumb_db);
 		thumb_db = NULL;
 	}
+	playerart_close();
 
 	bool ok = sd_root && sd_root[0] && try_cache_db(sd_root);
+	playerart_open(ok ? sd_root : NULL);
 	if (!ok) {
 		// The card may be missing or read-only; a tmpfs cache still saves the
 		// rescan cost within a single run.
@@ -1677,6 +1740,199 @@ static void thumb_db_store(const char *key, const cover_image_t *img, bool has_i
 		sqlite3_finalize(stmt);
 	}
 
+	pthread_mutex_unlock(&thumb_db_lock);
+}
+
+// ---------------------------------------------------------------------------
+// on-disk player artwork cache
+//
+// The player's sleeve and its blurred backdrop are the most expensive pictures
+// in the interface: a full decode of the original, a resample to the width of
+// the screen, three blur passes and a dithered pack, on every album the player
+// is asked to show. Kept on the card, coming back to an album costs one read of
+// about a megabyte instead.
+//
+// A file of its own, .local/playerart, and not more rows in the thumbnails
+// database: SonixLink copies that one to the phone, and a few hundred
+// screen-sized pictures in it would turn every sync into a long download.
+//
+// The key is the artwork's own bytes (cover_source_id), not the track, so every
+// track of an album that shares a cover.jpg or the same embedded picture shares
+// one entry; the sizes and the backdrop's light/upright treatment go in too,
+// since each of them changes the pixels. Entries are dropped least recently
+// shown first once there are more than PLAYERART_MAX_ROWS.
+// ---------------------------------------------------------------------------
+
+#define PLAYERART_SUBPATH ".local/playerart"
+#define PLAYERART_MAX_ROWS 150 // about a megabyte each at the Blaze's sizes
+
+// Call with thumb_db_lock held, like everything else that touches the caches.
+static void playerart_close(void) {
+	if (playerart_db) {
+		sqlite3_close(playerart_db);
+		playerart_db = NULL;
+	}
+}
+
+static bool playerart_prepare_schema(sqlite3 *db) {
+	return sqlite3_exec(db,
+						"PRAGMA synchronous=OFF;"
+						"PRAGMA cache_size=-128;"
+						"CREATE TABLE IF NOT EXISTS art("
+						" key TEXT PRIMARY KEY,"
+						" cw INTEGER NOT NULL, ch INTEGER NOT NULL, cover BLOB NOT NULL,"
+						" bw INTEGER NOT NULL, bh INTEGER NOT NULL, backdrop BLOB NOT NULL,"
+						" used INTEGER NOT NULL)",
+						NULL, NULL, NULL) == SQLITE_OK;
+}
+
+// Only on the card: a tmpfs copy of pictures this size would be memory the
+// player needs for everything else.
+static void playerart_open(const char *base) {
+	playerart_close();
+	if (!base || !base[0] || strcmp(base, "/tmp") == 0) {
+		return;
+	}
+	if (snprintf(playerart_path, sizeof(playerart_path), "%s/%s", base, PLAYERART_SUBPATH) >=
+		(int)sizeof(playerart_path)) {
+		playerart_path[0] = '\0';
+		return;
+	}
+
+	sqlite3 *db = NULL;
+	if (sqlite3_open(playerart_path, &db) != SQLITE_OK || !playerart_prepare_schema(db)) {
+		// Corrupt or half-written: it is only a cache, start it again.
+		sqlite3_close(db);
+		unlink(playerart_path);
+		db = NULL;
+		if (sqlite3_open(playerart_path, &db) != SQLITE_OK || !playerart_prepare_schema(db)) {
+			sqlite3_close(db);
+			playerart_path[0] = '\0';
+			return;
+		}
+	}
+	playerart_db = db;
+	file_identity_read(playerart_path, &playerart_identity);
+	printf("cover: player artwork cache in %s\n", playerart_path);
+}
+
+static bool playerart_key(char *out, size_t out_size, uint64_t id, int cw, int ch, int bw, int bh) {
+	if (!id) {
+		return false;
+	}
+	snprintf(out, out_size, "%016llx|%d|%d|%d|%d|%d%d", (unsigned long long)id, cw, ch, bw, bh, backdrop_light ? 1 : 0,
+			 backdrop_upright ? 1 : 0);
+	return true;
+}
+
+static bool playerart_unpack(sqlite3_stmt *stmt, int col, cover_image_t *out) {
+	int w = sqlite3_column_int(stmt, col);
+	int h = sqlite3_column_int(stmt, col + 1);
+	if (w <= 0 || h <= 0 || w > 0xFFFF || h > 0xFFFF) {
+		return false;
+	}
+	size_t bytes = (size_t)w * h * 2;
+	const void *blob = sqlite3_column_blob(stmt, col + 2);
+	if (!blob || (size_t)sqlite3_column_bytes(stmt, col + 2) != bytes) {
+		return false;
+	}
+	uint8_t *pixels = malloc(bytes);
+	if (!pixels) {
+		return false;
+	}
+	memcpy(pixels, blob, bytes);
+	memset(out, 0, sizeof(*out));
+	out->pixels = pixels;
+	out->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+	out->dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+	out->dsc.header.w = (uint32_t)w;
+	out->dsc.header.h = (uint32_t)h;
+	out->dsc.header.stride = (uint32_t)w * 2;
+	out->dsc.data_size = (uint32_t)bytes;
+	out->dsc.data = pixels;
+	return true;
+}
+
+static bool playerart_load(const char *key, cover_image_t *cover, cover_image_t *backdrop) {
+	bool hit = false;
+	pthread_mutex_lock(&thumb_db_lock);
+	if (playerart_db) {
+		sqlite3_stmt *stmt = NULL;
+		if (sqlite3_prepare_v2(playerart_db, "SELECT cw, ch, cover, bw, bh, backdrop FROM art WHERE key = ?1", -1,
+							   &stmt, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+			if (sqlite3_step(stmt) == SQLITE_ROW) {
+				if (playerart_unpack(stmt, 0, cover)) {
+					if (playerart_unpack(stmt, 3, backdrop)) {
+						hit = true;
+					} else {
+						cover_free(cover);
+					}
+				}
+			}
+			sqlite3_finalize(stmt);
+		}
+		if (hit) {
+			sqlite3_stmt *touch = NULL;
+			if (sqlite3_prepare_v2(playerart_db,
+								   "UPDATE art SET used = (SELECT IFNULL(MAX(used), 0) + 1 FROM art) WHERE key = ?1",
+								   -1, &touch, NULL) == SQLITE_OK) {
+				sqlite3_bind_text(touch, 1, key, -1, SQLITE_STATIC);
+				sqlite3_step(touch);
+				sqlite3_finalize(touch);
+			}
+		}
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+	return hit;
+}
+
+static bool playerart_has(const char *key) {
+	bool found = false;
+	pthread_mutex_lock(&thumb_db_lock);
+	if (playerart_db) {
+		sqlite3_stmt *stmt = NULL;
+		if (sqlite3_prepare_v2(playerart_db, "SELECT 1 FROM art WHERE key = ?1", -1, &stmt, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+			found = sqlite3_step(stmt) == SQLITE_ROW;
+			sqlite3_finalize(stmt);
+		}
+	} else {
+		found = true; // no cache to warm: nothing to do
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+	return found;
+}
+
+static void playerart_store(const char *key, const cover_image_t *cover, const cover_image_t *backdrop) {
+	if (!cover->pixels || !backdrop->pixels) {
+		return;
+	}
+	pthread_mutex_lock(&thumb_db_lock);
+	if (playerart_db) {
+		sqlite3_stmt *stmt = NULL;
+		if (sqlite3_prepare_v2(playerart_db,
+							   "INSERT OR REPLACE INTO art(key, cw, ch, cover, bw, bh, backdrop, used) "
+							   "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, (SELECT IFNULL(MAX(used), 0) + 1 FROM art))",
+							   -1, &stmt, NULL) == SQLITE_OK) {
+			int cw = (int)cover->dsc.header.w, ch = (int)cover->dsc.header.h;
+			int bw = (int)backdrop->dsc.header.w, bh = (int)backdrop->dsc.header.h;
+			sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+			sqlite3_bind_int(stmt, 2, cw);
+			sqlite3_bind_int(stmt, 3, ch);
+			sqlite3_bind_blob(stmt, 4, cover->pixels, (int)((size_t)cw * ch * 2), SQLITE_STATIC);
+			sqlite3_bind_int(stmt, 5, bw);
+			sqlite3_bind_int(stmt, 6, bh);
+			sqlite3_bind_blob(stmt, 7, backdrop->pixels, (int)((size_t)bw * bh * 2), SQLITE_STATIC);
+			sqlite3_step(stmt); // a failure only costs a future decode
+			sqlite3_finalize(stmt);
+		}
+		char trim[160];
+		snprintf(trim, sizeof(trim),
+				 "DELETE FROM art WHERE key IN (SELECT key FROM art ORDER BY used DESC LIMIT -1 OFFSET %d)",
+				 PLAYERART_MAX_ROWS);
+		sqlite3_exec(playerart_db, trim, NULL, NULL, NULL);
+	}
 	pthread_mutex_unlock(&thumb_db_lock);
 }
 

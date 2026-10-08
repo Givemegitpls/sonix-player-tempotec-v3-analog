@@ -62,6 +62,7 @@ static id_job_t player_id_job;
 
 static dual_job_t player_job;
 static dual_job_t saver_job;
+static dual_job_t warm_job; // the next track's player artwork, into the disk cache
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wakeup = PTHREAD_COND_INITIALIZER;
@@ -147,7 +148,8 @@ static void *worker(void *arg) {
 		pthread_mutex_lock(&lock);
 
 		while (next_pending() < 0 && !(player_id_job.pending && !player_id_job.running) &&
-			   !(player_job.pending && !player_job.running) && !(saver_job.pending && !saver_job.running)) {
+			   !(player_job.pending && !player_job.running) && !(saver_job.pending && !saver_job.running) &&
+			   !(warm_job.pending && !warm_job.running)) {
 			pthread_cond_wait(&wakeup, &lock);
 		}
 
@@ -182,6 +184,13 @@ static void *worker(void *arg) {
 		}
 
 		int index = next_pending();
+		if (index < 0 && warm_job.pending && !warm_job.running) {
+			// After every list thumbnail: a picture nobody is looking at yet.
+			// With the screen off the thread already sits at the bottom of the
+			// pile (see above), below playback.
+			run_dual_job(&warm_job, cover_warm_player_images); // returns unlocked
+			continue;
+		}
 		if (index < 0 && saver_job.pending && !saver_job.running) {
 			// Last: it is a picture for a screen that is off, and nothing on
 			// screen is waiting for it.
@@ -416,6 +425,12 @@ static bool dual_take(dual_job_t *job, cover_image_t *first, cover_image_t *seco
 
 void coverloader_request_player(const char *path, int cover_w, int cover_h, int backdrop_w, int backdrop_h) {
 	dual_request(&player_job, path, cover_w, cover_h, backdrop_w, backdrop_h);
+}
+
+void coverloader_warm_player(const char *path, int cover_w, int cover_h, int backdrop_w, int backdrop_h) {
+	// Never collected: the result is in the cache, not in the job, and the
+	// next request discards whatever verdict this one left.
+	dual_request(&warm_job, path, cover_w, cover_h, backdrop_w, backdrop_h);
 }
 
 bool coverloader_take_player(cover_image_t *cover, cover_image_t *backdrop, bool *finished) {

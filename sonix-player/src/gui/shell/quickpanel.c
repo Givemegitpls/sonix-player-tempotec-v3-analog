@@ -24,6 +24,7 @@
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
 #include "src/system/bluetooth/btreceiver.h"
+#include "src/system/audio/alsa-controls.h"
 #include "src/system/audio/usbdac.h"
 #include "src/system/net/wifitransfer.h"
 #include "src/gui/shell/switcher.h"
@@ -1467,14 +1468,22 @@ static void refresh_audio_buttons(void) {
 	circle_button_set_on(sleep_podcast_btn, sleep_timer_armed(SLEEPTIMER_PODCAST));
 	circle_button_set_on(wifi_transfer_btn, wifitransfer_get_enabled());
 
-	bool high = musicsettings_high_gain();
+	// Two or three gains: the icon names the level (L, M, H) and the circle is
+	// lit for anything above the lowest.
+	int level = musicsettings_gain_level();
 	if (gain_btn) {
 		lv_obj_t *icon = lv_obj_get_child(gain_btn, 0);
 		if (icon) {
-			lv_image_set_src(icon, high ? &icon_high_gain : &icon_low_gain);
+			const lv_image_dsc_t *src = &icon_low_gain;
+			if (level == gain_level_count() - 1 && level > 0) {
+				src = &icon_high_gain;
+			} else if (level > 0) {
+				src = &icon_mid_gain;
+			}
+			lv_image_set_src(icon, src);
 		}
 	}
-	circle_button_set_on(gain_btn, high);
+	circle_button_set_on(gain_btn, level > 0);
 	circle_button_set_on(lineout_btn, lineout_is_active());
 
 	// The drawing changes with the state as well as the fill: the two halves

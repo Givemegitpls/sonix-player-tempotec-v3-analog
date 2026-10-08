@@ -75,6 +75,14 @@ uint64_t cover_source_id(const char *filepath);
 bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, cover_image_t *cover_out,
 							  int backdrop_w, int backdrop_h, cover_image_t *backdrop_out);
 
+// Puts the player's pictures for `filepath` in the on-disk cache without
+// handing them to anybody: the next track's, decoded while this one plays, so
+// that skipping to it reads them back instead of decoding. Does nothing when
+// they are already cached or the track has no artwork. Always returns false
+// with both outputs zeroed (the coverloader's dual-job signature).
+bool cover_warm_player_images(const char *filepath, int cover_w, int cover_h, cover_image_t *cover_out,
+							  int backdrop_w, int backdrop_h, cover_image_t *backdrop_out);
+
 // The two pictures the screensaver needs from one photograph: the picture
 // itself filling the screen, and the blurred block along the bottom that the
 // clock and the track name sit on.
