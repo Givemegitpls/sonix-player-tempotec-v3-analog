@@ -120,9 +120,14 @@ TARGET_CXXFLAGS = $(TARGET_CFLAGS) $(GB_CFLAGS)
 # Target only. On the host they ask for a static libstdc++ that most
 # distributions do not ship, and the link fails with "cannot find -lstdc++".
 GB_LDFLAGS = -static-libstdc++ -static-libgcc
-HOST_LDFLAGS = $(shell sdl2-config --libs) -lpthread -lm -ldl -lasound $(shell pkg-config --libs freetype2) \
+# Every interface timer runs through src/gui/shell/timerprof.c, and in a
+# profiled run every event callback through eventprof.c, so a slow-pass report
+# (frameprof.c) can name the callback the time went to.
+TIMER_WRAP = -Wl,--wrap=lv_timer_create -Wl,--wrap=lv_timer_set_cb -Wl,--wrap=lv_obj_add_event_cb \
+			 -Wl,--wrap=lv_obj_remove_event_cb
+HOST_LDFLAGS = $(TIMER_WRAP) $(shell sdl2-config --libs) -lpthread -lm -ldl -lasound $(shell pkg-config --libs freetype2) \
 			   $(shell pkg-config --libs opusfile wavpack)
-TARGET_LDFLAGS = $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS) -lpthread -lm -ldl -lasound \
+TARGET_LDFLAGS = $(TIMER_WRAP) $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS) -lpthread -lm -ldl -lasound \
 				 $(GB_LDFLAGS)
 
 # FreeType for the target, built static: the rootfs has no libfreetype.so. The

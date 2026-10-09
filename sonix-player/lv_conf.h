@@ -100,6 +100,30 @@
  * dropouts. */
 #define LV_DEF_REFR_PERIOD 16
 
+/* LVGL's own profiling points go to src/gui/shell/frameprof.c, which breaks
+ * a slow interface pass down in the log when <card>/.local/frameprof exists.
+ * Only the coarse ones: every point reads the clock, a system call on the
+ * device, and the drawing and event points -- thousands a frame -- slowed the
+ * interface down by a fifth. The sampling profiler covers the drawing. */
+#define LV_USE_PROFILER 1
+#define LV_USE_PROFILER_BUILTIN 0
+#define LV_PROFILER_INCLUDE "src/system/core/frameprof.h"
+#define LV_PROFILER_BEGIN frameprof_begin(__func__)
+#define LV_PROFILER_END frameprof_end(__func__)
+#define LV_PROFILER_BEGIN_TAG(tag) frameprof_begin(tag)
+#define LV_PROFILER_END_TAG(tag) frameprof_end(tag)
+#define LV_PROFILER_LAYOUT 1
+#define LV_PROFILER_REFR 1
+#define LV_PROFILER_DRAW 0
+#define LV_PROFILER_DECODER 0
+#define LV_PROFILER_TIMER 1
+#define LV_PROFILER_EVENT 0
+#define LV_PROFILER_INDEV 0
+#define LV_PROFILER_FONT 0
+#define LV_PROFILER_STYLE 0
+#define LV_PROFILER_CACHE 0
+#define LV_PROFILER_FS 0
+
 /* No press animation: the default theme grows a button and fades its colour
  * over 80 ms, which on this hardware reads as lag. */
 #define LV_THEME_DEFAULT_GROW 0
