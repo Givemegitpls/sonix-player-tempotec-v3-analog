@@ -1124,6 +1124,101 @@ bool albumart_load_candidate(const char *filepath, int index, albumart_t *out) {
 	return false;
 }
 
+typedef struct {
+	long offset;
+	size_t size;
+	uint8_t type;
+} flac_where_t;
+
+static void flac_where_callback(void *user_data, drflac_metadata *meta) {
+	flac_where_t *w = user_data;
+	if (meta->type != DRFLAC_METADATA_BLOCK_TYPE_PICTURE || w->type == PIC_TYPE_FRONT_COVER)
+		return;
+	w->offset = (long)meta->data.picture.pictureDataOffset;
+	w->size = meta->data.picture.pictureDataSize;
+	w->type = (uint8_t)meta->data.picture.type;
+}
+
+// Where a candidate's picture sits, without reading it: the cover file beside
+// the track, or a FLAC's own PICTURE block. The bytes found there are the ones
+// albumart_load_candidate() would hand back -- the same checks decide whether
+// there is a picture at all -- so an id worked out from them is the id of the
+// loaded picture. Anything else (tags that have to be decoded to find the
+// picture, a CUE track) is ALBUMART_WHERE_UNKNOWN: load it to know.
+static albumart_where_t where_checked(const char *path, long offset, size_t size, albumart_place_t *out) {
+	if (size < 12) {
+		return ALBUMART_WHERE_NONE;
+	}
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		return ALBUMART_WHERE_NONE;
+	}
+	uint8_t head[12];
+	bool ok = fseek(f, offset, SEEK_SET) == 0 && fread(head, 1, sizeof(head), f) == sizeof(head);
+	fclose(f);
+	// What take_picture_at() accepts: a JPEG or a PNG, and over the size limit
+	// only a JPEG, which it can shrink.
+	if (!ok || !is_supported_image(head, sizeof(head)) || (size > ALBUMART_MAX_BYTES && head[0] != 0xFF)) {
+		return ALBUMART_WHERE_NONE;
+	}
+	snprintf(out->path, sizeof(out->path), "%s", path);
+	out->offset = offset;
+	out->size = size;
+	return ALBUMART_WHERE_FOUND;
+}
+
+albumart_where_t albumart_locate_candidate(const char *filepath, int index, albumart_place_t *out) {
+	if (!filepath || index < 0 || index >= ALBUMART_CANDIDATES) {
+		return ALBUMART_WHERE_NONE;
+	}
+	char sheet_path[512];
+	if (cue_split_path(filepath, sheet_path, sizeof(sheet_path)) > 0) {
+		return ALBUMART_WHERE_UNKNOWN;
+	}
+	if (has_extension(filepath, ".jpg") || has_extension(filepath, ".jpeg") || has_extension(filepath, ".png")) {
+		long size = get_file_size(filepath);
+		return index == 0 && size > 0 ? where_checked(filepath, 0, (size_t)size, out) : ALBUMART_WHERE_NONE;
+	}
+
+	if (index == 0) {
+		if (decode_detect_format(filepath) != DECODE_FORMAT_FLAC) {
+			return ALBUMART_WHERE_UNKNOWN;
+		}
+		flac_where_t w = {.type = 0xFF};
+		drflac *flac = drflac_open_file_with_metadata(filepath, flac_where_callback, &w, NULL);
+		if (flac) {
+			drflac_close(flac);
+		}
+		return w.type == 0xFF ? ALBUMART_WHERE_NONE : where_checked(filepath, w.offset, w.size, out);
+	}
+
+	char dirpath[1024];
+	snprintf(dirpath, sizeof(dirpath), "%s", filepath);
+	char *slash = strrchr(dirpath, '/');
+	const char *filename = slash ? slash + 1 : dirpath;
+	char stem[256] = {0};
+	const char *dot = strrchr(filename, '.');
+	size_t stem_len = dot ? (size_t)(dot - filename) : strlen(filename);
+	if (stem_len < sizeof(stem)) {
+		memcpy(stem, filename, stem_len);
+		stem[stem_len] = '\0';
+	}
+	if (slash) {
+		*slash = '\0';
+	} else {
+		snprintf(dirpath, sizeof(dirpath), ".");
+	}
+	if (dirpath[0] == '\0') {
+		snprintf(dirpath, sizeof(dirpath), "/");
+	}
+	char cover_path[1300];
+	if (!find_cover_file(dirpath, stem, cover_path, sizeof(cover_path))) {
+		return ALBUMART_WHERE_NONE;
+	}
+	long size = get_file_size(cover_path);
+	return size > 0 ? where_checked(cover_path, 0, (size_t)size, out) : ALBUMART_WHERE_NONE;
+}
+
 // ---------------------------------------------------------------------------
 // Getting oversized pictures ready ahead of time
 //
@@ -1205,20 +1300,6 @@ static void prepare_if_oversized(const char *path, long offset, size_t size) {
 		prepare_push(path, offset, size);
 }
 
-typedef struct {
-	long offset;
-	size_t size;
-	uint8_t type;
-} flac_where_t;
-
-static void flac_where_callback(void *user_data, drflac_metadata *meta) {
-	flac_where_t *w = user_data;
-	if (meta->type != DRFLAC_METADATA_BLOCK_TYPE_PICTURE || w->type == PIC_TYPE_FRONT_COVER)
-		return;
-	w->offset = (long)meta->data.picture.pictureDataOffset;
-	w->size = meta->data.picture.pictureDataSize;
-	w->type = (uint8_t)meta->data.picture.type;
-}
 
 void albumart_prepare_new_track(const char *filepath) {
 	const char *slash = filepath ? strrchr(filepath, '/') : NULL;

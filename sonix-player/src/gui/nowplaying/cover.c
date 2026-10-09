@@ -1298,6 +1298,35 @@ static uint64_t bytes_id(const uint8_t *data, size_t size) {
 	return h ? h : 1;
 }
 
+// bytes_id() of the `size` bytes at `offset` of a file, reading only the two
+// ends it folds in. 0 when they cannot be read.
+static uint64_t bytes_id_in_file(const char *path, long offset, size_t size) {
+	size_t edge = size < 4096 ? size : 4096;
+	uint8_t head[4096], tail[4096];
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		return 0;
+	}
+	bool ok = fseek(f, offset, SEEK_SET) == 0 && fread(head, 1, edge, f) == edge &&
+			  fseek(f, offset + (long)(size - edge), SEEK_SET) == 0 && fread(tail, 1, edge, f) == edge;
+	fclose(f);
+	if (!ok) {
+		return 0;
+	}
+	uint64_t h = 1469598103934665603ULL;
+	h ^= (uint64_t)size;
+	h *= 1099511628211ULL;
+	for (size_t i = 0; i < edge; i++) {
+		h ^= head[i];
+		h *= 1099511628211ULL;
+	}
+	for (size_t i = 0; i < edge; i++) {
+		h ^= tail[i];
+		h *= 1099511628211ULL;
+	}
+	return h ? h : 1;
+}
+
 uint64_t cover_source_id(const char *filepath) {
 	if (!filepath || !filepath[0]) {
 		return 0;
@@ -1307,6 +1336,25 @@ uint64_t cover_source_id(const char *filepath) {
 	// candidate -- but that outcome follows from these same bytes, so two
 	// tracks that agree here agree about the picture that ends up on screen.
 	for (int i = 0; i < ALBUMART_CANDIDATES; i++) {
+		// Where the picture is, when that can be told without reading it: the
+		// id needs only its length and its two ends, and loading a picture of a
+		// megabyte from the card for eight kilobytes of it was most of the wait
+		// for a cover that was already in the cache.
+		//
+		// An oversized one is the exception. What the decode starts from there
+		// is the shrunk copy albumart hands back, so its id is that copy's, as
+		// before.
+		albumart_place_t place;
+		albumart_where_t where = albumart_locate_candidate(filepath, i, &place);
+		if (where == ALBUMART_WHERE_NONE) {
+			continue;
+		}
+		if (where == ALBUMART_WHERE_FOUND && place.size <= ALBUMART_MAX_BYTES) {
+			uint64_t id = bytes_id_in_file(place.path, place.offset, place.size);
+			if (id) {
+				return id;
+			}
+		}
 		albumart_t art;
 		if (!albumart_load_candidate(filepath, i, &art)) {
 			continue;
@@ -1975,8 +2023,10 @@ static void playerart_store(const char *key, const cover_image_t *cover, const c
 							  .ch = (uint16_t)cover->dsc.header.h,
 							  .bw = (uint16_t)backdrop->dsc.header.w,
 							  .bh = (uint16_t)backdrop->dsc.header.h};
-	char tmp[620];
-	snprintf(tmp, sizeof(tmp), "%s.part", path);
+	// The loader and the warm-up thread can be storing the same picture at
+	// once: each writes a part file of its own, and the rename settles it.
+	char tmp[640];
+	snprintf(tmp, sizeof(tmp), "%s.%lx.part", path, (unsigned long)pthread_self());
 	FILE *f = fopen(tmp, "wb");
 	if (!f) {
 		return;

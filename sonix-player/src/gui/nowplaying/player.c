@@ -847,6 +847,9 @@ static void set_progress_label(double current_secs, double total_secs) {
 
 // True while a decode is in flight at the worker.
 static bool cover_request_outstanding;
+// When the track last changed, for the log line that says how long its
+// picture took to be on screen -- the delay a skip is felt by.
+static uint32_t track_change_tick;
 // The sizes the last request used, which the next track's warm-up repeats so
 // its cache entry is the one that request will look for.
 static int warm_cover_w, warm_cover_h, warm_backdrop_h;
@@ -2936,6 +2939,12 @@ static void warm_next_cover(void) {
 		playlist_path_at(next_index, next_path, sizeof(next_path))) {
 		coverloader_warm_player(next_path, warm_cover_w, warm_cover_h, backdrop_w, warm_backdrop_h);
 	}
+	// And the one before, for "previous" -- after the next one, on the loader.
+	int prev_index = playlist_current_index() - 1;
+	if (prev_index >= 0 && prev_index < playlist_count() &&
+		playlist_path_at(prev_index, next_path, sizeof(next_path))) {
+		coverloader_warm_player_back(next_path, warm_cover_w, warm_cover_h, backdrop_w, warm_backdrop_h);
+	}
 }
 
 // The answer to whichever question was asked, picked up on the progress poll.
@@ -2961,6 +2970,8 @@ static void apply_cover_id_result(void) {
 	// The same picture: the cover, the backdrop, the sleeve colour and the
 	// chrome all stay exactly as they are. This is the whole point.
 	if (id != 0 && id == cover_shown_id) {
+		printf("cover: the same picture, kept, %u ms after the track change\n",
+			   (unsigned)lv_tick_elaps(track_change_tick));
 		warm_next_cover();
 		return;
 	}
@@ -2986,6 +2997,7 @@ static void apply_cover_result(void) {
 		return; // still decoding; the placeholder stays up
 	}
 	cover_request_outstanding = false;
+	printf("cover: on screen %u ms after the track change\n", (unsigned)lv_tick_elaps(track_change_tick));
 
 	if (has_cover) {
 		// What is now on screen, so the next track can be asked whether its
@@ -3096,6 +3108,7 @@ static void update_qobuz_badge(void);
 // device state and resets the per-track length cache. Used both when the user
 // picks a file and when playback auto-advances to a new track.
 static void refresh_now_playing(void) {
+	track_change_tick = lv_tick_get();
 	current_total_length = 0; // unknown until the playback thread reports it
 
 	// The library lists carry an accent mark on the playing track (and on the
@@ -4137,6 +4150,19 @@ static void smooth_timer_cb(lv_timer_t *timer) {
 	lyrics_follow(seconds);
 }
 
+// The worker's answers, picked up the moment they exist. They used to wait for
+// the progress poll, every half second, and a track change asks two questions
+// in turn -- the picture's id, then the pictures -- so a cover already in the
+// cache could take up to a second to appear. The poll still picks them up too;
+// both are no-ops with nothing new.
+static void cover_answer_arrived(void *user) {
+	(void)user;
+	apply_cover_id_result();
+	apply_cover_result();
+}
+
+static void cover_answer_ready(void) { gui_post(cover_answer_arrived, NULL); }
+
 static void progress_slider_timer_cb(lv_timer_t *timer) {
 	(void)timer;
 	apply_cover_id_result(); // "is the new track's picture the one already up?"
@@ -4588,6 +4614,7 @@ void player_init(gui_config_t *cfg) {
 	// The artwork decodes on the shared worker; make sure it exists before
 	// the first track can be started. Safe to call more than once.
 	coverloader_start();
+	coverloader_set_player_ready_cb(cover_answer_ready);
 
 	lv_obj_add_style(player_screen, &theme_style_screen, 0);
 
