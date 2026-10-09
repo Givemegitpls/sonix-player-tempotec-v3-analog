@@ -1345,9 +1345,14 @@ static void playlist_resync_to_current(void) {
 	playlist_load_folder(folder, filename);
 }
 
+static const char *const PROF_RESYNC = "skip_resync";
+static const char *const PROF_QUEUE_STEP = "skip_playlist_next";
+
 bool device_state_next(char *out_path, size_t out_size) {
 	char path[512];
+	frameprof_begin(PROF_RESYNC);
 	playlist_resync_to_current();
+	frameprof_end(PROF_RESYNC);
 
 	// The same step a track running out would take. Without this the two
 	// options only worked when the player was left alone: pressing next on the
@@ -1361,7 +1366,10 @@ bool device_state_next(char *out_path, size_t out_size) {
 		return true;
 	}
 
-	if (!playlist_next(path, sizeof(path)))
+	frameprof_begin(PROF_QUEUE_STEP);
+	bool stepped = playlist_next(path, sizeof(path));
+	frameprof_end(PROF_QUEUE_STEP);
+	if (!stepped)
 		return false;
 
 	load_and_play(path);

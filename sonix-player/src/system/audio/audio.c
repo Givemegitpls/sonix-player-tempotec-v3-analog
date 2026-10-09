@@ -2194,6 +2194,35 @@ static snd_pcm_sframes_t pcm_write_bluetooth(snd_pcm_t *pcm, const void *buf, sn
 	return (snd_pcm_sframes_t)done;
 }
 
+// The playback thread's real-time priority, held only while the card is
+// playing. Real time is there so that nothing on the one core can starve the
+// DAC of samples -- but before a stream has started there is nothing to
+// starve: the buffer is being filled for the first time, and the sound starts
+// when it is full. That first fill is the decode of the better part of a
+// second of audio, effects included, in one go, and at real-time priority it
+// took the core from the interface for all of it, at the very moment a track
+// had been tapped or skipped to. So it runs at the interface's own level, and
+// the thread goes back to real time as soon as the card is running.
+static bool playback_rt_now = true; // the thread starts real time (playback_thread_func)
+static bool playback_first_fill;	 // a track's PCM just opened, not running yet
+
+static void playback_rt_follow(snd_pcm_state_t state) {
+	// Only a track's first fill: a stream that stopped mid-track (an underrun)
+	// refills at real time, which is exactly when the DAC is waiting.
+	bool running = state == SND_PCM_STATE_RUNNING || state == SND_PCM_STATE_DRAINING;
+	if (running) {
+		playback_first_fill = false;
+	}
+	bool want = running || !playback_first_fill;
+	if (want == playback_rt_now) {
+		return;
+	}
+	struct sched_param param = {.sched_priority = want ? 10 : 0};
+	if (pthread_setschedparam(pthread_self(), want ? SCHED_RR : SCHED_OTHER, &param) == 0) {
+		playback_rt_now = want;
+	}
+}
+
 static snd_pcm_sframes_t pcm_write_recover(snd_pcm_t **pcm, const void *buf, snd_pcm_uframes_t frames, int channels,
 										   int rate, int bits, snd_pcm_uframes_t *period) {
 	for (int attempt = 0; attempt < 8; attempt++) {
@@ -2216,6 +2245,7 @@ static snd_pcm_sframes_t pcm_write_recover(snd_pcm_t **pcm, const void *buf, snd
 		// by definition, and the write is what starts it.
 		bool room = true;
 		snd_pcm_state_t pcm_state = snd_pcm_state(*pcm);
+		playback_rt_follow(pcm_state);
 		if (pcm_state == SND_PCM_STATE_RUNNING || pcm_state == SND_PCM_STATE_DRAINING) {
 			room = false;
 			bool bluetooth = pcm_is_bluetooth(*pcm);
@@ -2545,6 +2575,7 @@ static void play_wav_file(const char *filepath) {
 		return;
 	}
 	track_started();
+	playback_first_fill = true; // see playback_rt_follow
 
 	// From here, how long this track takes to start coming out is timed.
 	bt_start_probe_arm(pcm_handle);
@@ -3165,6 +3196,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		return;
 	}
 	track_started();
+	playback_first_fill = true; // see playback_rt_follow
 
 	// From here, how long this track takes to start coming out is timed.
 	bt_start_probe_arm(pcm_handle);
