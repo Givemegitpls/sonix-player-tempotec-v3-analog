@@ -66,8 +66,16 @@ static const char *const AK4493_FILTER_NAMES[6] = {
 	"musicsettings_ak_low_dispersion",
 };
 
+// Until one is chosen, the filter the stock firmware plays through. On the
+// Blaze that is the AK4493's own reset value, short delay sharp roll-off (SD
+// set in its codec driver's register 1 default, 0x22): the stock player never
+// writes the control.
+static int stored_dac_filter(void) {
+	return (int)config_get_int("audio", "dac_filter", alsa_board_is_ak4493() ? 2 : 0);
+}
+
 static void refresh_filter_checks(void) {
-	int active = (int)config_get_int("audio", "dac_filter", 0);
+	int active = stored_dac_filter();
 	for (int i = 0; i < FILTER_MAX; i++) {
 		if (filter_checks[i]) {
 			lv_label_set_text(filter_checks[i], i == active ? "\xE2\x9C\x93" : "");
@@ -2012,7 +2020,7 @@ void musicsettings_init(gui_config_t *cfg) {
 	// keep the two consistent.
 	fade_apply_setting();
 
-	set_dac_filter((int)config_get_int("audio", "dac_filter", 0));
+	set_dac_filter(stored_dac_filter());
 	set_dac_dre((int)config_get_int("audio", "dac_dre", 1));
 	set_dac_nos((int)config_get_int("audio", "dac_nos", 0));
 	set_gain_level(stored_gain_level());
