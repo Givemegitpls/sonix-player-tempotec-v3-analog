@@ -8,15 +8,18 @@
 #include "src/system/decode/wavpackdec.h"
 #include "src/system/decode/apedec.h"
 #include "src/system/core/utils.h"
+#include "src/system/image/art_shrink.h"
 
 #include <opusfile.h>
 
 #include <dirent.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 // APIC / FLAC PICTURE picture type for "front cover". When a file carries
 // several pictures (front, back, artist, ...) this is the one to keep.
@@ -69,6 +72,169 @@ static bool take_picture(albumart_t *out, const uint8_t *data, size_t size) {
 	albumart_free(out); // drop any lower-priority picture picked up earlier
 	out->data = copy;
 	out->size = size;
+	return true;
+}
+
+// A picture bigger than ALBUMART_MAX_BYTES never comes into memory whole. If
+// it is a baseline JPEG it is decoded straight from the file at a reduced
+// scale, a few kilobytes at a time, and re-encoded at this size -- still
+// larger than any box a cover is drawn in -- so the rest of the player only
+// ever sees an ordinary picture of a few hundred kilobytes.
+#define OVERSIZED_MAX_SIDE 1024
+#define OVERSIZED_QUALITY 90
+
+// That decode reads the whole picture and is slow -- a 15 MB cover takes some
+// ten seconds on the device -- and one track asks for its picture several
+// times (the list thumbnail, cover_source_id, the Now Playing art). So the
+// result is kept: the last one in memory, and every one as a small JPEG on
+// the card, keyed by the file, where the picture sits in it and its mtime.
+// One lock around all of it, so two threads wanting the same picture decode
+// it once.
+#define BIGART_SUBDIR ".local/bigart"
+static char bigart_dir[600];
+static pthread_mutex_t bigart_lock = PTHREAD_MUTEX_INITIALIZER;
+static char bigart_last_key[17];
+static uint8_t *bigart_last_data;
+static size_t bigart_last_size;
+
+void albumart_set_cache_root(const char *root) {
+	pthread_mutex_lock(&bigart_lock);
+	bigart_dir[0] = '\0';
+	// Only on the card: in /tmp the copies would be memory.
+	if (root && root[0] && strcmp(root, "/tmp") != 0 &&
+		snprintf(bigart_dir, sizeof(bigart_dir), "%s/%s", root, BIGART_SUBDIR) < (int)sizeof(bigart_dir)) {
+		mkdir(bigart_dir, 0755);
+	} else {
+		bigart_dir[0] = '\0';
+	}
+	pthread_mutex_unlock(&bigart_lock);
+}
+
+static void bigart_key(char out[17], const char *path, long offset, size_t size) {
+	struct stat st;
+	long long mtime = stat(path, &st) == 0 ? (long long)st.st_mtime : 0;
+	char text[1400];
+	int n = snprintf(text, sizeof(text), "%s|%ld|%zu|%lld", path, offset, size, mtime);
+	uint64_t h = 1469598103934665603ULL;
+	for (int i = 0; i < n && i < (int)sizeof(text); i++) {
+		h ^= (uint8_t)text[i];
+		h *= 1099511628211ULL;
+	}
+	snprintf(out, 17, "%016llx", (unsigned long long)h);
+}
+
+static uint8_t *copy_bytes(const uint8_t *data, size_t size) {
+	uint8_t *copy = malloc(size);
+	if (copy)
+		memcpy(copy, data, size);
+	return copy;
+}
+
+static uint8_t *read_small_file(const char *path, size_t *len) {
+	long size = get_file_size(path);
+	if (size <= 0 || size > ALBUMART_MAX_BYTES)
+		return NULL;
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return NULL;
+	uint8_t *buf = malloc((size_t)size);
+	if (buf && fread(buf, 1, (size_t)size, f) != (size_t)size) {
+		free(buf);
+		buf = NULL;
+	}
+	fclose(f);
+	*len = (size_t)size;
+	return buf;
+}
+
+static void write_small_file(const char *path, const uint8_t *data, size_t len) {
+	char tmp[720];
+	snprintf(tmp, sizeof(tmp), "%s.part", path);
+	FILE *f = fopen(tmp, "wb");
+	if (!f)
+		return;
+	bool ok = fwrite(data, 1, len, f) == len;
+	ok = fclose(f) == 0 && ok;
+	if (!ok || rename(tmp, path) != 0)
+		unlink(tmp);
+}
+
+// The shrunk copy of an oversized JPEG, from wherever it is already kept or
+// made now. malloc'd, the caller frees.
+static uint8_t *bigart_get(const char *path, long offset, size_t size, size_t *len) {
+	char key[17];
+	bigart_key(key, path, offset, size);
+
+	pthread_mutex_lock(&bigart_lock);
+	uint8_t *data = NULL;
+	if (bigart_last_data && strcmp(key, bigart_last_key) == 0) {
+		data = copy_bytes(bigart_last_data, bigart_last_size);
+		*len = bigart_last_size;
+	}
+
+	char file[700] = "";
+	if (bigart_dir[0])
+		snprintf(file, sizeof(file), "%s/%s.jpg", bigart_dir, key);
+	if (!data && file[0]) {
+		data = read_small_file(file, len);
+		if (data)
+			printf("albumart: %zu KB picture in %s from the card's shrunk copy\n", size / 1024, path);
+	}
+
+	if (!data) {
+		data = art_shrink_jpeg_file(path, offset, size, OVERSIZED_MAX_SIDE, OVERSIZED_QUALITY, len);
+		printf("albumart: %zu KB picture in %s %s\n", size / 1024, path, data ? "shrunk from the file" : "too big to load");
+		if (data && file[0])
+			write_small_file(file, data, *len);
+	}
+
+	if (data && strcmp(key, bigart_last_key) != 0) {
+		uint8_t *keep = copy_bytes(data, *len);
+		if (keep) {
+			free(bigart_last_data);
+			bigart_last_data = keep;
+			bigart_last_size = *len;
+			memcpy(bigart_last_key, key, sizeof(key));
+		}
+	}
+	pthread_mutex_unlock(&bigart_lock);
+	return data;
+}
+
+// Takes the `size` bytes at `offset` of `path` as the picture. Returns false
+// (and leaves `out` untouched) if they are not a usable image.
+static bool take_picture_at(albumart_t *out, const char *path, long offset, size_t size) {
+	if (size < 12)
+		return false;
+
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return false;
+
+	uint8_t head[12];
+	bool ok = fseek(f, offset, SEEK_SET) == 0 && fread(head, 1, sizeof(head), f) == sizeof(head) &&
+			  is_supported_image(head, sizeof(head));
+	uint8_t *data = NULL;
+	size_t len = 0;
+	if (ok && size <= ALBUMART_MAX_BYTES) {
+		data = malloc(size);
+		ok = data && fseek(f, offset, SEEK_SET) == 0 && fread(data, 1, size, f) == size;
+		len = size;
+	}
+	fclose(f);
+
+	if (ok && !data && head[0] == 0xFF) {
+		data = bigart_get(path, offset, size, &len);
+		ok = data != NULL;
+	}
+	if (!ok) {
+		free(data);
+		return false;
+	}
+
+	albumart_free(out); // drop any lower-priority picture picked up earlier
+	out->data = data;
+	out->size = len;
 	return true;
 }
 
@@ -386,8 +552,14 @@ static bool read_iff_embedded(const char *filepath, albumart_t *out) {
 // FLAC: PICTURE metadata block
 // ---------------------------------------------------------------------------
 
+// dr_flac is built with DR_FLAC_NO_PICTURE_METADATA_MALLOC (decode.c): it hands
+// over where the picture sits in the file rather than reading it into memory.
+// Every open with metadata -- tags, lyrics, chapters, not only this -- used to
+// allocate and read the whole picture, and a 15 MB cover, opened by three
+// threads at the start of a track, took the 64 MB device down.
 typedef struct {
 	albumart_t *out;
+	const char *path;
 	bool found;
 	uint8_t best_type;
 } flac_picture_ctx_t;
@@ -400,14 +572,15 @@ static void flac_picture_callback(void *user_data, drflac_metadata *meta) {
 	if (ctx->found && ctx->best_type == PIC_TYPE_FRONT_COVER)
 		return; // the front cover is already in hand
 
-	if (take_picture(ctx->out, meta->data.picture.pPictureData, meta->data.picture.pictureDataSize)) {
+	if (take_picture_at(ctx->out, ctx->path, (long)meta->data.picture.pictureDataOffset,
+						meta->data.picture.pictureDataSize)) {
 		ctx->found = true;
 		ctx->best_type = (uint8_t)meta->data.picture.type;
 	}
 }
 
 static bool read_flac_embedded(const char *filepath, albumart_t *out) {
-	flac_picture_ctx_t ctx = {.out = out, .found = false, .best_type = 0xFF};
+	flac_picture_ctx_t ctx = {.out = out, .path = filepath, .found = false, .best_type = 0xFF};
 
 	drflac *flac = drflac_open_file_with_metadata(filepath, flac_picture_callback, &ctx, NULL);
 	if (flac)
@@ -654,32 +827,7 @@ static int cover_name_rank(const char *name) {
 
 static bool read_whole_file(const char *path, albumart_t *out) {
 	long size = get_file_size(path);
-	if (size <= 0 || size > ALBUMART_MAX_BYTES)
-		return false;
-
-	FILE *f = fopen(path, "rb");
-	if (!f)
-		return false;
-
-	uint8_t *buf = malloc((size_t)size);
-	if (!buf) {
-		fclose(f);
-		return false;
-	}
-
-	size_t got = fread(buf, 1, (size_t)size, f);
-	fclose(f);
-
-	bool ok = (got == (size_t)size) && is_supported_image(buf, got);
-	if (!ok) {
-		free(buf);
-		return false;
-	}
-
-	albumart_free(out);
-	out->data = buf;
-	out->size = got;
-	return true;
+	return size > 0 && take_picture_at(out, path, 0, (size_t)size);
 }
 
 // Whether an image file is named after `stem` -- the same name, a different
@@ -974,4 +1122,131 @@ bool albumart_load_candidate(const char *filepath, int index, albumart_t *out) {
 		return read_whole_file(cover_path, out);
 
 	return false;
+}
+
+// ---------------------------------------------------------------------------
+// Getting oversized pictures ready ahead of time
+//
+// The library scan hands over each new track. The first one of every folder
+// is looked at -- the folder's cover file by its size, a FLAC's picture by its
+// PICTURE block, neither read -- and any picture over ALBUMART_MAX_BYTES goes
+// on a short queue. One background thread works through it at idle priority,
+// through bigart_get(), so the slow decode is done and on the card before the
+// album is first opened.
+// ---------------------------------------------------------------------------
+
+#define PREPARE_QUEUE 32
+
+typedef struct {
+	char path[1024];
+	long offset;
+	size_t size;
+} prepare_job_t;
+
+static prepare_job_t prepare_queue[PREPARE_QUEUE];
+static int prepare_head, prepare_count;
+static bool prepare_running;
+static pthread_mutex_t prepare_lock = PTHREAD_MUTEX_INITIALIZER;
+static char prepare_last_dir[1024];
+
+static void *prepare_thread(void *arg) {
+	(void)arg;
+	thread_be_background("albumart prepare");
+	for (;;) {
+		pthread_mutex_lock(&prepare_lock);
+		if (prepare_count == 0) {
+			prepare_running = false;
+			pthread_mutex_unlock(&prepare_lock);
+			return NULL;
+		}
+		prepare_job_t job = prepare_queue[prepare_head];
+		prepare_head = (prepare_head + 1) % PREPARE_QUEUE;
+		prepare_count--;
+		pthread_mutex_unlock(&prepare_lock);
+
+		size_t len = 0;
+		free(bigart_get(job.path, job.offset, job.size, &len));
+	}
+}
+
+static void prepare_push(const char *path, long offset, size_t size) {
+	pthread_mutex_lock(&prepare_lock);
+	if (prepare_count < PREPARE_QUEUE) {
+		prepare_job_t *job = &prepare_queue[(prepare_head + prepare_count) % PREPARE_QUEUE];
+		snprintf(job->path, sizeof(job->path), "%s", path);
+		job->offset = offset;
+		job->size = size;
+		prepare_count++;
+		if (!prepare_running) {
+			pthread_t thread;
+			prepare_running = pthread_create(&thread, NULL, prepare_thread, NULL) == 0;
+			if (prepare_running) {
+				pthread_detach(thread);
+			} else {
+				prepare_count = 0;
+			}
+		}
+	}
+	pthread_mutex_unlock(&prepare_lock);
+}
+
+// Pushes the picture at `offset` if it is oversized and starts like a JPEG.
+static void prepare_if_oversized(const char *path, long offset, size_t size) {
+	if (size <= ALBUMART_MAX_BYTES)
+		return;
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return;
+	uint8_t head[3];
+	bool jpeg = fseek(f, offset, SEEK_SET) == 0 && fread(head, 1, 3, f) == 3 && head[0] == 0xFF && head[1] == 0xD8 &&
+				head[2] == 0xFF;
+	fclose(f);
+	if (jpeg)
+		prepare_push(path, offset, size);
+}
+
+typedef struct {
+	long offset;
+	size_t size;
+	uint8_t type;
+} flac_where_t;
+
+static void flac_where_callback(void *user_data, drflac_metadata *meta) {
+	flac_where_t *w = user_data;
+	if (meta->type != DRFLAC_METADATA_BLOCK_TYPE_PICTURE || w->type == PIC_TYPE_FRONT_COVER)
+		return;
+	w->offset = (long)meta->data.picture.pictureDataOffset;
+	w->size = meta->data.picture.pictureDataSize;
+	w->type = (uint8_t)meta->data.picture.type;
+}
+
+void albumart_prepare_new_track(const char *filepath) {
+	const char *slash = filepath ? strrchr(filepath, '/') : NULL;
+	if (!slash)
+		return;
+	char dir[1024];
+	size_t dir_len = (size_t)(slash - filepath);
+	if (dir_len >= sizeof(dir))
+		return;
+	memcpy(dir, filepath, dir_len);
+	dir[dir_len] = '\0';
+	if (strcmp(dir, prepare_last_dir) == 0)
+		return; // the folder's first track has been looked at already
+	snprintf(prepare_last_dir, sizeof(prepare_last_dir), "%s", dir);
+
+	char cover_path[1300];
+	if (find_cover_file(dir, NULL, cover_path, sizeof(cover_path))) {
+		long size = get_file_size(cover_path);
+		if (size > 0)
+			prepare_if_oversized(cover_path, 0, (size_t)size);
+	}
+
+	if (decode_detect_format(filepath) == DECODE_FORMAT_FLAC) {
+		flac_where_t w = {.type = 0xFF};
+		drflac *flac = drflac_open_file_with_metadata(filepath, flac_where_callback, &w, NULL);
+		if (flac)
+			drflac_close(flac);
+		if (w.type != 0xFF)
+			prepare_if_oversized(filepath, w.offset, w.size);
+	}
 }

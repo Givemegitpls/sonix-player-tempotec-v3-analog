@@ -20,6 +20,15 @@ typedef struct {
 // absurd tag evict the page cache the audio decoder reads through.
 #define ALBUMART_MAX_BYTES (8 * 1024 * 1024)
 
+// Where shrunk copies of pictures over ALBUMART_MAX_BYTES are kept: <root>/.local/bigart.
+// "/tmp" or NULL keeps them in memory only, one at a time.
+void albumart_set_cache_root(const char *root);
+
+// For the library scan, with each new track: a picture of its folder too big
+// to load (see ALBUMART_MAX_BYTES) is made ready in the background, so the
+// first look at the album does not wait for it. Call from one thread only.
+void albumart_prepare_new_track(const char *filepath);
+
 // How many places a cover can come from, for the candidate loaders below.
 #define ALBUMART_CANDIDATES 2
 

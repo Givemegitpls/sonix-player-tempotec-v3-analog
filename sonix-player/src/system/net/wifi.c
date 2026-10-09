@@ -169,7 +169,11 @@ static int run_argv(char *const argv[], char *out, size_t out_size) {
 		return -1;
 	}
 
-	pid_t pid = fork();
+	// vfork, not fork: this runs every two seconds while Wi-Fi is on, and
+	// fork() copies the page tables of the whole player first -- on this one
+	// core that showed up in a profile. The child below only makes system
+	// calls (dup2, open, close, exec), which is what vfork allows.
+	pid_t pid = vfork();
 	if (pid < 0) {
 		close(pipe_fd[0]);
 		close(pipe_fd[1]);

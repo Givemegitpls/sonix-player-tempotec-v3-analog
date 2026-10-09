@@ -11,6 +11,7 @@
 #include <time.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <utime.h>
 
 #include "src/system/db/sqlite3.h"
 
@@ -1348,17 +1349,22 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 	}
 
 	// Both pictures, the only request the player makes: try the card first.
+	// Timed in two parts, because the key is not free: it reads the picture's
+	// bytes to hash them.
+	struct timespec t_id;
+	clock_gettime(CLOCK_MONOTONIC, &t_id);
 	char art_key[96];
 	bool cacheable = cover_out && backdrop_out &&
 					 playerart_key(art_key, sizeof(art_key), cover_source_id(filepath), cover_w, cover_h, backdrop_w,
 								   backdrop_h);
 	struct timespec t0;
 	clock_gettime(CLOCK_MONOTONIC, &t0);
+	long id_ms = (long)((t0.tv_sec - t_id.tv_sec) * 1000 + (t0.tv_nsec - t_id.tv_nsec) / 1000000);
 	if (cacheable && playerart_load(art_key, cover_out, backdrop_out)) {
 		struct timespec t1;
 		clock_gettime(CLOCK_MONOTONIC, &t1);
-		printf("cover: player artwork from the cache in %ld ms\n",
-			   (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000));
+		printf("cover: player artwork from the cache in %ld ms (finding its key took %ld ms)\n",
+			   (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000), id_ms);
 		return true;
 	}
 
@@ -1466,7 +1472,7 @@ static file_identity_t thumb_db_identity;
 
 // The player's own artwork cache lives beside it (see further down) and opens,
 // closes and reopens with it.
-static sqlite3 *playerart_db;
+static bool playerart_ready;
 static char playerart_path[512];
 static file_identity_t playerart_identity;
 static void playerart_open(const char *base);
@@ -1499,6 +1505,33 @@ static void thumb_wipe_old_dir(const char *dir) {
 // Schema plus pragma. synchronous=OFF because this is only a cache: an entry
 // lost to a card pulled mid-write recomputes itself, and every fsync saved is
 // smoother scrolling.
+// The "no artwork here" rows are answers about what the player could read at
+// the time, and their key holds only the file's own name, size and date: when
+// the player learns to read more, nothing would ever change them. Pictures
+// over ALBUMART_MAX_BYTES were once refused outright and fell here, and JPEGs
+// TJpgDec cannot take decode since libjpeg came in. So the database carries
+// the generation of the readers in its user_version, and on a newer one only
+// those rows go, to be looked at once more. The thumbnails themselves stay.
+#define THUMB_NONE_EPOCH 1
+
+static void thumb_db_forget_old_nones(sqlite3 *db) {
+	sqlite3_stmt *stmt = NULL;
+	int version = 0;
+	if (sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &stmt, NULL) == SQLITE_OK &&
+		sqlite3_step(stmt) == SQLITE_ROW) {
+		version = sqlite3_column_int(stmt, 0);
+	}
+	sqlite3_finalize(stmt);
+	if (version >= THUMB_NONE_EPOCH) {
+		return;
+	}
+	char sql[96];
+	snprintf(sql, sizeof(sql), "DELETE FROM thumbs WHERE w = 0 OR h = 0; PRAGMA user_version = %d", THUMB_NONE_EPOCH);
+	if (sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK) {
+		printf("cover: \"no artwork\" answers of older readers dropped, %d\n", sqlite3_changes(db));
+	}
+}
+
 static bool thumb_db_prepare_schema(sqlite3 *db) {
 	char *err = NULL;
 	if (sqlite3_exec(db,
@@ -1515,6 +1548,7 @@ static bool thumb_db_prepare_schema(sqlite3 *db) {
 					 " h INTEGER NOT NULL,"
 					 " pixels BLOB)",
 					 NULL, NULL, &err) == SQLITE_OK) {
+		thumb_db_forget_old_nones(db);
 		return true;
 	}
 	fprintf(stderr, "cover: thumbnails db refused: %s\n", err ? err : "?");
@@ -1588,7 +1622,7 @@ void cover_cache_reopen_if_replaced(void) {
 			printf("cover: thumbnail cache disabled\n");
 		}
 	}
-	if (playerart_db && playerart_path[0] && file_identity_changed(playerart_path, &playerart_identity)) {
+	if (playerart_ready && playerart_path[0] && file_identity_changed(playerart_path, &playerart_identity)) {
 		char base[sizeof(thumb_db_base)];
 		snprintf(base, sizeof(base), "%s", thumb_db_base);
 		playerart_open(base);
@@ -1752,39 +1786,34 @@ static void thumb_db_store(const char *key, const cover_image_t *img, bool has_i
 // is asked to show. Kept on the card, coming back to an album costs one read of
 // about a megabyte instead.
 //
-// A file of its own, .local/playerart, and not more rows in the thumbnails
-// database: SonixLink copies that one to the phone, and a few hundred
-// screen-sized pictures in it would turn every sync into a long download.
+// Not more rows in the thumbnails database: SonixLink copies that one to the
+// phone, and a few hundred screen-sized pictures in it would turn every sync
+// into a long download. Not a database of its own either, which it once was:
+// SQLite reads a megabyte blob as a chain of overflow pages, and the
+// least-recently-shown bookkeeping rewrote the whole row -- the megabyte of
+// pixels with it -- on every hit. On the Blaze's card a hit took 2.3 seconds,
+// longer than decoding the cover. So one plain file per entry, read in one go,
+// in .local/playerart.d; "least recently shown" is the file's mtime, set on
+// every hit, and the oldest go once there are more than PLAYERART_MAX_ROWS.
 //
 // The key is the artwork's own bytes (cover_source_id), not the track, so every
 // track of an album that shares a cover.jpg or the same embedded picture shares
 // one entry; the sizes and the backdrop's light/upright treatment go in too,
-// since each of them changes the pixels. Entries are dropped least recently
-// shown first once there are more than PLAYERART_MAX_ROWS.
+// since each of them changes the pixels.
 // ---------------------------------------------------------------------------
 
-#define PLAYERART_SUBPATH ".local/playerart"
+#define PLAYERART_SUBPATH ".local/playerart.d"
+#define PLAYERART_OLD_DB ".local/playerart" // the database it replaces, deleted on sight
 #define PLAYERART_MAX_ROWS 150 // about a megabyte each at the Blaze's sizes
+#define PLAYERART_MAGIC 0x41505853u // "SXPA"
+
+typedef struct {
+	uint32_t magic;
+	uint16_t cw, ch, bw, bh;
+} playerart_header_t;
 
 // Call with thumb_db_lock held, like everything else that touches the caches.
-static void playerart_close(void) {
-	if (playerart_db) {
-		sqlite3_close(playerart_db);
-		playerart_db = NULL;
-	}
-}
-
-static bool playerart_prepare_schema(sqlite3 *db) {
-	return sqlite3_exec(db,
-						"PRAGMA synchronous=OFF;"
-						"PRAGMA cache_size=-128;"
-						"CREATE TABLE IF NOT EXISTS art("
-						" key TEXT PRIMARY KEY,"
-						" cw INTEGER NOT NULL, ch INTEGER NOT NULL, cover BLOB NOT NULL,"
-						" bw INTEGER NOT NULL, bh INTEGER NOT NULL, backdrop BLOB NOT NULL,"
-						" used INTEGER NOT NULL)",
-						NULL, NULL, NULL) == SQLITE_OK;
-}
+static void playerart_close(void) { playerart_ready = false; }
 
 // Only on the card: a tmpfs copy of pictures this size would be memory the
 // player needs for everything else.
@@ -1793,25 +1822,23 @@ static void playerart_open(const char *base) {
 	if (!base || !base[0] || strcmp(base, "/tmp") == 0) {
 		return;
 	}
+	char old[600];
+	snprintf(old, sizeof(old), "%s/%s", base, PLAYERART_OLD_DB);
+	struct stat st;
+	if (stat(old, &st) == 0 && S_ISREG(st.st_mode)) {
+		unlink(old);
+	}
 	if (snprintf(playerart_path, sizeof(playerart_path), "%s/%s", base, PLAYERART_SUBPATH) >=
 		(int)sizeof(playerart_path)) {
 		playerart_path[0] = '\0';
 		return;
 	}
-
-	sqlite3 *db = NULL;
-	if (sqlite3_open(playerart_path, &db) != SQLITE_OK || !playerart_prepare_schema(db)) {
-		// Corrupt or half-written: it is only a cache, start it again.
-		sqlite3_close(db);
-		unlink(playerart_path);
-		db = NULL;
-		if (sqlite3_open(playerart_path, &db) != SQLITE_OK || !playerart_prepare_schema(db)) {
-			sqlite3_close(db);
-			playerart_path[0] = '\0';
-			return;
-		}
+	mkdir(playerart_path, 0755);
+	if (stat(playerart_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+		playerart_path[0] = '\0';
+		return;
 	}
-	playerart_db = db;
+	playerart_ready = true;
 	file_identity_read(playerart_path, &playerart_identity);
 	printf("cover: player artwork cache in %s\n", playerart_path);
 }
@@ -1825,22 +1852,32 @@ static bool playerart_key(char *out, size_t out_size, uint64_t id, int cw, int c
 	return true;
 }
 
-static bool playerart_unpack(sqlite3_stmt *stmt, int col, cover_image_t *out) {
-	int w = sqlite3_column_int(stmt, col);
-	int h = sqlite3_column_int(stmt, col + 1);
-	if (w <= 0 || h <= 0 || w > 0xFFFF || h > 0xFFFF) {
+// The entry's file, or false with no cache. Takes and drops the lock: the
+// reading and writing happen outside it, so a megabyte going to or from the
+// card does not hold up the thumbnails.
+static bool playerart_file(const char *key, char *out, size_t out_size) {
+	uint64_t h = 1469598103934665603ULL;
+	for (const char *p = key; *p; p++) {
+		h ^= (uint8_t)*p;
+		h *= 1099511628211ULL;
+	}
+	pthread_mutex_lock(&thumb_db_lock);
+	bool ok = playerart_ready &&
+			  snprintf(out, out_size, "%s/%016llx.px", playerart_path, (unsigned long long)h) < (int)out_size;
+	pthread_mutex_unlock(&thumb_db_lock);
+	return ok;
+}
+
+static bool playerart_read_image(FILE *f, int w, int h, cover_image_t *out) {
+	if (w <= 0 || h <= 0) {
 		return false;
 	}
 	size_t bytes = (size_t)w * h * 2;
-	const void *blob = sqlite3_column_blob(stmt, col + 2);
-	if (!blob || (size_t)sqlite3_column_bytes(stmt, col + 2) != bytes) {
-		return false;
-	}
 	uint8_t *pixels = malloc(bytes);
-	if (!pixels) {
+	if (!pixels || fread(pixels, 1, bytes, f) != bytes) {
+		free(pixels);
 		return false;
 	}
-	memcpy(pixels, blob, bytes);
 	memset(out, 0, sizeof(*out));
 	out->pixels = pixels;
 	out->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
@@ -1854,86 +1891,109 @@ static bool playerart_unpack(sqlite3_stmt *stmt, int col, cover_image_t *out) {
 }
 
 static bool playerart_load(const char *key, cover_image_t *cover, cover_image_t *backdrop) {
-	bool hit = false;
-	pthread_mutex_lock(&thumb_db_lock);
-	if (playerart_db) {
-		sqlite3_stmt *stmt = NULL;
-		if (sqlite3_prepare_v2(playerart_db, "SELECT cw, ch, cover, bw, bh, backdrop FROM art WHERE key = ?1", -1,
-							   &stmt, NULL) == SQLITE_OK) {
-			sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
-			if (sqlite3_step(stmt) == SQLITE_ROW) {
-				if (playerart_unpack(stmt, 0, cover)) {
-					if (playerart_unpack(stmt, 3, backdrop)) {
-						hit = true;
-					} else {
-						cover_free(cover);
-					}
-				}
-			}
-			sqlite3_finalize(stmt);
-		}
-		if (hit) {
-			sqlite3_stmt *touch = NULL;
-			if (sqlite3_prepare_v2(playerart_db,
-								   "UPDATE art SET used = (SELECT IFNULL(MAX(used), 0) + 1 FROM art) WHERE key = ?1",
-								   -1, &touch, NULL) == SQLITE_OK) {
-				sqlite3_bind_text(touch, 1, key, -1, SQLITE_STATIC);
-				sqlite3_step(touch);
-				sqlite3_finalize(touch);
-			}
-		}
+	char path[600];
+	if (!playerart_file(key, path, sizeof(path))) {
+		return false;
 	}
-	pthread_mutex_unlock(&thumb_db_lock);
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		return false;
+	}
+	playerart_header_t hdr;
+	bool hit = fread(&hdr, sizeof(hdr), 1, f) == 1 && hdr.magic == PLAYERART_MAGIC &&
+			   playerart_read_image(f, hdr.cw, hdr.ch, cover);
+	if (hit && !playerart_read_image(f, hdr.bw, hdr.bh, backdrop)) {
+		cover_free(cover);
+		hit = false;
+	}
+	fclose(f);
+	if (hit) {
+		utime(path, NULL); // shown now: the last to go
+	} else {
+		unlink(path); // short or foreign: decode again and write it anew
+	}
 	return hit;
 }
 
 static bool playerart_has(const char *key) {
-	bool found = false;
-	pthread_mutex_lock(&thumb_db_lock);
-	if (playerart_db) {
-		sqlite3_stmt *stmt = NULL;
-		if (sqlite3_prepare_v2(playerart_db, "SELECT 1 FROM art WHERE key = ?1", -1, &stmt, NULL) == SQLITE_OK) {
-			sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
-			found = sqlite3_step(stmt) == SQLITE_ROW;
-			sqlite3_finalize(stmt);
-		}
-	} else {
-		found = true; // no cache to warm: nothing to do
+	char path[600];
+	if (!playerart_file(key, path, sizeof(path))) {
+		return true; // no cache to warm: nothing to do
 	}
-	pthread_mutex_unlock(&thumb_db_lock);
-	return found;
+	return access(path, F_OK) == 0;
+}
+
+// Drops the least recently shown entries beyond PLAYERART_MAX_ROWS.
+static void playerart_trim(const char *dir) {
+	DIR *d = opendir(dir);
+	if (!d) {
+		return;
+	}
+	for (;;) {
+		int count = 0;
+		time_t oldest_time = 0;
+		char oldest[300] = "";
+		struct dirent *de;
+		rewinddir(d);
+		while ((de = readdir(d)) != NULL) {
+			size_t len = strlen(de->d_name);
+			if (len < 4 || strcmp(de->d_name + len - 3, ".px") != 0) {
+				continue;
+			}
+			char path[900];
+			struct stat st;
+			snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+			if (stat(path, &st) != 0) {
+				continue;
+			}
+			count++;
+			if (!oldest[0] || st.st_mtime < oldest_time) {
+				oldest_time = st.st_mtime;
+				snprintf(oldest, sizeof(oldest), "%s", de->d_name);
+			}
+		}
+		if (count <= PLAYERART_MAX_ROWS || !oldest[0]) {
+			break;
+		}
+		char path[900];
+		snprintf(path, sizeof(path), "%s/%s", dir, oldest);
+		unlink(path);
+	}
+	closedir(d);
 }
 
 static void playerart_store(const char *key, const cover_image_t *cover, const cover_image_t *backdrop) {
 	if (!cover->pixels || !backdrop->pixels) {
 		return;
 	}
-	pthread_mutex_lock(&thumb_db_lock);
-	if (playerart_db) {
-		sqlite3_stmt *stmt = NULL;
-		if (sqlite3_prepare_v2(playerart_db,
-							   "INSERT OR REPLACE INTO art(key, cw, ch, cover, bw, bh, backdrop, used) "
-							   "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, (SELECT IFNULL(MAX(used), 0) + 1 FROM art))",
-							   -1, &stmt, NULL) == SQLITE_OK) {
-			int cw = (int)cover->dsc.header.w, ch = (int)cover->dsc.header.h;
-			int bw = (int)backdrop->dsc.header.w, bh = (int)backdrop->dsc.header.h;
-			sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
-			sqlite3_bind_int(stmt, 2, cw);
-			sqlite3_bind_int(stmt, 3, ch);
-			sqlite3_bind_blob(stmt, 4, cover->pixels, (int)((size_t)cw * ch * 2), SQLITE_STATIC);
-			sqlite3_bind_int(stmt, 5, bw);
-			sqlite3_bind_int(stmt, 6, bh);
-			sqlite3_bind_blob(stmt, 7, backdrop->pixels, (int)((size_t)bw * bh * 2), SQLITE_STATIC);
-			sqlite3_step(stmt); // a failure only costs a future decode
-			sqlite3_finalize(stmt);
-		}
-		char trim[160];
-		snprintf(trim, sizeof(trim),
-				 "DELETE FROM art WHERE key IN (SELECT key FROM art ORDER BY used DESC LIMIT -1 OFFSET %d)",
-				 PLAYERART_MAX_ROWS);
-		sqlite3_exec(playerart_db, trim, NULL, NULL, NULL);
+	char path[600];
+	if (!playerart_file(key, path, sizeof(path))) {
+		return;
 	}
-	pthread_mutex_unlock(&thumb_db_lock);
+	playerart_header_t hdr = {.magic = PLAYERART_MAGIC,
+							  .cw = (uint16_t)cover->dsc.header.w,
+							  .ch = (uint16_t)cover->dsc.header.h,
+							  .bw = (uint16_t)backdrop->dsc.header.w,
+							  .bh = (uint16_t)backdrop->dsc.header.h};
+	char tmp[620];
+	snprintf(tmp, sizeof(tmp), "%s.part", path);
+	FILE *f = fopen(tmp, "wb");
+	if (!f) {
+		return;
+	}
+	bool ok = fwrite(&hdr, sizeof(hdr), 1, f) == 1 &&
+			  fwrite(cover->pixels, 1, (size_t)hdr.cw * hdr.ch * 2, f) == (size_t)hdr.cw * hdr.ch * 2 &&
+			  fwrite(backdrop->pixels, 1, (size_t)hdr.bw * hdr.bh * 2, f) == (size_t)hdr.bw * hdr.bh * 2;
+	ok = fclose(f) == 0 && ok;
+	if (!ok || rename(tmp, path) != 0) {
+		unlink(tmp); // a failure only costs a future decode
+		return;
+	}
+	char *slash = strrchr(path, '/');
+	if (slash) {
+		*slash = '\0';
+		playerart_trim(path);
+	}
 }
 
 // ---------------------------------------------------------------------------
