@@ -1,6 +1,11 @@
 #include "library.h"
 
 #include "src/system/library/albumart.h"
+#include "src/system/core/frameprof.h"
+
+// SQLite's page cache for the library, in the form PRAGMA cache_size takes
+// (negative: kibibytes). See library_open().
+#define DB_CACHE_KIB "-2048"
 
 #include "src/system/library/audiobookdb.h"
 #include "src/system/playback/playlist.h"
@@ -1269,10 +1274,13 @@ bool library_open(const char *db_path) {
 		return false;
 	}
 
-	// A ceiling SQLite will stay under by recycling instead of growing. The
-	// scan is the only thing here that touches a lot of rows and it has no
-	// business holding megabytes on a device with ten of them.
-	sqlite3_soft_heap_limit64(1536 * 1024);
+	// A ceiling SQLite will stay under by recycling instead of growing: every
+	// database in the player together, the library's DB_CACHE_KIB of page
+	// cache included. At 1.5 MB that cache could never fill, and the lists'
+	// reads went to the card every time -- the kernel's own cache does not keep
+	// the file either on a device this short of memory. The scans still give
+	// their pages back when they are done (sqlite3_db_release_memory below).
+	sqlite3_soft_heap_limit64(4 * 1024 * 1024);
 
 	if (sqlite3_open(db_path, &db) != SQLITE_OK) {
 		fprintf(stderr, "library: cannot open %s: %s\n", db_path, sqlite3_errmsg(db));
@@ -1313,7 +1321,14 @@ bool library_open(const char *db_path) {
 	// and just stop waiting for the platter on every commit.
 	exec("PRAGMA synchronous=NORMAL");
 	exec("PRAGMA journal_mode=TRUNCATE");
-	exec("PRAGMA cache_size=-256"); // 256 KB, not the 2 MB default
+	// The page cache the player keeps for the life of the database: big enough
+	// to hold most of a library's index. It once stood at 256 KB, and the lists
+	// read their rows a windowful at a time, by row id -- pages that had gone
+	// by then were read again from the card. On the Blaze that put up to 140 ms
+	// of card reads into a single step of a scroll (a profiled run, the
+	// db_list_window mark). Two megabytes hold a library of a few thousand
+	// tracks nearly whole once it has been read.
+	exec("PRAGMA cache_size=" DB_CACHE_KIB);
 
 	for (size_t i = 0; i < sizeof(SCHEMA) / sizeof(SCHEMA[0]); i++) {
 		if (!exec(SCHEMA[i])) {
@@ -1599,6 +1614,20 @@ bool library_track_names(const char *path, char *title_out, size_t title_size, c
 	return found;
 }
 
+// Profiling marks for the reads the interface thread waits on (frameprof.h):
+// how long it queued for db_lock -- another thread in the database -- and how
+// long the read itself took. Free unless a profiled run is going on.
+static const char *const PROF_DB_WAIT = "db_lock_wait";
+static const char *const PROF_DB_WINDOW = "db_list_window";
+static const char *const PROF_DB_QUALITY = "db_track_quality";
+static const char *const PROF_DB_OPEN = "db_list_open";
+
+static void db_lock_profiled(void) {
+	frameprof_begin(PROF_DB_WAIT);
+	pthread_mutex_lock(&db_lock);
+	frameprof_end(PROF_DB_WAIT);
+}
+
 library_quality_t library_track_quality(const char *path, int *rate_out, int *bits_out) {
 	if (rate_out) {
 		*rate_out = 0;
@@ -1611,7 +1640,8 @@ library_quality_t library_track_quality(const char *path, int *rate_out, int *bi
 	}
 
 	int format = -1, rate = 0, bits = 0;
-	pthread_mutex_lock(&db_lock);
+	db_lock_profiled();
+	frameprof_begin(PROF_DB_QUALITY);
 	sqlite3_stmt *stmt = NULL;
 	if (db && sqlite3_prepare_v2(db, "SELECT format, sample_rate, bit FROM MEDIA_TABLE WHERE path=? LIMIT 1", -1,
 								 &stmt, NULL) == SQLITE_OK) {
@@ -1623,6 +1653,7 @@ library_quality_t library_track_quality(const char *path, int *rate_out, int *bi
 		}
 		sqlite3_finalize(stmt);
 	}
+	frameprof_end(PROF_DB_QUALITY);
 	pthread_mutex_unlock(&db_lock);
 
 	if (rate_out) {
@@ -2453,7 +2484,8 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 		*order_by = '\0';
 	}
 
-	pthread_mutex_lock(&db_lock);
+	db_lock_profiled();
+	frameprof_begin(PROF_DB_OPEN);
 
 	// No database to ask. It happens for real: exporting the card to a computer
 	// closes the index (usb.c, storage_export) and library_close() sets the
@@ -2463,6 +2495,7 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 	// label -- and it also skips the whole prologue below, which has no meaning
 	// without a handle.
 	if (!db) {
+		frameprof_end(PROF_DB_OPEN);
 		pthread_mutex_unlock(&db_lock);
 		free(ix);
 		return NULL;
@@ -2479,9 +2512,7 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 	// and every list at all while an upgraded database is still having its keys
 	// filled in -- where the whole result goes through a temporary b-tree and
 	// what does not fit spills to a scratch file on the card. The budget is the
-	// page cache, held at 256 KB for the rest of the player's life. It is given
-	// back on the way out.
-	exec("PRAGMA cache_size=-2048");
+	// page cache, DB_CACHE_KIB for the life of the player.
 	uint32_t started_ms = now_ms();
 
 	// The count first, so the row ids land in one allocation of the right size
@@ -2502,6 +2533,7 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 	if (expected > 0) {
 		ix->rows = malloc((size_t)expected * sizeof(*ix->rows));
 		if (!ix->rows) {
+			frameprof_end(PROF_DB_OPEN);
 			pthread_mutex_unlock(&db_lock);
 			free(ix);
 			return NULL;
@@ -2532,21 +2564,13 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 		ix->buckets_valid = by_name && ix->count > 0;
 	}
 
-	// Back to what the rest of the player runs on. Whatever the sorter took is
-	// released with it.
-	exec("PRAGMA cache_size=-256");
-	// Null-checked, unlike the calls above it. sqlite3_exec() and
-	// sqlite3_prepare_v2() check the handle and answer SQLITE_MISUSE on a
-	// closed one; sqlite3_db_release_memory() does not -- its check is behind
-	// SQLITE_ENABLE_API_ARMOR, which this build does not define -- so it walks
-	// straight into db->mutex and segfaults. The crash handler parks the
-	// process instead of dying, so that fault on the interface thread shows up
-	// as a hang with db_lock held for ever.
-	if (db) {
-		sqlite3_db_release_memory(db);
-	}
+	// The pages this read brought in stay: the list is about to be scrolled,
+	// and each step of that reads rows by id again (library_index_window).
+	// Emptying the cache here was what sent every one of those reads back to
+	// the card.
 
 	uint32_t elapsed = now_ms() - started_ms;
+	frameprof_end(PROF_DB_OPEN);
 	pthread_mutex_unlock(&db_lock);
 
 	// The one line that says whether opening a list is the slow part. It holds
@@ -2600,7 +2624,7 @@ int library_index_window(const library_index_t *ix, int offset, int count, libra
 		return 0;
 	}
 
-	pthread_mutex_lock(&db_lock);
+	db_lock_profiled();
 
 	// A handle from before a rescan or a card change names rows that are now
 	// somebody else's. Answering nothing is what makes the caller reload.
@@ -2609,6 +2633,7 @@ int library_index_window(const library_index_t *ix, int offset, int count, libra
 		return 0;
 	}
 
+	frameprof_begin(PROF_DB_WINDOW);
 	int delivered = 0;
 	sqlite3_stmt *stmt = NULL;
 	if (db && sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
@@ -2635,6 +2660,7 @@ int library_index_window(const library_index_t *ix, int offset, int count, libra
 		}
 		sqlite3_finalize(stmt);
 	}
+	frameprof_end(PROF_DB_WINDOW);
 
 	pthread_mutex_unlock(&db_lock);
 	return delivered;
@@ -5445,8 +5471,7 @@ static void update_run(void) {
 	}
 	scan_id_base = count_rows("SELECT MAX(id) FROM MEDIA_TABLE");
 	// Room for the path index, which every folder looked into is compared
-	// against. Given back below.
-	exec("PRAGMA cache_size=-2048");
+	// against: the page cache, DB_CACHE_KIB.
 	pthread_mutex_unlock(&db_lock);
 
 	int before = library_track_count();
@@ -5545,7 +5570,6 @@ static void update_run(void) {
 		// are not among them, and the removed ones still are.
 		bump_generation(GEN_MEDIA);
 	}
-	exec("PRAGMA cache_size=-256");
 	if (db) {
 		sqlite3_db_release_memory(db);
 	}
