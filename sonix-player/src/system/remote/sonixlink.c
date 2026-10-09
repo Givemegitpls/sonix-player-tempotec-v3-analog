@@ -165,7 +165,7 @@ static void push_command_paths(sonixlink_command_kind_t kind, int arg, char *pat
 		slot->kind = kind;
 		slot->arg = arg;
 		if (value && value[0]) {
-			snprintf(slot->value, sizeof(slot->value), "%s", value);
+			snprintf(slot->value, sizeof(slot->value), "%.*s", (int)sizeof(slot->value) - 1, value);
 		}
 		slot->paths = paths;
 		slot->path_count = path_count;
@@ -1204,6 +1204,12 @@ static void route_command(client_t *c, const char *query) {
 		bool to_playlist = strncmp(what, "playlist_", 9) == 0;
 		if (to_playlist && !value[0]) {
 			reply_status(c, "400 Bad Request", "no playlist");
+			return;
+		}
+		// The command keeps SONIXLINK_TEXT_MAX bytes of it: a longer name
+		// would reach the playlist code cut, as a different playlist.
+		if (to_playlist && strlen(value) >= SONIXLINK_TEXT_MAX) {
+			reply_status(c, "400 Bad Request", "playlist name too long");
 			return;
 		}
 		char *paths = NULL;
@@ -2761,7 +2767,7 @@ static void *sonixlink_worker(void *unused) {
 
 	int listener = -1, beacon = -1, mdns = -1;
 	uint32_t last_beacon = 0, last_mdns = 0;
-	char ip[64] = "";
+	char ip[INET6_ADDRSTRLEN] = "";
 	char instance[192] = "";
 	char host[160] = "";
 

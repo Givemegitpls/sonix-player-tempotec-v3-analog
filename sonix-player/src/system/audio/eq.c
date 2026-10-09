@@ -886,9 +886,14 @@ static void peq_migrate_legacy(void) {
 		if (len < 5 || strcasecmp(de->d_name + len - 4, ".ini") != 0) {
 			continue;
 		}
+		// A name too long for the buffers is left where it is: a cut path
+		// would read, write or rename the wrong file.
 		char from[700], to[700], done[720];
-		snprintf(from, sizeof(from), "%s/%s", peq_legacy_dir, de->d_name);
-		snprintf(to, sizeof(to), "%s/%.*s.txt", peq_preset_dir, (int)(len - 4), de->d_name);
+		int n_from = snprintf(from, sizeof(from), "%s/%s", peq_legacy_dir, de->d_name);
+		int n_to = snprintf(to, sizeof(to), "%s/%.*s.txt", peq_preset_dir, (int)(len - 4), de->d_name);
+		if (n_from < 0 || (size_t)n_from >= sizeof(from) || n_to < 0 || (size_t)n_to >= sizeof(to)) {
+			continue;
+		}
 		snprintf(done, sizeof(done), "%s.migrated", from);
 
 		peq_band_t bands[PEQ_BANDS];
