@@ -1387,14 +1387,55 @@ typedef struct {
 
 static void lyrics_settle(void);
 
+// The column is built when it is about to be seen, not when the words arrive.
+// They arrive with every track change, while the player is animating the new
+// sleeve in, and a label per line -- forty for a song, each with its styles
+// and its share of a relayout -- made one of the longest frames of the whole
+// interface on the device, for a page that is mostly never opened. So the
+// fill waits for a quiet moment, LYRICS_FILL_DELAY_MS on, or happens at once
+// if the page starts to come in first (lyrics_progress_apply).
+#define LYRICS_FILL_DELAY_MS 1200
+
+static bool lyrics_fill_pending;
+static lv_timer_t *lyrics_fill_timer;
+
+static void lyrics_fill_now(void) {
+	lyrics_fill_pending = false;
+	if (lyrics_fill_timer) {
+		lv_timer_pause(lyrics_fill_timer);
+	}
+	lyrics_fill();
+	lyrics_settle();
+}
+
+static void lyrics_fill_timer_cb(lv_timer_t *timer) {
+	(void)timer;
+	if (lyrics_fill_pending) {
+		lyrics_fill_now();
+	}
+}
+
+static void lyrics_fill_soon(void) {
+	if (lyrics_progress > 0) {
+		lyrics_fill_now(); // the page is up: no waiting
+		return;
+	}
+	lyrics_fill_pending = true;
+	if (!lyrics_fill_timer) {
+		lyrics_fill_timer = lv_timer_create(lyrics_fill_timer_cb, LYRICS_FILL_DELAY_MS, NULL);
+	}
+	lv_timer_set_period(lyrics_fill_timer, LYRICS_FILL_DELAY_MS);
+	lv_timer_reset(lyrics_fill_timer);
+	lv_timer_resume(lyrics_fill_timer);
+}
+
 static void lyrics_arrived(void *user) {
 	lyrics_job_t *job = user;
 	if (job->generation == lyrics_generation && strcmp(job->path, lyrics_path) == 0) {
 		lyrics_free(&lyrics_cur);
 		lyrics_cur = job->lyrics; // handed over, found or empty
 		lyrics_loaded = true;
-		lyrics_fill();
-		lyrics_settle();
+		lyrics_fill_soon();
 	} else {
 		lyrics_free(&job->lyrics);
 	}
@@ -1445,7 +1486,7 @@ static void lyrics_request(const device_state_t *state) {
 	lyrics_free(&lyrics_cur);
 	lyrics_loaded = false;
 	lyrics_generation++;
-	lyrics_fill();
+	lyrics_fill_soon();
 
 	lyrics_job_t *job = calloc(1, sizeof(*job));
 	if (!job) {
@@ -1661,6 +1702,10 @@ static void lyrics_progress_apply(int32_t progress) {
 	}
 	if (progress > LYRICS_FULL) {
 		progress = LYRICS_FULL;
+	}
+	if (progress > 0 && lyrics_fill_pending) {
+		lyrics_progress = progress; // so the fill does not defer itself again
+		lyrics_fill_now();
 	}
 	lyrics_progress = progress;
 	bool rest = progress == 0;

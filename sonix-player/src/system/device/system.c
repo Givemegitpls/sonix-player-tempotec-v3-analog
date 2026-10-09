@@ -55,8 +55,12 @@
 #define PATH_MAX 4096
 #endif
 
-static char battery_cache[16] = "!!";
-static bool battery_charging_cache = false;
+// What the level reads, published two-deep: the poller (below) writes the
+// buffer nobody is reading and then flips which one is current, so a reader
+// on the interface thread never sees half a number.
+static char battery_buffers[2][16] = {"!!", "!!"};
+static volatile int battery_current;
+static volatile bool battery_charging_cache = false;
 static const battery_config_t *g_battery_cfg = NULL;
 
 typedef struct {
@@ -233,7 +237,22 @@ static void scan_power_supplies(int *percent, bool *charging) {
 	closedir(dir);
 }
 
-void sync_battery_from_sysfs(void) {
+static void battery_read_into(char *battery_cache, size_t battery_cache_size);
+
+static void battery_publish(const char *level) {
+	int next = !battery_current;
+	snprintf(battery_buffers[next], sizeof(battery_buffers[next]), "%s", level);
+	__sync_synchronize();
+	battery_current = next;
+}
+
+static void battery_read_now(void) {
+	char battery_cache[16];
+	battery_read_into(battery_cache, sizeof(battery_cache));
+	battery_publish(battery_cache);
+}
+
+static void battery_read_into(char *battery_cache, size_t battery_cache_size) {
 	// The host build has no power supplies at all; the two override files let
 	// the status bar be worked on without a device (see main.c).
 	if (g_battery_cfg && g_battery_cfg->battery_capacity_file) {
@@ -253,12 +272,12 @@ void sync_battery_from_sysfs(void) {
 
 		char *content = read_file_content(g_battery_cfg->battery_capacity_file);
 		if (!content) {
-			strcpy(battery_cache, "!!");
+			snprintf(battery_cache, battery_cache_size, "!!");
 			return;
 		}
 
 		content[strcspn(content, "\r\n")] = '\0';
-		snprintf(battery_cache, sizeof(battery_cache), "%s", content);
+		snprintf(battery_cache, battery_cache_size, "%s", content);
 		free(content);
 		return;
 	}
@@ -283,13 +302,47 @@ void sync_battery_from_sysfs(void) {
 
 	battery_charging_cache = charging;
 	if (percent < 0) {
-		strcpy(battery_cache, "!!");
+		snprintf(battery_cache, battery_cache_size, "!!");
 	} else {
-		snprintf(battery_cache, sizeof(battery_cache), "%d", percent);
+		snprintf(battery_cache, battery_cache_size, "%d", percent);
 	}
 }
 
-char *read_battery_percent() { return battery_cache; }
+// The battery and the charger are read on a thread of their own. On the Blaze
+// both live in the AXP2101, and every one of these sysfs files is an I2C
+// transfer to it: the walk over the supplies took up to 40 ms, four times a
+// second, on the interface thread (named in a slow-pass report). The thread
+// keeps that beat; the interface only ever reads what it last found.
+#define BATTERY_POLL_MS 250
+#define BATTERY_POLL_OFF_MS 5000
+
+static volatile bool battery_poller_on;
+
+static void *battery_poller(void *arg) {
+	(void)arg;
+	thread_be_low_priority("battery");
+	for (;;) {
+		battery_read_now();
+		// With the screen off nobody is looking at the icon, and the reads
+		// wake the PMIC's bus: a slow beat until it comes back on.
+		usleep((power_screen_is_on() ? BATTERY_POLL_MS : BATTERY_POLL_OFF_MS) * 1000);
+	}
+	return NULL;
+}
+
+void sync_battery_from_sysfs(void) {
+	if (battery_poller_on) {
+		return; // the poller keeps it current
+	}
+	battery_read_now(); // a first reading at once, for whoever asked
+	pthread_t thread;
+	if (pthread_create(&thread, NULL, battery_poller, NULL) == 0) {
+		pthread_detach(thread);
+		battery_poller_on = true;
+	}
+}
+
+char *read_battery_percent() { return battery_buffers[battery_current]; }
 
 // Set while something has deliberately stopped the charger -- DAC mode with
 // charging switched off. The hardware may still report a healthy charger on
