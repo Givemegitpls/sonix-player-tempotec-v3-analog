@@ -1,5 +1,7 @@
 #include "device_state.h"
 
+#include "src/system/core/frameprof.h"
+#include "src/system/core/utils.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/audio/audio.h"
 #include "src/system/playback/audiobook.h"
@@ -177,7 +179,11 @@ static void flush_book_position(const device_state_t *state) {
 	audiobook_note_position(state->progress_current_secs, state->progress_total_secs, true);
 }
 
+static void queue_job_flush(void);
+
 void device_state_remember_flush(void) {
+	// The queue first: a write still waiting on its thread (queue_job_flush).
+	queue_job_flush();
 	device_state_t state;
 	device_state_get(&state);
 	flush_book_position(&state);
@@ -304,6 +310,142 @@ static void playlist_resync_to_current(void);
 static unsigned saved_queue_revision;
 static bool queue_ever_saved;
 
+// The writing itself happens on a thread of its own. It is a transaction on
+// the card, and on the Blaze it took up to 370 ms -- on the interface thread,
+// at the moment a row was tapped, before the player could slide in. What is
+// written is gathered here first (the queue is in memory and cheap to copy);
+// the thread only hands it to the library. Each job is the whole state, so a
+// newer one simply replaces a job still waiting.
+typedef enum { QUEUE_JOB_INDEX, QUEUE_JOB_QUERY, QUEUE_JOB_LIST } queue_job_kind_t;
+
+typedef struct {
+	queue_job_kind_t kind;
+	int current;			  // INDEX: the position; QUERY: the entry; LIST: the index
+	library_index_spec_t spec; // QUERY
+	char **paths;			  // QUERY: the appended tracks; LIST: the queue
+	int *slots;				  // QUERY
+	int count;
+	bool custom; // LIST
+} queue_job_t;
+
+// The writer waits this long after the newest job before writing it. A track
+// is starting at that moment, and the playback thread saves to the library as
+// it closes one track and opens the next -- with the audio mutex held, which
+// play then waits on. A queue write in the same instant held the database for
+// a few hundred milliseconds, and the tap that started the track waited for
+// all of it. Writing once things have settled also lets a burst of taps end
+// in a single write. The way out does not wait (queue_job_flush).
+#define QUEUE_WRITE_DELAY_MS 1500
+
+static pthread_mutex_t queue_job_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t queue_job_cond = PTHREAD_COND_INITIALIZER;
+static queue_job_t *queue_job_waiting;
+static bool queue_job_running;
+static bool queue_job_hurry; // set by queue_job_flush: no settling delay
+static bool queue_writer_started;
+
+static void queue_job_free(queue_job_t *job) {
+	if (!job) {
+		return;
+	}
+	for (int i = 0; job->paths && i < job->count; i++) {
+		free(job->paths[i]);
+	}
+	free(job->paths);
+	free(job->slots);
+	free(job);
+}
+
+static void queue_job_write(const queue_job_t *job) {
+	switch (job->kind) {
+	case QUEUE_JOB_INDEX:
+		library_queue_save_index(job->current);
+		break;
+	case QUEUE_JOB_QUERY:
+		library_queue_save_query(&job->spec, job->current, (const char *const *)job->paths, job->slots, job->count);
+		break;
+	case QUEUE_JOB_LIST:
+		library_queue_save((const char *const *)job->paths, job->count, job->current, job->custom);
+		break;
+	}
+}
+
+static void *queue_writer(void *arg) {
+	(void)arg;
+	thread_be_low_priority("queue writer");
+	pthread_mutex_lock(&queue_job_lock);
+	for (;;) {
+		while (!queue_job_waiting) {
+			pthread_cond_wait(&queue_job_cond, &queue_job_lock);
+		}
+		// Settle: until QUEUE_WRITE_DELAY_MS have passed with no newer job, or
+		// until the way out asks for it now.
+		for (;;) {
+			queue_job_t *seen = queue_job_waiting;
+			struct timespec until;
+			clock_gettime(CLOCK_REALTIME, &until);
+			until.tv_sec += QUEUE_WRITE_DELAY_MS / 1000;
+			until.tv_nsec += (long)(QUEUE_WRITE_DELAY_MS % 1000) * 1000000L;
+			if (until.tv_nsec >= 1000000000L) {
+				until.tv_sec++;
+				until.tv_nsec -= 1000000000L;
+			}
+			while (!queue_job_hurry && queue_job_waiting == seen &&
+				   pthread_cond_timedwait(&queue_job_cond, &queue_job_lock, &until) == 0) {
+			}
+			if (queue_job_hurry || queue_job_waiting == seen) {
+				break; // asked for now, or quiet for the whole delay
+			}
+		}
+		queue_job_t *job = queue_job_waiting;
+		queue_job_waiting = NULL;
+		queue_job_running = true;
+		pthread_mutex_unlock(&queue_job_lock);
+
+		queue_job_write(job);
+		queue_job_free(job);
+
+		pthread_mutex_lock(&queue_job_lock);
+		queue_job_running = false;
+		pthread_cond_broadcast(&queue_job_cond);
+	}
+	return NULL;
+}
+
+// Hands a job to the writer, or writes it here when there is no writer.
+static void queue_job_submit(queue_job_t *job) {
+	if (!queue_writer_started) {
+		pthread_t thread;
+		queue_writer_started = pthread_create(&thread, NULL, queue_writer, NULL) == 0;
+		if (queue_writer_started) {
+			pthread_detach(thread);
+		}
+	}
+	if (!queue_writer_started) {
+		queue_job_write(job);
+		queue_job_free(job);
+		return;
+	}
+	pthread_mutex_lock(&queue_job_lock);
+	queue_job_free(queue_job_waiting); // superseded
+	queue_job_waiting = job;
+	pthread_cond_broadcast(&queue_job_cond);
+	pthread_mutex_unlock(&queue_job_lock);
+}
+
+// Returns once nothing is waiting to be written: for the way out, where the
+// queue has to be on the card before the power goes.
+static void queue_job_flush(void) {
+	pthread_mutex_lock(&queue_job_lock);
+	queue_job_hurry = true;
+	pthread_cond_broadcast(&queue_job_cond);
+	while (queue_job_waiting || queue_job_running) {
+		pthread_cond_wait(&queue_job_cond, &queue_job_lock);
+	}
+	queue_job_hurry = false;
+	pthread_mutex_unlock(&queue_job_lock);
+}
+
 // Writes a library-backed queue down as its query. The position is the entry as
 // stored, not where it sits in the order being played: a shuffled queue is
 // dealt again when it comes back, and the old deal's position would land on an
@@ -337,13 +479,22 @@ static void queue_save_query_form(const library_index_spec_t *spec) {
 		}
 	}
 
-	library_queue_save_query(spec, (int)playlist_current_entry(), (const char *const *)extra, slots, filled);
-
-	for (int i = 0; i < filled; i++) {
-		free(extra[i]);
+	queue_job_t *job = calloc(1, sizeof(*job));
+	if (!job) {
+		for (int i = 0; i < filled; i++) {
+			free(extra[i]);
+		}
+		free(extra);
+		free(slots);
+		return;
 	}
-	free(extra);
-	free(slots);
+	job->kind = QUEUE_JOB_QUERY;
+	job->spec = *spec;
+	job->current = (int)playlist_current_entry();
+	job->paths = extra;
+	job->slots = slots;
+	job->count = filled;
+	queue_job_submit(job);
 }
 
 static void queue_persist(void) {
@@ -361,7 +512,12 @@ static void queue_persist(void) {
 		if (playlist_library_spec(&moved)) {
 			queue_save_query_form(&moved);
 		} else {
-			library_queue_save_index(current);
+			queue_job_t *job = calloc(1, sizeof(*job));
+			if (job) {
+				job->kind = QUEUE_JOB_INDEX;
+				job->current = current;
+				queue_job_submit(job);
+			}
 		}
 		return;
 	}
@@ -405,9 +561,18 @@ static void queue_persist(void) {
 	}
 
 	if (filled > 0 && !from_stream) {
-		library_queue_save((const char *const *)list, filled, current, playlist_is_custom());
-		saved_queue_revision = revision;
-		queue_ever_saved = true;
+		queue_job_t *job = calloc(1, sizeof(*job));
+		if (job) {
+			job->kind = QUEUE_JOB_LIST;
+			job->paths = list; // the job owns it now
+			job->count = filled;
+			job->current = current;
+			job->custom = playlist_is_custom();
+			queue_job_submit(job);
+			saved_queue_revision = revision;
+			queue_ever_saved = true;
+			return;
+		}
 	}
 
 	for (int i = 0; i < filled; i++) {
@@ -484,6 +649,14 @@ static void apply_track_speed(void) {
 //
 // `position` is where to start; below zero means the beginning, which is what
 // every caller but the resume below wants.
+// Profiling marks for the steps of a track change, which runs on the
+// interface thread right under the finger (frameprof.h).
+static const char *const PROF_META = "play_metadata_read";
+static const char *const PROF_BOOK = "play_audiobook_check";
+static const char *const PROF_RG = "play_replaygain";
+static const char *const PROF_START = "play_audio_start";
+static const char *const PROF_PERSIST = "play_queue_persist";
+
 static void load_and_play_at(const char *filepath, double position) {
 	// A position picked on the outgoing track means nothing on this one, and
 	// the track can change under a held button -- the queue advances on its
@@ -502,15 +675,21 @@ static void load_and_play_at(const char *filepath, double position) {
 		current_metadata_file[sizeof(current_metadata_file) - 1] = '\0';
 	}
 
+	frameprof_begin(PROF_META);
 	metadata_read(current_metadata_file, &current_metadata);
+	frameprof_end(PROF_META);
 	// Whether the loaded file is an audiobook is decided here, once per track
 	// change, and everything that dresses the player for one reads the answer
 	// from it. Every route by which the track can change passes through one of
 	// these calls.
+	frameprof_begin(PROF_BOOK);
 	audiobook_track_changed(current_metadata_file);
+	frameprof_end(PROF_BOOK);
 	// The ReplayGain the tags asked for, worked out once per track.
+	frameprof_begin(PROF_RG);
 	replaygain_load(&current_metadata);
 	apply_track_speed();
+	frameprof_end(PROF_RG);
 
 	// The file may not be there yet: with Qobuz and Tidal the queue holds the
 	// whole album and playback can reach a track before its download does. The
@@ -523,18 +702,22 @@ static void load_and_play_at(const char *filepath, double position) {
 		}
 	}
 
+	frameprof_begin(PROF_START);
 	if (position > 0) {
 		audio_play_at(current_metadata_file, position);
 	} else {
 		audio_play(current_metadata_file);
 	}
+	frameprof_end(PROF_START);
 
 	// Any track load supersedes the note: it belongs to the one press that
 	// follows the storage coming back.
 	interrupted_file[0] = '\0';
 	interrupted_pos = -1.0;
 
+	frameprof_begin(PROF_PERSIST);
 	queue_persist();
+	frameprof_end(PROF_PERSIST);
 }
 
 static void load_and_play(const char *filepath) { load_and_play_at(filepath, -1.0); }
