@@ -29,6 +29,20 @@ void albumart_set_cache_root(const char *root);
 // first look at the album does not wait for it. Call from one thread only.
 void albumart_prepare_new_track(const char *filepath);
 
+// Where a candidate's picture lies in a file, found without reading it -- for
+// identifying a picture cheaply (cover.c's cover_source_id). FOUND fills
+// `out`; NONE means the candidate has no picture, as albumart_load_candidate()
+// would find; UNKNOWN means it cannot be told without loading.
+typedef enum { ALBUMART_WHERE_NONE, ALBUMART_WHERE_FOUND, ALBUMART_WHERE_UNKNOWN } albumart_where_t;
+
+typedef struct {
+	char path[1300];
+	long offset;
+	size_t size;
+} albumart_place_t;
+
+albumart_where_t albumart_locate_candidate(const char *filepath, int index, albumart_place_t *out);
+
 // How many places a cover can come from, for the candidate loaders below.
 #define ALBUMART_CANDIDATES 2
 

@@ -74,7 +74,16 @@ bool coverloader_take_player(cover_image_t *cover, cover_image_t *backdrop, bool
 
 // The next track's pictures, decoded into the disk cache at the lowest
 // priority so that changing to it is a read. Nothing to collect.
+// Called on the worker each time a player question -- the id of a track's
+// picture, or its pictures -- has been answered, so the answer can be picked up
+// at once rather than on the next progress poll. It must not touch LVGL: post
+// to the interface thread (gui_post) and take the result there.
+void coverloader_set_player_ready_cb(void (*cb)(void));
+
 void coverloader_warm_player(const char *path, int cover_w, int cover_h, int backdrop_w, int backdrop_h);
+// The same for the track before the current one, done after the next one's:
+// so that "previous" finds its picture ready as well.
+void coverloader_warm_player_back(const char *path, int cover_w, int cover_h, int backdrop_w, int backdrop_h);
 
 // Asks only WHAT the artwork of `path` is, without decoding any of it: the
 // answer is cover_source_id()'s number, and the player compares it with the one

@@ -62,11 +62,27 @@ static id_job_t player_id_job;
 
 static dual_job_t player_job;
 static dual_job_t saver_job;
-static dual_job_t warm_job; // the next track's player artwork, into the disk cache
+static dual_job_t warm_job;		// the next track's player artwork, into the disk cache
+static dual_job_t warm_back_job; // and the previous track's, after it
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wakeup = PTHREAD_COND_INITIALIZER;
+// The warm-ups' own thread is woken on its own condition: a signal on `wakeup`
+// must reach the worker, and with two threads waiting it might not.
+static pthread_cond_t warm_wakeup = PTHREAD_COND_INITIALIZER;
 static bool started;
+
+// Said the moment a player question is answered, from the worker: see
+// coverloader_set_player_ready_cb().
+static void (*player_ready_cb)(void);
+
+void coverloader_set_player_ready_cb(void (*cb)(void)) { player_ready_cb = cb; }
+
+static void player_ready(void) {
+	if (player_ready_cb) {
+		player_ready_cb();
+	}
+}
 
 // Picks up the next slot waiting to be decoded. Called with the lock held.
 static int next_pending(void) {
@@ -148,8 +164,7 @@ static void *worker(void *arg) {
 		pthread_mutex_lock(&lock);
 
 		while (next_pending() < 0 && !(player_id_job.pending && !player_id_job.running) &&
-			   !(player_job.pending && !player_job.running) && !(saver_job.pending && !saver_job.running) &&
-			   !(warm_job.pending && !warm_job.running)) {
+			   !(player_job.pending && !player_job.running) && !(saver_job.pending && !saver_job.running)) {
 			pthread_cond_wait(&wakeup, &lock);
 		}
 
@@ -173,6 +188,7 @@ static void *worker(void *arg) {
 				player_id_job.done = true;
 			}
 			pthread_mutex_unlock(&lock);
+			player_ready();
 			continue;
 		}
 
@@ -180,19 +196,11 @@ static void *worker(void *arg) {
 		// at; it goes before any list thumbnail.
 		if (player_job.pending && !player_job.running) {
 			run_dual_job(&player_job, cover_load_player_images); // returns unlocked
+			player_ready();
 			continue;
 		}
 
 		int index = next_pending();
-		if (index < 0 && warm_job.pending && !warm_job.running) {
-			// After every list thumbnail: a picture nobody is looking at yet.
-			// So at the bottom of the pile even with the screen on: it comes
-			// with a track change, the moment the interface is animating into
-			// the player, and a decode at nice 10 took frames from that.
-			thread_set_background_level(false);
-			run_dual_job(&warm_job, cover_warm_player_images); // returns unlocked
-			continue;
-		}
 		if (index < 0 && saver_job.pending && !saver_job.running) {
 			// Last: it is a picture for a screen that is off, and nothing on
 			// screen is waiting for it.
@@ -245,6 +253,29 @@ static void *worker(void *arg) {
 	return NULL;
 }
 
+// The next and the previous track's artwork, worked out ahead into the disk
+// cache. On a thread of their own, at the bottom of the pile: on the worker
+// they queued in front of the picture the user was waiting for -- a warm-up
+// decode takes the better part of a second here, and a skip that landed in the
+// middle of one waited for all of it before its own picture, already in the
+// cache, was even looked up. Here a warm-up only ever has the core when
+// nothing else wants it, and the worker is free for the player.
+static void *warm_worker(void *arg) {
+	(void)arg;
+	thread_be_background("cover warmer");
+	pthread_mutex_lock(&lock);
+	for (;;) {
+		while (!(warm_job.pending && !warm_job.running) && !(warm_back_job.pending && !warm_back_job.running)) {
+			pthread_cond_wait(&warm_wakeup, &lock);
+		}
+		// The next track first: "previous" is pressed far less often.
+		dual_job_t *job = warm_job.pending && !warm_job.running ? &warm_job : &warm_back_job;
+		run_dual_job(job, cover_warm_player_images); // returns unlocked
+		pthread_mutex_lock(&lock);
+	}
+	return NULL;
+}
+
 void coverloader_start(void) {
 	pthread_mutex_lock(&lock);
 
@@ -262,6 +293,9 @@ void coverloader_start(void) {
 		return;
 	}
 	pthread_detach(thread);
+	if (pthread_create(&thread, NULL, warm_worker, NULL) == 0) {
+		pthread_detach(thread);
+	}
 }
 
 // Drops whatever the slot is holding. Called with the lock held.
@@ -433,6 +467,16 @@ void coverloader_warm_player(const char *path, int cover_w, int cover_h, int bac
 	// Never collected: the result is in the cache, not in the job, and the
 	// next request discards whatever verdict this one left.
 	dual_request(&warm_job, path, cover_w, cover_h, backdrop_w, backdrop_h);
+	pthread_mutex_lock(&lock);
+	pthread_cond_signal(&warm_wakeup);
+	pthread_mutex_unlock(&lock);
+}
+
+void coverloader_warm_player_back(const char *path, int cover_w, int cover_h, int backdrop_w, int backdrop_h) {
+	dual_request(&warm_back_job, path, cover_w, cover_h, backdrop_w, backdrop_h);
+	pthread_mutex_lock(&lock);
+	pthread_cond_signal(&warm_wakeup);
+	pthread_mutex_unlock(&lock);
 }
 
 bool coverloader_take_player(cover_image_t *cover, cover_image_t *backdrop, bool *finished) {
