@@ -47,6 +47,7 @@
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/streaming/tidalsync.h"
 #include "src/system/core/utils.h"
+#include "src/system/core/frameprof.h"
 #include "src/system/audio/waveform.h"
 
 #include "lvgl/src/core/lv_obj_event_private.h"
@@ -3889,6 +3890,12 @@ void player_screen_prev(void) {
 	update_progress();
 }
 
+// Profiling marks for a skip from the player (frameprof.h): the queue step and
+// track load, the repaint of the player, and the progress bar.
+static const char *const PROF_STEP = "skip_queue_and_load";
+static const char *const PROF_REFRESH = "skip_refresh_now_playing";
+static const char *const PROF_PROGRESS = "skip_update_progress";
+
 void player_screen_next(void) {
 	if (live_step(1)) {
 		return;
@@ -3903,10 +3910,17 @@ void player_screen_next(void) {
 		return;
 	}
 
-	if (device_state_next(NULL, 0)) {
+	frameprof_begin(PROF_STEP);
+	bool moved = device_state_next(NULL, 0);
+	frameprof_end(PROF_STEP);
+	if (moved) {
+		frameprof_begin(PROF_REFRESH);
 		refresh_now_playing();
+		frameprof_end(PROF_REFRESH);
 	}
+	frameprof_begin(PROF_PROGRESS);
 	update_progress();
+	frameprof_end(PROF_PROGRESS);
 }
 
 static void prev_btn_event_cb(lv_event_t *e) {
