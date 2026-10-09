@@ -20,6 +20,7 @@
 #include "src/system/audio/waveform.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
+#include "src/system/core/frameprof.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/powersettings.h"
@@ -2803,11 +2804,17 @@ int main(int argc, char **argv) {
 	// not opened) poll() on a negative fd is exactly a timed sleep, and the
 	// bridge timer polls fast in that case.
 	watchdog_start();
+	// On only when asked for: <card>/.local/frameprof, or the simulator's
+	// variable, which also lowers the threshold (the computer is many times
+	// faster than the device).
+	frameprof_init(frameprof_wanted(), getenv("SONIX_FRAMEPROF") ? (unsigned)atoi(getenv("SONIX_FRAMEPROF")) : 0);
 
 	printf("Entering main event loop...\n");
 	while (running) {
 		ui_heartbeat++;
+		frameprof_pass_begin();
 		uint32_t time_till_next = lv_timer_handler();
+		frameprof_pass_end();
 		if (time_till_next > MAIN_LOOP_MAX_SLEEP_MS) {
 			time_till_next = MAIN_LOOP_MAX_SLEEP_MS; // also catches LV_NO_TIMER_READY
 		}
