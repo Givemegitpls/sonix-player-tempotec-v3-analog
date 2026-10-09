@@ -2832,29 +2832,30 @@ static void wave_refresh(const char *path, double position) {
 // Throws away what is on screen and asks for the artwork of `filepath`. The
 // half of refresh_cover() that runs once it is known that the picture really is
 // changing.
-static void reload_cover(const char *filepath) {
+// Takes the pictures on screen down and frees them. With `placeholder` the
+// empty sleeve goes up in their place and the chrome follows the theme again;
+// without, the caller is about to put the next pictures up in this same pass.
+static void cover_drop_current(bool placeholder) {
 	if (cover_release_cb) {
 		cover_release_cb();
 	}
 
 	// Detach the old pixels before freeing them, so nothing can draw from a
-	// buffer that's already gone. The placeholder covers the gap while the
-	// worker decodes.
+	// buffer that's already gone.
 	lv_image_set_src(cover_img, NULL);
 	lv_obj_set_style_bg_image_src(player_menu, NULL, 0);
-	// The blur of the picture going away goes with it, from behind the words
-	// too: until the new one is made they are on a plain dark page.
-	lyrics_bg_forget();
 	if (layout_studio_now && studio_bg) {
 		lv_image_set_src(studio_bg, NULL); // Studio's points at the backdrop freed below
 	}
 	cover_free(&current_cover);
 	cover_free(&current_backdrop);
 
+	if (!placeholder) {
+		return;
+	}
 	cover_show(false);
 	// Studio holds pointers to both of those, so it is told in the same breath:
-	// its sleeve and its background come down and the empty square goes up for
-	// as long as the decode takes.
+	// its sleeve and its background come down and the empty square goes up.
 	if (layout_studio_now) {
 		studio_refresh_cover();
 	}
@@ -2866,6 +2867,21 @@ static void reload_cover(const char *filepath) {
 
 	lv_obj_invalidate(cover_panel);
 	lv_obj_invalidate(player_menu);
+}
+
+static void reload_cover(const char *filepath) {
+	// The blur of the picture going away goes with it, from behind the words
+	// too: until the new one is made they are on a plain dark page.
+	lyrics_bg_forget();
+
+	// The pictures on screen stay up until the next ones are ready, and are
+	// swapped for them in one pass (apply_cover_result). Taking them down here
+	// put the empty sleeve on screen for the length of the load -- a blink at
+	// every skip, even with the next picture already in the cache. Only with
+	// nothing to load do they come down now.
+	if (!(filepath && filepath[0] && current_cover.pixels)) {
+		cover_drop_current(true);
+	}
 
 	if (filepath && filepath[0]) {
 		backdrop_is_studio = layout_studio_now;
@@ -2994,12 +3010,18 @@ static void apply_cover_result(void) {
 	bool has_cover = coverloader_take_player(&new_cover, &new_backdrop, &finished);
 
 	if (!finished) {
-		return; // still decoding; the placeholder stays up
+		return; // still decoding; what was on screen stays up
 	}
 	cover_request_outstanding = false;
 	printf("cover: on screen %u ms after the track change\n", (unsigned)lv_tick_elaps(track_change_tick));
 
 	if (has_cover) {
+		// The pictures of the track before, held up until now, go in the same
+		// pass the new ones come in: no frame in between shows the gap.
+		if (current_cover.pixels) {
+			cover_drop_current(false);
+		}
+
 		// What is now on screen, so the next track can be asked whether its
 		// artwork is this same picture. Usually known already; when it is not
 		// -- the first cover after the player opens, a station's icon -- the
@@ -3043,6 +3065,9 @@ static void apply_cover_result(void) {
 	if (!has_cover) {
 		cover_shown_id = 0; // nothing to compare the next track against
 		lyrics_bg_forget(); // no picture, nothing to blur
+		if (current_cover.pixels) {
+			cover_drop_current(true); // the previous track's, held up until now
+		}
 	}
 	if (lyrics_progress > 0) {
 		lyrics_look(true); // Studio's backdrop has arrived, or there is none
