@@ -27,4 +27,9 @@
 uint8_t *jpeg_scaled_decode(const uint8_t *data, size_t size, int min_box, int *out_w, int *out_h,
 							int *src_w, int *src_h);
 
+// The same, reading `size` bytes at `offset` of a file as the decoder asks for
+// them, so a picture too big to hold in RAM still decodes in a few kilobytes.
+uint8_t *jpeg_scaled_decode_file(const char *path, long offset, size_t size, int min_box, int *out_w, int *out_h,
+								 int *src_w, int *src_h);
+
 #endif /* JPEG_SCALED_H */

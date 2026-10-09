@@ -20,6 +20,7 @@
 #include "src/system/audio/waveform.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/toast.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/settings/settings.h"
@@ -28,6 +29,7 @@
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/audio/usbaudio.h"
 #include "src/system/audio/audio.h"
+#include "src/system/library/albumart.h"
 #include "src/system/library/audiobookdb.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/bluetooth/btlog.h"
@@ -35,6 +37,7 @@
 #include "src/system/device/clock.h"
 #include "src/system/device/factoryreset.h"
 #include "src/system/core/config.h"
+#include "src/system/core/profiler.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/led.h"
 #include "src/system/audio/eq.h"
@@ -1372,6 +1375,64 @@ static uint8_t *fb_mem;
 static size_t fb_page_size;
 static struct fb_var_screeninfo fb_var;
 
+// The flip itself, on a thread of its own. FBIOPAN_DISPLAY blocks until the
+// panel takes the new page, 10 to 16 ms on the Blaze, and on the interface
+// thread that wait came on top of every frame. Where LVGL draws into a buffer
+// of its own and the flush only copies into the panel page -- shrunk or turned
+// -- the interface can draw the next frame while the last one is being
+// flipped; the copy of the next frame waits for that flip to be done, since it
+// writes into the page going off screen. Where LVGL draws straight into the
+// panel pages the flip stays where it was, inline.
+static pthread_mutex_t flip_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t flip_cond = PTHREAD_COND_INITIALIZER;
+static bool flip_pending, flip_thread_on;
+static struct fb_var_screeninfo flip_var;
+
+static void *flip_thread(void *arg) {
+	(void)arg;
+	thread_be_realtime("fb flip", 5);
+	for (;;) {
+		pthread_mutex_lock(&flip_lock);
+		while (!flip_pending) {
+			pthread_cond_wait(&flip_cond, &flip_lock);
+		}
+		struct fb_var_screeninfo var = flip_var;
+		pthread_mutex_unlock(&flip_lock);
+
+		if (ioctl(fb_fd, FBIOPAN_DISPLAY, &var) < 0) {
+			static bool warned;
+			if (!warned) {
+				perror("fb: FBIOPAN_DISPLAY");
+				warned = true;
+			}
+		}
+
+		pthread_mutex_lock(&flip_lock);
+		flip_pending = false;
+		pthread_cond_broadcast(&flip_cond);
+		pthread_mutex_unlock(&flip_lock);
+	}
+	return NULL;
+}
+
+// Returns once no flip is under way: the page off screen is then really off
+// screen, and fb_var.yoffset is the page being shown.
+static void fb_flip_wait(void) {
+	pthread_mutex_lock(&flip_lock);
+	while (flip_pending) {
+		pthread_cond_wait(&flip_cond, &flip_lock);
+	}
+	pthread_mutex_unlock(&flip_lock);
+}
+
+static void fb_flip_start(void) {
+	pthread_t thread;
+	flip_thread_on = pthread_create(&thread, NULL, flip_thread, NULL) == 0;
+	if (flip_thread_on) {
+		pthread_detach(thread);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 180 degree rotation ("Rotate screen")
 //
@@ -1408,17 +1469,23 @@ static uint8_t *scale_page;
 static int32_t log_w, log_h; // the resolution LVGL renders at; the panel's unless scaled
 
 // What this frame touched, and what each framebuffer page has not been given
-// yet (a bounding box each -- cheap, and a frame's damage is one region in
-// practice). Empty is x1 > x2.
-static lv_area_t rot_frame_dirty;
-static lv_area_t rot_page_pending[2];
+// yet. Empty is x1 > x2.
+//
+// A short list of rectangles, not one bounding box. A frame's damage is often
+// two small places far apart -- the title scrolling at the top of the player,
+// the progress bar at the bottom -- and the box around both is nearly the
+// whole screen, shrunk again every frame for a few dozen changed rows. In a
+// profile on the device that copy was the biggest single cost of the
+// interface thread.
+#define DIRTY_MAX 8
 
-static void area_clear(lv_area_t *a) {
-	a->x1 = 1;
-	a->y1 = 1;
-	a->x2 = 0;
-	a->y2 = 0;
-}
+typedef struct {
+	int n;
+	lv_area_t r[DIRTY_MAX];
+} dirty_t;
+
+static dirty_t rot_frame_dirty;
+static dirty_t rot_page_pending[2];
 
 static bool area_is_empty(const lv_area_t *a) { return a->x1 > a->x2 || a->y1 > a->y2; }
 
@@ -1452,10 +1519,80 @@ static void area_set_full(lv_area_t *a) {
 	a->y2 = log_h - 1;
 }
 
+static int32_t area_size(const lv_area_t *a) {
+	return area_is_empty(a) ? 0 : (a->x2 - a->x1 + 1) * (a->y2 - a->y1 + 1);
+}
+
+static void dirty_clear(dirty_t *d) { d->n = 0; }
+
+static void dirty_set_full(dirty_t *d) {
+	d->n = 1;
+	area_set_full(&d->r[0]);
+}
+
+// Adds a rectangle. It joins one already there when the box around the two
+// costs little more than the two apart -- overlapping, touching, or side by
+// side -- and otherwise takes a slot of its own. With the list full it goes
+// into whichever rectangle it grows least.
+static void dirty_add(dirty_t *d, const lv_area_t *a) {
+	if (area_is_empty(a)) {
+		return;
+	}
+	int best = -1;
+	int32_t best_growth = 0;
+	for (int i = 0; i < d->n; i++) {
+		lv_area_t box = d->r[i];
+		area_merge(&box, a);
+		int32_t growth = area_size(&box) - area_size(&d->r[i]);
+		if (area_size(&box) <= (area_size(&d->r[i]) + area_size(a)) * 5 / 4) {
+			d->r[i] = box;
+			return;
+		}
+		if (best < 0 || growth < best_growth) {
+			best = i;
+			best_growth = growth;
+		}
+	}
+	if (d->n < DIRTY_MAX) {
+		d->r[d->n++] = *a;
+	} else {
+		area_merge(&d->r[best], a);
+	}
+}
+
+static void dirty_add_all(dirty_t *d, const dirty_t *from) {
+	for (int i = 0; i < from->n; i++) {
+		dirty_add(d, &from->r[i]);
+	}
+}
+
+// RGB565 spread out so the three fields have room to grow: green moves up to
+// bits 21..26, red stays at 11..15 and blue at 0..4, with at least four free
+// bits above each. A weighted sum of total weight 16 then adds all three
+// channels in one 32-bit addition.
+static inline __attribute__((always_inline)) uint32_t spread565(uint32_t p) { return (p | (p << 16)) & 0x07E0F81Fu; }
+
+// A 9/3/3/1 sum of four spread pixels (weight 16 in all) back to RGB565: all
+// three fields rounded (+8) and divided by 16 in one shift, then folded back.
+// The weights are the bilinear ones, which is what makes this a shift; the
+// area weights (4/2/2/1, over 9) took three multiplications a pixel, and on
+// the device this was a quarter of the whole copy: 6.3 ms a full frame against
+// 8.2, with a difference measured at 40 dB on real screens.
+static inline __attribute__((always_inline)) uint16_t pack16(uint32_t s) {
+	uint32_t t = ((s + 0x01004008u) >> 4) & 0x07E0F81Fu;
+	return (uint16_t)(t | (t >> 16));
+}
+
 // Shrinks a dirty rectangle of the 3:2-larger layout `src` into `dst` (a whole
 // framebuffer page), turned through 180 degrees when `rotated`. Each panel
-// pixel covers 1.5 layout pixels per axis: the nearer one weighs 2, the
+// pixel covers 1.5 layout pixels per axis: the nearer one weighs 3, the
 // shared one 1, so every 3x3 block of the layout becomes a 2x2 block.
+//
+// The filter is separable, so each source column of a row pair is first
+// folded vertically -- 3 * outer row + the shared middle row -- and then each
+// output pixel horizontally from two such folds: 3 * outer column + middle
+// column. A 3x3 block is loaded once for its four output pixels, the middle
+// row and column shared between them.
 static void blit_scaled_2_3(uint16_t *dst, const uint16_t *src, const lv_area_t *area, bool rotated) {
 	int32_t pw = (int32_t)fb_var.xres, ph = (int32_t)fb_var.yres;
 	int32_t x1 = area->x1 < 0 ? 0 : area->x1;
@@ -1476,30 +1613,57 @@ static void blit_scaled_2_3(uint16_t *dst, const uint16_t *src, const lv_area_t 
 		py2 = ph - 1;
 	}
 
-	for (int32_t py = py1; py <= py2; py++) {
+	for (int32_t py = py1; py <= py2;) {
 		int32_t k = py / 2 * 3;
-		int32_t ya = (py & 1) ? k + 2 : k; // weight 2
-		int32_t yb = k + 1;				   // weight 1
-		const uint16_t *ra = src + (size_t)ya * log_w;
-		const uint16_t *rb = src + (size_t)yb * log_w;
-		uint16_t *out = dst + (size_t)(rotated ? ph - 1 - py : py) * pw;
+		// Both rows of the pair when the rectangle has them, else the one.
+		bool even = !(py & 1);
+		bool pair = even && py + 1 <= py2;
+		const uint16_t *r0 = src + (size_t)k * log_w;	// outer row of the even line
+		const uint16_t *r1 = r0 + log_w;				// the shared middle row
+		const uint16_t *r2 = r1 + log_w;				// outer row of the odd line
+		const uint16_t *ra = even ? r0 : r2;			// the outer row of a lone line
+		uint16_t *oe = dst + (size_t)(rotated ? ph - 1 - py : py) * pw;
+		uint16_t *oo = dst + (size_t)(rotated ? ph - 2 - py : py + 1) * pw;
 
-		for (int32_t px = px1; px <= px2; px++) {
+		for (int32_t px = px1; px <= px2;) {
 			int32_t j = px / 2 * 3;
-			int32_t xa = (px & 1) ? j + 2 : j;
-			int32_t xb = j + 1;
-			uint32_t p4 = ra[xa], p2a = ra[xb], p2b = rb[xa], p1 = rb[xb];
+			bool left = !(px & 1);
+			bool both = left && px + 1 <= px2;
+			int32_t xl = rotated ? pw - 1 - px : px;
 
-			uint32_t r = ((p4 >> 11) * 4) + (((p2a >> 11) + (p2b >> 11)) * 2) + (p1 >> 11);
-			uint32_t g = (((p4 >> 5) & 63) * 4) + ((((p2a >> 5) & 63) + ((p2b >> 5) & 63)) * 2) + ((p1 >> 5) & 63);
-			uint32_t b = ((p4 & 31) * 4) + (((p2a & 31) + (p2b & 31)) * 2) + (p1 & 31);
-			// Divide by the total weight, 9, rounding: x * 7282 >> 16 is x / 9.
-			r = (r * 7282 + 32768) >> 16;
-			g = (g * 7282 + 32768) >> 16;
-			b = (b * 7282 + 32768) >> 16;
-
-			out[rotated ? pw - 1 - px : px] = (uint16_t)((r << 11) | (g << 5) | b);
+			if (pair) {
+				uint32_t m0 = spread565(r1[j]), m1 = spread565(r1[j + 1]), m2 = spread565(r1[j + 2]);
+				uint32_t e0 = 3 * spread565(r0[j]) + m0, e1 = 3 * spread565(r0[j + 1]) + m1,
+						 e2 = 3 * spread565(r0[j + 2]) + m2;
+				uint32_t o0 = 3 * spread565(r2[j]) + m0, o1 = 3 * spread565(r2[j + 1]) + m1,
+						 o2 = 3 * spread565(r2[j + 2]) + m2;
+				if (both) {
+					int32_t xr = rotated ? xl - 1 : xl + 1;
+					oe[xl] = pack16(3 * e0 + e1);
+					oe[xr] = pack16(3 * e2 + e1);
+					oo[xl] = pack16(3 * o0 + o1);
+					oo[xr] = pack16(3 * o2 + o1);
+					px += 2;
+				} else {
+					oe[xl] = pack16(3 * (left ? e0 : e2) + e1);
+					oo[xl] = pack16(3 * (left ? o0 : o2) + o1);
+					px++;
+				}
+			} else {
+				uint32_t v1 = 3 * spread565(ra[j + 1]) + spread565(r1[j + 1]);
+				if (both) {
+					int32_t xr = rotated ? xl - 1 : xl + 1;
+					oe[xl] = pack16(3 * (3 * spread565(ra[j]) + spread565(r1[j])) + v1);
+					oe[xr] = pack16(3 * (3 * spread565(ra[j + 2]) + spread565(r1[j + 2])) + v1);
+					px += 2;
+				} else {
+					int32_t c = left ? j : j + 2;
+					oe[xl] = pack16(3 * (3 * spread565(ra[c]) + spread565(r1[c])) + v1);
+					px++;
+				}
+			}
 		}
+		py += pair ? 2 : 1;
 	}
 }
 
@@ -1521,42 +1685,115 @@ static void blit_rotated_180(uint16_t *dst, const uint16_t *src, const lv_area_t
 	}
 }
 
+// Frame timing, for the log: how long LVGL took to draw a frame, the copy onto
+// the panel page and the page flip. Summed over a second and printed only for
+// seconds with a frame over FRAME_SLOW_MS in them, so an idle player says
+// nothing and an animation that stutters says where the time went.
+#define FRAME_SLOW_MS 34
+
+static struct {
+	uint64_t refr_start_us, second_start_us;
+	int frames, slow;
+	uint64_t copied_px; // layout pixels shrunk onto the panel, summed
+	uint32_t render_max, render_sum, blit_max, blit_sum, pan_max, pan_sum;
+} ft;
+
+static uint64_t ft_now_us(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+static void ft_refr_start_cb(lv_event_t *e) {
+	(void)e;
+	ft.refr_start_us = ft_now_us();
+}
+
+// `flush_us` when the flush began, `wait_us` once the previous flip let it go
+// on, `blit_done_us` after the copy, `pan_done_us` after an inline flip (the
+// same as blit_done_us when the flip is on its own thread). The flip column
+// is the time the interface thread spent on flips, either way.
+static void ft_frame_done(uint64_t flush_us, uint64_t wait_us, uint64_t blit_done_us, uint64_t pan_done_us) {
+	uint32_t render = ft.refr_start_us ? (uint32_t)(flush_us - ft.refr_start_us) / 1000u : 0;
+	uint32_t blit = (uint32_t)(blit_done_us - wait_us) / 1000u;
+	uint32_t pan = (uint32_t)((wait_us - flush_us) + (pan_done_us - blit_done_us)) / 1000u;
+	if (!ft.second_start_us) {
+		ft.second_start_us = pan_done_us;
+	}
+	ft.frames++;
+	ft.slow += (render + blit + pan) > FRAME_SLOW_MS;
+	ft.render_sum += render;
+	ft.blit_sum += blit;
+	ft.pan_sum += pan;
+	ft.render_max = render > ft.render_max ? render : ft.render_max;
+	ft.blit_max = blit > ft.blit_max ? blit : ft.blit_max;
+	ft.pan_max = pan > ft.pan_max ? pan : ft.pan_max;
+	if (pan_done_us - ft.second_start_us >= 1000000u) {
+		if (ft.slow) {
+			printf("frames: %d in %u ms, %d slow; draw avg %u max %u, copy avg %u max %u (%u%% of a screen), flip avg "
+				   "%u max %u ms\n",
+				   ft.frames, (unsigned)((pan_done_us - ft.second_start_us) / 1000u), ft.slow,
+				   ft.render_sum / ft.frames, ft.render_max, ft.blit_sum / ft.frames, ft.blit_max,
+				   (unsigned)(ft.copied_px * 100u / ((uint64_t)ft.frames * (uint64_t)(log_w * log_h))),
+				   ft.pan_sum / ft.frames, ft.pan_max);
+		}
+		memset(&ft, 0, sizeof(ft));
+	}
+}
+
 static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
 	bool second_page;
+	uint64_t flush_us = ft_now_us(), wait_us = flush_us, blit_done_us = flush_us;
+	bool copied = fb_rotated || fb_scaled;
 
-	if (fb_rotated || fb_scaled) {
+	if (copied) {
 		// Collect this frame's damage; the copy happens once, on the last
 		// area, into the page that is NOT on screen.
-		area_merge(&rot_frame_dirty, area);
+		dirty_add(&rot_frame_dirty, area);
 		if (!lv_display_flush_is_last(disp)) {
 			lv_display_flush_ready(disp);
 			return;
 		}
 
+		fb_flip_wait(); // the page about to be written may still be on screen
+		wait_us = ft_now_us();
 		second_page = (fb_var.yoffset == 0); // flip to the other page
 		int target = second_page ? 1 : 0;
 
 		// Everything this page still owes, plus what just changed.
-		lv_area_t redraw = rot_page_pending[target];
-		area_merge(&redraw, &rot_frame_dirty);
+		dirty_t redraw = rot_page_pending[target];
+		dirty_add_all(&redraw, &rot_frame_dirty);
 
-		if (!area_is_empty(&redraw)) {
-			uint16_t *page = (uint16_t *)(fb_mem + (second_page ? fb_page_size : 0));
+		uint16_t *page = (uint16_t *)(fb_mem + (second_page ? fb_page_size : 0));
+		for (int i = 0; i < redraw.n; i++) {
+			ft.copied_px += (uint32_t)area_size(&redraw.r[i]);
 			if (fb_scaled) {
-				blit_scaled_2_3(page, (const uint16_t *)px, &redraw, fb_rotated);
+				blit_scaled_2_3(page, (const uint16_t *)px, &redraw.r[i], fb_rotated);
 			} else {
-				blit_rotated_180(page, (const uint16_t *)px, &redraw, (int32_t)fb_var.xres, (int32_t)fb_var.yres);
+				blit_rotated_180(page, (const uint16_t *)px, &redraw.r[i], (int32_t)fb_var.xres,
+								 (int32_t)fb_var.yres);
 			}
 		}
 
-		area_clear(&rot_page_pending[target]);
-		area_merge(&rot_page_pending[target ? 0 : 1], &rot_frame_dirty); // the other page still owes it
-		area_clear(&rot_frame_dirty);
+		dirty_clear(&rot_page_pending[target]);
+		dirty_add_all(&rot_page_pending[target ? 0 : 1], &rot_frame_dirty); // the other page still owes it
+		dirty_clear(&rot_frame_dirty);
+		blit_done_us = ft_now_us();
 	} else {
+		fb_flip_wait(); // one left by a copied frame, before the rotation was turned off
+		wait_us = blit_done_us = ft_now_us();
 		second_page = (px >= fb_mem + fb_page_size);
 	}
 
-	if (lv_display_flush_is_last(disp)) {
+	if (lv_display_flush_is_last(disp) && copied && flip_thread_on) {
+		fb_var.yoffset = second_page ? fb_var.yres : 0;
+		pthread_mutex_lock(&flip_lock);
+		flip_var = fb_var;
+		flip_pending = true;
+		pthread_cond_signal(&flip_cond);
+		pthread_mutex_unlock(&flip_lock);
+		ft_frame_done(flush_us, wait_us, blit_done_us, blit_done_us);
+	} else if (lv_display_flush_is_last(disp)) {
 		fb_var.yoffset = second_page ? fb_var.yres : 0;
 		if (ioctl(fb_fd, FBIOPAN_DISPLAY, &fb_var) < 0) {
 			// One warning, not one per frame.
@@ -1566,6 +1803,7 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 				warned = true;
 			}
 		}
+		ft_frame_done(flush_us, wait_us, blit_done_us, ft_now_us());
 	}
 	lv_display_flush_ready(disp);
 }
@@ -1658,9 +1896,9 @@ static lv_display_t *try_panned_display(void) {
 	lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 	if (fb_scaled) {
 		// Both framebuffer pages owe a full frame.
-		area_clear(&rot_frame_dirty);
-		area_set_full(&rot_page_pending[0]);
-		area_set_full(&rot_page_pending[1]);
+		dirty_clear(&rot_frame_dirty);
+		dirty_set_full(&rot_page_pending[0]);
+		dirty_set_full(&rot_page_pending[1]);
 		lv_display_set_buffers(disp, scale_page, NULL, (uint32_t)(log_w * log_h * 2), LV_DISPLAY_RENDER_MODE_DIRECT);
 		printf("fb: interface at %dx%d, shrunk 2/3 onto the %ux%u panel\n", (int)log_w, (int)log_h, fb_var.xres,
 			   fb_var.yres);
@@ -1669,6 +1907,8 @@ static lv_display_t *try_panned_display(void) {
 							   LV_DISPLAY_RENDER_MODE_DIRECT);
 	}
 	lv_display_set_flush_cb(disp, fb_pan_flush_cb);
+	lv_display_add_event_cb(disp, ft_refr_start_cb, LV_EVENT_REFR_START, NULL);
+	fb_flip_start();
 	fb_display = disp;
 
 	printf("fb: double-buffered, page flip on FBIOPAN_DISPLAY (%ux%u)\n", fb_var.xres, fb_var.yres);
@@ -1704,6 +1944,7 @@ uint16_t *display_capture_frame(int *out_w, int *out_h) {
 		return NULL;
 	}
 
+	fb_flip_wait();
 	const uint8_t *page = fb_mem + (fb_var.yoffset ? fb_page_size : 0);
 	memcpy(copy, page, fb_page_size);
 
@@ -1735,6 +1976,7 @@ uint16_t *display_capture_frame(int *out_w, int *out_h) {
 
 void display_wake_begin(lv_display_t *disp) {
 	if (fb_fd >= 0) {
+		fb_flip_wait();
 		fb_var.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_FORCE;
 		if (ioctl(fb_fd, FBIOPUT_VSCREENINFO, &fb_var) < 0) {
 			perror("fb: FBIOPUT_VSCREENINFO (wake)");
@@ -1795,9 +2037,9 @@ void display_set_rotated(bool rotated) {
 		// Already drawing into a RAM page: only the copy turns, and both
 		// framebuffer pages owe a full frame the new way round.
 		fb_rotated = rotated;
-		area_clear(&rot_frame_dirty);
-		area_set_full(&rot_page_pending[0]);
-		area_set_full(&rot_page_pending[1]);
+		dirty_clear(&rot_frame_dirty);
+		dirty_set_full(&rot_page_pending[0]);
+		dirty_set_full(&rot_page_pending[1]);
 	} else if (rotated) {
 		if (!rot_page) {
 			rot_page = malloc(fb_page_size);
@@ -1810,9 +2052,9 @@ void display_set_rotated(bool rotated) {
 
 		// Both framebuffer pages still hold the picture the right way up, so
 		// they each owe a full frame.
-		area_clear(&rot_frame_dirty);
-		area_set_full(&rot_page_pending[0]);
-		area_set_full(&rot_page_pending[1]);
+		dirty_clear(&rot_frame_dirty);
+		dirty_set_full(&rot_page_pending[0]);
+		dirty_set_full(&rot_page_pending[1]);
 
 		lv_display_set_buffers(fb_display, rot_page, NULL, (uint32_t)fb_page_size, LV_DISPLAY_RENDER_MODE_DIRECT);
 		fb_rotated = true;
@@ -1962,6 +2204,12 @@ static lv_display_t *init_target_display(void) {
 	return disp;
 }
 #endif
+
+// The developer's sampling profiler (profiler.h) says when it starts and stops,
+// so whoever is testing knows when to do the slow thing. Untranslated: only a
+// file put on the card by hand turns it on.
+static void profiler_toast_cb(void *started) { toast_plain(started ? "Perfilando..." : "Perfil guardado"); }
+static void profiler_notify(bool started) { gui_post(profiler_toast_cb, started ? (void *)1 : NULL); }
 
 #ifndef HOST_BUILD
 // The kernel's real-time throttling: of every sched_rt_period_us, at most
@@ -2271,6 +2519,8 @@ int main(int argc, char **argv) {
 	// browsing a library only ever decodes each cover once -- the same trick
 	// the stock player uses with its own .hiby/.../cache folder.
 	cover_set_cache_dir(gui_cfg.sd_root_path);
+	profiler_set_notify(profiler_notify);
+	profiler_start(gui_cfg.sd_root_path);
 
 	// The shapes of tracks, for the player's alternative layout. The worker
 	// sleeps until a page asks for one, so starting it costs a thread and
@@ -2320,6 +2570,7 @@ int main(int argc, char **argv) {
 		char thumbs_path[600];
 		snprintf(thumbs_path, sizeof(thumbs_path), "%s/.local/thumbnails", db_root);
 		sonixlink_set_thumbs_path(thumbs_path);
+		albumart_set_cache_root(db_root);
 
 		// The audiobook index lives beside it, in its own file.
 		snprintf(db_path, sizeof(db_path), "%s/.local/audiobooks.db", db_root);

@@ -2060,6 +2060,12 @@ static void lyrics_bg_arrived(void *user) {
 
 static void *lyrics_bg_worker(void *arg) {
 	lyrics_bg_job_t *job = arg;
+	// Idle class: this starts in the same moment the player slides in and the
+	// sleeve arrives, and at the interface's own priority its quarter of a
+	// second of blur was taken out of that animation. Nobody is waiting for it
+	// yet; it only has to be done before the words are pulled in.
+	// Quietly: one of these runs per sleeve, and the named call logs a line.
+	thread_set_background_level(false);
 	cover_blur_fill(&job->src, job->w, job->h, &job->out);
 	cover_free(&job->src);
 	if (!gui_post(lyrics_bg_arrived, job)) {

@@ -18,4 +18,8 @@
 // the original.
 uint8_t *art_shrink_to_jpeg(const uint8_t *data, size_t size, int max_side, int quality, size_t *out_len);
 
+// The same for a baseline JPEG read straight from `size` bytes at `offset` of a
+// file, for a picture too big to load into memory first.
+uint8_t *art_shrink_jpeg_file(const char *path, long offset, size_t size, int max_side, int quality, size_t *out_len);
+
 #endif /* ART_SHRINK_H */

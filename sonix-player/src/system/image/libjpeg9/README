@@ -1,0 +1,8 @@
+The public headers of the Independent JPEG Group's libjpeg 9d (9.4.0), as
+installed by its own `./configure` on Linux. Only the headers: the library is
+the one the stock firmware already carries, /usr/lib/libjpeg.so.9, opened at
+run time by jpeg_scaled.c. The struct layout has to match that build exactly
+(jpeg_CreateDecompress checks the version and the struct size), which is why
+these are the 9d headers and not the build machine's libjpeg-turbo ones.
+
+This software is based in part on the work of the Independent JPEG Group.

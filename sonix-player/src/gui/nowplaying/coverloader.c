@@ -186,8 +186,10 @@ static void *worker(void *arg) {
 		int index = next_pending();
 		if (index < 0 && warm_job.pending && !warm_job.running) {
 			// After every list thumbnail: a picture nobody is looking at yet.
-			// With the screen off the thread already sits at the bottom of the
-			// pile (see above), below playback.
+			// So at the bottom of the pile even with the screen on: it comes
+			// with a track change, the moment the interface is animating into
+			// the player, and a decode at nice 10 took frames from that.
+			thread_set_background_level(false);
 			run_dual_job(&warm_job, cover_warm_player_images); // returns unlocked
 			continue;
 		}

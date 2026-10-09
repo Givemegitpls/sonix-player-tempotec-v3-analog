@@ -99,24 +99,10 @@ static uint8_t *shrink_rgb(const uint8_t *src, int sw, int sh, int dw, int dh) {
 	return dst;
 }
 
-uint8_t *art_shrink_to_jpeg(const uint8_t *data, size_t size, int max_side, int quality, size_t *out_len) {
-	if (!data || size < 4 || max_side < 16 || !out_len || size <= SMALL_ENOUGH_BYTES) {
-		return NULL;
-	}
-
-	int w = 0, h = 0;
-	uint8_t *rgb = NULL;
-	if (data[0] == 0xFF && data[1] == 0xD8) {
-		// TJpgDec keeps the short side at twice its argument where it can: half
-		// the wanted side leaves the shrink below one reduction's worth to do,
-		// and a 3000-pixel cover comes out at 750 rather than 1500.
-		rgb = jpeg_scaled_decode(data, size, max_side / 2, &w, &h, NULL, NULL);
-		if (!rgb) {
-			rgb = jpeg_planes_decode(data, size, max_side, PLANES_BUDGET_BYTES, &w, &h, NULL);
-		}
-	} else if (data[0] == 0x89 && data[1] == 'P') {
-		rgb = png_scaled_decode(data, size, max_side, &w, &h);
-	}
+// Takes `rgb` (freed here, whatever happens), fits it within `max_side` and
+// encodes it. NULL unless the JPEG comes out smaller than `size`, the bytes the
+// original took.
+static uint8_t *fit_and_encode(uint8_t *rgb, int w, int h, int max_side, int quality, size_t size, size_t *out_len) {
 	if (!rgb || w <= 0 || h <= 0) {
 		free(rgb);
 		return NULL;
@@ -147,4 +133,34 @@ uint8_t *art_shrink_to_jpeg(const uint8_t *data, size_t size, int max_side, int 
 	}
 	*out_len = sink.len;
 	return sink.data;
+}
+
+uint8_t *art_shrink_to_jpeg(const uint8_t *data, size_t size, int max_side, int quality, size_t *out_len) {
+	if (!data || size < 4 || max_side < 16 || !out_len || size <= SMALL_ENOUGH_BYTES) {
+		return NULL;
+	}
+
+	int w = 0, h = 0;
+	uint8_t *rgb = NULL;
+	if (data[0] == 0xFF && data[1] == 0xD8) {
+		// TJpgDec keeps the short side at twice its argument where it can: half
+		// the wanted side leaves the shrink below one reduction's worth to do,
+		// and a 3000-pixel cover comes out at 750 rather than 1500.
+		rgb = jpeg_scaled_decode(data, size, max_side / 2, &w, &h, NULL, NULL);
+		if (!rgb) {
+			rgb = jpeg_planes_decode(data, size, max_side, PLANES_BUDGET_BYTES, &w, &h, NULL);
+		}
+	} else if (data[0] == 0x89 && data[1] == 'P') {
+		rgb = png_scaled_decode(data, size, max_side, &w, &h);
+	}
+	return fit_and_encode(rgb, w, h, max_side, quality, size, out_len);
+}
+
+uint8_t *art_shrink_jpeg_file(const char *path, long offset, size_t size, int max_side, int quality, size_t *out_len) {
+	if (!path || size == 0 || max_side < 16 || !out_len) {
+		return NULL;
+	}
+	int w = 0, h = 0;
+	uint8_t *rgb = jpeg_scaled_decode_file(path, offset, size, max_side / 2, &w, &h, NULL, NULL);
+	return fit_and_encode(rgb, w, h, max_side, quality, size, out_len);
 }

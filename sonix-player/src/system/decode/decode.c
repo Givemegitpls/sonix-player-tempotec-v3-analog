@@ -26,7 +26,11 @@
 #define DR_MP3_IMPLEMENTATION
 #include "dr_mp3.h"
 
+// PICTURE blocks are not read into memory: callers get the offset and read
+// what they want (albumart.c). Otherwise every open with metadata allocates
+// the whole picture, however big.
 #define DR_FLAC_IMPLEMENTATION
+#define DR_FLAC_NO_PICTURE_METADATA_MALLOC
 #include "dr_flac.h"
 
 #include "stb_vorbis_decl.h"

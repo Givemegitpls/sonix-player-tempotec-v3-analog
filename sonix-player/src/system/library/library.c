@@ -1,5 +1,7 @@
 #include "library.h"
 
+#include "src/system/library/albumart.h"
+
 #include "src/system/library/audiobookdb.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/podcastdl.h"
@@ -4248,6 +4250,7 @@ static void scan_one_file(const char *child, const char *name, const struct stat
 	song_metadata_t tags;
 	metadata_read(child, &tags);
 	scan_indexed(child, name, &tags, st);
+	albumart_prepare_new_track(child);
 }
 
 // One directory open at a time.
