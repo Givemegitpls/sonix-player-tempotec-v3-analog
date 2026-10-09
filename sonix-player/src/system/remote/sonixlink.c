@@ -766,7 +766,7 @@ static bool hash_index(const char *path, uint64_t *out) {
 
 	static const char *const TABLES[] = {
 		"MEDIA_TABLE", "ALBUM_TABLE", "ALBUM_GROUP_TABLE", "ARTIST_TABLE",
-		"ALBUM_ARTIST_TABLE", "GENRE_TABLE", "ARTIST_LINK", "GENRE_LINK",
+		"ALBUM_ARTIST_TABLE", "GENRE_TABLE", "ARTIST_LINK", "ALBUM_ARTIST_LINK", "GENRE_LINK",
 	};
 	uint64_t total = FNV_OFFSET;
 	bool ok = true;
@@ -1837,6 +1837,12 @@ static void *art_worker(void *unused) {
 					}
 				}
 			}
+			// A card pulled out under the read: zeros, not artwork.
+			if (data && albumart_faulted(&art)) {
+				free(data);
+				data = NULL;
+				missing = true;
+			}
 			albumart_free(&art);
 		}
 
@@ -1948,7 +1954,15 @@ static void route_art(client_t *c, const char *query) {
 	}
 	// What it is, from the bytes rather than from a file name: an embedded
 	// picture has no name to read an extension off.
+	size_t before = c->out.len;
 	reply_art_bytes(c, art_type_of(art.data, art.size), art.data, art.size);
+	if (albumart_faulted(&art)) {
+		// A card pulled out under the copy: zeros, not artwork.
+		c->out.len = before;
+		albumart_free(&art);
+		reply_status(c, "404 Not Found", "no artwork");
+		return;
+	}
 	albumart_free(&art);
 }
 
@@ -2064,7 +2078,7 @@ static void browse_read(const char *path, browse_list_t *out) {
 		}
 		char sheet_path[PATH_MAX + 260];
 		snprintf(sheet_path, sizeof(sheet_path), "%s/%s", path, de->d_name);
-		if (!cue_parse(sheet_path, sheet)) {
+		if (!cue_parse(sheet_path, sheet) || sheet->split) {
 			continue;
 		}
 		for (int t = 0; t < sheet->track_count; t++) {

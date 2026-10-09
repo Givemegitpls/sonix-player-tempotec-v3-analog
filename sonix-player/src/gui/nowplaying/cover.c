@@ -1124,7 +1124,8 @@ static cover_build_t build_from_sources(const char *path, bool is_dir, const ima
 		}
 
 		had_bytes = true;
-		bool ok = build_images_safely(art.data, art.size, reqs, n, outs);
+		// A card pulled out under the decode: an image made of zeros, not kept.
+		bool ok = build_images_safely(art.data, art.size, reqs, n, outs) && !albumart_faulted(&art);
 		albumart_free(&art);
 		if (ok) {
 			crumb_set_artwork(NULL);
@@ -1310,6 +1311,9 @@ uint64_t cover_source_id(const char *filepath) {
 			continue;
 		}
 		uint64_t id = art.size ? bytes_id(art.data, art.size) : 0;
+		if (albumart_faulted(&art)) {
+			id = 0;
+		}
 		albumart_free(&art);
 		if (id) {
 			return id;
@@ -1398,6 +1402,12 @@ void cover_free(cover_image_t *img) {
 // hundred albums a card holds, but not for anything larger.
 #define THUMB_DISK_MAX_SIZE 216
 #define THUMB_WAV_EPOCH "|w2"
+
+// A cached "no artwork here" is a row with no width, and its height carries
+// the epoch of the readers that gave that answer. A row from another epoch is
+// a miss: raising the epoch has every file without artwork asked again, while
+// every cached picture stays as it is.
+#define THUMB_NONE_EPOCH 3
 
 static sqlite3 *thumb_db;
 // The thumbnail worker writes while the GUI thread may be reading, and a card
@@ -1614,9 +1624,11 @@ static bool thumb_db_load(const char *key, cover_image_t *out, bool *has_image) 
 			int w = sqlite3_column_int(stmt, 0);
 			int h = sqlite3_column_int(stmt, 1);
 
-			if (w == 0 || h == 0) {
-				*has_image = false; // cached "no artwork here"
-				hit = true;
+			if (w == 0) {
+				if (h == THUMB_NONE_EPOCH) {
+					*has_image = false; // cached "no artwork here"
+					hit = true;
+				}
 			} else if (w > 0 && h > 0 && w <= 0xFFFF && h <= 0xFFFF) {
 				size_t bytes = (size_t)w * h * 2;
 				const void *blob = sqlite3_column_blob(stmt, 2);
@@ -1670,7 +1682,7 @@ static void thumb_db_store(const char *key, const cover_image_t *img, bool has_i
 			sqlite3_bind_blob(stmt, 4, img->pixels, (int)((size_t)w * h * 2), SQLITE_STATIC);
 		} else {
 			sqlite3_bind_int(stmt, 2, 0);
-			sqlite3_bind_int(stmt, 3, 0);
+			sqlite3_bind_int(stmt, 3, THUMB_NONE_EPOCH);
 			sqlite3_bind_null(stmt, 4);
 		}
 		sqlite3_step(stmt); // a failure here only costs a future re-decode
