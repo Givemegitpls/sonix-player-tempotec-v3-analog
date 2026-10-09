@@ -63,7 +63,9 @@ static const sysinfo_model_t MODELS[] = {
 		.remap_list = true,
 		.tap_wake = false,
 		.one_flank = false,
-		.media_keys_swapped = false,
+		// Like the R3 Pro II's: KEY_NEXTSONG is the key that goes back,
+		// confirmed on the device.
+		.media_keys_swapped = true,
 	},
 };
 
