@@ -484,6 +484,14 @@ bool library_index_buckets(const library_index_t *ix, int counts[LIBRARY_INDEX_B
 // with a `path` (a track to take the cover from) and an `artist` (the album's).
 int library_index_window(const library_index_t *ix, int offset, int count, library_row_cb cb, void *user);
 
+// The same, with each track's badge (a library_quality_t) read in the same
+// lookup as the row: what a list showing badges wants, rather than a query per
+// row bound. `quality` is -1 on the lists that do not carry it this way.
+typedef bool (*library_row_quality_cb)(const char *name, const char *path, const char *artist, int quality,
+									   void *user);
+int library_index_window_quality(const library_index_t *ix, int offset, int count, library_row_quality_cb cb,
+								 void *user);
+
 // A second handle over the same rows, without asking the database for the
 // sort again: the row ids are simply copied. What the playback queue is given
 // when a list is started, so the queue does not have to be a second copy of the
