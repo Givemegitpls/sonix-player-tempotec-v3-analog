@@ -5,8 +5,9 @@
 
 #include "lvgl/lvgl.h"
 
-// The handful of colours the whole UI is built from. Two presets (dark and
-// light) live in theme.c; everything on screen pulls from the active one.
+// The handful of colours the whole UI is built from. Three presets (dark,
+// light and AMOLED) live in theme.c; everything on screen pulls from the
+// active one.
 typedef struct {
 	lv_color_t screen_bg;	   // page background
 	lv_color_t surface;		   // list rows, cards
@@ -67,7 +68,8 @@ void theme_notify_screen_shown(lv_obj_t *screen);
 const theme_palette_t *theme(void);
 bool theme_is_dark(void);
 
-// Switches between the two presets and repaints the UI.
+// Switches between light and whichever dark preset was last chosen, and
+// repaints the UI.
 void theme_toggle(void);
 
 // The accent colour, chosen from a fixed set of presets (Appearance > Accent
@@ -79,7 +81,20 @@ int theme_get_accent(void);
 void theme_set_accent(int index);
 
 // Picks a specific theme rather than flipping; no-op when already active.
+// Asking for dark while AMOLED is in force keeps AMOLED: both are dark.
 void theme_set_dark(bool dark);
+
+// The three presets the Appearance page offers. AMOLED is the dark palette
+// taken down to pure black, for panels that switch a black pixel off; it
+// counts as dark everywhere theme_is_dark() is asked.
+typedef enum {
+	THEME_MODE_DARK = 0,
+	THEME_MODE_LIGHT = 1,
+	THEME_MODE_AMOLED = 2,
+} theme_mode_t;
+
+theme_mode_t theme_get_mode(void);
+void theme_set_mode(theme_mode_t mode);
 
 // The dynamic tint (Appearance > Dynamic tint): the neutral colours --
 // backgrounds, cards, the status bar -- borrow the accent's hue, the way
