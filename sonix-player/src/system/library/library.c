@@ -1984,6 +1984,30 @@ bool library_track_album_value(const char *path, char *out, size_t out_size) {
 	return track_album(path, true, out, out_size);
 }
 
+bool library_track_artist(const char *path, char *out, size_t out_size) {
+	if (!path || !path[0] || !out) {
+		return false;
+	}
+
+	pthread_mutex_lock(&db_lock);
+	bool found = false;
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, "SELECT artist FROM MEDIA_TABLE WHERE path=? LIMIT 1", -1, &stmt, NULL) ==
+				  SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			const unsigned char *artist = sqlite3_column_text(stmt, 0);
+			if (artist && artist[0]) {
+				snprintf(out, out_size, "%s", (const char *)artist);
+				found = true;
+			}
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return found;
+}
+
 void library_album_title(const char *value, char *out, size_t size) {
 	if (!out || size == 0) {
 		return;

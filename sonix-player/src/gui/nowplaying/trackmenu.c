@@ -726,6 +726,33 @@ static void open_album_cb(void *user) {
 	switcher_set_player_return(medialist_tracks_screen);
 }
 
+// "Show artist": everything indexed under the artist of the playing track,
+// opened the way their page was last left (records or tracks). A streamed
+// track or an episode is not in the library and says so.
+static void open_artist_cb(void *user) {
+	(void)user;
+
+	device_state_t state;
+	device_state_get(&state);
+	if (!state.current_file[0]) {
+		return;
+	}
+
+	char artist[256];
+	if (!library_track_artist(state.current_file, artist, sizeof(artist)) || !artist[0]) {
+		gui_notify_popup("trackmenu_no_artist");
+		return;
+	}
+
+	player_sheet_close(false);
+	medialist_open_artist(artist);
+	// Records or tracks, whichever the artist page opened on.
+	lv_obj_t *opened = lv_screen_active();
+	if (opened == medialist_albums_screen || opened == medialist_tracks_screen) {
+		switcher_set_player_return(opened);
+	}
+}
+
 static void open_settings_cb(void *user) {
 	(void)user;
 	player_sheet_close(false);
@@ -759,6 +786,7 @@ void trackmenu_open(lv_obj_t *anchor) {
 		{"trackmenu_queue", open_queue_cb, NULL},
 		{"add_to_playlist", add_to_playlist_cb, NULL},
 		{"show_album", open_album_cb, NULL},
+		{"show_artist", open_artist_cb, NULL},
 		{"details", open_details_cb, NULL},
 		{"settings", open_settings_cb, NULL},
 	};
@@ -774,7 +802,8 @@ void trackmenu_open(lv_obj_t *anchor) {
 	device_state_get(&state);
 	bool podcast = state.current_file[0] && podcastcache_is_episode(state.current_file);
 
-	popover_show(anchor, podcast ? ITEMS_PODCAST : ITEMS, 5);
+	popover_show(anchor, podcast ? ITEMS_PODCAST : ITEMS,
+				 podcast ? sizeof(ITEMS_PODCAST) / sizeof(ITEMS_PODCAST[0]) : sizeof(ITEMS) / sizeof(ITEMS[0]));
 }
 
 void trackmenu_init(gui_config_t *cfg) {
