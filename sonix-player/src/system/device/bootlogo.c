@@ -1,6 +1,7 @@
 #include "bootlogo.h"
 
 #include "src/system/core/utils.h"
+#include "src/system/device/sysinfo.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -30,6 +31,7 @@ int bootlogo_current(void) {
 	snprintf(cmd, sizeof(cmd), "nanddump -q -s %s -l %d %s -a > %s 2>/dev/null", MARKER_OFFSET, MARKER_LENGTH,
 			 MTD_DEVICE, tmp);
 	if (system(cmd) != 0) {
+		fprintf(stderr, "bootlogo: nanddump could not read the marker\n");
 		return 0;
 	}
 
@@ -105,8 +107,10 @@ static void *write_main(void *arg) {
 }
 
 void bootlogo_follow_theme(bool dark) {
-	// logo1 is the pale image, logo2 the dark one.
-	int want = dark ? 2 : 1;
+	// logo1 is the pale image, logo2 the dark one. A player whose own logo is
+	// logo.jpeg alone gets a marker the script matches neither way.
+	const sysinfo_model_t *model = sysinfo_model();
+	int want = (model && model->one_boot_logo) ? 0 : (dark ? 2 : 1);
 
 	if (access(MTD_DEVICE, W_OK) != 0) {
 		return; // no such flash here (the host build, or a different device)
