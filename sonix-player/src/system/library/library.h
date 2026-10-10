@@ -317,6 +317,10 @@ bool library_track_album(const char *path, char *out, size_t out_size);
 // name: what "Show album" opens.
 bool library_track_album_value(const char *path, char *out, size_t out_size);
 
+// The artist a track is indexed under, as the tag has it: the value "Show
+// artist" opens. False when the file is not indexed or carries no artist tag.
+bool library_track_artist(const char *path, char *out, size_t out_size);
+
 // Finds indexed tracks by file name alone -- the whole batch in one pass over
 // the table, because a name without its folders cannot use an index and would
 // otherwise cost a scan each. `cb` fires once per match with the position the
