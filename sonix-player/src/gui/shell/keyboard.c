@@ -157,6 +157,14 @@ struct keyboard_s {
 
 	key_ref_t refs[KB_MAX_KEYS];
 
+	// What the keys are built from, kept until they are (see kb_build).
+	bool built;
+	int width, height;
+	const lv_image_dsc_t *accept_icon;
+	const char *accept_text;
+	lv_event_cb_t on_accept;
+	void *accept_user;
+
 	struct keyboard_s *next; // the chain below
 };
 
@@ -187,7 +195,14 @@ static void kb_register_refresh(void) {
 // The tray the keys sit on. In the light theme both the page and the cards are
 // near-white, so keys built straight out of those styles would be white on
 // white -- they have to sit on something darker.
+//
+// AMOLED's keys are its near-black cards, the shade of the dark tray: there
+// the tray is black, as the page is, and the keys stand on it the way the
+// cards do.
 static lv_color_t kb_tray_color(void) {
+	if (theme_get_mode() == THEME_MODE_AMOLED) {
+		return lv_color_black();
+	}
 	return theme()->dark ? lv_color_make(22, 22, 22) : lv_color_make(206, 209, 216);
 }
 
@@ -926,7 +941,9 @@ static void kb_refresh_theme(void) {
 			lv_obj_set_style_bg_color(kb->tray, kb_tray_color(), 0);
 			lv_obj_set_style_bg_opa(kb->tray, LV_OPA_COVER, 0);
 		}
-		kb_refresh_caps(kb);
+		if (kb->built) { // no keys yet: kb_build paints them as it makes them
+			kb_refresh_caps(kb);
+		}
 	}
 
 	for (int i = 0; i < caret_field_count; i++) {
@@ -934,28 +951,23 @@ static void kb_refresh_theme(void) {
 	}
 }
 
-keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *field,
-							const lv_image_dsc_t *accept_icon, const char *accept_text, lv_event_cb_t on_accept,
-							void *user) {
-	keyboard_t *kb = calloc(1, sizeof(*kb));
-	if (!kb) {
-		return NULL;
+// The keys, the keypad, the bubble and the accent strip: some 150 objects
+// per keyboard, and a dozen pages carry one that most sessions never open.
+// They are built the first time the tray is about to be drawn (kb_refr_start_cb)
+// or shown, not when the page is.
+static void kb_build(keyboard_t *kb) {
+	if (kb->built) {
+		return;
 	}
-	kb->field = field;
-	kb->host = parent;
+	kb->built = true;
 
-	kb->tray = lv_obj_create(parent);
-	lv_obj_set_size(kb->tray, width, height);
-	lv_obj_align(kb->tray, LV_ALIGN_BOTTOM_MID, 0, 0);
-	lv_obj_set_style_bg_color(kb->tray, kb_tray_color(), 0);
-	lv_obj_set_style_bg_opa(kb->tray, LV_OPA_COVER, 0);
-	lv_obj_set_style_border_width(kb->tray, 0, 0);
-	lv_obj_set_style_radius(kb->tray, 0, 0);
-	lv_obj_set_style_pad_all(kb->tray, 8, 0);
-	lv_obj_set_style_pad_gap(kb->tray, 7, 0);
-	lv_obj_set_scrollable(kb->tray, false);
-	lv_obj_set_flex_flow(kb->tray, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(kb->tray, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_t *parent = kb->host;
+	int width = kb->width;
+	int height = kb->height;
+	const lv_image_dsc_t *accept_icon = kb->accept_icon;
+	const char *accept_text = kb->accept_text;
+	lv_event_cb_t on_accept = kb->on_accept;
+	void *user = kb->accept_user;
 
 	int row_h = (height - 16 - 3 * 7) / 4;
 	int key_w = (width - 16 - 9 * 6) / 10;
@@ -1146,12 +1158,84 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 		lv_obj_center(kb->variant_label[i]);
 	}
 
+	kb_apply_layout(kb);
+}
+
+// Whether the tray is on what the display shows: its screen is the active one
+// or a layer, and nothing between it and there is hidden. Coordinates are not
+// asked, since a page never shown has not been laid out yet.
+static bool kb_tray_shown(keyboard_t *kb) {
+	lv_obj_t *screen = lv_obj_get_screen(kb->tray);
+	if (screen != lv_screen_active() && screen != lv_layer_top() && screen != lv_layer_sys()) {
+		return false;
+	}
+	for (lv_obj_t *o = kb->tray; o; o = lv_obj_get_parent(o)) {
+		if (lv_obj_is_hidden(o)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// At the start of every refresh, before the layout and the drawing: a tray
+// that is about to appear gets its keys in the same frame, so it is never
+// seen empty. Nothing to do once every keyboard is built.
+static int kb_unbuilt;
+
+static void kb_refr_start_cb(lv_event_t *e) {
+	(void)e;
+	if (kb_unbuilt == 0) {
+		return;
+	}
+	for (keyboard_t *kb = kb_list; kb; kb = kb->next) {
+		if (!kb->built && kb_tray_shown(kb)) {
+			kb_build(kb);
+			kb_unbuilt--;
+		}
+	}
+}
+
+keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *field,
+							const lv_image_dsc_t *accept_icon, const char *accept_text, lv_event_cb_t on_accept,
+							void *user) {
+	keyboard_t *kb = calloc(1, sizeof(*kb));
+	if (!kb) {
+		return NULL;
+	}
+	kb->field = field;
+	kb->host = parent;
+
+	kb->width = width;
+	kb->height = height;
+	kb->accept_icon = accept_icon;
+	kb->accept_text = accept_text;
+	kb->on_accept = on_accept;
+	kb->accept_user = user;
+
+	kb->tray = lv_obj_create(parent);
+	lv_obj_set_size(kb->tray, width, height);
+	lv_obj_align(kb->tray, LV_ALIGN_BOTTOM_MID, 0, 0);
+	lv_obj_set_style_bg_color(kb->tray, kb_tray_color(), 0);
+	lv_obj_set_style_bg_opa(kb->tray, LV_OPA_COVER, 0);
+	lv_obj_set_style_border_width(kb->tray, 0, 0);
+	lv_obj_set_style_radius(kb->tray, 0, 0);
+	lv_obj_set_style_pad_all(kb->tray, 8, 0);
+	lv_obj_set_style_pad_gap(kb->tray, 7, 0);
+	lv_obj_set_scrollable(kb->tray, false);
+	lv_obj_set_flex_flow(kb->tray, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_flex_align(kb->tray, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
 	kb->next = kb_list;
 	kb_list = kb;
 	kb_register_refresh();
-
 	kb->layout = kblayout_default();
-	kb_apply_layout(kb);
+
+	static bool refr_hooked;
+	if (!refr_hooked) {
+		refr_hooked = true;
+		lv_display_add_event_cb(lv_display_get_default(), kb_refr_start_cb, LV_EVENT_REFR_START, NULL);
+	}
+	kb_unbuilt++;
 
 	// Leaving the page puts the alphabet back to the default. That is what
 	// makes a layout picked from the "123" key temporary: it lasts as long as
@@ -1171,6 +1255,10 @@ void keyboard_set_visible(keyboard_t *kb, bool visible) {
 		return;
 	}
 	if (visible) {
+		if (!kb->built) {
+			kb_build(kb);
+			kb_unbuilt--;
+		}
 		lv_obj_set_hidden(kb->tray, false);
 	} else {
 		lv_obj_set_hidden(kb->tray, true);
@@ -1329,10 +1417,7 @@ void keyboard_reset(keyboard_t *kb) {
 void keyboard_refresh_layout(void) {
 	kblayout_t now = kblayout_default();
 	for (keyboard_t *kb = kb_list; kb; kb = kb->next) {
-		if (!kb->rows[0]) {
-			continue;
-		}
-		kb->layout = now;
+		kb->layout = now; // an unbuilt keyboard is laid out in it when built
 		kb_apply_layout(kb);
 	}
 }
