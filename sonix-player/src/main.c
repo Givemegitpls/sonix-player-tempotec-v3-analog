@@ -2571,7 +2571,6 @@ int main(int argc, char **argv) {
 		char thumbs_path[600];
 		snprintf(thumbs_path, sizeof(thumbs_path), "%s/.local/thumbnails", db_root);
 		sonixlink_set_thumbs_path(thumbs_path);
-		albumart_set_cache_root(db_root);
 
 		// The audiobook index lives beside it, in its own file.
 		snprintf(db_path, sizeof(db_path), "%s/.local/audiobooks.db", db_root);

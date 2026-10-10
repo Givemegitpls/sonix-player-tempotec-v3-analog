@@ -346,23 +346,3 @@ uint8_t *jpeg_scaled_decode(const uint8_t *data, size_t size, int min_box, int *
 	uint8_t *out = lj_decode(data, size, NULL, min_box, out_w, out_h, src_w, src_h);
 	return out ? out : decode_io((jpeg_io_t){.data = data, .size = size}, min_box, out_w, out_h, src_w, src_h);
 }
-
-uint8_t *jpeg_scaled_decode_file(const char *path, long offset, size_t size, int min_box, int *out_w, int *out_h,
-								 int *src_w, int *src_h) {
-	if (!path || size == 0 || !out_w || !out_h) {
-		return NULL;
-	}
-	FILE *f = fopen(path, "rb");
-	if (!f) {
-		return NULL;
-	}
-	uint8_t *out = NULL;
-	if (fseek(f, offset, SEEK_SET) == 0) {
-		out = lj_decode(NULL, size, f, min_box, out_w, out_h, src_w, src_h);
-	}
-	if (!out && fseek(f, offset, SEEK_SET) == 0) {
-		out = decode_io((jpeg_io_t){.file = f, .size = size}, min_box, out_w, out_h, src_w, src_h);
-	}
-	fclose(f);
-	return out;
-}
