@@ -155,12 +155,3 @@ uint8_t *art_shrink_to_jpeg(const uint8_t *data, size_t size, int max_side, int 
 	}
 	return fit_and_encode(rgb, w, h, max_side, quality, size, out_len);
 }
-
-uint8_t *art_shrink_jpeg_file(const char *path, long offset, size_t size, int max_side, int quality, size_t *out_len) {
-	if (!path || size == 0 || max_side < 16 || !out_len) {
-		return NULL;
-	}
-	int w = 0, h = 0;
-	uint8_t *rgb = jpeg_scaled_decode_file(path, offset, size, max_side / 2, &w, &h, NULL, NULL);
-	return fit_and_encode(rgb, w, h, max_side, quality, size, out_len);
-}
