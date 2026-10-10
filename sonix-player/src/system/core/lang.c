@@ -415,6 +415,7 @@ int lang_list(const char **names, int max) {
 	// are tags, so a language with no file would show those tags rather than
 	// any readable text.
 	static char found[16][64];
+	char labels[16][64]; // what each accepted file declares, read once
 	int count = 0;
 
 	DIR *d = opendir(dir_path);
@@ -445,11 +446,7 @@ int lang_list(const char **names, int max) {
 
 		bool already = false;
 		for (int i = 0; i < count; i++) {
-			char other[64];
-			if (!read_declared_name(names[i], other, sizeof(other))) {
-				snprintf(other, sizeof(other), "%s", names[i]);
-			}
-			if (strcmp(other, label) == 0) {
+			if (strcmp(labels[i], label) == 0) {
 				already = true;
 				break;
 			}
@@ -457,6 +454,7 @@ int lang_list(const char **names, int max) {
 		if (already) {
 			continue;
 		}
+		snprintf(labels[count], sizeof(labels[0]), "%s", label);
 		snprintf(found[count], sizeof(found[0]), "%s", name);
 		names[count] = found[count];
 		count++;

@@ -288,6 +288,8 @@ void processespage_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(proc_list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_scrollable(proc_list, false);
 
-	rebuild();
-	lv_obj_add_event_cb(processespage_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	// No rebuild() here: screen_loaded_cb reads /proc on every open, and a
+	// list read at boot would be stale by then anyway. At the start of the
+	// load, so a page sliding in arrives with its list.
+	lv_obj_add_event_cb(processespage_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOAD_START, NULL);
 }

@@ -635,27 +635,38 @@ static void report_memory(const char *when) {
 // Provided by the linker: the first address past the code.
 extern char etext[];
 
-static void lock_code_pages(void) {
+// Measured on the V3 Blaze, the pinning reads some 9 MB of code off the
+// squashfs: a quarter of a second spent before the first frame. So it is done
+// in two steps. lock_code_plan() reads the map where the pinning used to
+// happen, which costs nothing and keeps the same set of mappings -- not the
+// libraries opened later, OpenSSL and libjpeg among them. lock_code_start()
+// then pins that set on a worker below the interface once the main loop runs,
+// a quarter megabyte per call: mlock faults its range in under the address
+// space lock, and in small pieces a page fault of the interface or of the
+// playback thread never waits behind a whole library.
+#define LOCK_RANGES_MAX 64
+#define LOCK_CHUNK (256u * 1024u)
+
+static struct {
+	unsigned long start, stop;
+} lock_ranges[LOCK_RANGES_MAX];
+static int lock_range_count;
+static bool lock_use_mlockall;
+static unsigned long lock_writable, lock_readonly;
+
+static void lock_code_plan(void) {
 	FILE *maps = fopen("/proc/self/maps", "r");
 	if (!maps) {
-		if (mlockall(MCL_CURRENT) != 0) {
-			perror("mlockall");
-		}
+		lock_use_mlockall = true;
 		return;
 	}
 
 	long page_size = sysconf(_SC_PAGESIZE);
 	unsigned long page = page_size > 0 ? (unsigned long)page_size : 4096u;
 	unsigned long code_end = (unsigned long)etext;
-	unsigned long here = (unsigned long)&lock_code_pages;
+	unsigned long here = (unsigned long)&lock_code_plan;
 
 	char line[256];
-	unsigned long locked = 0;
-	unsigned long writable = 0;
-	unsigned long readonly = 0;
-	int regions = 0;
-	int refused = 0;
-
 	while (fgets(line, sizeof(line), maps)) {
 		unsigned long start = 0;
 		unsigned long end = 0;
@@ -669,7 +680,7 @@ static void lock_code_pages(void) {
 		// Executable and writable: data wearing the x this process gives to
 		// everything readable. See the note above.
 		if (perms[1] == 'w') {
-			writable += end - start;
+			lock_writable += end - start;
 			continue;
 		}
 
@@ -681,24 +692,73 @@ static void lock_code_pages(void) {
 			if (stop > end) {
 				stop = end;
 			}
-			readonly += end - stop;
+			lock_readonly += end - stop;
 		}
 
-		if (mlock((void *)start, (size_t)(stop - start)) == 0) {
-			locked += stop - start;
-			regions++;
+		if (lock_range_count < LOCK_RANGES_MAX) {
+			lock_ranges[lock_range_count].start = start;
+			lock_ranges[lock_range_count].stop = stop;
+			lock_range_count++;
 		} else {
-			// The kernel keeps a few mappings of its own that cannot be
-			// locked; they are not the player's code.
-			refused++;
+			fprintf(stderr, "memory: more than %d code mappings, %lx-%lx left unlocked\n", LOCK_RANGES_MAX, start,
+					stop);
 		}
 	}
 	fclose(maps);
+}
+
+static void *lock_code_thread(void *arg) {
+	(void)arg;
+	// Not idle class: preempted for long while holding the address space
+	// lock, it would leave every page fault queued behind it.
+	thread_be_low_priority("code lock");
+
+	if (lock_use_mlockall) {
+		if (mlockall(MCL_CURRENT) != 0) {
+			perror("mlockall");
+		}
+		return NULL;
+	}
+
+	unsigned long locked = 0;
+	int regions = 0;
+	int refused = 0;
+	for (int i = 0; i < lock_range_count; i++) {
+		bool ok = true;
+		for (unsigned long at = lock_ranges[i].start; at < lock_ranges[i].stop; at += LOCK_CHUNK) {
+			unsigned long len = lock_ranges[i].stop - at;
+			if (len > LOCK_CHUNK) {
+				len = LOCK_CHUNK;
+			}
+			if (mlock((void *)at, (size_t)len) == 0) {
+				locked += len;
+			} else {
+				ok = false;
+			}
+		}
+		// The kernel keeps a few mappings of its own that cannot be locked;
+		// they are not the player's code.
+		if (ok) {
+			regions++;
+		} else {
+			refused++;
+		}
+	}
 
 	fprintf(stderr,
 			"memory: %d code regions locked in RAM (%lu kB), %d refused, "
 			"left %lu kB writable and %lu kB read-only\n",
-			regions, locked / 1024, refused, writable / 1024, readonly / 1024);
+			regions, locked / 1024, refused, lock_writable / 1024, lock_readonly / 1024);
+	return NULL;
+}
+
+static void lock_code_start(void) {
+	pthread_t thread;
+	if (pthread_create(&thread, NULL, lock_code_thread, NULL) == 0) {
+		pthread_detach(thread);
+	} else {
+		fprintf(stderr, "memory: no thread to lock the code pages; left unlocked\n");
+	}
 }
 
 // Tells the kernel who to kill when memory runs out. The player is the last
@@ -2252,6 +2312,16 @@ static void limit_realtime_share(void) {
 }
 #endif
 
+// See the call in main().
+static void *tls_warm_thread(void *arg) {
+	(void)arg;
+	thread_be_low_priority("tls warm-up"); // not idle class: radio pages wait on its lock
+	if (!tls_available()) {
+		fprintf(stderr, "tls: unavailable; https radio stations cannot be opened\n");
+	}
+	return NULL;
+}
+
 int main(int argc, char **argv) {
 	// Before anything at all -- before the signal guards, before the allocator
 	// is tuned, before a display is opened. thttpd runs this same binary as the
@@ -2288,7 +2358,7 @@ int main(int argc, char **argv) {
 #ifndef HOST_BUILD
 	set_oom_priority("-500");
 
-	lock_code_pages();
+	lock_code_plan(); // pinned once the main loop runs: lock_code_start()
 
 	// Before the first real-time thread starts.
 	limit_realtime_share();
@@ -2297,7 +2367,7 @@ int main(int argc, char **argv) {
 #ifndef HOST_BUILD
 	// Straight away, before anything is opened: how much RAM the binary takes
 	// and how much is left for the rest of the device. Here and not up at
-	// lock_code_pages() because nothing collects stderr before logging_init().
+	// lock_code_plan() because nothing collects stderr before logging_init().
 	//
 	// Printed every time, because the player sets oom_score_adj to -500: when
 	// RAM runs out the kernel kills something else, and if that is a system
@@ -2612,8 +2682,16 @@ int main(int argc, char **argv) {
 	// rather than to the local database.
 	library_forget_under(qobuzcache_dir());
 	library_forget_under(tidalcache_dir());
-	if (!tls_available()) {
-		fprintf(stderr, "tls: unavailable; https radio stations cannot be opened\n");
+	// OpenSSL is loaded on a worker below the interface: the libraries and the
+	// certificate bundle take a quarter of a second on this core, and nothing
+	// needs them until a stream is opened, which waits on the loader's lock.
+	{
+		pthread_t tls_thread;
+		if (pthread_create(&tls_thread, NULL, tls_warm_thread, NULL) == 0) {
+			pthread_detach(tls_thread);
+		} else {
+			fprintf(stderr, "tls: no thread for the warm-up; loaded on first use\n");
+		}
 	}
 
 	// The radios, before the interface: both read their switch out of the
@@ -2807,6 +2885,10 @@ int main(int argc, char **argv) {
 	// variable, which also lowers the threshold (the computer is many times
 	// faster than the device).
 	frameprof_init(frameprof_wanted(), getenv("SONIX_FRAMEPROF") ? (unsigned)atoi(getenv("SONIX_FRAMEPROF")) : 0);
+
+#ifndef HOST_BUILD
+	lock_code_start();
+#endif
 
 	printf("Entering main event loop...\n");
 	while (running) {
