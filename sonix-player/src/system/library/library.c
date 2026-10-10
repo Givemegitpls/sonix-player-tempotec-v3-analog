@@ -1804,6 +1804,8 @@ static void db_lock_profiled(void) {
 	frameprof_end(PROF_DB_WAIT);
 }
 
+static library_quality_t quality_of(int format, int rate, int bits);
+
 library_quality_t library_track_quality(const char *path, int *rate_out, int *bits_out) {
 	if (rate_out) {
 		*rate_out = 0;
@@ -1838,7 +1840,11 @@ library_quality_t library_track_quality(const char *path, int *rate_out, int *bi
 	if (bits_out) {
 		*bits_out = bits;
 	}
+	return quality_of(format, rate, bits);
+}
 
+// The badge for what the scan wrote down about a file.
+static library_quality_t quality_of(int format, int rate, int bits) {
 	switch (format) {
 	case FORMAT_DSD:
 		return LIBRARY_QUALITY_DSD;
@@ -2818,8 +2824,10 @@ static int row_slot(const struct library_index *ix, int index) {
 	return ix->desc ? ix->count - 1 - index : index;
 }
 
-int library_index_window(const library_index_t *ix, int offset, int count, library_row_cb cb, void *user) {
-	if (!ix || !cb || offset < 0 || count <= 0 || offset >= ix->count) {
+// Both window readers: `cb` gets the row, `qcb` the row and its badge.
+static int index_window(const library_index_t *ix, int offset, int count, library_row_cb cb,
+						library_row_quality_cb qcb, void *user) {
+	if (!ix || (!cb && !qcb) || offset < 0 || count <= 0 || offset >= ix->count) {
 		return 0;
 	}
 	if (offset + count > ix->count) {
@@ -2828,6 +2836,11 @@ int library_index_window(const library_index_t *ix, int offset, int count, libra
 
 	char sql_buf[PLAYLIST_TABLE_MAX + 384];
 	const char *sql = row_by_id_sql(ix->kind, ix->value, sql_buf, sizeof(sql_buf));
+	// A track row is already open: its three numbers come with it.
+	bool with_quality = qcb && ix->kind == LIBRARY_LIST_TRACKS;
+	if (with_quality) {
+		sql = "SELECT name, path, artist, format, sample_rate, bit FROM MEDIA_TABLE WHERE rowid=?";
+	}
 	if (!sql) {
 		return 0;
 	}
@@ -2852,7 +2865,7 @@ int library_index_window(const library_index_t *ix, int offset, int count, libra
 				// The row went while the window was being read. The window is
 				// positional, so it gets a blank rather than the next row
 				// shifted into its place.
-				if (!cb("", NULL, NULL, user)) {
+				if (qcb ? !qcb("", NULL, NULL, -1, user) : !cb("", NULL, NULL, user)) {
 					break;
 				}
 				delivered++;
@@ -2861,7 +2874,19 @@ int library_index_window(const library_index_t *ix, int offset, int count, libra
 			const char *name = (const char *)sqlite3_column_text(stmt, 0);
 			const char *path = (const char *)sqlite3_column_text(stmt, 1);
 			const char *artist = (const char *)sqlite3_column_text(stmt, 2);
-			if (!cb(name ? name : "", path, artist, user)) {
+			bool more;
+			if (qcb) {
+				int quality = -1;
+				if (with_quality) {
+					quality = (int)quality_of(sqlite3_column_type(stmt, 3) == SQLITE_NULL ? -1
+																						   : sqlite3_column_int(stmt, 3),
+											  sqlite3_column_int(stmt, 4), sqlite3_column_int(stmt, 5));
+				}
+				more = qcb(name ? name : "", path, artist, quality, user);
+			} else {
+				more = cb(name ? name : "", path, artist, user);
+			}
+			if (!more) {
 				break;
 			}
 			delivered++;
@@ -2872,6 +2897,15 @@ int library_index_window(const library_index_t *ix, int offset, int count, libra
 
 	pthread_mutex_unlock(&db_lock);
 	return delivered;
+}
+
+int library_index_window(const library_index_t *ix, int offset, int count, library_row_cb cb, void *user) {
+	return index_window(ix, offset, count, cb, NULL, user);
+}
+
+int library_index_window_quality(const library_index_t *ix, int offset, int count, library_row_quality_cb cb,
+								 void *user) {
+	return index_window(ix, offset, count, NULL, cb, user);
 }
 
 library_index_t *library_index_clone(const library_index_t *ix) {

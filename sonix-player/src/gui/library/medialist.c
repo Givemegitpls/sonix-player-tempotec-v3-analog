@@ -124,6 +124,7 @@ typedef struct {
 	char path[512];
 	char artist[128]; // a track's artist, an album's; empty on the other lists
 	bool has_path;
+	int quality; // a library_quality_t read with the row, or -1 (the badge asks)
 } winrow_t;
 
 typedef struct {
@@ -227,6 +228,8 @@ typedef struct {
 	// the strip's rather than the page's. Until it has, nothing moves.
 	lv_point_t index_press;
 	bool index_engaged;
+	// When a drag on the strip last moved the list (see index_bar_cb).
+	uint32_t index_jump_at;
 
 	// Selection mode, on the lists panel_selectable() allows: a long press on
 	// a row starts it, taps then choose rows, and the corner holds the way out
@@ -460,7 +463,7 @@ typedef struct {
 	int filled;
 } window_fill_t;
 
-static bool window_fill_cb(const char *name, const char *path, const char *artist, void *user) {
+static bool window_fill_cb(const char *name, const char *path, const char *artist, int quality, void *user) {
 	window_fill_t *fill = user;
 	if (fill->filled >= WINDOW_ROWS) {
 		return false;
@@ -470,6 +473,7 @@ static bool window_fill_cb(const char *name, const char *path, const char *artis
 	row->has_path = path != NULL;
 	snprintf(row->path, sizeof(row->path), "%s", path ? path : "");
 	snprintf(row->artist, sizeof(row->artist), "%s", artist ? artist : "");
+	row->quality = quality;
 	return true;
 }
 
@@ -524,7 +528,15 @@ static bool window_cover(panel_t *p, int index) {
 		return true;
 	}
 
+	// Ahead of where the list is going. A row wanted above the band is a list
+	// scrolling up, so the band is laid out mostly above it, with the pool
+	// below it still inside; otherwise mostly below. Placed the one way for
+	// both, a list going up left the band after twelve rows instead of
+	// thirty-five.
 	int first = index - ROW_POOL;
+	if (p->window_first >= 0 && index < p->window_first) {
+		first = index + ROW_POOL + 1 - WINDOW_ROWS;
+	}
 	if (first < 0) {
 		first = 0;
 	}
@@ -536,7 +548,7 @@ static bool window_cover(panel_t *p, int index) {
 	}
 
 	window_fill_t fill = {.panel = p, .filled = 0};
-	library_index_window(p->ix, first, WINDOW_ROWS, window_fill_cb, &fill);
+	library_index_window_quality(p->ix, first, WINDOW_ROWS, window_fill_cb, &fill);
 	p->window_first = first;
 	p->window_count = fill.filled;
 	return index >= first && index < first + fill.filled;
@@ -811,7 +823,7 @@ void medialist_notify_now_playing(void) {
 
 // The badge a track wears, or nothing at all when the setting is off, the row
 // is not a track, or the index never learned what the file holds.
-static void row_update_quality(panel_t *p, row_t *row, const char *path) {
+static void row_update_quality(panel_t *p, row_t *row, int index, const char *path) {
 	if (!row->quality) {
 		return;
 	}
@@ -820,8 +832,18 @@ static void row_update_quality(panel_t *p, row_t *row, const char *path) {
 		return;
 	}
 
+	// Read with the row where the list carries it; a query of its own where
+	// it does not (favourites, playlists, a list of paths).
+	int quality = -1;
+	if (!p->from_paths && index >= 0 && index < p->count && window_cover(p, index)) {
+		quality = p->window[index - p->window_first].quality;
+	}
+	if (quality < 0) {
+		quality = (int)library_track_quality(path, NULL, NULL);
+	}
+
 	const lv_image_dsc_t *icon = NULL;
-	switch (library_track_quality(path, NULL, NULL)) {
+	switch ((library_quality_t)quality) {
 	case LIBRARY_QUALITY_LOSSY:
 		icon = &icon_quality_lossy;
 		break;
@@ -877,7 +899,7 @@ static bool panel_shows_artist(const panel_t *p) {
 // The line under the title: the badge, the artist, both or neither -- and when
 // neither, the line itself goes, so the title sits in the middle of the row.
 static void row_update_detail(panel_t *p, row_t *row, int index, const char *path) {
-	row_update_quality(p, row, path);
+	row_update_quality(p, row, index, path);
 
 	const char *artist = panel_shows_artist(p) ? row_artist_at(p, index) : NULL;
 	// Inside an album, only a track by someone other than the album's artist.
@@ -1865,17 +1887,24 @@ static void index_go(panel_t *p, int slot) {
 // worked out from the strip's height: the row of labels is laid out with even
 // gaps around it, so it does not quite fill the box, and arithmetic on the box
 // answers a press near either end with the neighbouring letter.
-static void index_go_at(panel_t *p, lv_point_t point) {
+static int index_slot_at(panel_t *p, lv_point_t point) {
 	for (int slot = 0; slot < INDEX_BUCKETS; slot++) {
 		lv_area_t area;
 		lv_obj_get_coords(p->index_letters[slot], &area);
 		if (point.y <= area.y2) {
-			index_go(p, slot);
-			return;
+			return slot;
 		}
 	}
-	index_go(p, INDEX_BUCKETS - 1); // past the last letter: the last letter
+	return INDEX_BUCKETS - 1; // past the last letter: the last letter
 }
+
+static void index_go_at(panel_t *p, lv_point_t point) { index_go(p, index_slot_at(p, point)); }
+
+// How often a finger sliding down the strip moves the list. Every letter it
+// crosses is a jump to rows nobody has read yet, a windowful from the card,
+// and a quick slide from A to Z threw away two dozen of them; the big letter
+// follows the finger all the same, and the list catches up within this.
+#define INDEX_JUMP_MS 80
 
 // The strip carries the page's own gestures as well -- the swipe back and the
 // pull that brings the player in -- so a press on it does not commit to the
@@ -1895,9 +1924,10 @@ static void index_bar_cb(lv_event_t *e) {
 
 	if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
 		lv_indev_t *indev = lv_indev_active();
-		if (code == LV_EVENT_RELEASED && !p->index_engaged && indev) {
+		if (code == LV_EVENT_RELEASED && indev) {
 			// It never moved: a tap on a letter, which is the other way the
-			// strip is meant to be used. Acted on at the lift.
+			// strip is meant to be used. Acted on at the lift. Or a slide,
+			// whose last letter may not have been jumped to yet.
 			lv_point_t point;
 			lv_indev_get_point(indev, &point);
 			index_go_at(p, point);
@@ -1935,9 +1965,16 @@ static void index_bar_cb(lv_event_t *e) {
 			return; // not enough to tell yet
 		}
 		p->index_engaged = true;
+		p->index_jump_at = 0;
 	}
 
-	index_go_at(p, point);
+	int slot = index_slot_at(p, point);
+	if (p->index_jump_at && lv_tick_elaps(p->index_jump_at) < INDEX_JUMP_MS) {
+		index_hint_show(p, slot);
+		return;
+	}
+	p->index_jump_at = lv_tick_get() | 1; // never 0, which means "jump now"
+	index_go(p, slot);
 }
 
 // ---------------------------------------------------------------------------
