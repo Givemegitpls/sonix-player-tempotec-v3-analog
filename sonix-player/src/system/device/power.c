@@ -1072,7 +1072,7 @@ static void suspend_to_ram(void) {
 		headset_suspend_finish();
 		headset_keys_wake();
 		// The route was parked and the DAC muted for a sleep that never began.
-		audio_force_output_reinit_after_resume();
+		audio_start_output_reinit_after_resume();
 		return;
 	}
 	fputs("mem", f);
@@ -1094,11 +1094,10 @@ static void suspend_to_ram(void) {
 	// starts again, like any other countdown, and the instant-wake counter below
 	// is what guards against a device that wakes itself in a loop.
 
-	// Before the first play opens a PCM: force the output route to re-init. The
-	// suspend powers the HBC3000 down and its kernel resume is a no-op, but the
-	// software route survives, so auto_set_output() would see "X == X" and skip
-	// hbc3000_enable(). A real X->Y->X on the mixer forces the chip's power-on
-	// again, without which the first play after a standby reboots the device.
+	// The route written again before the first play opens a PCM: on the R3 Pro
+	// II that powers the HBC3000 back up, without which the first play after a
+	// standby reboots the device. It runs in the background while the screen
+	// comes back; whatever reaches the card meanwhile waits for it.
 	//
 	// And this is the whole of what a resume owes the audio path. Volume, gain,
 	// digital filter, DRE and NOS are not rewritten because they are not lost:
@@ -1108,9 +1107,8 @@ static void suspend_to_ram(void) {
 	// on alsa_controls_reapply() in alsa-controls.c.
 	//
 	// After a refused suspend too: the route was parked and the DAC muted all
-	// the same, and left that way the next play goes to the parked socket in
-	// silence.
-	audio_force_output_reinit_after_resume();
+	// the same, and the card stays closed until the re-init has run.
+	audio_start_output_reinit_after_resume();
 	if (rc == 0) {
 
 		// And the same courtesy to the radio. The daemons came through the
