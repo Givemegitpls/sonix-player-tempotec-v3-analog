@@ -16,8 +16,7 @@
 
 lv_obj_t *appearance_screen;
 
-static lv_obj_t *btn_dark;
-static lv_obj_t *btn_light;
+static lv_obj_t *btn_theme[3]; // indexed by theme_mode_t
 static lv_obj_t *btn_clock[4]; // left / centre / right / hidden
 static lv_obj_t *btn_accent[THEME_ACCENT_COUNT]; // the coloured circles
 static lv_obj_t *tint_toggle;
@@ -67,19 +66,22 @@ static void text_size_cb(lv_event_t *e) {
 	refresh_text_size_pills();
 }
 
-// Paints the pair: the active choice is the filled accent button, the other a
-// quiet neutral, like libadwaita's suggested-action beside a regular button.
+// Paints the choices: the active one is the filled accent button, the others
+// a quiet neutral, like libadwaita's suggested-action beside regular buttons.
 static void refresh_buttons(void) {
-	bool dark = theme_is_dark();
-
-	lv_obj_t *on = dark ? btn_dark : btn_light;
-	lv_obj_t *off = dark ? btn_light : btn_dark;
-
-	lv_obj_set_style_bg_color(on, theme()->accent, 0);
-	lv_obj_set_style_text_color(lv_obj_get_child(on, 0), lv_color_white(), 0);
-
-	lv_obj_set_style_bg_color(off, theme()->surface_pressed, 0);
-	lv_obj_set_style_text_color(lv_obj_get_child(off, 0), theme()->text_primary, 0);
+	theme_mode_t active_mode = theme_get_mode();
+	for (int i = 0; i < 3; i++) {
+		if (!btn_theme[i]) {
+			continue;
+		}
+		if (i == (int)active_mode) {
+			lv_obj_set_style_bg_color(btn_theme[i], theme()->accent, 0);
+			lv_obj_set_style_text_color(lv_obj_get_child(btn_theme[i], 0), lv_color_white(), 0);
+		} else {
+			lv_obj_set_style_bg_color(btn_theme[i], theme()->surface_pressed, 0);
+			lv_obj_set_style_text_color(lv_obj_get_child(btn_theme[i], 0), theme()->text_primary, 0);
+		}
+	}
 }
 
 // The active circle wears a ring in the text colour; the rest sit flat.
@@ -160,19 +162,19 @@ static lv_obj_t *make_clock_choice(lv_obj_t *parent, const char *text, int pos) 
 }
 
 static void pick_cb(lv_event_t *e) {
-	bool dark = (bool)(uintptr_t)lv_event_get_user_data(e);
-	theme_set_dark(dark);
+	theme_mode_t m = (theme_mode_t)(uintptr_t)lv_event_get_user_data(e);
+	theme_set_mode(m);
 	refresh_buttons();
 }
 
-static lv_obj_t *make_choice(lv_obj_t *parent, const char *text, bool dark) {
+static lv_obj_t *make_choice(lv_obj_t *parent, const char *text, theme_mode_t m) {
 	lv_obj_t *btn = lv_btn_create(parent);
 	lv_obj_set_size(btn, LV_SIZE_CONTENT, 64);
-	lv_obj_set_style_pad_hor(btn, 34, 0);
+	lv_obj_set_style_pad_hor(btn, 24, 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_add_event_cb(btn, pick_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)dark);
+	lv_obj_add_event_cb(btn, pick_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)m);
 
 	lv_obj_t *label = lv_label_create(btn);
 	lv_label_set_text(label, tr(text));
@@ -185,7 +187,7 @@ static lv_obj_t *make_choice(lv_obj_t *parent, const char *text, bool dark) {
 void appearance_init(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(appearance_screen, cfg, "appearance");
 
-	// One tall card: the option's name on top, the two choices under it.
+	// One tall card: the option's name on top, the three choices under it.
 	lv_obj_t *card = lv_obj_create(container);
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
@@ -211,11 +213,14 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(row, 0, 0);
 	lv_obj_set_style_pad_gap(row, 14, 0);
 	lv_obj_set_scrollable(row, false);
-	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	// Wrapped for the same reason as the clock pills below: three translated
+	// words do not fit across the panel in every language.
+	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
+	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
 
-	btn_dark = make_choice(row, "appearance_dark", true);
-	btn_light = make_choice(row, "appearance_light", false);
+	btn_theme[THEME_MODE_DARK] = make_choice(row, "appearance_dark", THEME_MODE_DARK);
+	btn_theme[THEME_MODE_AMOLED] = make_choice(row, "appearance_amoled", THEME_MODE_AMOLED);
+	btn_theme[THEME_MODE_LIGHT] = make_choice(row, "appearance_light", THEME_MODE_LIGHT);
 
 	// A second card: where the clock sits in the status bar.
 	lv_obj_t *clock_card = lv_obj_create(container);

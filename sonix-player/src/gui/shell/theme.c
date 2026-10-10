@@ -50,10 +50,41 @@ static theme_palette_t palette_light = {
 	.dark = false,
 };
 
-// Whether the dark preset is the chosen one, kept apart from `active` because
-// with the dynamic tint on `active` points at a derived copy rather than at
-// either preset.
-static bool dark_selected = true;
+// AMOLED: the dark preset taken down to pure black wherever a page has no
+// content -- the window, the status bar, the player's control block -- so an
+// OLED panel switches those pixels off. The cards are lifted just enough to
+// stay readable as cards on black, and pressed a step further, the same ladder
+// the dark preset climbs, started from zero.
+static theme_palette_t palette_amoled = {
+	.screen_bg = LV_COLOR_MAKE(0, 0, 0),
+	.surface = LV_COLOR_MAKE(20, 20, 20),
+	.surface_pressed = LV_COLOR_MAKE(44, 44, 44),
+	.panel = LV_COLOR_MAKE(0, 0, 0),
+	.cover_bg = LV_COLOR_MAKE(14, 14, 14),
+	.text_primary = LV_COLOR_MAKE(255, 255, 255),
+	.text_secondary = LV_COLOR_MAKE(150, 150, 150),
+	.accent = LV_COLOR_MAKE(53, 132, 228),
+	.dark = true,
+};
+
+// Which preset is the chosen one, kept apart from `active` because with the
+// dynamic tint on `active` points at a derived copy rather than at any preset.
+static theme_mode_t mode = THEME_MODE_DARK;
+
+// The dark preset light toggles back to: dark or AMOLED, whichever was last
+// chosen.
+static theme_mode_t last_dark_mode = THEME_MODE_DARK;
+
+static theme_palette_t *mode_palette(theme_mode_t m) {
+	switch (m) {
+	case THEME_MODE_LIGHT:
+		return &palette_light;
+	case THEME_MODE_AMOLED:
+		return &palette_amoled;
+	default:
+		return &palette_dark;
+	}
+}
 
 // The dynamic tint: the neutral colours -- backgrounds, cards, the status bar
 // -- borrow the accent's hue, the way Material You colours a system from one
@@ -146,7 +177,7 @@ static lv_color_t tint_with(lv_color_t c, lv_color_t accent, float strength) {
 
 // Points `active` at the chosen preset, or at a tinted copy of it.
 static void rebuild_active(void) {
-	theme_palette_t *base = dark_selected ? &palette_dark : &palette_light;
+	theme_palette_t *base = mode_palette(mode);
 
 	if (!dynamic_tint) {
 		active = base;
@@ -223,15 +254,19 @@ void theme_init(void) {
 	lv_style_set_radius(&theme_style_slider_track, LV_RADIUS_CIRCLE);
 
 	// Whatever was chosen last time. Dark is the default for a first boot.
-	dark_selected = config_get_bool("ui", "dark_theme", true);
+	// AMOLED is a second key beside dark_theme rather than a new value of it,
+	// so a config written here still reads as dark to a build without AMOLED.
+	last_dark_mode = config_get_bool("ui", "amoled", false) ? THEME_MODE_AMOLED : THEME_MODE_DARK;
+	mode = config_get_bool("ui", "dark_theme", true) ? last_dark_mode : THEME_MODE_LIGHT;
 
-	// The accent as it was left; both palettes carry the same one.
+	// The accent as it was left; every palette carries the same one.
 	accent_index = (int)config_get_int("ui", "accent", 0);
 	if (accent_index < 0 || accent_index >= THEME_ACCENT_COUNT) {
 		accent_index = 0;
 	}
 	palette_dark.accent = ACCENT_COLORS[accent_index];
 	palette_light.accent = ACCENT_COLORS[accent_index];
+	palette_amoled.accent = ACCENT_COLORS[accent_index];
 
 	dynamic_tint = config_get_bool("ui", "dynamic_tint", false);
 
@@ -281,6 +316,8 @@ void theme_set_dark(bool dark) {
 	}
 	theme_toggle();
 }
+
+theme_mode_t theme_get_mode(void) { return mode; }
 
 // Which palette the pages on screen were last walked for.
 //
@@ -371,21 +408,39 @@ static void refresh_all(void) {
 	}
 }
 
-void theme_toggle(void) {
-	dark_selected = !dark_selected;
+void theme_set_mode(theme_mode_t m) {
+	if (m != THEME_MODE_LIGHT && m != THEME_MODE_AMOLED) {
+		m = THEME_MODE_DARK;
+	}
+	if (m == mode) {
+		return;
+	}
+	bool was_dark = active->dark;
+	mode = m;
+	if (mode != THEME_MODE_LIGHT) {
+		last_dark_mode = mode;
+	}
 	rebuild_active();
 	apply_palette();
 
 	config_set_bool("ui", "dark_theme", active->dark);
+	config_set_bool("ui", "amoled", last_dark_mode == THEME_MODE_AMOLED);
 	config_save();
 
 	// The picture shown while the player boots follows the theme too. It is
 	// written into raw flash rather than into the config, because the script
 	// that draws it runs long before any filesystem holding a config is
-	// mounted -- see bootlogo.h.
-	bootlogo_follow_theme(active->dark);
+	// mounted -- see bootlogo.h. Dark and AMOLED share the dark picture, so a
+	// move between those two leaves the flash alone.
+	if (active->dark != was_dark) {
+		bootlogo_follow_theme(active->dark);
+	}
 
 	refresh_all();
+}
+
+void theme_toggle(void) {
+	theme_set_mode(mode == THEME_MODE_LIGHT ? last_dark_mode : THEME_MODE_LIGHT);
 }
 
 void theme_set_accent(int index) {
@@ -395,6 +450,7 @@ void theme_set_accent(int index) {
 	accent_index = index;
 	palette_dark.accent = ACCENT_COLORS[index];
 	palette_light.accent = ACCENT_COLORS[index];
+	palette_amoled.accent = ACCENT_COLORS[index];
 	rebuild_active(); // the tint is drawn from the accent, so it moves with it
 	apply_palette();
 
