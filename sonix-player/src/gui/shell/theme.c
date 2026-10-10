@@ -1,6 +1,7 @@
 #include "theme.h"
 
 #include "src/system/device/bootlogo.h"
+#include "src/system/device/sysinfo.h"
 #include "src/system/core/config.h"
 
 #include <stdio.h>
@@ -272,6 +273,14 @@ void theme_init(void) {
 
 	rebuild_active();
 	apply_palette();
+
+	// A player with one boot logo puts back a marker that an earlier build,
+	// which wrote it by theme, left on the flash (see bootlogo.h). Read on a
+	// worker, written only when it differs.
+	const sysinfo_model_t *model = sysinfo_model();
+	if (model && model->one_boot_logo) {
+		bootlogo_follow_theme(active->dark);
+	}
 }
 
 void theme_apply_slider_knob(lv_obj_t *slider) {
@@ -431,8 +440,10 @@ void theme_set_mode(theme_mode_t m) {
 	// written into raw flash rather than into the config, because the script
 	// that draws it runs long before any filesystem holding a config is
 	// mounted -- see bootlogo.h. Dark and AMOLED share the dark picture, so a
-	// move between those two leaves the flash alone.
-	if (active->dark != was_dark) {
+	// move between those two leaves the flash alone. A player with one boot
+	// logo has nothing to follow; theme_init() already set it.
+	const sysinfo_model_t *model = sysinfo_model();
+	if (active->dark != was_dark && !(model && model->one_boot_logo)) {
 		bootlogo_follow_theme(active->dark);
 	}
 
