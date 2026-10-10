@@ -36,6 +36,10 @@ static lv_obj_t *standby_switch;
 static lv_obj_t *charge_note;
 static lv_obj_t *axp_limit_switch, *axp_current_switch; // the R1's two, instead of the slider
 
+// The R1 with the open axp2101.ko, which keeps a percentage limit like the
+// R3 Pro II's charger: the slider, and the current switch.
+static bool axp_driver_limit(void) { return axpcharge_applies() && power_charge_limit_supported(); }
+
 // --- reading the saved values ---
 
 static int charge_index(void) {
@@ -71,7 +75,16 @@ static void set_checked(lv_obj_t *sw, bool on) {
 }
 
 void powersettings_apply(void) {
-	if (axpcharge_applies()) {
+	if (axp_driver_limit()) {
+		// The 80 % switch of the stock driver becomes the slider at 80 %.
+		if (config_get_bool("power", "charge_limit_80", false)) {
+			config_set_bool("power", "charge_limit_80", false);
+			config_set_int("power", "charge_limit", CHARGE_LIMIT_MIN);
+			config_save();
+		}
+		power_set_charge_limit(CHARGE_LIMIT_MIN + (charge_index() * CHARGE_LIMIT_STEP));
+		axpcharge_set(false, config_get_bool("power", "charge_500ma", false));
+	} else if (axpcharge_applies()) {
 		power_set_charge_limit(100);
 		axpcharge_set(config_get_bool("power", "charge_limit_80", false),
 					  config_get_bool("power", "charge_500ma", false));
@@ -100,6 +113,8 @@ static void refresh_labels(void) {
 	}
 	if (axp_limit_switch) {
 		set_checked(axp_limit_switch, config_get_bool("power", "charge_limit_80", false));
+	}
+	if (axp_current_switch) {
 		set_checked(axp_current_switch, config_get_bool("power", "charge_500ma", false));
 	}
 	lv_label_set_text(auto_off_value, tr(AUTO_OFF[auto_off_index()].label));
@@ -238,11 +253,16 @@ void powersettings_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(standby_note, &font_ui_22, 0);
 	lv_label_set_text(standby_note, tr("power_standby_mem_note"));
 
-	// The R1 charges through its PMIC, which takes a lower target voltage and a
-	// lower current rather than a percentage: two switches there, the slider
-	// everywhere else.
+	// The R1 charges through its PMIC. With the stock driver it takes a lower
+	// target voltage and a lower current rather than a percentage: two
+	// switches. With the open one, the slider and the current switch.
 	bool pmic = axpcharge_applies();
-	if (pmic) {
+	if (axp_driver_limit()) {
+		settingsrow_slider(container, "power_charge_limit", CHARGE_LIMIT_COUNT, &charge_value, &charge_slider,
+						   charge_changed_cb);
+		lv_slider_set_value(charge_slider, charge_index(), LV_ANIM_OFF);
+		settingsrow_toggle(container, "power_charge_500ma", &axp_current_switch, axp_current_toggled_cb);
+	} else if (pmic) {
 		settingsrow_toggle(container, "power_charge_limit_80", &axp_limit_switch, axp_limit_toggled_cb);
 		lv_obj_t *limit_note = lv_label_create(container);
 		lv_label_set_long_mode(limit_note, LV_LABEL_LONG_WRAP);
