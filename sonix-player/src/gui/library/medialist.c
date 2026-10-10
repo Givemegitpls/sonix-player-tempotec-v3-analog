@@ -228,8 +228,10 @@ typedef struct {
 	// the strip's rather than the page's. Until it has, nothing moves.
 	lv_point_t index_press;
 	bool index_engaged;
-	// When a drag on the strip last moved the list (see index_bar_cb).
+	// When a drag on the strip last moved the list, and the letter it is over
+	// now (see index_bar_cb).
 	uint32_t index_jump_at;
+	int index_slot_now;
 
 	// Selection mode, on the lists panel_selectable() allows: a long press on
 	// a row starts it, taps then choose rows, and the corner holds the way out
@@ -833,9 +835,11 @@ static void row_update_quality(panel_t *p, row_t *row, int index, const char *pa
 	}
 
 	// Read with the row where the list carries it; a query of its own where
-	// it does not (favourites, playlists, a list of paths).
+	// it does not (favourites, playlists, a list of paths). Only from the band
+	// as it is: moving it here would rewrite the strings row_bind still holds.
 	int quality = -1;
-	if (!p->from_paths && index >= 0 && index < p->count && window_cover(p, index)) {
+	if (!p->from_paths && p->window && p->window_first >= 0 && index >= p->window_first &&
+		index < p->window_first + p->window_count) {
 		quality = p->window[index - p->window_first].quality;
 	}
 	if (quality < 0) {
@@ -1932,6 +1936,11 @@ static void index_bar_cb(lv_event_t *e) {
 			lv_indev_get_point(indev, &point);
 			index_go_at(p, point);
 		}
+		// A press taken away mid-slide still lands on the letter shown; the
+		// point is not asked, since a lost press may not have one.
+		if (code == LV_EVENT_PRESS_LOST && p->index_engaged) {
+			index_go(p, p->index_slot_now);
+		}
 		p->index_hint_at = lv_tick_get(); // from here the big letter fades out
 		p->index_engaged = false;
 		return;
@@ -1969,6 +1978,7 @@ static void index_bar_cb(lv_event_t *e) {
 	}
 
 	int slot = index_slot_at(p, point);
+	p->index_slot_now = slot;
 	if (p->index_jump_at && lv_tick_elaps(p->index_jump_at) < INDEX_JUMP_MS) {
 		index_hint_show(p, slot);
 		return;
