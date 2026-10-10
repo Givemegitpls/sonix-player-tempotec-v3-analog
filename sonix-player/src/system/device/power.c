@@ -329,26 +329,19 @@ static bool g_screen_view_hold; // see power_hold_screen_for_view
 #define STEP_CHARGING_NODE "/sys/class/power_supply/mp2731-charger/step_charging_enabled"
 
 // The open mp2731.ko keeps the limit itself: given the percentage once, it
-// reads the fuel gauge, stops and restarts the charge with the same 3 %
-// hysteresis, and keeps the system out of suspend while the cable is in, so
-// the limit holds whatever user space is doing. Where these files are, the
-// tick below leaves the percentage to the driver and only forbids charging
-// outright (DAC mode); the stock driver has neither, and the tick does it all.
+// reads the fuel gauge, stops the charge at the limit and restarts it 3 %
+// below the level the gauge settles at once charging stops, and keeps the
+// system out of suspend while the cable is in, so the limit holds whatever
+// user space is doing. Where these files are, the tick below leaves the
+// percentage to the driver and only forbids charging outright (DAC mode); the
+// stock driver has neither, and the tick does it all.
 #define DRIVER_LIMIT_NODE "/sys/class/power_supply/mp2731-charger/charge_limit_percent"
 #define DRIVER_HELD_NODE "/sys/class/power_supply/mp2731-charger/charge_limit_held"
-
-// The R1's open axp2101.ko keeps the same limit, with the same two files, on
-// the PMIC's battery supply. The R1 has no node to stop charging with from
-// here, so DAC mode does not stop it there.
-#define AXP_LIMIT_NODE "/sys/class/power_supply/axp_battery/charge_limit_percent"
-#define AXP_HELD_NODE "/sys/class/power_supply/axp_battery/charge_limit_held"
 
 static const char *g_charge_node;	 // the writable node, NULL if there is none
 static int g_charge_limit = 100;	 // 100 = charge to full
 static bool g_charging_suspended;
-static bool g_driver_limit;			 // a driver keeps the limit, through g_limit_node
-static const char *g_limit_node = DRIVER_LIMIT_NODE;
-static const char *g_held_node = DRIVER_HELD_NODE;
+static bool g_driver_limit;			 // the driver keeps the limit (DRIVER_LIMIT_NODE)
 
 // Set while something has deliberately forbidden charging regardless of the
 // battery level -- DAC mode with the charger switched off. Kept separate from
@@ -363,16 +356,6 @@ static void find_charge_node(void) {
 		return;
 	}
 	searched = true;
-
-	if (axpcharge_applies()) {
-		g_driver_limit = access(AXP_LIMIT_NODE, W_OK) == 0;
-		if (g_driver_limit) {
-			g_limit_node = AXP_LIMIT_NODE;
-			g_held_node = AXP_HELD_NODE;
-			printf("power: charge limit kept by the driver through %s\n", AXP_LIMIT_NODE);
-		}
-		return;
-	}
 
 	if (access(STEP_CHARGING_NODE, W_OK) != 0) {
 		printf("power: %s is not writable; the charge limit cannot be enforced\n", STEP_CHARGING_NODE);
@@ -389,11 +372,11 @@ static void find_charge_node(void) {
 }
 
 // Whether the driver is holding the charge at the limit right now.
-static bool driver_limit_held(void) { return read_long_from_file(g_held_node) == 1; }
+static bool driver_limit_held(void) { return read_long_from_file(DRIVER_HELD_NODE) == 1; }
 
 bool power_charge_limit_supported(void) {
 	find_charge_node();
-	return g_charge_node != NULL || g_driver_limit;
+	return g_charge_node != NULL;
 }
 
 int power_get_charge_limit(void) { return g_charge_limit; }
@@ -428,7 +411,7 @@ void power_set_charge_limit(int percent) {
 	find_charge_node();
 	static int written = -1;
 	if (g_driver_limit && percent != written) {
-		write_long_to_file(g_limit_node, percent);
+		write_long_to_file(DRIVER_LIMIT_NODE, percent);
 		written = percent;
 	}
 }
