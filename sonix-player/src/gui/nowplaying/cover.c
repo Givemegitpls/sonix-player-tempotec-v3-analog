@@ -1515,33 +1515,6 @@ static void thumb_wipe_old_dir(const char *dir) {
 // Schema plus pragma. synchronous=OFF because this is only a cache: an entry
 // lost to a card pulled mid-write recomputes itself, and every fsync saved is
 // smoother scrolling.
-// The "no artwork here" rows are answers about what the player could read at
-// the time, and their key holds only the file's own name, size and date: when
-// the player learns to read more, nothing would ever change them. Pictures
-// over ALBUMART_MAX_BYTES were once refused outright and fell here, and JPEGs
-// TJpgDec cannot take decode since libjpeg came in. So the database carries
-// the generation of the readers in its user_version, and on a newer one only
-// those rows go, to be looked at once more. The thumbnails themselves stay.
-#define THUMB_NONE_EPOCH 1
-
-static void thumb_db_forget_old_nones(sqlite3 *db) {
-	sqlite3_stmt *stmt = NULL;
-	int version = 0;
-	if (sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &stmt, NULL) == SQLITE_OK &&
-		sqlite3_step(stmt) == SQLITE_ROW) {
-		version = sqlite3_column_int(stmt, 0);
-	}
-	sqlite3_finalize(stmt);
-	if (version >= THUMB_NONE_EPOCH) {
-		return;
-	}
-	char sql[96];
-	snprintf(sql, sizeof(sql), "DELETE FROM thumbs WHERE w = 0 OR h = 0; PRAGMA user_version = %d", THUMB_NONE_EPOCH);
-	if (sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK) {
-		printf("cover: \"no artwork\" answers of older readers dropped, %d\n", sqlite3_changes(db));
-	}
-}
-
 static bool thumb_db_prepare_schema(sqlite3 *db) {
 	char *err = NULL;
 	if (sqlite3_exec(db,
@@ -1566,7 +1539,6 @@ static bool thumb_db_prepare_schema(sqlite3 *db) {
 					 " h INTEGER NOT NULL,"
 					 " pixels BLOB)",
 					 NULL, NULL, &err) == SQLITE_OK) {
-		thumb_db_forget_old_nones(db);
 		return true;
 	}
 	fprintf(stderr, "cover: thumbnails db refused: %s\n", err ? err : "?");
@@ -2073,7 +2045,31 @@ bool cover_thumb_load(const char *path, bool is_dir, int size, cover_image_t *ou
 		}
 	}
 
+	// A track's picture is very often its album's: the same embedded image in
+	// every file, or the one cover.jpg beside them. Keyed by the file alone,
+	// the songs list decoded that picture once per track -- fifteen times for
+	// an album that the albums list decodes once -- and that was the whole
+	// difference between scrolling the two. So a file whose thumbnail is not
+	// cached yet asks by its picture too (cover_source_id: the picture's length
+	// and its two ends, read from the mapped file), and the answer is stored
+	// under both keys.
+	char pic_key[40] = "";
+	if (cacheable && !is_dir) {
+		uint64_t id = cover_source_id(path);
+		if (id) {
+			snprintf(pic_key, sizeof(pic_key), "p%016llx-%d", (unsigned long long)id, size);
+			bool has_image = false;
+			if (thumb_db_load(pic_key, out, &has_image) && has_image) {
+				thumb_db_store(key, out, true); // and by the file, for next time
+				return true;
+			}
+		}
+	}
+
 	cover_build_t built = thumb_load_uncached(path, is_dir, size, out);
+	if (pic_key[0] && built == COVER_BUILD_OK) {
+		thumb_db_store(pic_key, out, true);
+	}
 
 	// "There is no artwork here" is worth storing too: a folder without any is
 	// otherwise rescanned from scratch every time it scrolls past.
