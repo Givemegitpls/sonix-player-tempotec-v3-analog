@@ -356,6 +356,9 @@ void musictiles_init(gui_config_t *cfg) {
 	lv_obj_add_style(musictiles_screen, &theme_style_screen, 0);
 
 	page = settingsrow_page(musictiles_screen, cfg, "musicsettings_rearrange_main_page");
+	// No buttons in the corner, so the heading may run to the edge: the name
+	// of the page is long in every language.
+	settingsrow_title_corner_slots(settingsrow_page_title(musictiles_screen), cfg, 0);
 
 	int width = cfg->screen_width - 2 * cfg->padding;
 

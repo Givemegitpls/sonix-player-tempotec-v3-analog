@@ -1611,8 +1611,9 @@ static void layout_pick_cb(lv_event_t *e) {
 // Library
 //
 // How the library's lists are drawn: what an artist opens on, what a row says
-// under its title, and which tile the Music page leads with. Inside Display
-// options, which keeps what concerns the now-playing page and the rest.
+// under its title, and which tiles the Music page shows. A page of its own
+// beside Display options, which keeps what concerns the now-playing page and
+// the rest.
 // ---------------------------------------------------------------------------
 
 static void build_library_page(gui_config_t *cfg) {
@@ -1668,9 +1669,6 @@ static void build_display_page(gui_config_t *cfg) {
 	display_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(display_screen, cfg, "musicsettings_display_options");
 	settingsrow_title_corner_slots(settingsrow_page_title(display_screen), cfg, 0);
-
-	build_library_page(cfg);
-	settingsrow_add(container, "musicsettings_library", NULL, switch_screen_cb, library_screen);
 
 	// Whose name goes under the title on the now-playing page, in the control
 	// centre and on the screensaver: the album's artist, as the record is
@@ -1871,8 +1869,8 @@ void musicsettings_init(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(musicsettings_screen, cfg, "music");
 
 	// The pages of behaviour first: how the index is built, what playback does
-	// around a track, how the lists look, and Last.fm, which only reports what
-	// was played. Then the sound, from the widest tool to the narrowest, and the
+	// around a track, how the pages and the lists look, and Last.fm, which
+	// only reports what was played. Then the sound, from the widest tool to the narrowest, and the
 	// DAC's own switches at the end.
 	artistexceptions_init(cfg, organize_touched);
 	build_scan_page(cfg);
@@ -1883,6 +1881,9 @@ void musicsettings_init(gui_config_t *cfg) {
 
 	build_display_page(cfg);
 	settingsrow_add(container, "musicsettings_display_options", NULL, switch_screen_cb, display_screen);
+
+	build_library_page(cfg);
+	settingsrow_add(container, "musicsettings_library", NULL, switch_screen_cb, library_screen);
 
 	lastfmsettings_init(cfg);
 	settingsrow_add(container, "lastfm", NULL, switch_screen_cb, lastfmsettings_screen());
