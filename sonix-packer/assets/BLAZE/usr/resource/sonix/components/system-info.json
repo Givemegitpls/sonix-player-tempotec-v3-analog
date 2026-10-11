@@ -1,7 +1,7 @@
 {
     "device-name": "TempoTec V3 Blaze",
     "dac-info": "AKM AK4493SEQ",
-    "OS_version": "1.1.0",
+    "OS_version": "1.2.0.1-blaze",
     "build_version": "000000000000",
-    "ota-repo": ""
+    "ota-repo": "carmine-bin/sonix-player-tempotec-v3-blaze"
 }
