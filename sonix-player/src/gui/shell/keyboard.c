@@ -1,6 +1,7 @@
 #include "keyboard.h"
 
 #include "src/gui/shell/popover.h"
+#include "src/gui/shell/shown.h"
 #include "src/system/input/kblayout.h"
 
 #include <stdint.h>
@@ -179,8 +180,9 @@ static bool refresh_registered;
 // the accent changes at runtime (Appearance > Accent colour), so the fields
 // have to be reachable when it does -- LVGL repaints styles it owns, but this
 // caret is a set of local style properties on each field.
-#define KB_MAX_CARETS 12
+#define KB_MAX_CARETS 24
 static lv_obj_t *caret_fields[KB_MAX_CARETS];
+static bool caret_blinking[KB_MAX_CARETS]; // see kb_caret_refr_start_cb
 static int caret_field_count;
 
 static void kb_refresh_theme(void);
@@ -1275,6 +1277,50 @@ void keyboard_set_field(keyboard_t *kb, lv_obj_t *field) {
 	}
 }
 
+// A calm blink.
+#define KB_CARET_BLINK_MS 900
+
+// LVGL starts every textarea blinking when it is created and never stops it, so
+// the fields of every page that is built -- all of them, at boot -- kept an
+// animation alive, and with it LVGL's animation timer awake every frame, for a
+// caret nobody could see. A blink time of nought is LVGL's own way of not
+// blinking (start_cursor_blink drops the animation and leaves the caret
+// shown), and it is read again at each cursor move; so at the start of a
+// refresh a field that has gone out of sight gets nought and one that has come
+// into sight gets its blink back, each followed by a cursor move to put it into
+// effect. Whatever hides or shows a page invalidates it, so a refresh comes for
+// either. caret_blinking is what the field is doing now.
+static uint32_t kb_caret_blink_ms(int i) { return caret_blinking[i] ? KB_CARET_BLINK_MS : 0; }
+
+// A field that goes away leaves the list, which is walked at every refresh.
+static void kb_caret_deleted_cb(lv_event_t *e) {
+	lv_obj_t *field = lv_event_get_target(e);
+	for (int i = 0; i < caret_field_count; i++) {
+		if (caret_fields[i] == field) {
+			caret_fields[i] = caret_fields[caret_field_count - 1];
+			caret_blinking[i] = caret_blinking[caret_field_count - 1];
+			caret_field_count--;
+			return;
+		}
+	}
+}
+
+static void kb_caret_refr_start_cb(lv_event_t *e) {
+	(void)e;
+	for (int i = 0; i < caret_field_count; i++) {
+		bool want = gui_obj_shown(caret_fields[i]);
+		if (caret_blinking[i] == want) {
+			continue; // most refreshes: nothing changed
+		}
+		caret_blinking[i] = want;
+		const lv_style_selector_t parts[] = {LV_PART_CURSOR, LV_PART_CURSOR | LV_STATE_FOCUSED};
+		for (unsigned p = 0; p < sizeof(parts) / sizeof(parts[0]); p++) {
+			lv_obj_set_style_anim_duration(caret_fields[i], kb_caret_blink_ms(i), parts[p]);
+		}
+		lv_textarea_set_cursor_pos(caret_fields[i], lv_textarea_get_cursor_pos(caret_fields[i]));
+	}
+}
+
 // The caret is the left border of the CURSOR part, not a block: three pixels
 // of accent, like a system text field's cursor.
 #define KB_CARET_WIDTH 3
@@ -1289,15 +1335,35 @@ void keyboard_style_caret(lv_obj_t *field) {
 	// LVGL's own repaint knows to come back for it, so without this list the
 	// caret keeps the colour it was born with.
 	bool known = false;
+	int index = -1;
 	for (int i = 0; i < caret_field_count; i++) {
 		if (caret_fields[i] == field) {
 			known = true;
+			index = i;
 			break;
 		}
 	}
 	if (!known && caret_field_count < KB_MAX_CARETS) {
+		index = caret_field_count;
+		// Born blinking (LVGL's doing, see kb_caret_refr_start_cb) and put to
+		// sleep here: nothing has been laid out yet, so no cursor move to
+		// ask for it, and a field that is on screen from the start is woken at
+		// the first refresh like any other.
+		lv_anim_t *blink = lv_anim_get(field, NULL);
+		if (blink && blink->repeat_cnt == LV_ANIM_REPEAT_INFINITE) {
+			lv_anim_delete(field, blink->exec_cb);
+			caret_blinking[index] = false;
+		} else {
+			caret_blinking[index] = true;
+		}
 		caret_fields[caret_field_count++] = field;
+		lv_obj_add_event_cb(field, kb_caret_deleted_cb, LV_EVENT_DELETE, NULL);
 		kb_register_refresh();
+		static bool caret_hooked;
+		if (!caret_hooked) {
+			caret_hooked = true;
+			lv_display_add_event_cb(lv_display_get_default(), kb_caret_refr_start_cb, LV_EVENT_REFR_START, NULL);
+		}
 	}
 
 	const lv_style_selector_t parts[] = {LV_PART_CURSOR, LV_PART_CURSOR | LV_STATE_FOCUSED};
@@ -1307,7 +1373,9 @@ void keyboard_style_caret(lv_obj_t *field) {
 		lv_obj_set_style_border_color(field, theme()->accent, parts[i]);
 		lv_obj_set_style_border_opa(field, LV_OPA_COVER, parts[i]);
 		lv_obj_set_style_border_width(field, KB_CARET_WIDTH, parts[i]);
-		lv_obj_set_style_anim_duration(field, 900, parts[i]); // a calm blink
+		// Whatever the field is doing (kb_caret_refr_start_cb): a theme refresh
+		// comes through here too, and must not wake a caret put to sleep.
+		lv_obj_set_style_anim_duration(field, index >= 0 ? kb_caret_blink_ms(index) : KB_CARET_BLINK_MS, parts[i]);
 	}
 }
 

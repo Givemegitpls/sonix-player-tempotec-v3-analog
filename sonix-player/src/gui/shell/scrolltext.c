@@ -1,6 +1,7 @@
 #include "scrolltext.h"
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/shown.h"
 
 #include "lvgl/src/misc/lv_text_ap.h"
 
@@ -105,7 +106,7 @@ static int32_t text_width(lv_obj_t *label, const char *text) {
 
 #define FADE_EDGE_PX 24
 #define FADE_CACHE_MAX 8
-#define FADE_LABELS_MAX 16
+#define FADE_LABELS_MAX 24
 #define FADE_POLL_MS 80
 
 // One size, and the two masks for it: `both` while the text moves, `tail` while
@@ -193,6 +194,7 @@ static const fade_masks_t *fade_masks(int32_t w, int32_t h) {
 typedef struct {
 	lv_obj_t *label;
 	const fade_masks_t *masks; // NULL while the text fits
+	bool parked;			   // its scroll was stopped for being out of sight
 } fade_label_t;
 
 static fade_label_t fade_labels[FADE_LABELS_MAX];
@@ -210,6 +212,7 @@ static fade_label_t *fade_entry(lv_obj_t *label) {
 	}
 	fade_labels[fade_label_count].label = label;
 	fade_labels[fade_label_count].masks = NULL;
+	fade_labels[fade_label_count].parked = false;
 	return &fade_labels[fade_label_count++];
 }
 
@@ -241,7 +244,10 @@ static void fade_poll_cb(lv_timer_t *timer) {
 	(void)timer;
 	bool any = false;
 	for (int i = 0; i < fade_label_count; i++) {
-		if (!fade_labels[i].masks) {
+		// A label parked out of sight (scroll_refr_start_cb) is not polled: its
+		// fade is as the park left it, and the timer is woken again when one
+		// comes back.
+		if (!fade_labels[i].masks || fade_labels[i].parked) {
 			continue;
 		}
 		any = true;
@@ -278,6 +284,45 @@ static void fade_update(lv_obj_t *label) {
 			fade_timer = lv_timer_create(fade_poll_cb, FADE_POLL_MS, NULL);
 		} else {
 			lv_timer_resume(fade_timer);
+		}
+	}
+}
+
+// Only while it can be seen. A scrolling label on a page that is not showing
+// -- the player's title while another page is on top, a row of the quick panel
+// while it is closed -- carried on regardless, and an animation alive keeps
+// LVGL's animation timer running every frame, with every step of the label
+// invalidating an area nobody can see. At the start of a refresh, a label that
+// has gone out of sight is put back at its start and its animation dropped; one
+// that has come back into sight is given a fresh one, which waits its pause at
+// the start of the title as a new title does. The refresh is the right moment
+// for both: whatever hides or shows a page invalidates it, so one comes.
+static lv_anim_t *scroll_anim(lv_obj_t *label) {
+	lv_anim_t *a = lv_anim_get(label, NULL);
+	return a && a->repeat_cnt == LV_ANIM_REPEAT_INFINITE ? a : NULL;
+}
+
+static void scroll_refr_start_cb(lv_event_t *e) {
+	(void)e;
+	for (int i = 0; i < fade_label_count; i++) {
+		fade_label_t *entry = &fade_labels[i];
+		bool shown = gui_obj_shown(entry->label);
+		lv_anim_t *a = scroll_anim(entry->label);
+		if (shown) {
+			if (entry->parked && !a) {
+				// Only a label parked here is restarted: one whose text fits has
+				// no animation either, and must not be laid out again for it.
+				lv_label_set_text_static(entry->label, NULL);
+			}
+			if (entry->parked && fade_timer) {
+				lv_timer_resume(fade_timer); // its fade follows the scroll again
+			}
+			entry->parked = false;
+		} else if (a) {
+			a->exec_cb(entry->label, a->start_value);
+			lv_anim_delete(entry->label, a->exec_cb);
+			entry->parked = true;
+			fade_pick(entry);
 		}
 	}
 }
@@ -350,6 +395,7 @@ void scrolltext_apply(lv_obj_t *label) {
 	static bool registered;
 	if (!registered) {
 		fonts_register_change(fonts_changed);
+		lv_display_add_event_cb(lv_display_get_default(), scroll_refr_start_cb, LV_EVENT_REFR_START, NULL);
 		registered = true;
 	}
 
