@@ -120,11 +120,12 @@ lv_obj_t *medialist_albums_screen;
 // from the middle, so the ink is never on a grey of its own colour. A light
 // sleeve makes a light page written in near-black, anything else a dark one
 // written in white.
-#define TINT_LIGHT_FROM 150 // a sleeve this bright or brighter makes a light page
+#define TINT_LIGHT_FROM COVER_PAGE_LIGHT_FROM // a sleeve this bright or brighter makes a light page
 #define TINT_LIGHT_MIN 180
 #define TINT_LIGHT_MAX 225
 #define TINT_DARK_MIN 28
 #define TINT_DARK_MAX 90
+#define TINT_SAT_MAX 176 // the most saturation a page keeps, out of 256
 // The track number that takes the place of the cover on each row of that
 // layout: one picture at the top says whose record it is, and the twelve
 // beneath it would only say it again.
@@ -3899,10 +3900,16 @@ static bool tint_from_cover(panel_t *p) {
 	if (!p->head_has_cover) {
 		return false;
 	}
+	// Kept with the picture by the loader, so an album opened before does not
+	// have its colours worked out again.
 	uint32_t tone;
 	int luma;
 	bool light;
-	if (!cover_page_tone(&p->head_image, TINT_LIGHT_FROM, &tone, &luma, &light)) {
+	if (p->head_image.has_tone) {
+		tone = p->head_image.tone;
+		luma = p->head_image.tone_luma;
+		light = p->head_image.tone_light;
+	} else if (!cover_page_tone(&p->head_image, TINT_LIGHT_FROM, &tone, &luma, &light)) {
 		return false;
 	}
 
@@ -3925,6 +3932,19 @@ static bool tint_from_cover(panel_t *p) {
 		r += (255 - r) * step / 255;
 		g += (255 - g) * step / 255;
 		b += (255 - b) * step / 255;
+	}
+
+	// And no more saturated than TINT_SAT_MAX: a sleeve of pure red or green
+	// at full strength is a poster, not a page to read a track list on. The
+	// strongest channel stays where it is and the others come up towards it.
+	int hi = LV_MAX(r, LV_MAX(g, b));
+	int lo = LV_MIN(r, LV_MIN(g, b));
+	if (hi > 0 && (hi - lo) * 256 > hi * TINT_SAT_MAX) {
+		int keep = TINT_SAT_MAX * hi; // the spread wanted, times 256
+		int spread = (hi - lo) * 256;
+		r = hi - (hi - r) * keep / spread;
+		g = hi - (hi - g) * keep / spread;
+		b = hi - (hi - b) * keep / spread;
 	}
 
 	p->tint_bg = lv_color_make((uint8_t)LV_CLAMP(0, r, 255), (uint8_t)LV_CLAMP(0, g, 255), (uint8_t)LV_CLAMP(0, b, 255));

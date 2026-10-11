@@ -266,7 +266,12 @@ static void scan_cb(lv_event_t *e) {
 
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
-	gridpage_show_empty(tile_grid, empty_panel, !library_scan_running() && library_track_count() == 0);
+	bool empty = !library_scan_running() && library_track_count() == 0;
+	gridpage_show_empty(tile_grid, empty_panel, empty);
+	// More tiles than the screen holds: the scrollbar shows for a moment.
+	if (!empty) {
+		gridpage_hint_scroll(tile_grid);
+	}
 }
 
 // The corner buttons share everything but icon and action.

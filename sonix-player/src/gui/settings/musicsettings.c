@@ -1575,6 +1575,12 @@ static void coverflow_cb(lv_event_t *e) {
 	coverflow_set_enabled(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
+static lv_obj_t *cover_accent_switch;
+
+static void cover_accent_cb(lv_event_t *e) {
+	player_cover_accent_set(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
 // ---------------------------------------------------------------------------
 // Which of the two arrangements the now-playing page uses
 //
@@ -1716,6 +1722,13 @@ static void build_display_page(gui_config_t *cfg) {
 	// stream from a phone and an audiobook all get the standard one whatever
 	// this says. Studio asks for less and takes all of them.
 	option_note(container, "musicsettings_local_only_note");
+
+	// The sleeve's colour as the accent of the other two arrangements too.
+	settingsrow_toggle(container, "musicsettings_cover_accent", &cover_accent_switch, cover_accent_cb);
+	option_note(container, "musicsettings_cover_accent_note");
+	if (player_cover_accent()) {
+		lv_obj_add_state(cover_accent_switch, LV_STATE_CHECKED);
+	}
 
 	// Whether a start with a remembered track lands on the now-playing page
 	// rather than on the home screen. Read once, at startup (main.c).

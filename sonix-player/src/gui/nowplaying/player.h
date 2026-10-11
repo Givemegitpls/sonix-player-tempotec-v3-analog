@@ -58,6 +58,11 @@ typedef enum {
 player_layout_t player_layout_get(void);
 void player_layout_set(player_layout_t layout);
 
+// Whether the Standard and Studio arrangements take the sleeve's colour as
+// their accent, as Waveform always does. Off by default; saved in the config.
+bool player_cover_accent(void);
+void player_cover_accent_set(bool on);
+
 // The output the music was going to has just been unplugged -- a jack pulled
 // out, a USB-C DAC removed, headphones that walked out of range. Pauses, so
 // that taking the headphones off does not cost three tracks of an album, and

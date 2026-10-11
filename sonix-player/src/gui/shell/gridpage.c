@@ -169,6 +169,44 @@ void gridpage_set_scrolling(lv_obj_t *grid) {
 	lv_obj_set_scroll_elastic(grid, false);
 }
 
+// How long the scrollbar stays up when a page that scrolls is shown: long
+// enough to be seen, short enough not to sit over the tiles.
+#define SCROLL_HINT_MS 1500
+
+static lv_timer_t *scroll_hint_timer;
+static lv_obj_t *scroll_hint_grid;
+
+static void scroll_hint_end_cb(lv_timer_t *timer) {
+	(void)timer;
+	scroll_hint_timer = NULL; // a repeat count of one deletes the timer after this call
+	if (scroll_hint_grid) {
+		lv_obj_set_scrollbar_mode(scroll_hint_grid, LV_SCROLLBAR_MODE_ACTIVE);
+		scroll_hint_grid = NULL;
+	}
+}
+
+void gridpage_hint_scroll(lv_obj_t *grid) {
+	if (!grid || !lv_obj_is_scrollable(grid)) {
+		return;
+	}
+	// The page's real size: on its first showing nothing has laid it out yet.
+	lv_obj_update_layout(grid);
+	if (lv_obj_get_scroll_top(grid) + lv_obj_get_scroll_bottom(grid) <= 0) {
+		return; // everything fits, nothing to hint at
+	}
+	if (scroll_hint_timer) {
+		lv_timer_delete(scroll_hint_timer);
+		scroll_hint_timer = NULL;
+		if (scroll_hint_grid && scroll_hint_grid != grid) {
+			lv_obj_set_scrollbar_mode(scroll_hint_grid, LV_SCROLLBAR_MODE_ACTIVE);
+		}
+	}
+	scroll_hint_grid = grid;
+	lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_ON);
+	scroll_hint_timer = lv_timer_create(scroll_hint_end_cb, SCROLL_HINT_MS, NULL);
+	lv_timer_set_repeat_count(scroll_hint_timer, 1);
+}
+
 lv_obj_t *gridpage_empty_panel(lv_obj_t *screen, gui_config_t *cfg, const lv_image_dsc_t *icon, const char *text,
 							   lv_event_cb_t scan_cb) {
 	int top = settingsrow_content_top(cfg);

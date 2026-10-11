@@ -858,15 +858,10 @@ static bool tone_weighted_average(const cover_image_t *cover, unsigned *r_out, u
 	return true;
 }
 
-uint32_t cover_dominant_tone(const cover_image_t *cover) {
-	unsigned r, g, b;
-	if (!tone_weighted_average(cover, &r, &g, &b)) {
-		return 0;
-	}
-
-	// Pull it away from grey: the gap between the strongest channel and the
-	// weakest is stretched, and the middle one moves with it, so the hue stays
-	// where it was and only the strength changes.
+// Pulls a colour away from grey: the gap between the strongest channel and
+// the weakest is stretched, and the middle one moves with it, so the hue stays
+// where it was and only the strength changes.
+static uint32_t tone_stretch(unsigned r, unsigned g, unsigned b) {
 	unsigned hi = r > g ? (r > b ? r : b) : (g > b ? g : b);
 	unsigned lo = r < g ? (r < b ? r : b) : (g < b ? g : b);
 	if (hi - lo < TONE_CHROMA_FLOOR) {
@@ -898,6 +893,18 @@ uint32_t cover_dominant_tone(const cover_image_t *cover) {
 		b = b * 180 / hi;
 	}
 	return (r << 16) | (g << 8) | b;
+}
+
+uint32_t cover_dominant_tone(const cover_image_t *cover) {
+	unsigned r, g, b;
+	if (!tone_weighted_average(cover, &r, &g, &b)) {
+		return 0;
+	}
+	return tone_stretch(r, g, b);
+}
+
+uint32_t cover_tone_stretched(uint32_t tone) {
+	return tone_stretch((tone >> 16) & 0xFF, (tone >> 8) & 0xFF, tone & 0xFF);
 }
 
 int cover_mean_luma(const cover_image_t *cover) {
@@ -932,16 +939,26 @@ int cover_mean_luma(const cover_image_t *cover) {
 // done to it. So the sleeve's colours are sorted into families of hue, and the
 // page takes one family rather than a mix of all of them.
 //
-// A family is three neighbouring bins of 15 degrees, scored by how much colour
-// falls in it: each pixel counts for its distance from grey, and a pixel too
-// close to grey counts for nothing. The strongest family is always a
-// candidate, and so is any other family that does not overlap it and scores
-// at least half as much. A dark page takes the darkest candidate and a light
-// page the lightest, so the page is a colour that looks right at that
-// brightness. A sleeve with no colour worth sorting falls back to the plain
-// average, which is near grey anyway.
-#define TONE_BINS 24		  // 15 degrees of hue each
-#define TONE_FAMILY_CHROMA 32 // closer to grey than this, a pixel has no hue to vote for
+// A family is three neighbouring bins of 15 degrees, scored by how much of the
+// sleeve is that colour: each pixel votes with its saturation, its distance
+// from grey measured against its own brightness. Measured against full scale
+// instead, a deep navy (16,32,48) is as far from grey as a mid grey's rounding
+// noise and gets no vote at all, and a dark blue sleeve with a gold crest on it
+// is called gold. A pixel too dark to have a hue, or too close to grey, does
+// not vote.
+//
+// The strongest family is always a candidate, and so is any other family that
+// does not overlap it and scores at least half as much. A dark page takes the
+// darkest candidate and a light page the lightest, so the page is a colour
+// that looks right at that brightness. The family's colour is its pixels
+// averaged as tone_weighted_average() weighs them, the vivid ones counting
+// most, so a yellow is the yellow of the sleeve and not of its shaded edges.
+// A sleeve with no colour worth sorting falls back to the plain average, which
+// is near grey anyway.
+#define TONE_BINS 24		 // 15 degrees of hue each
+#define TONE_FAMILY_SAT 64	 // saturation out of 256 below which a pixel has no hue to vote for
+#define TONE_FAMILY_DARK 24	 // and a brightest channel below which it is black
+#define TONE_FAMILY_SPREAD 10 // and a channel spread below which its hue is noise
 #define TONE_FAMILIES (TONE_BINS / 3)
 // A yellow family that covers this much of the sleeve, in tenths, and is this
 // bright makes a light page even on a darker sleeve: darkened, it would only
@@ -953,7 +970,7 @@ int cover_mean_luma(const cover_image_t *cover) {
 
 typedef struct {
 	uint64_t r, g, b, weight; // the colours, weighted as tone_weighted_average() weighs them
-	uint64_t score;			  // how much colour, for choosing between bins
+	uint64_t score;			  // the saturation voted, for choosing between bins
 	unsigned count;			  // how many samples
 } tone_bin_t;
 
@@ -1007,7 +1024,11 @@ bool cover_page_tone(const cover_image_t *cover, int light_from, uint32_t *tone,
 			unsigned hi = r > g ? (r > b ? r : b) : (g > b ? g : b);
 			unsigned lo = r < g ? (r < b ? r : b) : (g < b ? g : b);
 			samples++;
-			if (hi - lo < TONE_FAMILY_CHROMA) {
+			if (hi < TONE_FAMILY_DARK || hi - lo < TONE_FAMILY_SPREAD) {
+				continue;
+			}
+			unsigned sat = (hi - lo) * 256 / hi;
+			if (sat < TONE_FAMILY_SAT) {
 				continue;
 			}
 			tone_bin_t *bin = &bins[tone_hue(r, g, b) * TONE_BINS / 360];
@@ -1016,18 +1037,18 @@ bool cover_page_tone(const cover_image_t *cover, int light_from, uint32_t *tone,
 			bin->g += (uint64_t)g * k;
 			bin->b += (uint64_t)b * k;
 			bin->weight += k;
-			bin->score += hi - lo;
+			bin->score += sat;
 			bin->count++;
-			colour += hi - lo;
+			colour += sat;
 		}
 	}
 
 	bool is_light = mean >= light_from;
 	unsigned r = 0, g = 0, b = 0;
-	// On average less than an eighth of the floor's worth of colour per sample:
-	// a grey sleeve with a few coloured specks, which the plain average
+	// On average less than an eighth of the floor's worth of saturation per
+	// sample: a grey sleeve with a few coloured specks, which the plain average
 	// describes better than any one family.
-	if (colour * 8 < (uint64_t)samples * TONE_FAMILY_CHROMA) {
+	if (colour * 8 < (uint64_t)samples * TONE_FAMILY_SAT) {
 		if (!tone_weighted_average(cover, &r, &g, &b)) {
 			return false;
 		}
@@ -1584,6 +1605,7 @@ static uint64_t source_id_uncached(const char *filepath, int *index) {
 static uint64_t player_source_id(const char *filepath, int *index);
 static bool player_cover_load(uint64_t id, int w, int h, cover_image_t *out);
 static void player_cover_store(uint64_t id, int w, int h, const cover_image_t *img);
+static void cover_tone_attach(uint64_t id, cover_image_t *img);
 
 // The backdrop made from a cover already scaled and packed, for a cover that
 // came out of the cache with no source decoded.
@@ -1609,6 +1631,7 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 	int source_index = -1;
 	uint64_t id = cover_out ? player_source_id(filepath, &source_index) : 0;
 	if (id && player_cover_load(id, cover_w, cover_h, cover_out)) {
+		cover_tone_attach(id, cover_out);
 		if (backdrop_out) {
 			backdrop_from_cover(cover_out, backdrop_w, backdrop_h, backdrop_out);
 		}
@@ -1651,6 +1674,10 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 	if (ok && id && cover_index >= 0 && used == source_index) {
 		player_cover_store(id, cover_w, cover_h, &results[cover_index]);
 	}
+	// The colour goes with it, kept under the same id on the same condition.
+	if (ok && cover_index >= 0) {
+		cover_tone_attach(used == source_index ? id : 0, &results[cover_index]);
+	}
 
 	// A missing backdrop is survivable; the controls just stay plain.
 	if (cover_index >= 0)
@@ -1673,16 +1700,22 @@ bool cover_load_shared(const char *filepath, int player_w, int player_h, int siz
 	uint64_t id = player_source_id(filepath, &source_index);
 	cover_image_t big;
 	bool have = id && player_cover_load(id, player_w, player_h, &big);
+	bool keyed = have; // whether `id` describes the picture in `big`
 	if (!have) {
 		image_request_t req = {.w = player_w, .h = player_h, .fit = COVER_FIT_COVER, .backdrop = false};
 		int used = -1;
 		if (build_from_sources_at(filepath, false, &req, 1, &big, &used) != COVER_BUILD_OK) {
 			return false;
 		}
-		if (id && used == source_index) {
+		keyed = id && used == source_index;
+		if (keyed) {
 			player_cover_store(id, player_w, player_h, &big);
 		}
 	}
+
+	// Its colour, from the player's picture, so the player and the album page
+	// share one row of it.
+	cover_tone_attach(keyed ? id : 0, &big);
 
 	// Then down to the size asked for.
 	if (player_w == size && player_h == size) {
@@ -1691,12 +1724,19 @@ bool cover_load_shared(const char *filepath, int player_w, int player_h, int siz
 	}
 	raw_image_t raw;
 	bool ok = raw_from_cover(&big, &raw);
+	cover_image_t tones = big;
 	cover_free(&big);
 	if (!ok) {
 		return false;
 	}
 	ok = make_scaled(&raw, size, size, COVER_FIT_COVER, out);
 	raw_free(&raw);
+	if (ok) {
+		out->has_tone = tones.has_tone;
+		out->tone = tones.tone;
+		out->tone_luma = tones.tone_luma;
+		out->tone_light = tones.tone_light;
+	}
 	return ok;
 }
 
@@ -1821,7 +1861,15 @@ static bool thumb_db_prepare_schema(sqlite3 *db) {
 					 "CREATE INDEX IF NOT EXISTS player_covers_used ON player_covers(used);"
 					 "CREATE TABLE IF NOT EXISTS player_cover_ids("
 					 " key TEXT PRIMARY KEY,"
-					 " id TEXT NOT NULL)",
+					 " id TEXT NOT NULL);"
+					 // The colour of each of those pictures, so the pages
+					 // that wear it do not work it out again (see the
+					 // picture's colour below).
+					 "CREATE TABLE IF NOT EXISTS cover_colours("
+					 " key TEXT PRIMARY KEY,"
+					 " tone INTEGER NOT NULL,"
+					 " luma INTEGER NOT NULL,"
+					 " light INTEGER NOT NULL)",
 					 NULL, NULL, &err) == SQLITE_OK) {
 		return true;
 	}
@@ -2485,4 +2533,106 @@ static void player_cover_store(uint64_t id, int w, int h, const cover_image_t *i
 	}
 	pthread_mutex_unlock(&thumb_db_lock);
 	free(jpeg);
+}
+
+// ---------------------------------------------------------------------------
+// the picture's colour
+//
+// What the pages that wear a sleeve's colour need from it: the colour an
+// album's page is painted in, which the player is tinted with as well
+// (cover_page_tone). Working it out is a few passes over the picture, small
+// next to decoding it, but not something to repeat on the interface thread
+// every time a page opens. It is kept in cover_colours under the picture's id,
+// like the picture itself, so it is worked out once per picture, on the loader
+// thread, and read back with the picture after that.
+//
+// The epoch is part of the key: raising it when the way the colour is worked
+// out changes makes every stored row a miss.
+// ---------------------------------------------------------------------------
+
+#define COVER_TONE_EPOCH 1
+#define COVER_TONE_MAX_ROWS 20000
+#define COVER_TONE_PRUNE_EVERY 256
+
+static void cover_tone_key(char *out, size_t out_size, uint64_t id) {
+	snprintf(out, out_size, "%016llx|%d|%d", (unsigned long long)id, COVER_PAGE_LIGHT_FROM, COVER_TONE_EPOCH);
+}
+
+static bool cover_tone_load(uint64_t id, cover_image_t *img) {
+	char key[64];
+	cover_tone_key(key, sizeof(key), id);
+	bool hit = false;
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db && sqlite3_prepare_v2(thumb_db, "SELECT tone, luma, light FROM cover_colours WHERE key = ?1", -1,
+									   &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			img->tone = (uint32_t)sqlite3_column_int64(stmt, 0);
+			img->tone_luma = (int16_t)sqlite3_column_int(stmt, 1);
+			img->tone_light = sqlite3_column_int(stmt, 2) != 0;
+			img->has_tone = true;
+			hit = true;
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+	return hit;
+}
+
+static void cover_tone_store(uint64_t id, const cover_image_t *img) {
+	static unsigned stores;
+	char key[64];
+	cover_tone_key(key, sizeof(key), id);
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db && sqlite3_prepare_v2(thumb_db,
+									   "INSERT OR REPLACE INTO cover_colours(key, tone, luma, light) VALUES(?1, ?2, ?3, ?4)",
+									   -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+		sqlite3_bind_int64(stmt, 2, img->tone);
+		sqlite3_bind_int(stmt, 3, img->tone_luma);
+		sqlite3_bind_int(stmt, 4, img->tone_light ? 1 : 0);
+		sqlite3_step(stmt); // a failure here only costs working it out again
+		sqlite3_finalize(stmt);
+
+		// A row is a few dozen bytes, so the table keeps many more pictures
+		// than player_covers does; past that the oldest rows go.
+		if (++stores % COVER_TONE_PRUNE_EVERY == 0 &&
+			sqlite3_prepare_v2(thumb_db,
+							   "DELETE FROM cover_colours WHERE rowid IN"
+							   " (SELECT rowid FROM cover_colours ORDER BY rowid DESC LIMIT -1 OFFSET ?1)",
+							   -1, &stmt, NULL) == SQLITE_OK) {
+			sqlite3_bind_int(stmt, 1, COVER_TONE_MAX_ROWS);
+			sqlite3_step(stmt);
+			sqlite3_finalize(stmt);
+		}
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+}
+
+// Fills in the colour of `img`: read back under `id`, or worked out from the
+// picture and written down. An id of 0 is a picture the id does not describe,
+// whose colour is worked out and not kept.
+static void cover_tone_attach(uint64_t id, cover_image_t *img) {
+	img->has_tone = false;
+	if (!img->pixels) {
+		return;
+	}
+	if (id && cover_tone_load(id, img)) {
+		return;
+	}
+	uint32_t tone = 0;
+	int luma = 0;
+	bool light = false;
+	if (!cover_page_tone(img, COVER_PAGE_LIGHT_FROM, &tone, &luma, &light)) {
+		return;
+	}
+	img->tone = tone;
+	img->tone_luma = (int16_t)luma;
+	img->tone_light = light;
+	img->has_tone = true;
+	if (id) {
+		cover_tone_store(id, img);
+	}
 }

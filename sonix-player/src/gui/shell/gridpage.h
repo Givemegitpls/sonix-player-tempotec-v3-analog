@@ -47,6 +47,11 @@ void gridpage_set_entries(lv_obj_t *grid, gui_config_t *cfg, const grid_entry_t 
 // rest, the tiles keeping the size that grid gives them.
 void gridpage_set_scrolling(lv_obj_t *grid);
 
+// Shows the scrollbar of a grid that scrolls for a moment, so a page whose
+// tiles run past the screen says so when it is opened. Nothing when the tiles
+// all fit.
+void gridpage_hint_scroll(lv_obj_t *grid);
+
 // What a section page shows instead of its tiles while its index is empty: a
 // picture, a line saying a scan is needed and a Scan button calling `scan_cb`.
 // Hidden until gridpage_show_empty() is told otherwise.
