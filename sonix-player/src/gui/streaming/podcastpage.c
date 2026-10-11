@@ -2804,8 +2804,8 @@ void podcastpage_init(gui_config_t *cfg) {
 	device_state_add_prepare_cb(podcastpage_prepare_track);
 	fetch_start_thread();
 
-	lv_timer_create(queue_watch_cb, 1000, NULL);
-	lv_timer_create(wifi_watch_cb, 1000, NULL);
+	power_slow_in_standby(lv_timer_create(queue_watch_cb, 1000, NULL), 5000); // see qobuzpage.c
+	power_pause_in_standby(lv_timer_create(wifi_watch_cb, 1000, NULL)); // repaints a notice on a page nobody sees
 	art_drop_timer = lv_timer_create(art_drop_cb, ART_DROP_DELAY_MS, NULL);
 	lv_timer_pause(art_drop_timer);
 	art_timer = lv_timer_create(art_poll_cb, 120, NULL);

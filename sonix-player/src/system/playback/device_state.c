@@ -4,6 +4,7 @@
 #include "src/system/core/utils.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/audio/audio.h"
+#include "src/system/device/power.h"
 #include "src/system/playback/audiobook.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
@@ -65,6 +66,9 @@ static char current_metadata_file[512] = {0};
 // ---------------------------------------------------------------------------
 
 #define REMEMBER_PERIOD_MS 10000
+// With the screen dark the position is written every half minute instead: the
+// card is woken for each write, and a crash then loses at most that much.
+#define REMEMBER_PERIOD_DARK_MS 30000
 #define REMEMBER_MOVE_SECS 1.0
 #define REMEMBER_RESTORE_GRACE_MS 8000
 
@@ -115,7 +119,8 @@ static bool remember_should_write(remember_state_t *st, const char *file, audio_
 	// itself, and writing every time it has moved a second is a write to the
 	// card every second.
 	bool drifted = same_file && st->pos >= 0 && status != AUDIO_STATUS_PLAYING && moved >= REMEMBER_MOVE_SECS;
-	bool due = status == AUDIO_STATUS_PLAYING && (uint32_t)(now - st->saved_ms) >= REMEMBER_PERIOD_MS;
+	bool due = status == AUDIO_STATUS_PLAYING &&
+			   (uint32_t)(now - st->saved_ms) >= (power_screen_is_on() ? REMEMBER_PERIOD_MS : REMEMBER_PERIOD_DARK_MS);
 
 	if (!changed && !drifted && !due) {
 		return false;

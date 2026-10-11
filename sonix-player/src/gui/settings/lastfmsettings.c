@@ -308,7 +308,10 @@ static void login_finished(const lastfm_status_t *st) {
 // ---------------------------------------------------------------------------
 
 static void tick_cb(lv_timer_t *t) {
-	(void)t;
+	// Once a second while there is a session to report on or the page is up to
+	// show it; a player that is not signed in, with the page closed, has
+	// nothing to look at but the occasional login that finished elsewhere.
+	lv_timer_set_period(t, lastfm_active() || lv_screen_active() == page_screen ? TICK_MS : 5000);
 	if (lastfm_active()) {
 		char file[512];
 		audio_get_current_file(file, sizeof(file));

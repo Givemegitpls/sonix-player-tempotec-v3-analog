@@ -2,6 +2,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/system/core/frameprof.h"
+#include "src/system/device/power.h"
 #include "src/gui/shell/shown.h"
 
 #include "lvgl/src/misc/lv_text_ap.h"
@@ -283,6 +284,11 @@ static void fade_update(lv_obj_t *label) {
 	if (entry->masks) {
 		if (!fade_timer) {
 			fade_timer = lv_timer_create(fade_poll_cb, FADE_POLL_MS, NULL);
+			// Twelve wake-ups a second for as long as a title overflows, and
+			// nothing shows with the panel dark. Slowed rather than paused
+			// because fade_update() resumes it at every text change, which
+			// with the screen off is every track.
+			power_slow_in_standby(fade_timer, 60000);
 		} else {
 			lv_timer_resume(fade_timer);
 		}
