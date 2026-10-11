@@ -1040,7 +1040,7 @@ static bool panel_shows_artist(const panel_t *p) {
 	if (!show_artist || p->from_paths) {
 		return false;
 	}
-	if (p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_NONE) {
+	if ((p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_NONE) || p->kind == LIBRARY_LIST_MOST_PLAYED) {
 		return (artist_lists & MEDIALIST_ARTIST_TRACKS) != 0;
 	}
 	if ((p->kind == LIBRARY_LIST_ALBUMS && (p->filter == LIBRARY_FILTER_NONE || p->filter == LIBRARY_FILTER_YEAR)) ||
@@ -1093,15 +1093,15 @@ static void play_menu_hide(void);
 static library_filter_t filter_for(library_list_t kind);
 
 // The lists rows can be chosen on: tracks, albums, artists, album artists, a
-// playlist and the favourites, read from the index. Not genres, and not a list
-// handed in as paths.
+// playlist, the favourites and the most played, read from the index. Not
+// genres, and not a list handed in as paths.
 static bool panel_selectable(const panel_t *p) {
 	if (p->from_paths) {
 		return false;
 	}
 	return p->kind == LIBRARY_LIST_TRACKS || p->kind == LIBRARY_LIST_ALBUMS || p->kind == LIBRARY_LIST_ARTISTS ||
 		   p->kind == LIBRARY_LIST_ALBUM_ARTISTS || p->kind == LIBRARY_LIST_PLAYLIST ||
-		   p->kind == LIBRARY_LIST_FAVOURITES;
+		   p->kind == LIBRARY_LIST_FAVOURITES || p->kind == LIBRARY_LIST_MOST_PLAYED;
 }
 
 // What a row stands for in the selection: its position on a playlist, which
@@ -2966,7 +2966,8 @@ static library_index_t *menu_tracks_open(panel_t *p) {
 	window_update(p);
 
 	library_index_t *ix = NULL;
-	if (p->kind == LIBRARY_LIST_TRACKS || p->kind == LIBRARY_LIST_FAVOURITES || p->kind == LIBRARY_LIST_PLAYLIST) {
+	if (p->kind == LIBRARY_LIST_TRACKS || p->kind == LIBRARY_LIST_FAVOURITES || p->kind == LIBRARY_LIST_PLAYLIST ||
+		p->kind == LIBRARY_LIST_MOST_PLAYED) {
 		ix = library_index_clone(p->ix);
 	} else if (p->kind == LIBRARY_LIST_ALBUMS) {
 		ix = library_index_open(LIBRARY_LIST_TRACKS, p->filter, p->filter_value[0] ? p->filter_value : NULL,
@@ -4502,8 +4503,8 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// Which of the three screens this list belongs on. Tracks are always the
 	// last level; an album list narrowed to one artist or genre is the middle
 	// one; everything else is where a walk starts.
-	bool tracks_like =
-		(kind == LIBRARY_LIST_TRACKS || kind == LIBRARY_LIST_FAVOURITES || kind == LIBRARY_LIST_PLAYLIST);
+	bool tracks_like = (kind == LIBRARY_LIST_TRACKS || kind == LIBRARY_LIST_FAVOURITES ||
+						kind == LIBRARY_LIST_PLAYLIST || kind == LIBRARY_LIST_MOST_PLAYED);
 	bool artist_albums =
 		kind == LIBRARY_LIST_ALBUMS && (filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST ||
 										filter == LIBRARY_FILTER_GENRE || filter == LIBRARY_FILTER_YEAR);
@@ -4554,10 +4555,11 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	bool want_album = artist_tracks || artist_records_page;
 	// The circle-play menu, wherever "play all of this" is a question worth
 	// asking: an artist's records, an artist's tracks, all the records, all the
-	// tracks, the favourites, a playlist, inside one album. Not on the name lists,
-	// where a row is not a set of tracks.
+	// tracks, the favourites, the most played, a playlist, inside one album. Not
+	// on the name lists, where a row is not a set of tracks.
 	bool want_play = artist_albums || (kind == LIBRARY_LIST_ALBUMS && filter == LIBRARY_FILTER_NONE) ||
 					 kind == LIBRARY_LIST_FAVOURITES || kind == LIBRARY_LIST_PLAYLIST ||
+					 kind == LIBRARY_LIST_MOST_PLAYED ||
 					 (kind == LIBRARY_LIST_TRACKS &&
 					  (filter == LIBRARY_FILTER_NONE || filter == LIBRARY_FILTER_ARTIST ||
 					   filter == LIBRARY_FILTER_ALBUM_ARTIST || filter == LIBRARY_FILTER_ALBUM));
@@ -4630,6 +4632,14 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// database returns it oldest-starred first, and with the button on, the
 	// newest belongs on top.
 	bool desc = (sortable && sort_desc) || (kind == LIBRARY_LIST_FAVOURITES && fav_reversed);
+
+	// Most played starts out empty for a reason of its own: nothing has been
+	// listened to long enough yet, not a library still to scan. Its note is
+	// wrapped inside the page, since a translation can run wider than the
+	// screen; the usual one keeps the width of its own lines.
+	bool most_played = kind == LIBRARY_LIST_MOST_PLAYED;
+	lv_label_set_text(p->empty, tr(most_played ? "medialist_most_played_empty" : "library_empty_note"));
+	lv_obj_set_width(p->empty, most_played ? lv_pct(90) : LV_SIZE_CONTENT);
 
 	p->from_paths = false;
 	p->list_order = order;
@@ -4747,6 +4757,8 @@ void medialist_open_paths(const char *title, const char *const *paths, const cha
 	}
 
 	lv_obj_set_height(p->body, body_height(p));
+	lv_label_set_text(p->empty, tr("library_empty_note"));
+	lv_obj_set_width(p->empty, LV_SIZE_CONTENT);
 	if (p->count == 0) {
 		lv_obj_set_hidden(p->empty, false);
 	} else {

@@ -34,6 +34,12 @@ static void open_album_artists(void) {
 }
 static void open_genres(void) { medialist_open(tr("music_genres"), LIBRARY_LIST_GENRES, LIBRARY_FILTER_NONE, NULL); }
 static void open_years(void) { medialist_open(tr("music_year"), LIBRARY_LIST_YEARS, LIBRARY_FILTER_NONE, NULL); }
+static void open_favourites(void) {
+	medialist_open(tr("favourites"), LIBRARY_LIST_FAVOURITES, LIBRARY_FILTER_NONE, NULL);
+}
+static void open_most_played(void) {
+	medialist_open(tr("music_most_played"), LIBRARY_LIST_MOST_PLAYED, LIBRARY_FILTER_NONE, NULL);
+}
 static void open_browse(void) { switch_screen(browser_screen); }
 static void open_playlists(void) { playlistpage_open(); }
 
@@ -62,6 +68,9 @@ static const struct {
 								  {"music_album_artists", &icon_menu_album_artist, NULL, open_album_artists}},
 	[MUSIC_TILE_GENRES] = {"genres", {"music_genres", &icon_menu_genre, NULL, open_genres}},
 	[MUSIC_TILE_YEARS] = {"years", {"music_year", &icon_menu_year, NULL, open_years}},
+	[MUSIC_TILE_FAVOURITES] = {"favourites", {"favourites", &icon_menu_favourites, NULL, open_favourites}},
+	[MUSIC_TILE_MOST_PLAYED] = {"most_played",
+								{"music_most_played", &icon_menu_most_played, NULL, open_most_played}},
 	[MUSIC_TILE_PLAYLISTS] = {"playlists", {"playlists", &icon_menu_playlist, NULL, open_playlists}},
 	[MUSIC_TILE_BROWSE] = {"browse", {"music_browse", &icon_menu_explorer, NULL, open_browse}},
 };
@@ -250,11 +259,6 @@ static void search_cb(lv_event_t *e) {
 	search_open();
 }
 
-static void favourites_cb(lv_event_t *e) {
-	(void)e;
-	medialist_open(tr("favourites"), LIBRARY_LIST_FAVOURITES, LIBRARY_FILTER_NONE, NULL);
-}
-
 // With no tracks indexed the tiles would all open empty lists: the page says
 // a scan is needed instead, and the button asks which folders to scan.
 static lv_obj_t *empty_panel;
@@ -305,16 +309,13 @@ void music_init(gui_config_t *cfg) {
 	// the grid because that is where a tile's press stops bubbling.
 	coverflow_attach_edge(grid, cfg);
 
-	// Three buttons in the corner, so the heading has to be told to clear them.
-	settingsrow_title_corner_slots(settingsrow_title(music_screen, cfg, "music"), cfg, 3);
+	// Two buttons in the corner, so the heading has to be told to clear them.
+	settingsrow_title_corner_slots(settingsrow_title(music_screen, cfg, "music"), cfg, 2);
 
 	lv_obj_t *settings_btn = corner_button(cfg, 0, &icon_music_settings);
 	lv_obj_add_event_cb(settings_btn, switch_screen_cb, LV_EVENT_CLICKED, musicsettings_screen);
 
-	lv_obj_t *favourites_btn = corner_button(cfg, 1, &icon_star_corner);
-	lv_obj_add_event_cb(favourites_btn, favourites_cb, LV_EVENT_CLICKED, NULL);
-
-	lv_obj_t *search_btn = corner_button(cfg, 2, &icon_search);
+	lv_obj_t *search_btn = corner_button(cfg, 1, &icon_search);
 	lv_obj_add_event_cb(search_btn, search_cb, LV_EVENT_CLICKED, NULL);
 
 	empty_panel = gridpage_empty_panel(music_screen, cfg, &icon_music_note, "music_no_database", scan_cb);

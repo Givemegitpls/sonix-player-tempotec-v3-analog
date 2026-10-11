@@ -176,6 +176,12 @@ audio_status_t device_state_toggle_play_pause(void);
 
 void device_state_seek(double seconds);
 
+// Called with the playing track's position and length, from the progress
+// poll. In the last seconds of a track, with gapless on, reads the next one
+// off the card ahead of time (readahead.h), so it opens in time to follow on
+// without a gap.
+void device_state_read_ahead(double position, double total);
+
 // Running through the track with a held button, without asking the decoder for
 // anything until it is let go.
 //

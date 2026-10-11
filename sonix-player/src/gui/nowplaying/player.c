@@ -3735,6 +3735,9 @@ static void update_progress(void) {
 
 	set_progress_label(state.progress_current_secs, current_total_length);
 	wave_refresh(cover_shown_path, state.progress_current_secs);
+	if (state.status == AUDIO_STATUS_PLAYING && !state.live) {
+		device_state_read_ahead(state.progress_current_secs, state.progress_total_secs);
+	}
 	lyrics_request(&state);
 	lyrics_follow(state.progress_current_secs);
 	apply_playback_status(state.status);

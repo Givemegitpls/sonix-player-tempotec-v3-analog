@@ -2,6 +2,7 @@
 
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/audio/audio.h"
+#include "src/system/audio/readahead.h"
 #include "src/system/playback/audiobook.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
@@ -1273,6 +1274,42 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 		out_path[out_size - 1] = '\0';
 	}
 	return true;
+}
+
+// How long before the end of a track the next one is read ahead
+// (readahead.h), and how far into the track at the earliest, so the read does
+// not land on the moment a track starts and its output is being opened.
+#define READAHEAD_LEAD_SECS 20.0
+#define READAHEAD_SETTLE_SECS 3.0
+
+void device_state_read_ahead(double position, double total) {
+	// Only where gapless can use it: what it buys is the next track opening
+	// before the queue held at the end of this one runs out.
+	if (!audio_get_gapless() || radio_is_active() || total <= 0.0 || position < READAHEAD_SETTLE_SECS ||
+		total - position > READAHEAD_LEAD_SECS) {
+		return;
+	}
+	// The same ends device_state_advance_auto() stops at. At the end of the
+	// queue, which record or folder follows (if any) is decided when the track
+	// ends, so there is nothing to read ahead of.
+	if (audiobook_is_playing() && !audiobook_has_next_part()) {
+		return;
+	}
+	if (playlist_at_end() && playlist_get_mode() != PLAYBACK_MODE_REPEAT_ONE) {
+		return;
+	}
+
+	char next[512];
+	if (!playlist_peek_auto(next, sizeof(next)) || strcmp(next, current_metadata_file) == 0) {
+		return; // nothing next, or this track again, which is already read
+	}
+	// Asked once per track: the poll comes round twice a second.
+	static char asked[512];
+	if (strcmp(next, asked) == 0) {
+		return;
+	}
+	snprintf(asked, sizeof(asked), "%s", next);
+	readahead_file(next);
 }
 
 // Re-anchors the queue to the track that is actually loaded. If the two ever

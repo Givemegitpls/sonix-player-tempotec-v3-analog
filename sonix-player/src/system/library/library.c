@@ -88,6 +88,11 @@ static const char *const SCHEMA[] = {
 	// and can point at files the index has never seen.
 	"CREATE TABLE IF NOT EXISTS FAVOURITES(path TEXT PRIMARY KEY, name TEXT, artist TEXT, added_at INT)",
 
+	// Also local: how many times each track has been played through, by the
+	// rule Last.fm counts a play by, and when last. Keyed by path and kept apart
+	// from MEDIA_TABLE like the favourites, so a rescan does not forget it.
+	"CREATE TABLE IF NOT EXISTS PLAY_COUNTS(path TEXT PRIMARY KEY, plays INT NOT NULL, last_played INT)",
+
 	// Also local: where playback was left (the "Ricorda traccia" option). One
 	// row only; id is always 0.
 	"CREATE TABLE IF NOT EXISTS PLAYBACK_STATE(id INT PRIMARY KEY, path TEXT, position REAL, updated_at INT)",
@@ -316,6 +321,14 @@ static pthread_mutex_t db_lock = PTHREAD_MUTEX_INITIALIZER;
 	"COALESCE(NULLIF((SELECT m.artist FROM MEDIA_TABLE m WHERE m.path = FAVOURITES.path LIMIT 1), ''), artist)"
 // The title the same way: the library's, then the one written down at starring.
 #define FAV_NAME "COALESCE(NULLIF((SELECT m.name FROM MEDIA_TABLE m WHERE m.path = FAVOURITES.path LIMIT 1), ''), name)"
+
+// The most played tracks: the ones still in the index, most plays first and,
+// between equals, the one played last. The title and the artist are the
+// index's, which is the only place they are kept.
+#define PLAYS_IN_INDEX "EXISTS(SELECT 1 FROM MEDIA_TABLE m WHERE m.path = PLAY_COUNTS.path)"
+#define PLAYS_ORDER "plays DESC, last_played DESC, rowid"
+#define PLAYS_NAME "(SELECT m.name FROM MEDIA_TABLE m WHERE m.path = PLAY_COUNTS.path LIMIT 1)"
+#define PLAYS_ARTIST "(SELECT m.artist FROM MEDIA_TABLE m WHERE m.path = PLAY_COUNTS.path LIMIT 1)"
 
 typedef enum {
 	GEN_MEDIA = 0, // MEDIA_TABLE and the four lookup tables the scan fills
@@ -1274,7 +1287,8 @@ static void backfill_stop_and_wait(void) {
 static bool list_uses_sortkey(library_list_t kind) {
 	// Favourites run by when they were starred and a playlist by the order it
 	// was built, so neither has a sort key to read.
-	return sortkeys_ready && kind != LIBRARY_LIST_FAVOURITES && kind != LIBRARY_LIST_PLAYLIST;
+	return sortkeys_ready && kind != LIBRARY_LIST_FAVOURITES && kind != LIBRARY_LIST_PLAYLIST &&
+		   kind != LIBRARY_LIST_MOST_PLAYED;
 }
 
 static void next_mount_serial(void);
@@ -1437,7 +1451,7 @@ static bool playlist_table(const char *name, char *out, size_t out_size);
 // are found by name.
 static const char *const KEPT_TABLES[] = {
 	"FAVOURITES",			"PLAYBACK_STATE",		"PLAYBACK_QUEUE", "PLAYBACK_QUEUE_STATE",
-	"PLAYBACK_QUEUE_QUERY", "PLAYBACK_QUEUE_ALBUM", "PLAYLIST_MIGRATION",
+	"PLAYBACK_QUEUE_QUERY", "PLAYBACK_QUEUE_ALBUM", "PLAYLIST_MIGRATION",   "PLAY_COUNTS",
 };
 
 // Copies one table from the attached damaged file. A table the damage reaches
@@ -2152,6 +2166,38 @@ bool library_fav_toggle(const char *path, const char *name, const char *artist) 
 	return now_favourite;
 }
 
+void library_note_play(const char *path) {
+	if (!path || !path[0]) {
+		return;
+	}
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	// An upsert and not INSERT OR REPLACE: the row keeps its row id, so an open
+	// list of the most played -- and a queue built on one -- is not left
+	// holding ids that no longer exist. Neither is told: the list takes the
+	// new order the next time it is opened, and a queue playing it goes on in
+	// the order it started with.
+	//
+	// Only a track the index has: a station, a stream's cache file or a file
+	// played from the browser that was never scanned would only fill the table
+	// with rows the list never shows.
+	if (db && sqlite3_prepare_v2(db,
+								 "INSERT INTO PLAY_COUNTS(path, plays, last_played)"
+								 " SELECT ?1, 1, strftime('%s','now') WHERE EXISTS"
+								 " (SELECT 1 FROM MEDIA_TABLE m WHERE m.path = ?1)"
+								 " ON CONFLICT(path) DO UPDATE SET plays = plays + 1, last_played = excluded.last_played",
+								 -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(stmt) != SQLITE_DONE) {
+			fprintf(stderr, "library: play of '%s' not counted: %s\n", path, sqlite3_errmsg(db));
+		} else if (sqlite3_changes(db) > 0) {
+			printf("library: play of '%s' counted\n", path);
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+}
+
 int library_fav_add_many(const library_fav_row_t *rows, int count) {
 	if (!rows || count <= 0) {
 		return 0;
@@ -2298,6 +2344,9 @@ int library_for_each_ordered(library_list_t kind, library_filter_t filter, const
 
 	if (kind == LIBRARY_LIST_FAVOURITES) {
 		snprintf(sql, sizeof(sql), "SELECT name, path, %s FROM FAVOURITES ORDER BY added_at, rowid", FAV_ARTIST);
+	} else if (kind == LIBRARY_LIST_MOST_PLAYED) {
+		snprintf(sql, sizeof(sql), "SELECT " PLAYS_NAME ", path, " PLAYS_ARTIST " FROM PLAY_COUNTS WHERE " PLAYS_IN_INDEX
+								   " ORDER BY " PLAYS_ORDER);
 	} else if (kind == LIBRARY_LIST_TRACKS) {
 		char order_sql[256];
 		track_order_sql(order_sql, sizeof(order_sql), order, col && value && filter == LIBRARY_FILTER_ALBUM, by_name);
@@ -2514,6 +2563,11 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 		return;
 	}
 
+	if (kind == LIBRARY_LIST_MOST_PLAYED) {
+		snprintf(sql, size, "SELECT %s FROM PLAY_COUNTS WHERE " PLAYS_IN_INDEX " ORDER BY " PLAYS_ORDER, select);
+		return;
+	}
+
 	// A playlist is a table of its own, so the name of the table is the value
 	// the caller passed. It runs in the order it was built -- `idx` -- and
 	// shows what PLAYLIST_SHOWN lets through.
@@ -2695,6 +2749,8 @@ static const char *row_by_id_sql(library_list_t kind, const char *value, char *o
 		return "SELECT " ALBUM_GROUP_YEAR ", NULL, NULL FROM ALBUM_GROUP_TABLE g WHERE rowid=?";
 	case LIBRARY_LIST_FAVOURITES:
 		return "SELECT " FAV_NAME ", path, " FAV_ARTIST " FROM FAVOURITES WHERE rowid=?";
+	case LIBRARY_LIST_MOST_PLAYED:
+		return "SELECT " PLAYS_NAME ", path, " PLAYS_ARTIST " FROM PLAY_COUNTS WHERE rowid=?";
 	default:
 		return NULL;
 	}
@@ -2713,6 +2769,10 @@ static const char *name_column(library_list_t kind) {
 		return "album_artist";
 	case LIBRARY_LIST_GENRES:
 		return "genre";
+	case LIBRARY_LIST_MOST_PLAYED:
+		// No name of its own: the table holds the path, and the list is not
+		// filed by letter anyway.
+		return "path";
 	default:
 		return "name";
 	}
@@ -2853,6 +2913,7 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 		// album by disc position, an artist's records by album -- three lists
 		// whose order has nothing to do with the alphabet.
 		bool by_name = kind != LIBRARY_LIST_FAVOURITES && kind != LIBRARY_LIST_PLAYLIST && kind != LIBRARY_LIST_YEARS &&
+					   kind != LIBRARY_LIST_MOST_PLAYED &&
 					   order != LIBRARY_ORDER_ALBUM && order != LIBRARY_ORDER_ADDED && order != LIBRARY_ORDER_YEAR &&
 					   order != LIBRARY_ORDER_YEAR_DESC &&
 					   !(kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_ALBUM);
@@ -3042,7 +3103,9 @@ int library_index_find_path(const library_index_t *ix, const char *path) {
 			return -1;
 		}
 	} else {
-		const char *table = ix->kind == LIBRARY_LIST_FAVOURITES ? "FAVOURITES" : "MEDIA_TABLE";
+		const char *table = ix->kind == LIBRARY_LIST_FAVOURITES	 ? "FAVOURITES"
+							: ix->kind == LIBRARY_LIST_MOST_PLAYED ? "PLAY_COUNTS"
+																   : "MEDIA_TABLE";
 		snprintf(sql, sizeof(sql), "SELECT rowid FROM %s WHERE path = ?", table);
 	}
 

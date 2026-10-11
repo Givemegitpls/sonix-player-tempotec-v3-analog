@@ -241,6 +241,9 @@ typedef enum {
 	// at least one album has (an album's year is its tracks' latest, as
 	// LIBRARY_ORDER_YEAR reads it). A row's name is the year. Handles only.
 	LIBRARY_LIST_YEARS,
+	// The tracks played most, most plays first: those still in the index that
+	// library_note_play() has counted. Handles only.
+	LIBRARY_LIST_MOST_PLAYED,
 } library_list_t;
 
 // Fills `out` with up to `max` names, in the collation's order (see above).
@@ -404,6 +407,10 @@ library_quality_t library_track_quality(const char *path, int *rate_out, int *bi
 
 // Stars/unstars a track. Returns the new state (true = it is now a favourite).
 bool library_fav_toggle(const char *path, const char *name, const char *artist);
+
+// One more play of `path`, counted for the Most played list. Called once a
+// play has gone on long enough to count (playcount.h).
+void library_note_play(const char *path);
 
 bool library_fav_contains(const char *path);
 
