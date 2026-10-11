@@ -110,14 +110,10 @@ lv_obj_t *medialist_albums_screen;
 #define HEAD_PLAY_PAD 40 // what the pill keeps either side of its word
 #define HEAD_BTN_GAP 20
 
-// Behind selection mode's buttons, while the head's cover can be under them: a
-// pill showing a blurred copy of the cover, lined up with the cover itself, with
-// the page's colour over it part see-through. The copy is blurred once, when
-// the mode starts, and only moved as the list scrolls: a blur worked out live
-// behind the buttons would be redone on every frame of a scroll. The pill clips
-// it to its rounded shape.
+// Behind selection mode's buttons, while the head's cover can be under them:
+// the page's colour, part see-through, over a blur of whatever it covers.
+#define SEL_BLUR_RADIUS 18
 #define SEL_BLUR_PAD 6
-#define SEL_BLUR_VEIL LV_OPA_40
 
 // The page in the sleeve's colour: the colour the sleeve looks
 // (cover_average_tone), at the brightness of the sleeve as a whole pushed away
@@ -278,11 +274,7 @@ typedef struct {
 	// up, the list runs to the top of the page so the cover can stand level
 	// with the chevron, and the rows would otherwise pass under the heading.
 	lv_obj_t *head_bar;
-	lv_obj_t *sel_blur;		 // behind the corner in selection mode, over the cover
-	lv_obj_t *sel_blur_img;	 // ...the blurred copy of the cover in it
-	lv_obj_t *sel_blur_veil; // ...and the page's colour over that
-	bool sel_blur_has;
-	cover_image_t sel_blur_pic;
+	lv_obj_t *sel_blur; // behind the corner in selection mode, over the cover
 	// The page in the sleeve's colours (see TINT_LIGHT_FROM), and those colours.
 	bool tinted;
 	lv_color_t tint_bg;		 // the page
@@ -1201,7 +1193,6 @@ static void sel_buttons_show(panel_t *p, bool on) {
 }
 
 static void head_bar_update(panel_t *p);
-static void sel_blur_drop(panel_t *p);
 
 static void selection_stop(panel_t *p) {
 	if (!p->selecting) {
@@ -2354,16 +2345,12 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 }
 
 static void head_follow(panel_t *p);
-static void sel_blur_follow(panel_t *p);
 
 static void scroll_cb(lv_event_t *e) {
 	panel_t *p = lv_event_get_user_data(e);
 	p->saved_scroll = lv_obj_get_scroll_y(p->list);
 	index_flash(p);
 	head_follow(p);
-	if (p->sel_blur && !lv_obj_is_hidden(p->sel_blur)) {
-		sel_blur_follow(p);
-	}
 	window_update(p);
 }
 
@@ -3403,6 +3390,19 @@ static void screen_loaded_cb(lv_event_t *e) {
 	}
 }
 
+// Rounds the blur behind selection mode's buttons to the pill's own corners.
+//
+// LVGL 9.6 hands the backdrop blur the corner radius of a rectangle
+// descriptor it has not filled in yet (lv_obj.c, LV_EVENT_DRAW_MAIN), so the
+// blur always comes out square and its corners show past the pill's rounded
+// ones. The blur task is put right here as it is added, before it is drawn.
+static void sel_blur_round_cb(lv_event_t *e) {
+	lv_draw_blur_dsc_t *blur = lv_draw_task_get_blur_dsc(lv_event_get_draw_task(e));
+	if (blur) {
+		blur->corner_radius = lv_obj_get_style_radius(lv_event_get_current_target(e), LV_PART_MAIN);
+	}
+}
+
 static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_base) {
 	p->cfg = cfg;
 	p->is_tracks = is_tracks;
@@ -3455,29 +3455,22 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	p->sel_blur = NULL;
 	if (is_tracks) {
 		int shelf = CORNER_MAX_BUTTONS * CORNER_BUTTON_SIZE + (CORNER_MAX_BUTTONS - 1) * CORNER_GAP;
-		int pill_h = CORNER_BUTTON_SIZE + 2 * SEL_BLUR_PAD;
 		p->sel_blur = lv_obj_create(p->screen);
 		lv_obj_remove_style_all(p->sel_blur);
 		lv_obj_add_style(p->sel_blur, &theme_style_screen, 0);
-		lv_obj_set_style_bg_opa(p->sel_blur, LV_OPA_COVER, 0);
-		lv_obj_set_style_radius(p->sel_blur, pill_h / 2, 0);
-		lv_obj_set_style_clip_corner(p->sel_blur, true, 0);
-		lv_obj_set_size(p->sel_blur, shelf + 2 * SEL_BLUR_PAD, pill_h);
+		lv_obj_set_style_bg_opa(p->sel_blur, LV_OPA_40, 0);
+		lv_obj_set_style_radius(p->sel_blur, LV_RADIUS_CIRCLE, 0);
+		lv_obj_set_send_draw_task_events(p->sel_blur, true);
+		lv_obj_add_event_cb(p->sel_blur, sel_blur_round_cb, LV_EVENT_DRAW_TASK_ADDED, NULL);
+		lv_obj_set_style_blur_radius(p->sel_blur, SEL_BLUR_RADIUS, 0);
+		lv_obj_set_style_blur_backdrop(p->sel_blur, true, 0);
+		lv_obj_set_style_blur_quality(p->sel_blur, LV_BLUR_QUALITY_SPEED, 0);
+		lv_obj_set_size(p->sel_blur, shelf + 2 * SEL_BLUR_PAD, CORNER_BUTTON_SIZE + 2 * SEL_BLUR_PAD);
 		lv_obj_align(p->sel_blur, LV_ALIGN_TOP_RIGHT, -cfg->padding + SEL_BLUR_PAD,
 					 cfg->padding + cfg->top_bar_height - SEL_BLUR_PAD);
 		lv_obj_set_scrollable(p->sel_blur, false);
 		lv_obj_set_clickable(p->sel_blur, false);
 		lv_obj_set_hidden(p->sel_blur, true);
-
-		p->sel_blur_img = lv_image_create(p->sel_blur);
-		lv_obj_set_hidden(p->sel_blur_img, true);
-
-		p->sel_blur_veil = lv_obj_create(p->sel_blur);
-		lv_obj_remove_style_all(p->sel_blur_veil);
-		lv_obj_add_style(p->sel_blur_veil, &theme_style_screen, 0);
-		lv_obj_set_style_bg_opa(p->sel_blur_veil, SEL_BLUR_VEIL, 0);
-		lv_obj_set_size(p->sel_blur_veil, LV_PCT(100), LV_PCT(100));
-		lv_obj_set_clickable(p->sel_blur_veil, false);
 	}
 
 	p->body = lv_obj_create(p->list);
@@ -3971,7 +3964,6 @@ static void page_paint(panel_t *p) {
 	}
 
 	local_color(p->sel_blur, LV_STYLE_BG_COLOR, 0, t, p->tint_bg);
-	local_color(p->sel_blur_veil, LV_STYLE_BG_COLOR, 0, t, p->tint_bg);
 
 	back_btn_tint_on_screen(p->screen, t, p->tint_ink);
 
@@ -4019,7 +4011,6 @@ static void head_clear(panel_t *p) {
 	}
 	if (p->sel_blur) {
 		lv_obj_set_hidden(p->sel_blur, true);
-		sel_blur_drop(p);
 	}
 	if (p->tinted) {
 		p->tinted = false;
@@ -4304,39 +4295,6 @@ static void head_follow(panel_t *p) {
 	head_bar_update(p);
 }
 
-// Lets go of the blurred copy behind selection mode's buttons.
-static void sel_blur_drop(panel_t *p) {
-	if (p->sel_blur_img) {
-		lv_image_set_src(p->sel_blur_img, NULL);
-		lv_obj_set_hidden(p->sel_blur_img, true);
-	}
-	if (p->sel_blur_has) {
-		cover_free(&p->sel_blur_pic);
-		p->sel_blur_has = false;
-	}
-}
-
-// Lines the blurred copy up with the cover under the pill: made the first time
-// it is needed, then only moved.
-static void sel_blur_follow(panel_t *p) {
-	if (!p->sel_blur || !p->head_cover || !p->head_has_cover) {
-		return;
-	}
-	if (!p->sel_blur_has) {
-		if (!cover_blur_copy(&p->head_image, &p->sel_blur_pic)) {
-			return;
-		}
-		p->sel_blur_has = true;
-		lv_image_set_src(p->sel_blur_img, &p->sel_blur_pic.dsc);
-		lv_obj_set_hidden(p->sel_blur_img, false);
-		lv_obj_move_foreground(p->sel_blur_veil);
-	}
-	lv_area_t cover, pill;
-	lv_obj_get_coords(p->head_cover, &cover);
-	lv_obj_get_coords(p->sel_blur, &pill);
-	lv_obj_set_pos(p->sel_blur_img, cover.x1 - pill.x1, cover.y1 - pill.y1);
-}
-
 // The bar is up while the title has gone under the heading row. Below that
 // point the head's cover can be under the corner, and while rows are being
 // chosen the corner is full of selection mode's buttons: a blur goes behind
@@ -4351,11 +4309,8 @@ static void head_bar_update(panel_t *p) {
 		bool blur = p->head && p->selecting && !bar;
 		lv_obj_set_hidden(p->sel_blur, !blur);
 		if (blur) {
-			sel_blur_follow(p);
 			lv_obj_move_foreground(p->sel_blur);
 			lv_obj_move_foreground(p->corner);
-		} else if (!p->selecting) {
-			sel_blur_drop(p);
 		}
 	}
 }
