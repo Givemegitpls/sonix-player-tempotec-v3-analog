@@ -1,6 +1,7 @@
 #include "scrolltext.h"
 
 #include "src/gui/fonts/fonts.h"
+#include "src/system/core/frameprof.h"
 #include "src/gui/shell/shown.h"
 
 #include "lvgl/src/misc/lv_text_ap.h"
@@ -482,6 +483,13 @@ static bool label_shows(lv_obj_t *label, const char *text) {
 #endif
 }
 
+// frameprof marks (only logged with the profiler on): how a text change splits
+// into measuring the pass, setting the text and deciding the end fade. The
+// letters are looked up in the font by each of them.
+static const char *const PROF_ST_MEASURE = "st_measure";
+static const char *const PROF_ST_SET = "st_set_text";
+static const char *const PROF_ST_FADE = "st_fade";
+
 void scrolltext_set(lv_obj_t *label, const char *text) {
 	if (!label) {
 		return;
@@ -500,9 +508,15 @@ void scrolltext_set(lv_obj_t *label, const char *text) {
 	// The duration first: changing it rebuilds the scroll animation, so doing
 	// it before the text means the text change is the last word and the
 	// animation it builds is the one that stays.
+	frameprof_begin(PROF_ST_MEASURE);
 	apply_duration(label, line);
+	frameprof_end(PROF_ST_MEASURE);
+	frameprof_begin(PROF_ST_SET);
 	lv_label_set_text(label, line);
+	frameprof_end(PROF_ST_SET);
+	frameprof_begin(PROF_ST_FADE);
 	fade_update(label);
+	frameprof_end(PROF_ST_FADE);
 	if (line != text) {
 		free(line);
 	}

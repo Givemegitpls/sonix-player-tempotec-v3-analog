@@ -66,7 +66,8 @@
  * amount of memory however much of it is on screen. */
 #define LV_USE_FREETYPE 1
 #define LV_FREETYPE_USE_LVGL_PORT 0
-#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 256
+#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 512
+#define LV_FREETYPE_CACHE_FT_GLYPH_L1 1
 
 /* Song titles, tags and station names in Arabic. The text is kept in the
  * order it is written in and LVGL draws each line right to left where the

@@ -374,6 +374,11 @@ bool library_fav_toggle(const char *path, const char *name, const char *artist);
 
 bool library_fav_contains(const char *path);
 
+// Moves whenever a favourite is added or removed, so an answer to
+// library_fav_contains() taken earlier can be told from a stale one without
+// asking the database again. Cheap and lock-free.
+unsigned library_favourites_generation(void);
+
 // Stars every track in `rows` that is not starred yet, in one transaction and
 // in the order given; one already starred keeps its place. Returns how many of
 // them are favourites afterwards.

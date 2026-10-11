@@ -735,6 +735,18 @@ static char np_artist[256];
 static char np_album_artist[256];
 static char np_genre[128];
 
+static bool np_album_value_known; // np_album_value has been looked up for np_path
+
+static void np_album_value_ensure(void) {
+	if (np_album_value_known) {
+		return;
+	}
+	np_album_value_known = true;
+	if (!np_path[0] || !library_track_album_value(np_path, np_album_value, sizeof(np_album_value))) {
+		np_album_value[0] = '\0';
+	}
+}
+
 static void np_cache_refresh(void) {
 	device_state_t state;
 	device_state_get(&state);
@@ -744,9 +756,11 @@ static void np_cache_refresh(void) {
 	snprintf(np_artist, sizeof(np_artist), "%s", state.metadata.artist);
 	snprintf(np_album_artist, sizeof(np_album_artist), "%s", state.metadata.album_artist);
 	snprintf(np_genre, sizeof(np_genre), "%s", state.metadata.genre);
-	if (!np_path[0] || !library_track_album_value(np_path, np_album_value, sizeof(np_album_value))) {
-		np_album_value[0] = '\0';
-	}
+	// The album key is a database lookup, and only an album list wants it:
+	// it is asked for by entry_is_now_playing() when one is being marked, not
+	// here, where every track change used to pay for it on the interface thread.
+	np_album_value[0] = '\0';
+	np_album_value_known = false;
 
 	// An album with no album-artist tag still belongs to its artist, which is
 	// what the mark in Album artists is looked up by.
@@ -780,6 +794,7 @@ static bool entry_is_now_playing(panel_t *p, int index) {
 		// A row is named by album and key. The key decides when the index knows
 		// the file; a track it does not know has only its tag, which matches
 		// every album of that name.
+		np_album_value_ensure();
 		if (np_album_value[0]) {
 			return strcmp(name, np_album_value) == 0;
 		}
@@ -3540,6 +3555,7 @@ static int current_row(panel_t *p) {
 		if (p->filter != LIBRARY_FILTER_NONE) {
 			return -1;
 		}
+		np_album_value_ensure();
 		return library_index_find_name(p->ix, np_album_value[0] ? np_album_value : np_album);
 	case LIBRARY_LIST_ARTISTS:
 		return library_index_find_name(p->ix, np_artist);

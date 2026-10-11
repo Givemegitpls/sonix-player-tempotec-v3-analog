@@ -222,4 +222,23 @@ void device_state_remember_note(void);
 void device_state_remember_flush(void);
 void device_state_remember_restored(const char *path, double position);
 
+// ---------------------------------------------------------------------------
+// Skip prefetch. What a skip needs to know about the track it lands on -- its
+// tags and whether it is starred -- is read from the card on a background
+// thread while the current track plays, for the two tracks a skip can go to,
+// so the press itself finds the answers in memory. The player hands the paths
+// over once the track is up (it already works out the neighbours to warm their
+// covers): at most four, the most likely first (next, previous, the one after
+// next, the one before previous), so a burst of skips keeps landing on tracks
+// that were read. Nothing here is required for correctness: a miss reads what
+// it always read.
+// ---------------------------------------------------------------------------
+void device_state_prefetch(const char *const *paths, int count);
+// The tags the prefetch holds for `path`, whatever their age or the file's
+// state (they are only used to get the text's glyphs ready). False when none.
+bool device_state_prefetch_peek(const char *path, song_metadata_t *out);
+// The starred flag of `path` when the prefetch has it and no favourite has
+// changed since; false when it has to be asked of the library.
+bool device_state_prefetched_fav(const char *path, bool *starred);
+
 #endif // DEVICE_STATE_H
