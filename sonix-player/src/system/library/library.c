@@ -6415,6 +6415,62 @@ void library_set_log_database(bool enabled) {
 
 // Whether there is an index to ask at all. False while the card is exported to
 // a computer, while it is out, and before the first open.
+#define NAMES_CHUNK 400
+
+// One column of one table, from the first row after `*after` (a rowid), up to
+// NAMES_CHUNK rows, under the lock. Returns the rows read; -1 on an error or
+// no database.
+static int names_chunk(const char *sql, sqlite3_int64 *after, bool (*cb)(const char *, void *), void *user,
+					   bool *stop) {
+	int n = -1;
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, *after);
+		n = 0;
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			*after = sqlite3_column_int64(stmt, 0);
+			const char *text = (const char *)sqlite3_column_text(stmt, 1);
+			n++;
+			if (text && text[0] && !cb(text, user)) {
+				*stop = true;
+				break;
+			}
+		}
+	}
+	if (stmt) {
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return n;
+}
+
+void library_names_walk(bool (*cb)(const char *text, void *user), void *user, int max_titles) {
+	static const struct {
+		const char *sql;
+		bool titles;
+	} WALK[] = {
+		{"SELECT rowid, album FROM ALBUM_TABLE WHERE rowid > ?1 ORDER BY rowid LIMIT 400", false},
+		{"SELECT rowid, artist FROM ARTIST_TABLE WHERE rowid > ?1 ORDER BY rowid LIMIT 400", false},
+		{"SELECT rowid, name FROM MEDIA_TABLE WHERE rowid > ?1 ORDER BY rowid LIMIT 400", true},
+	};
+	bool stop = false;
+	int titles = 0;
+	for (size_t i = 0; i < sizeof(WALK) / sizeof(WALK[0]) && !stop; i++) {
+		sqlite3_int64 after = 0;
+		for (;;) {
+			int n = names_chunk(WALK[i].sql, &after, cb, user, &stop);
+			if (n <= 0 || stop) {
+				break;
+			}
+			if (WALK[i].titles && (titles += n) >= max_titles) {
+				break;
+			}
+			usleep(2000); // the interface's queries get the lock between chunks
+		}
+	}
+}
+
 bool library_is_open(void) {
 	pthread_mutex_lock(&db_lock);
 	bool open = db != NULL;
