@@ -1704,6 +1704,47 @@ bool library_track_title(const char *path, char *out, size_t out_size) {
 	return found;
 }
 
+// The lock is let go between batches, so a scan writing rows or the interface
+// opening a list is never held behind a folder of eight hundred lookups.
+#define TRACK_PLACE_BATCH 64
+
+size_t library_track_places(const char *const *paths, size_t count, library_place_cb cb, void *user) {
+	if (!paths || !cb) {
+		return 0;
+	}
+
+	size_t found = 0;
+	for (size_t start = 0; start < count; start += TRACK_PLACE_BATCH) {
+		size_t end = start + TRACK_PLACE_BATCH < count ? start + TRACK_PLACE_BATCH : count;
+
+		pthread_mutex_lock(&db_lock);
+		sqlite3_stmt *stmt = NULL;
+		if (!db || sqlite3_prepare_v2(db,
+									  "SELECT album, COALESCE(disc,1), dis_id FROM MEDIA_TABLE WHERE path=? LIMIT 1",
+									  -1, &stmt, NULL) != SQLITE_OK) {
+			pthread_mutex_unlock(&db_lock);
+			break;
+		}
+		for (size_t i = start; i < end; i++) {
+			if (!paths[i] || !paths[i][0]) {
+				continue;
+			}
+			sqlite3_bind_text(stmt, 1, paths[i], -1, SQLITE_STATIC);
+			if (sqlite3_step(stmt) == SQLITE_ROW) {
+				const unsigned char *album = sqlite3_column_text(stmt, 0);
+				cb(i, album ? (const char *)album : "", sqlite3_column_int(stmt, 1), sqlite3_column_int(stmt, 2),
+				   user);
+				found++;
+			}
+			sqlite3_reset(stmt);
+			sqlite3_clear_bindings(stmt);
+		}
+		sqlite3_finalize(stmt);
+		pthread_mutex_unlock(&db_lock);
+	}
+	return found;
+}
+
 // Title and artist in one go, for a list built from paths rather than from a
 // query -- a playlist. The scan already put both in the row, so a lookup here
 // costs one indexed SELECT instead of opening the file and parsing its tags.

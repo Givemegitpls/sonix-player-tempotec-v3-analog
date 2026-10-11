@@ -289,6 +289,15 @@ int library_for_each_ordered(library_list_t kind, library_filter_t filter, const
 // False when the file is not in the index; `out` untouched then.
 bool library_track_title(const char *path, char *out, size_t out_size);
 
+// Where each of `count` paths sits on its record, as the scan stored it: the
+// album, the disc (1 when the file has no disc tag) and the track number (0
+// when it has none). `cb` is called once for every path the index holds, with
+// its position in `paths`, and never for one it does not. Called with the
+// index locked: `cb` must not call back into the library. Returns how many
+// were found.
+typedef void (*library_place_cb)(size_t index, const char *album, int disc, int track, void *user);
+size_t library_track_places(const char *const *paths, size_t count, library_place_cb cb, void *user);
+
 // An album is its name AND whose it is: two records called "Greatest Hits" by
 // two different artists are two albums. Whose is the album artist, the artist
 // on a file that has no album artist, and the folder on a file that has
