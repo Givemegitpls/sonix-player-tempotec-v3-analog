@@ -1830,7 +1830,62 @@ static bool connect_was_refused(const char *why) {
 	return strstr(why, "org.bluez.Error.Failed") != NULL && strstr(why, "Host is down") == NULL;
 }
 
+// Class of device major numbers for the things that send audio TO this device.
+#define COD_MAJOR_COMPUTER 0x01
+#define COD_MAJOR_PHONE 0x02
+
+static bool source_class(unsigned cod) {
+	unsigned major = (cod >> 8) & 0x1f;
+	return major == COD_MAJOR_COMPUTER || major == COD_MAJOR_PHONE;
+}
+
+// Whether this address is a phone or a computer rather than headphones, and
+// whether bluez reports a link to it, from the device list as bluez has it.
+static bool device_is_source(const char *mac, bool *connected_out) {
+	btstack_device_t devices[BT_MAX_DEVICES];
+	int count = btstack_devices(devices, BT_MAX_DEVICES);
+	for (int i = 0; i < count; i++) {
+		if (strcasecmp(devices[i].address, mac) == 0) {
+			if (connected_out) {
+				*connected_out = devices[i].connected;
+			}
+			return !devices[i].audio_sink && source_class(devices[i].cod);
+		}
+	}
+	return false;
+}
+
+// A phone or a computer tapped in the list. It is linked, and nothing more: no
+// audio is asked for unless the receiver is already open, and it is never the
+// "last device" to go back to at power-on. The Bluetooth link is also used for
+// other things (the SonixLink app sends no audio at all); opening the receiver
+// is what asks for audio.
+//
+// Device1.Connect is not used: with bluealsa carrying no A2DP sink bluez has no
+// profile it can start for a source and refuses at once.
+static bool connect_source(const char *mac) {
+	bool ok;
+	if (receiver_profile_wanted() || btreceiver_is_active()) {
+		ok = btstack_connect_a2dp_source(mac, CONNECT_TIMEOUT_MS);
+	} else {
+		ok = btstack_connect_avrcp(mac, CONNECT_TIMEOUT_MS);
+	}
+	refresh_devices();
+	if (!ok) {
+		// AlreadyConnected and the like: the link is what was asked for.
+		bool connected = false;
+		device_is_source(mac, &connected);
+		ok = connected;
+	}
+	fprintf(stderr, "bluetooth: link to source %s -> %s\n", mac, ok ? "ok" : "FAILED");
+	return ok;
+}
+
 static bool connect_device(const char *mac) {
+	if (device_is_source(mac, NULL)) {
+		return connect_source(mac);
+	}
+
 	// Never on top of a link that is already up.
 	//
 	// Headphones often come back by themselves the instant the adapter is
@@ -1875,7 +1930,6 @@ static bool connect_device(const char *mac) {
 	}
 	fprintf(stderr, "bluetooth: connect %s -> %s\n", mac, ok ? "ok" : "FAILED");
 	if (ok) {
-		remember_last_device(mac);
 		// Device1.Connect returning says the ACL link is up. It does not say
 		// that the AUDIO profile came up, which is a separate and later event --
 		// bluealsa publishing the PCM. Reporting the first as success puts
@@ -1897,6 +1951,11 @@ static bool connect_device(const char *mac) {
 			}
 		}
 		fprintf(stderr, "bluetooth: audio profile on %s %s\n", mac, audio ? "came up" : "did NOT come up");
+		// Only something that carries our audio is worth going back to at
+		// power-on.
+		if (audio) {
+			remember_last_device(mac);
+		}
 	}
 	refresh_devices();
 	return ok;
@@ -2044,6 +2103,13 @@ static void reconnect_last(void) {
 	char sink[BT_MAC_MAX];
 	if (btstack_audio_sink(sink, sizeof(sink))) {
 		fprintf(stderr, "bluetooth: %s came back on its own\n", sink);
+		return;
+	}
+
+	// An address written down by an older build may be a phone: something to
+	// stream from, not headphones to go back to.
+	if (device_is_source(mac, NULL)) {
+		fprintf(stderr, "bluetooth: %s is a phone or a computer; not going back to it\n", mac);
 		return;
 	}
 
@@ -2545,13 +2611,13 @@ bool bluetooth_receiver_device(char *mac_out, int mac_size, char *name_out, int 
 // state once bluealsa has settled.
 static void do_read_receiver(void);
 
-static void do_set_receiver_codec(const char *codec) {
-	char mac[BT_MAC_MAX];
-	if (!codec || !codec[0] || !btstack_audio_source(mac, sizeof(mac))) {
-		set_op(BT_OP_FAILED, NULL);
-		return;
-	}
+// Set when the user picks a codec by hand on the receiver page; cleared when the
+// page opens. Worker only. While it is set nothing here chooses for them.
+static bool g_rx_codec_manual;
 
+// Asks the sender at `mac` to move to `codec` and puts back what the
+// renegotiation resets. True when the sender took it.
+static bool receiver_codec_apply(const char *mac, const char *codec) {
 	// The level the sending device had set, carried over by hand: the PCM the
 	// renegotiation builds is a new object at bluealsa's default volume, and the
 	// phone does not send its level again, so without this its volume keys stop
@@ -2574,7 +2640,17 @@ static void do_set_receiver_codec(const char *codec) {
 	}
 
 	do_read_receiver();
-	set_op(done ? BT_OP_OK : BT_OP_FAILED, codec);
+	return done;
+}
+
+static void do_set_receiver_codec(const char *codec) {
+	char mac[BT_MAC_MAX];
+	if (!codec || !codec[0] || !btstack_audio_source(mac, sizeof(mac))) {
+		set_op(BT_OP_FAILED, NULL);
+		return;
+	}
+	g_rx_codec_manual = true;
+	set_op(receiver_codec_apply(mac, codec) ? BT_OP_OK : BT_OP_FAILED, codec);
 }
 
 static void do_read_receiver(void) {
@@ -2851,20 +2927,106 @@ static void restart_bluealsa(const char *why) {
 // With the receiver just opened: a phone or a computer already linked to this
 // device found no sink here when it connected, so its A2DP stream is asked for
 // now rather than left to the user to reconnect. Headphones are skipped.
+// The phones and computers the receiver page linked by asking, because they
+// were not linked when it opened. Worker only. When the page closes these are
+// let go: the link was the page's, and left up it shows as connected here while
+// the phone, with no profile on it, says it is not. A device that was already
+// linked when the page opened -- tapped in the list, or connected by itself --
+// is not in here and is left alone.
+static char g_invited[BT_MAX_DEVICES][BT_MAC_MAX];
+static int g_invited_count;
+
+static void release_invited(void) {
+	for (int i = 0; i < g_invited_count; i++) {
+		fprintf(stderr, "bluetooth: the receiver is closed; letting go of %s\n", g_invited[i]);
+		btstack_disconnect(g_invited[i]);
+	}
+	g_invited_count = 0;
+}
+
+// How long a stream this device has started is left to settle before its codec
+// is looked at. The phone may reconfigure on its own a moment after the
+// configuration is made (about 1.4 s in the logs), and a look before that
+// compares against a codec that is about to change.
+#define INVITE_STREAM_WAIT_MS 4000
+#define INVITE_SETTLE_MS 2500
+
+// bluez picks the first local sink endpoint, in the order bluealsa registered
+// them, which varies from one start to the next, so a stream this device asked
+// for can come up on aptX HD with LDAC on offer. Once, after an invitation:
+// moves it to the best codec the phone offers, by the same ranking as for
+// headphones. Never when the user has chosen a codec by hand, and no descent: a
+// refusal is logged and left.
+static void best_receiver_codec(const char *mac) {
+	if (g_rx_codec_manual) {
+		return;
+	}
+	char up[BT_MAC_MAX];
+	int waited = 0;
+	while (!(btstack_audio_source(up, sizeof(up)) && strcasecmp(up, mac) == 0)) {
+		if (waited >= INVITE_STREAM_WAIT_MS || !bluetooth_still_wanted() || user_job_waiting()) {
+			fprintf(stderr, "bluetooth: %s did not start streaming after the invitation; codec left alone\n", mac);
+			return;
+		}
+		sleep_ms(100);
+		waited += 100;
+	}
+	sleep_ms(INVITE_SETTLE_MS);
+
+	char codecs[BT_MAX_CODECS][BT_CODEC_MAX];
+	char selected[BT_CODEC_MAX] = "";
+	if (g_rx_codec_manual || !(btstack_audio_source(up, sizeof(up)) && strcasecmp(up, mac) == 0)) {
+		return;
+	}
+	int count = btstack_codecs_dir(mac, true, codecs, BT_MAX_CODECS, selected, sizeof(selected));
+	int best = -1;
+	for (int i = 0; i < count; i++) {
+		if (codec_rank(codecs[i]) > 0 && (best < 0 || codec_rank(codecs[i]) > codec_rank(codecs[best]))) {
+			best = i;
+		}
+	}
+	if (best < 0 || codec_rank(codecs[best]) <= codec_rank(selected)) {
+		fprintf(stderr, "bluetooth: %s came up with %s; nothing better on offer\n", mac,
+				selected[0] ? selected : "?");
+		return;
+	}
+	fprintf(stderr, "bluetooth: %s came up with %s; asking for %s\n", mac, selected[0] ? selected : "?",
+			codecs[best]);
+	if (!receiver_codec_apply(mac, codecs[best])) {
+		fprintf(stderr, "bluetooth: %s refused %s; leaving it as it is\n", mac, codecs[best]);
+	}
+}
+
 static void invite_sources(void) {
 	btstack_device_t devices[BT_MAX_DEVICES];
 	int count = btstack_devices(devices, BT_MAX_DEVICES);
 	bool waited = false;
+	g_invited_count = 0;
 	for (int i = 0; i < count; i++) {
-		if (!devices[i].connected || devices[i].audio_sink) {
+		if (devices[i].audio_sink) {
 			continue;
+		}
+		if (!devices[i].connected) {
+			// A bond whose phone or computer is not linked right now. It was
+			// paired while this device had no sink in its SDP, so it has no
+			// reason to connect here by itself. One ConnectProfile, only for
+			// those classes, never on top of a stream that is already up.
+			if (!devices[i].paired || !source_class(devices[i].cod) || btstack_audio_source(NULL, 0) ||
+				user_job_waiting()) {
+				continue;
+			}
 		}
 		if (!waited) {
 			sleep_ms(800); // the new daemon registers its endpoints after its name
 			waited = true;
 		}
+		if (!devices[i].connected && g_invited_count < BT_MAX_DEVICES) {
+			snprintf(g_invited[g_invited_count++], BT_MAC_MAX, "%.*s", BT_MAC_MAX - 1, devices[i].address);
+		}
 		fprintf(stderr, "bluetooth: asking %s to stream here\n", devices[i].address);
-		btstack_connect_a2dp_source(devices[i].address, CONNECT_TIMEOUT_MS);
+		if (btstack_connect_a2dp_source(devices[i].address, CONNECT_TIMEOUT_MS)) {
+			best_receiver_codec(devices[i].address);
+		}
 	}
 }
 
@@ -3008,6 +3170,12 @@ static void *bluetooth_worker(void *arg) {
 
 			case JOB_RECEIVER_PROFILE: {
 				bool want = receiver_profile_wanted();
+				if (want) {
+					g_rx_codec_manual = false;
+				}
+				if (!want) {
+					release_invited();
+				}
 				if (process_running("bluealsa") && bluealsa_has_sink() != want) {
 					restart_bluealsa(want ? "receiver open" : "receiver closed");
 					if (want) {

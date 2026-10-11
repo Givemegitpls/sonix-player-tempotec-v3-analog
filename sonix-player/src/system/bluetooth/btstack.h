@@ -130,6 +130,11 @@ bool btstack_connect_a2dp(const char *address, int timeout_ms);
 // The other direction: a phone or a computer's A2DP source, streaming to this
 // device, on a link that is already up.
 bool btstack_connect_a2dp_source(const char *address, int timeout_ms);
+// A link to a phone or a computer with no audio on it: the AVRCP control channel
+// alone, which needs no A2DP endpoint on this side. Device1.Connect cannot do
+// this while bluealsa carries no sink -- bluez tries a2dp-source only and
+// answers "Protocol not available" without touching the radio.
+bool btstack_connect_avrcp(const char *address, int timeout_ms);
 
 bool btstack_disconnect(const char *address);
 bool btstack_trust(const char *address, bool on);

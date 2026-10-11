@@ -8,6 +8,7 @@
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/popover.h"
+#include "src/gui/bluetooth/btsettings.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
@@ -253,6 +254,9 @@ static void loaded_cb(lv_event_t *e) {
 	// The A2DP sink exists only while this page is open (bluetooth.h): a phone
 	// connects to it from here on.
 	bluetooth_set_receiver_profile(true);
+	// Visible while the page is open, as on the list page: a phone that scans
+	// before it connects has to see this device here.
+	bluetooth_set_discoverable(true);
 	last_serial = (unsigned)-1;
 	// Arriving is the switch: there is nothing else this page does, so a toggle
 	// on it would only repeat what opening it already said.
@@ -269,6 +273,10 @@ static void unloaded_cb(lv_event_t *e) {
 	// holding a stream nobody can see.
 	btreceiver_stop();
 	bluetooth_set_receiver_profile(false);
+	// Unless the way out is the list page, which has just asked for it itself.
+	if (lv_screen_active() != btsettings_screen) {
+		bluetooth_set_discoverable(false);
+	}
 }
 
 void btreceiverpage_init(gui_config_t *cfg) {
