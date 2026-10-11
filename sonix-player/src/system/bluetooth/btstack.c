@@ -38,6 +38,8 @@
 // in a scan list.
 #define UUID_A2DP_SINK "0000110b-0000-1000-8000-00805f9b34fb"
 #define UUID_A2DP_SOURCE "0000110a-0000-1000-8000-00805f9b34fb"
+#define UUID_AVRCP_TARGET "0000110c-0000-1000-8000-00805f9b34fb"
+#define UUID_AVRCP_REMOTE "0000110e-0000-1000-8000-00805f9b34fb"
 
 #define CALL_MS 8000		// anything that is not pairing or connecting
 #define OBJECT_PATH_MAX 160
@@ -1107,6 +1109,41 @@ bool btstack_connect_a2dp_source(const char *address, int timeout_ms) {
 		fprintf(stderr, "btstack: ConnectProfile(A2DP source) on %s -> %s\n", address, err[0] ? err : "no reply");
 	}
 	return ok;
+}
+
+// ConnectProfile on a remote UUID, quietly: the callers decide what a failure
+// means.
+static bool connect_profile_uuid(const char *address, const char *uuid, int timeout_ms, char *err_out,
+								 size_t err_size) {
+	char path[OBJECT_PATH_MAX];
+	if (!device_path(address, path, sizeof(path))) {
+		return false;
+	}
+	pthread_mutex_lock(&lock);
+	dbus_conn_t *c = conn;
+	pthread_mutex_unlock(&lock);
+	if (!c) {
+		return false;
+	}
+	dbus_writer_t *w = dbus_call_begin(c, BLUEZ_SERVICE, path, BLUEZ_DEVICE_IFACE, "ConnectProfile", "s");
+	dbus_w_string(w, uuid);
+	return dbus_call_send(c, timeout_ms, err_out, err_size);
+}
+
+bool btstack_connect_avrcp(const char *address, int timeout_ms) {
+	// The remote controller (0x110E) first: it is the profile whose connect
+	// bluez runs for a phone that has just linked (audio-avrcp-target, in the
+	// log of a working link). The remote target (0x110C) is the other half.
+	char err[DBUS_NAME_MAX];
+	if (connect_profile_uuid(address, UUID_AVRCP_REMOTE, timeout_ms, err, sizeof(err))) {
+		return true;
+	}
+	fprintf(stderr, "btstack: ConnectProfile(AVRCP controller) on %s -> %s\n", address, err[0] ? err : "no reply");
+	if (connect_profile_uuid(address, UUID_AVRCP_TARGET, timeout_ms, err, sizeof(err))) {
+		return true;
+	}
+	fprintf(stderr, "btstack: ConnectProfile(AVRCP target) on %s -> %s\n", address, err[0] ? err : "no reply");
+	return false;
 }
 
 bool btstack_trust(const char *address, bool on) {

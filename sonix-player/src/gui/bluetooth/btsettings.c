@@ -608,7 +608,10 @@ static void screen_loaded_cb(lv_event_t *e) {
 static void screen_unloaded_cb(lv_event_t *e) {
 	(void)e;
 	lv_timer_pause(poll_timer);
-	bluetooth_set_discoverable(false);
+	// Not when the way out is the receiver page: it asks for visibility itself.
+	if (lv_screen_active() != btreceiverpage_screen) {
+		bluetooth_set_discoverable(false);
+	}
 	if (bluetooth_scan_running()) {
 		bluetooth_scan_stop(); // a scan nobody is watching only costs battery
 	}
