@@ -255,6 +255,17 @@ void led_set_on_charger(bool present) {
 }
 
 void led_update_playback(bool playing, int sample_rate, bool podcast, bool dsd) {
+	// A track that is starting reports "playing" with no rate yet: audio_play()
+	// clears it at once and the decoder fills it in a moment later. Taken at its
+	// word that dropped the LED to its idle colour and back -- two writes to
+	// the LED driver from the interface thread at every skip. The colour of the
+	// track that was playing stays until the new one has a rate of its own.
+	// (The short blink on a skip at 44.1/48 kHz is not ours: the codec driver
+	// mutes and powers the output stage down and up, as the stock firmware does.)
+	if (playing && sample_rate <= 0 && s_playing) {
+		s_last_playing = time(NULL);
+		return;
+	}
 	s_playing = playing && sample_rate > 0;
 	s_rate = sample_rate;
 	s_podcast = podcast;
