@@ -15,6 +15,10 @@ The upstream README, with the full build documentation and the source tree, is
 in [UPSTREAM-README.md](UPSTREAM-README.md). Features are in
 [FEATURES.md](FEATURES.md).
 
+The released images carry no streaming keys, so Tidal, Qobuz, podcasts and
+Last.fm stay off in them; see [Building](#building) to make an image with keys
+of your own.
+
 ## Install
 
 1. Charge the player above 30 %.
