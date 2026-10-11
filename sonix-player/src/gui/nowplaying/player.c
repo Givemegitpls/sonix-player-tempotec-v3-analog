@@ -51,6 +51,7 @@
 #include "src/system/audio/waveform.h"
 
 #include "lvgl/src/core/lv_obj_event_private.h"
+#include "src/gui/shell/unchanged.h"
 #include "lvgl/lvgl.h"
 
 lv_obj_t *player_screen;
@@ -666,10 +667,18 @@ static void apply_playback_status(audio_status_t status) {
 	// not resume, it reconnects -- so the button says stop while it is on.
 	// Stopped, it goes back to play: the station stays loaded, and pressing
 	// it opens a fresh connection to the same one.
-	lv_image_set_src(play_btn_icon,
-					 live_mode ? (playing ? &icon_stop : &icon_play) : (playing ? &icon_pause : &icon_play));
-	lv_obj_set_style_image_recolor(play_btn_icon, chrome_accent(), 0);
-	lv_obj_set_style_image_recolor_opa(play_btn_icon, LV_OPA_COVER, 0);
+	// Each of the three only when it would change: this runs on every poll, and
+	// a button redrawn twice a second for nothing is a refresh of the whole
+	// interface twice a second (see unchanged.h).
+	gui_image_set_src(play_btn_icon,
+					  live_mode ? (playing ? &icon_stop : &icon_play) : (playing ? &icon_pause : &icon_play));
+	lv_color_t accent = chrome_accent();
+	if (!lv_color_eq(lv_obj_get_style_image_recolor(play_btn_icon, 0), accent)) {
+		lv_obj_set_style_image_recolor(play_btn_icon, accent, 0);
+	}
+	if (lv_obj_get_style_image_recolor_opa(play_btn_icon, 0) != LV_OPA_COVER) {
+		lv_obj_set_style_image_recolor_opa(play_btn_icon, LV_OPA_COVER, 0);
+	}
 
 	// Keep polling either way, just less often when nothing is playing. The
 	// timer must never be paused here: a track change is briefly reported as
@@ -758,9 +767,9 @@ static void update_queue_position(void) {
 		int index;
 		int count;
 		if (live_custom_nav && radio_list_position(&index, &count)) {
-			lv_label_set_text_fmt(queue_position_label, "%d/%d", index + 1, count);
+			gui_label_set_text_fmt(queue_position_label, "%d/%d", index + 1, count);
 		} else {
-			lv_label_set_text(queue_position_label, "");
+			gui_label_set_text(queue_position_label, "");
 		}
 		return;
 	}
@@ -770,10 +779,10 @@ static void update_queue_position(void) {
 	bool worth_saying = count > 1 && index >= 0 && !audiobook_mode && !dlna_owns_playback();
 
 	if (!worth_saying) {
-		lv_label_set_text(queue_position_label, "");
+		gui_label_set_text(queue_position_label, "");
 		return;
 	}
-	lv_label_set_text_fmt(queue_position_label, "%d/%d", (int)playlist_current_entry() + 1, count);
+	gui_label_set_text_fmt(queue_position_label, "%d/%d", (int)playlist_current_entry() + 1, count);
 }
 
 // Works out view_start and view_length for playback at `position` in a file
@@ -835,10 +844,10 @@ static void set_progress_label(double current_secs, double total_secs) {
 	}
 
 	formatDoubleSeconds(shown, progress_label_text, sizeof(progress_label_text));
-	lv_label_set_text(elapsed_label, progress_label_text);
+	gui_label_set_text(elapsed_label, progress_label_text);
 
 	formatDoubleSeconds(view_length, progress_label_text, sizeof(progress_label_text));
-	lv_label_set_text(remaining_label, progress_label_text);
+	gui_label_set_text(remaining_label, progress_label_text);
 
 	// Written from here because this is the one place that runs on every poll
 	// and on every track change, which is exactly when the answer can move.
@@ -3488,7 +3497,7 @@ static void update_format_label(const device_state_t *state) {
 	if (layout_studio_now && studio_quality_icon) {
 		const lv_image_dsc_t *mark = studio_quality_mark(state);
 		if (mark) {
-			lv_image_set_src(studio_quality_icon, mark);
+			gui_image_set_src(studio_quality_icon, mark);
 			lv_obj_set_hidden(studio_quality_icon, false);
 		} else {
 			lv_obj_set_hidden(studio_quality_icon, true);
@@ -3509,17 +3518,17 @@ static void update_format_label(const device_state_t *state) {
 		// says MP3 while an AAC decoder is running on it is a lie the log
 		// cannot correct.
 		if (now.bitrate > 0) {
-			lv_label_set_text_fmt(format_label, "%d kbps %s", now.bitrate, now.codec[0] ? now.codec : "MP3");
+			gui_label_set_text_fmt(format_label, "%d kbps %s", now.bitrate, now.codec[0] ? now.codec : "MP3");
 		} else if (now.codec[0]) {
-			lv_label_set_text(format_label, now.codec);
+			gui_label_set_text(format_label, now.codec);
 		} else {
-			lv_label_set_text(format_label, "");
+			gui_label_set_text(format_label, "");
 		}
 		return;
 	}
 
 	if (state->stream_sample_rate <= 0 || !state->current_file[0]) {
-		lv_label_set_text(format_label, "");
+		gui_label_set_text(format_label, "");
 		return;
 	}
 
@@ -3528,7 +3537,7 @@ static void update_format_label(const device_state_t *state) {
 	// the number takes the line under the title without saying anything worth
 	// knowing.
 	if (podcastcache_is_episode(state->current_file)) {
-		lv_label_set_text(format_label, "");
+		gui_label_set_text(format_label, "");
 		return;
 	}
 
@@ -3547,7 +3556,7 @@ static void update_format_label(const device_state_t *state) {
 	// nothing. How it gets there is not said: DoP is the only way it does.
 	int dsd = audio_get_dsd_multiple();
 	if (dsd > 0) {
-		lv_label_set_text_fmt(format_label, "DSD%d", dsd);
+		gui_label_set_text_fmt(format_label, "DSD%d", dsd);
 		return;
 	}
 
@@ -3580,17 +3589,17 @@ static void update_format_label(const device_state_t *state) {
 		}
 
 		if (kbps > 0) {
-			lv_label_set_text_fmt(format_label, "%d kbps %s", kbps, name);
+			gui_label_set_text_fmt(format_label, "%d kbps %s", kbps, name);
 			return;
 		}
 		// Neither one: the format name alone beats quoting a bit depth the
 		// file does not have.
-		lv_label_set_text(format_label, name);
+		gui_label_set_text(format_label, name);
 		return;
 	}
 
 	int bits = audio_get_stream_bits();
-	lv_label_set_text_fmt(format_label, "%d/%g %s", bits > 0 ? bits : 16, state->stream_sample_rate / 1000.0, name);
+	gui_label_set_text_fmt(format_label, "%d/%g %s", bits > 0 ? bits : 16, state->stream_sample_rate / 1000.0, name);
 }
 
 // The speed setting of what is playing: an episode has its own, apart from the

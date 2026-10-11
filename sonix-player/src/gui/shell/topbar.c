@@ -11,6 +11,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/shell/unchanged.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/quickpanel.h"
 #include "src/gui/shell/theme.h"
@@ -219,12 +220,14 @@ void topbar_refresh_volume(int percent) {
 		percent = 100;
 	}
 
-	lv_label_set_text_fmt(vol_label, "%d", percent);
+	gui_label_set_text_fmt(vol_label, "%d", percent);
 
 	// Past this threshold the number turns red, warning that the next steps are
 	// the loud ones. The volume pop-up uses the same threshold.
 	if (percent > VOLUME_WARN_PERCENT) {
-		lv_obj_set_style_text_color(vol_label, VOLUME_WARN_COLOR, 0);
+		if (!lv_color_eq(lv_obj_get_style_text_color(vol_label, 0), VOLUME_WARN_COLOR)) {
+			lv_obj_set_style_text_color(vol_label, VOLUME_WARN_COLOR, 0);
+		}
 	} else {
 		lv_obj_remove_local_style_prop(vol_label, LV_STYLE_TEXT_COLOR, 0);
 	}
@@ -235,7 +238,7 @@ void topbar_refresh_volume(int percent) {
 	} else if (percent < VOLUME_HIGH_PERCENT) {
 		icon = &icon_volume_low;
 	}
-	lv_image_set_src(vol_icon, icon);
+	gui_image_set_src(vol_icon, icon);
 }
 
 // Shows or hides the headphone glyph to match what is in the jacks. Four times
@@ -524,16 +527,16 @@ static void refresh_play_icon(const device_state_t *state) {
 	airplay_state_t ap;
 	airplay_get_state(&ap);
 	if (ap.playing) {
-		lv_image_set_src(play_icon, &icon_airplay_status);
+		gui_image_set_src(play_icon, &icon_airplay_status);
 		lv_obj_remove_local_style_prop(play_icon, LV_STYLE_IMAGE_RECOLOR, 0);
 		lv_obj_set_hidden(play_icon, false);
 		return;
 	}
 
 	if (state->status == AUDIO_STATUS_PLAYING) {
-		lv_image_set_src(play_icon, &icon_play_status);
+		gui_image_set_src(play_icon, &icon_play_status);
 	} else if (state->current_file[0]) {
-		lv_image_set_src(play_icon, &icon_pause_status);
+		gui_image_set_src(play_icon, &icon_pause_status);
 	} else {
 		lv_obj_set_hidden(play_icon, true);
 		return;
@@ -544,7 +547,10 @@ static void refresh_play_icon(const device_state_t *state) {
 	// going. A fixed Bluetooth blue rather than the accent colour, because it
 	// means wireless, not active.
 	if (state->status == AUDIO_STATUS_PLAYING && bluetooth_audio_active()) {
-		lv_obj_set_style_image_recolor(play_icon, lv_color_make(0, 122, 255), 0);
+		lv_color_t blue = lv_color_make(0, 122, 255);
+		if (!lv_color_eq(lv_obj_get_style_image_recolor(play_icon, 0), blue)) {
+			lv_obj_set_style_image_recolor(play_icon, blue, 0);
+		}
 	} else {
 		lv_obj_remove_local_style_prop(play_icon, LV_STYLE_IMAGE_RECOLOR, 0);
 	}
