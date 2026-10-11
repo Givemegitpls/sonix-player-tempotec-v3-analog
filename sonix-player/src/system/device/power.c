@@ -38,6 +38,7 @@
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/bluetooth/btreceiver.h"
 #include "src/system/core/config.h"
+#include "src/system/core/frameprof.h"
 #include "src/system/core/logging.h"
 #include "src/system/device/usb.h"
 #include "src/system/audio/usbdac.h"
@@ -61,6 +62,11 @@
 // How often the power state machine polls. Kept short so a power-button press
 // feels responsive; the work done per tick is trivial.
 #define POWER_TICK_MS 250
+// The same tick with the panel dark (power_slow_in_standby). The power button
+// does not wait for it (power_notify_power_button readies the timer), so it
+// only paces the idle counters, the radio park, the suspend and the charge
+// limit, which count in seconds.
+#define POWER_TICK_STANDBY_MS 1000
 
 // How long ago a marker was stamped, from the tick the caller is working with.
 //
@@ -92,11 +98,10 @@ static uint32_t since(uint32_t mark, uint32_t now) {
 // come back essentially black (backlight technically on, but too dim to see).
 #define BRIGHTNESS_ON_FLOOR 20
 
-// After unblanking, wait this long before pushing a new brightness at the panel.
-// The fb blank notifier re-inits the panel + re-powers the backlight on unblank;
-// a brightness write that lands mid-reinit can be swallowed, leaving the screen
-// dark. A short settle makes the wake reliable.
-#define SCREEN_ON_SETTLE_US 60000 // 60ms
+// How long a screen-off keeps the panel powered, backlight off, so that a wake
+// inside it needs no unblank (see panel_blank_now). The user chose 60, provided the
+// panel costs under 15 mA (being measured).
+#define WAKE_FAST_DEFAULT_S 60
 
 // Bluetooth. A firmware whose /etc/init.d/S80_bt_init has not been replaced
 // still powers the chip up at every boot -- rfkill on, patchram, bluetoothd,
@@ -108,11 +113,6 @@ static uint32_t since(uint32_t mark, uint32_t now) {
 // ~17 steps * 12ms ~= 200ms for a full 100->1 fade.
 #define FADE_STEP 6
 #define FADE_STEP_DELAY_US 12000
-
-// The ramp back up at a wake, over a picture that is already drawn: a few
-// steps, so the screen is there almost at once and still does not snap on.
-#define WAKE_FADE_STEPS 4
-#define WAKE_FADE_STEP_DELAY_US 8000
 
 // --- Module state (owned by the LVGL/main thread unless noted) ---
 static power_config_t g_cfg;
@@ -204,17 +204,6 @@ static void fade_to(long target) {
 		backlight_write(next);
 		if (g_hw_brightness != target) {
 			usleep(FADE_STEP_DELAY_US);
-		}
-	}
-}
-
-// The same ramp in WAKE_FADE_STEPS even steps.
-static void fade_up_quickly(long target) {
-	long from = g_hw_brightness < 0 ? BRIGHTNESS_MIN : g_hw_brightness;
-	for (int i = 1; i <= WAKE_FADE_STEPS; i++) {
-		backlight_write(from + (target - from) * i / WAKE_FADE_STEPS);
-		if (i < WAKE_FADE_STEPS) {
-			usleep(WAKE_FADE_STEP_DELAY_US);
 		}
 	}
 }
@@ -651,9 +640,13 @@ static bool bluetooth_in_use(void) {
 // A key pressed with the screen dark counts. Skipping tracks in a pocket is the
 // user doing something, and switching off under their fingers is not what a
 // shutdown timer is for.
+// The period the tick actually has now (slowed in standby). "Just pressed" is
+// measured in ticks, so a slower tick still sees a key pressed between two.
+static uint32_t power_tick_ms(void) { return g_power_timer && g_power_timer->period ? g_power_timer->period : POWER_TICK_MS; }
+
 static bool player_is_busy(bool playing, uint32_t input_idle) {
 	return playing ||							   // a track or a station
-		   input_idle < POWER_TICK_MS * 4 ||	   // a key just pressed
+		   input_idle < power_tick_ms() * 4 ||	   // a key just pressed
 		   usbdac_is_active() ||				   // a computer feeding the DAC
 		   usb_storage_active() ||				   // the card exported over USB
 		   gearboy_running() ||					   // the emulator
@@ -1171,6 +1164,8 @@ static void suspend_to_ram(void) {
 	g_mem_skip_logged[0] = '\0';
 }
 
+static void panel_blank_now(void); // the fast-wake window, below
+
 // Every condition in one place, each of them logged, so the log explains why
 // the device is not sleeping.
 static void suspend_if_idle(uint32_t now, bool playing) {
@@ -1180,6 +1175,7 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 	if (since(g_mem_active_ms, now) < g_mem_after_ms) {
 		return; // not yet the full idle wait (see g_mem_active_ms)
 	}
+	panel_blank_now(); // never into a suspend with the panel powered
 	if (since(g_mem_last_attempt_ms, now) < 30 * 1000) {
 		return; // the last attempt gave up: do not hammer
 	}
@@ -1287,7 +1283,7 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 // A page registers its timer here once and then forgets about it; power.c
 // never looks at what the timer does.
 // ---------------------------------------------------------------------------
-#define STANDBY_TIMERS_MAX 16
+#define STANDBY_TIMERS_MAX 24
 static lv_timer_t *g_standby_timers[STANDBY_TIMERS_MAX];
 // 0 = paused outright while the panel is dark. Anything else = kept running,
 // at that period instead of its own. A timer that only paints can be stopped;
@@ -1382,6 +1378,29 @@ static bool (*g_wake_hook)(void);
 
 void power_set_wake_hook(bool (*cb)(void)) { g_wake_hook = cb; }
 
+// [power] wake_fast_seconds = N (default WAKE_FAST_DEFAULT_S, 0 = off): a screen-off that leaves the
+// panel powered, backlight at nought, for N seconds before really blanking it.
+// A wake inside the window needs no unblank at all -- none of the panel's
+// ~215 ms power-on sequence, no touch resume -- only the repaint and the
+// backlight. The blank still happens at the end of the window, and always
+// before a suspend to RAM. Not with double-tap wake: that one needs the blank
+// to put the touch controller in doze.
+static bool g_panel_lit_dark;
+static uint32_t g_panel_lit_until;
+
+static void panel_blank_now(void) {
+	if (!g_panel_lit_dark) {
+		return;
+	}
+	g_panel_lit_dark = false;
+	screen_power(false);
+	// The level the panel's driver brings the backlight back at on the next
+	// unblank: the dim one a blank always left before the fast window, not
+	// the nought written for it, which the driver does not keep.
+	backlight_write(BRIGHTNESS_MIN);
+	fprintf(stderr, "power: panel blanked after the fast-wake window\n");
+}
+
 void power_screen_off(void) {
 	waveform_set_screen_on(false); // told, but not a reason to stop -- see waveform.h
 	if (!g_screen_on) {
@@ -1402,7 +1421,17 @@ void power_screen_off(void) {
 
 	set_indevs_enabled(false); // no touch events into LVGL while the panel is down
 	fade_to(BRIGHTNESS_MIN);   // smooth dim down
-	screen_power(false);
+	long fast_s = g_double_tap_wake ? 0 : config_get_int("power", "wake_fast_seconds", WAKE_FAST_DEFAULT_S);
+	if (fast_s > 0) {
+		if (g_cfg.brightness_path) {
+			write_long_to_file(g_cfg.brightness_path, 0); // below BRIGHTNESS_MIN: the backlight off
+		}
+		g_hw_brightness = 0;
+		g_panel_lit_dark = true;
+		g_panel_lit_until = lv_tick_get() + (uint32_t)fast_s * 1000u;
+	} else {
+		screen_power(false);
+	}
 
 	// With the panel dark, draw what the next wake should open on straight
 	// into the framebuffer. Unblanking presents whatever the framebuffer
@@ -1454,12 +1483,28 @@ void power_screen_off(void) {
 	fprintf(stderr, "power: screen off\n");
 }
 
+// Microseconds, for the wake log (the clock is a system call on the Blaze, a
+// handful per wake).
+static uint64_t wake_us(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+static uint64_t wake_t_enter; // when power_screen_on() was entered
+
+#define PROF_WAKE_UNBLANK "wake_unblank"
+#define PROF_WAKE_SETTLE "wake_settle"
+#define PROF_WAKE_DRAW "wake_draw"
+#define PROF_WAKE_FADE "wake_fade"
+
 void power_screen_on(void) {
 	waveform_set_screen_on(true);
 	if (g_screen_on) {
 		return;
 	}
 	g_screen_on = true;
+	wake_t_enter = wake_us();
 
 	// And disarms the automatic-shutdown RTC alarm: there is a user. The
 	// shutdown timer goes back to zero here and stays there until the screen is
@@ -1498,10 +1543,53 @@ void power_screen_on(void) {
 		(void)g_wake_hook();
 	}
 
-	screen_power(true);			 // panel, backlight and touch controller back up
-	usleep(SCREEN_ON_SETTLE_US); // let the panel + backlight finish re-initializing
+	// Where the wake goes, step by step, written once per wake (frameprof marks
+	// as well, for the pass the power button's timer lands in). Measured on the
+	// Blaze: the blank write is ~250 ms (the ST77903's own power-on sleeps are
+	// ~215 ms, and the touch controller's reset follows the write); the
+	// repaint itself is ~15 ms.
+	char wake_log[256];
+	int wake_log_n = 0;
+	uint64_t wake_mark = wake_t_enter;
+#define WAKE_STEP(label)                                                                                  \
+	do {                                                                                                  \
+		uint64_t now_ = wake_us();                                                                        \
+		wake_log_n += snprintf(wake_log + wake_log_n, sizeof(wake_log) - (size_t)wake_log_n, " %s %llu", label, \
+							   (unsigned long long)(now_ - wake_mark));                                   \
+		wake_mark = now_;                                                                                 \
+	} while (0)
+	WAKE_STEP("before"); // radios, clock, the wake hook
+
+	// Woken inside the fast window: the panel never went down (see
+	// panel_blank_now), so there is no unblank, settle or touch resume to do.
+	bool lit = g_panel_lit_dark;
+	g_panel_lit_dark = false;
+
+	frameprof_begin(PROF_WAKE_UNBLANK);
+	if (!lit) {
+		screen_power(true); // panel, backlight and touch controller back up
+		// The unblank lights the backlight before there is a picture: dark
+		// until the repaint below is up, or the panel shows black first.
+		if (g_cfg.brightness_path) {
+			write_long_to_file(g_cfg.brightness_path, 0);
+		}
+	}
+	frameprof_end(PROF_WAKE_UNBLANK);
+	WAKE_STEP("unblank");
+
+	// The write returns when the panel's power-on and the backlight class's
+	// restore are done, so no wait is needed by default. [power]
+	// wake_settle_ms puts one back, should a panel ever show it was wanted.
+	long settle_us = config_get_int("power", "wake_settle_ms", 0) * 1000;
+	if (!lit && settle_us > 0) {
+		frameprof_begin(PROF_WAKE_SETTLE);
+		usleep((useconds_t)settle_us);
+		frameprof_end(PROF_WAKE_SETTLE);
+	}
+	WAKE_STEP("settle");
 	set_indevs_enabled(true);
 	indev_timers_set_paused(false);
+	WAKE_STEP("indevs");
 
 	// The painting timers come back before the repaint below, and each runs
 	// once straight away, so the first frame after the wake already has the
@@ -1516,33 +1604,48 @@ void power_screen_on(void) {
 	if (anim_timer) {
 		lv_timer_resume(anim_timer);
 	}
+	WAKE_STEP("timers");
+
 	// ... and force an immediate, full repaint of the framebuffer. The blank
 	// cleared the panel to black, so the whole UI must be redrawn; this is not
 	// gated on g_refr_timer, and lv_refr_now() draws even if the timer is paused.
 	//
-	// The sysfs blank/unblank cycle tears down the panel's scan-out, and on this
-	// hardware the controller does not re-present the framebuffer just because
-	// fresh pixels were copied into it -- it must be kicked explicitly. How
-	// depends on which display path is active, so main.c owns the kick: it
-	// restores the video mode (some drivers reset the page-flipping display's
-	// double-height virtual resolution on blank) and re-arms scan-out around
-	// this one wake repaint.
-	display_wake_begin(g_disp);
+	// The sysfs blank/unblank cycle tears down the panel's scan-out, and the
+	// controller does not re-present the framebuffer just because fresh pixels
+	// were copied into it -- the pan of the repaint's flush is the kick. How
+	// depends on which display path is active, so main.c owns the rest: it
+	// checks that the blank left the video mode (the page-flipping display's
+	// double-height virtual resolution) alone, and puts it back if not.
+	if (!lit) {
+		display_wake_begin(g_disp);
+	}
+	WAKE_STEP("fb_begin");
+	frameprof_begin(PROF_WAKE_DRAW);
 	lv_obj_t *scr = lv_screen_active();
 	if (scr) {
 		lv_obj_invalidate(scr);
 	}
 	lv_obj_invalidate(lv_layer_top());
 	lv_refr_now(g_disp);
-	display_wake_end(g_disp);
+	frameprof_end(PROF_WAKE_DRAW);
+	if (!lit) {
+		display_wake_end(g_disp);
+	}
+	WAKE_STEP("draw");
 
-	// The panel came back at its pre-blank (dim) level, and the backlight driver
-	// may not have restored the configured brightness on unblank. Forcing the
-	// tracked value to MIN and fading up guarantees every ramp step is written
-	// to sysfs after the unblank and settle, so the backlight reliably returns.
-	g_hw_brightness = BRIGHTNESS_MIN;
-	fade_up_quickly(g_cfg.brightness);
+	// The backlight class has put the pre-blank level back during the unblank
+	// (see de-wake.md), and the tracked value says MIN, so one write of the
+	// configured level after the picture is all the ramp there is to do; it
+	// used to be four writes with 8 ms sleeps between, 27 ms of blocking.
+	frameprof_begin(PROF_WAKE_FADE);
+	backlight_write(g_cfg.brightness);
+	frameprof_end(PROF_WAKE_FADE);
+	WAKE_STEP("backlight");
 	lv_display_trigger_activity(g_disp);
+
+	fprintf(stderr, "power: wake %s (us):%s, total %llu\n", lit ? "lit panel" : "serial", wake_log,
+			(unsigned long long)(wake_us() - wake_t_enter));
+#undef WAKE_STEP
 
 	led_set_standby(false);
 
@@ -1591,6 +1694,10 @@ static void power_timer_cb(lv_timer_t *timer) {
 		now = lv_tick_get();
 	}
 
+	if (g_panel_lit_dark && !g_screen_on && (int32_t)(now - g_panel_lit_until) >= 0) {
+		panel_blank_now();
+	}
+
 	// 2. music playing keeps resetting the suspend clock (but not the screen
 	//    clock -- the screen still dims while a track plays untouched)
 	// A live stream goes out through audio_external_*, which audio.c's own
@@ -1617,7 +1724,7 @@ static void power_timer_cb(lv_timer_t *timer) {
 	// cannot fall in the middle of a track change.
 	bool usb_now = usb_vbus_present();
 	bool usb_changed = g_usb_present_known && usb_now != g_usb_present_last;
-	if (playing || input_idle < POWER_TICK_MS * 2 || usb_changed) {
+	if (playing || input_idle < power_tick_ms() * 2 || usb_changed) {
 		g_mem_active_ms = now;
 	}
 	g_usb_present_last = usb_now;
@@ -1837,6 +1944,7 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	g_radio_park_after_ms = (uint32_t)park_secs * 1000u;
 
 	g_power_timer = lv_timer_create(power_timer_cb, POWER_TICK_MS, NULL);
+	power_slow_in_standby(g_power_timer, POWER_TICK_STANDBY_MS);
 
 	printf("power: initialized (max_brightness=%ld, on=%ld, screen_off=%s/%ums, mem=%s/%lus)\n", g_max_brightness,
 		   g_cfg.brightness, g_cfg.screen_off_enabled ? "on" : "off", g_cfg.screen_off_timeout_ms,
