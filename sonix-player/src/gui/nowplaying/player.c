@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "src/gui/library/browser.h"
 #include "src/gui/library/audiobookextras.h"
@@ -51,6 +52,9 @@
 #include "src/system/audio/waveform.h"
 
 #include "lvgl/src/core/lv_obj_event_private.h"
+#include "lvgl/src/font/lv_font_private.h"
+#include "lvgl/src/misc/lv_text_private.h"
+#include "lvgl/src/misc/lv_text_ap.h"
 #include "src/gui/shell/unchanged.h"
 #include "lvgl/lvgl.h"
 
@@ -2950,25 +2954,225 @@ static void refresh_cover(const char *filepath) {
 	reload_cover(filepath);
 }
 
+// ---------------------------------------------------------------------------
+// Glyph warm-up
+//
+// The first time a letter is drawn at a size, FreeType has to find it in the
+// font file (on the device a squashfs block to unpack), hint and rasterize it,
+// and LVGL measures it once more when the label is laid out. For a Latin title
+// the letters are nearly all in the caches already; a title in kanji is mostly
+// new ones, and that cost used to land in the skip itself (np_layout_texts up
+// to 141 ms, plus the first repaint). The tags of the tracks a skip can go to
+// are read ahead (device_state_prefetch), so their text is known a few seconds
+// early: while the player is idle its glyphs are asked for here, at the fonts
+// the title and artist labels use, a few milliseconds at a time. FreeType and
+// LVGL are not thread-safe, so this is the interface thread and nothing else.
+// ---------------------------------------------------------------------------
+#define GLYPH_WARM_PATHS 4
+#define GLYPH_WARM_PERIOD_MS 40
+#define GLYPH_WARM_SLICE_US 5000   // per tick, so a press that lands in one is not kept waiting
+#define GLYPH_WARM_QUIET_MS 300    // after the last touch or button
+#define GLYPH_WARM_GIVE_UP_MS 4000 // the tags did not turn up (not read ahead: a stream, a file the card refused)
+#define GLYPH_WARM_LABELS 4
+#define GLYPH_WARM_FONTS 2 // title and the lyrics page's copy of it, artist and its copy
+
+static const char *const PROF_GLYPH_WARM = "glyph_warm";
+
+typedef struct {
+	char path[512];
+	char text[2][512]; // title, artist
+	bool have_text;
+	bool done;
+} glyph_job_t;
+
+static glyph_job_t glyph_jobs[GLYPH_WARM_PATHS];
+static lv_timer_t *glyph_warm_timer;
+static uint32_t glyph_warm_started;
+static int glyph_job;       // the job in hand
+static int glyph_string;    // 0 title, 1 artist
+static int glyph_font;      // which font of the string
+static uint32_t glyph_pos;  // byte offset in the string
+
+// A label keeps Arabic in its joined (presentation) forms, so those are the
+// letters that get drawn and measured; the title as the tags have it is not.
+// Put in the same forms here, or the warm-up would fetch the wrong glyphs.
+static void glyph_shape(char *text, size_t capacity) {
+#if LV_USE_ARABIC_PERSIAN_CHARS
+	const unsigned char *p = (const unsigned char *)text;
+	while (*p && (*p < 0xD8 || *p > 0xDB)) {
+		p++;
+	}
+	if (!*p) {
+		return;
+	}
+	char *joined = malloc(lv_text_ap_strlen(text) + 1);
+	if (!joined) {
+		return;
+	}
+	lv_text_ap_proc(text, joined);
+	snprintf(text, capacity, "%s", joined);
+	free(joined);
+#else
+	(void)text;
+	(void)capacity;
+#endif
+}
+
+static uint64_t glyph_now_us(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+// The font a string is drawn in on the n-th label that shows it, or NULL.
+static const lv_font_t *glyph_font_for(int string, int n) {
+	lv_obj_t *label;
+	if (string == 0) {
+		label = n == 0 ? song_title_label : lyrics_head_title;
+	} else {
+		label = n == 0 ? song_artist_label : lyrics_head_artist;
+	}
+	return label ? lv_obj_get_style_text_font(label, LV_PART_MAIN) : NULL;
+}
+
+// Asks for one letter at one size the way drawing would: the metrics (what the
+// layout measures with), then the bitmap (what the repaint needs).
+static void glyph_warm_letter(const lv_font_t *font, uint32_t letter) {
+	lv_font_glyph_dsc_t g;
+	if (!lv_font_get_glyph_dsc(font, &g, letter, 0) || g.is_placeholder || g.box_w == 0 || g.box_h == 0) {
+		return;
+	}
+	if (lv_font_get_glyph_bitmap_internal(&g, NULL)) {
+		lv_font_glyph_release_draw_data_internal(&g);
+	}
+}
+
+static void glyph_warm_tick(lv_timer_t *timer) {
+	if (lv_display_get_inactive_time(NULL) < GLYPH_WARM_QUIET_MS) {
+		return; // somebody is using it
+	}
+	uint64_t begin = glyph_now_us();
+	frameprof_begin(PROF_GLYPH_WARM);
+
+	bool waiting = false; // a job whose tags have not arrived yet
+	bool budget_left = true;
+	while (budget_left && glyph_job < GLYPH_WARM_PATHS) {
+		glyph_job_t *job = &glyph_jobs[glyph_job];
+		if (job->done || !job->path[0]) {
+			glyph_job++;
+			continue;
+		}
+		if (!job->have_text) {
+			song_metadata_t meta;
+			if (!device_state_prefetch_peek(job->path, &meta)) {
+				waiting = true;
+				glyph_job++; // the next job may be ready; this one is looked at again from the top
+				continue;
+			}
+			const char *slash = strrchr(job->path, '/');
+			snprintf(job->text[0], sizeof(job->text[0]), "%s", meta.title[0] ? meta.title : (slash ? slash + 1 : job->path));
+			snprintf(job->text[1], sizeof(job->text[1]), "%s", metadata_shown_artist(&meta));
+			glyph_shape(job->text[0], sizeof(job->text[0]));
+			glyph_shape(job->text[1], sizeof(job->text[1]));
+			job->have_text = true;
+			glyph_string = 0;
+			glyph_font = 0;
+			glyph_pos = 0;
+		}
+
+		const char *text = job->text[glyph_string];
+		const lv_font_t *font = glyph_font_for(glyph_string, glyph_font);
+		const lv_font_t *first = glyph_font_for(glyph_string, 0);
+		if (glyph_font >= GLYPH_WARM_FONTS || !text[0] || !font || (glyph_font > 0 && font == first) ||
+			text[glyph_pos] == '\0') {
+			// This font is through (or there is none to do): the next one, the next string, the next job.
+			glyph_pos = 0;
+			if (++glyph_font >= GLYPH_WARM_FONTS) {
+				glyph_font = 0;
+				if (++glyph_string >= 2) {
+					glyph_string = 0;
+					job->done = true;
+					glyph_job++;
+					continue;
+				}
+			}
+			continue;
+		}
+
+		uint32_t letter = lv_text_encoded_next(text, &glyph_pos);
+		if (letter > ' ') {
+			glyph_warm_letter(font, letter);
+		}
+		budget_left = glyph_now_us() - begin < GLYPH_WARM_SLICE_US;
+	}
+
+	frameprof_end(PROF_GLYPH_WARM);
+
+	if (waiting && glyph_job >= GLYPH_WARM_PATHS && lv_tick_elaps(glyph_warm_started) < GLYPH_WARM_GIVE_UP_MS) {
+		glyph_job = 0; // everything that could be done is: look at the waiting ones again next time
+		return;
+	}
+	if (glyph_job >= GLYPH_WARM_PATHS) {
+		lv_timer_pause(timer);
+	}
+}
+
+// A new set of tracks to get ready (the two ahead and the two behind).
+static void glyph_warm_request(const char *const *paths, int count) {
+	if (!glyph_warm_timer) {
+		glyph_warm_timer = lv_timer_create(glyph_warm_tick, GLYPH_WARM_PERIOD_MS, NULL);
+	}
+	for (int i = 0; i < GLYPH_WARM_PATHS; i++) {
+		glyph_job_t *job = &glyph_jobs[i];
+		const char *path = i < count && paths[i] ? paths[i] : "";
+		if (strcmp(job->path, path) == 0 && job->done) {
+			continue; // asked for before and done (the letters are cached, not lost)
+		}
+		snprintf(job->path, sizeof(job->path), "%s", path);
+		job->have_text = false;
+		job->done = false;
+	}
+	glyph_job = 0;
+	glyph_string = 0;
+	glyph_font = 0;
+	glyph_pos = 0;
+	glyph_warm_started = lv_tick_get();
+	lv_timer_resume(glyph_warm_timer);
+}
+
 // This track's pictures are up (or were kept); the next one's go into the disk
 // cache in the background, so that skipping to it is a read rather than a
 // decode. At the sizes of the last request, which is what the next one will
 // ask for.
 static void warm_next_cover(void) {
+	// The tags and the star of the same tracks are read ahead too
+	// (device_state_prefetch), whether or not there is a cover to warm, and
+	// their text gets its glyphs ready once the tags are in.
+	char paths[GLYPH_WARM_PATHS][512] = {"", "", "", ""};
+	const char *list[GLYPH_WARM_PATHS];
+	int here = playlist_current_index();
+	int count = playlist_count();
+	// Most likely first: next, previous, then one further each way.
+	const int offsets[GLYPH_WARM_PATHS] = {1, -1, 2, -2};
+	for (int i = 0; i < GLYPH_WARM_PATHS; i++) {
+		int index = here + offsets[i];
+		if (index >= 0 && index < count) {
+			playlist_path_at(index, paths[i], sizeof(paths[i]));
+		}
+		list[i] = paths[i];
+	}
+	device_state_prefetch(list, GLYPH_WARM_PATHS);
+	glyph_warm_request(list, GLYPH_WARM_PATHS);
+
 	if (warm_cover_w <= 0 || warm_cover_h <= 0) {
 		return;
 	}
-	char next_path[512];
-	int next_index = playlist_current_index() + 1;
-	if (next_index > 0 && next_index < playlist_count() &&
-		playlist_path_at(next_index, next_path, sizeof(next_path))) {
-		coverloader_warm_player(next_path, warm_cover_w, warm_cover_h, backdrop_w, warm_backdrop_h);
+	if (paths[0][0]) {
+		coverloader_warm_player(paths[0], warm_cover_w, warm_cover_h, backdrop_w, warm_backdrop_h);
 	}
 	// And the one before, for "previous" -- after the next one, on the loader.
-	int prev_index = playlist_current_index() - 1;
-	if (prev_index >= 0 && prev_index < playlist_count() &&
-		playlist_path_at(prev_index, next_path, sizeof(next_path))) {
-		coverloader_warm_player_back(next_path, warm_cover_w, warm_cover_h, backdrop_w, warm_backdrop_h);
+	if (paths[1][0]) {
+		coverloader_warm_player_back(paths[1], warm_cover_w, warm_cover_h, backdrop_w, warm_backdrop_h);
 	}
 }
 
@@ -3141,6 +3345,18 @@ static void update_qobuz_badge(void);
 // Refreshes the now-playing info (title + artist) from the current
 // device state and resets the per-track length cache. Used both when the user
 // picks a file and when playback auto-advances to a new track.
+// Marks inside the repaint for a new track (frameprof.h; only logged when the
+// profiler is on), so a slow skip can be pinned on a step.
+static const char *const PROF_NP_LISTS = "np_notify_lists";
+static const char *const PROF_NP_LAYOUT = "np_layout_texts";
+static const char *const PROF_NP_TITLE = "np_lt_title";
+static const char *const PROF_NP_ARTIST = "np_lt_artist";
+static const char *const PROF_NP_HEAD = "np_lt_lyrics_head";
+static const char *const PROF_NP_FAV = "np_fav_button";
+static const char *const PROF_NP_BADGES = "np_format_badges";
+static const char *const PROF_NP_LYRICS = "np_lyrics_request";
+static const char *const PROF_NP_COVER = "np_refresh_cover";
+
 static void refresh_now_playing(void) {
 	track_change_tick = lv_tick_get();
 	current_total_length = 0; // unknown until the playback thread reports it
@@ -3148,9 +3364,11 @@ static void refresh_now_playing(void) {
 	// The library lists carry an accent mark on the playing track (and on the
 	// album and artist it belongs to). This is the one place every track
 	// change goes through, so it is where they are told.
+	frameprof_begin(PROF_NP_LISTS);
 	medialist_notify_now_playing();
 	browser_notify_now_playing();
 	trackmenu_notify_now_playing();
+	frameprof_end(PROF_NP_LISTS);
 
 	// Wind the progress display back to the start straight away, so the bar
 	// never sits at the previous track's position while the new one loads.
@@ -3189,23 +3407,39 @@ static void refresh_now_playing(void) {
 		return;
 	}
 
+	frameprof_begin(PROF_NP_LAYOUT);
 	const char *file = state.current_file;
 	const char *slash = strrchr(file, '/');
+	frameprof_begin(PROF_NP_TITLE);
 	scrolltext_set(song_title_label, state.metadata.title[0] ? state.metadata.title : (slash ? slash + 1 : file));
+	frameprof_end(PROF_NP_TITLE);
 
 	// Whose name goes under the title: see metadata_shown_artist().
 	const char *artist = metadata_shown_artist(&state.metadata);
+	frameprof_begin(PROF_NP_ARTIST);
 	scrolltext_set(song_artist_label, artist);
+	frameprof_end(PROF_NP_ARTIST);
+	frameprof_begin(PROF_NP_HEAD);
 	lyrics_head_sync();
+	frameprof_end(PROF_NP_HEAD);
 	alt_pills_sync();
+	frameprof_end(PROF_NP_LAYOUT);
 
+	frameprof_begin(PROF_NP_FAV);
 	update_fav_button();
+	frameprof_end(PROF_NP_FAV);
+	frameprof_begin(PROF_NP_BADGES);
 	update_format_label(&state);
 	update_qobuz_badge();
+	frameprof_end(PROF_NP_BADGES);
 
+	frameprof_begin(PROF_NP_LYRICS);
 	lyrics_request(&state);
+	frameprof_end(PROF_NP_LYRICS);
 
+	frameprof_begin(PROF_NP_COVER);
 	refresh_cover(file);
+	frameprof_end(PROF_NP_COVER);
 }
 
 // The parts of the now-playing display a live stream changes while it runs:
@@ -3384,7 +3618,13 @@ static void update_fav_button(void) {
 		// database while the drawing looked up a different one.
 		device_state_t state;
 		device_state_get(&state);
-		starred = state.current_file[0] && library_fav_contains(state.current_file);
+		// Read ahead while the previous track played when it can be (see
+		// device_state_prefetch); the database otherwise.
+		if (!state.current_file[0]) {
+			starred = false;
+		} else if (!device_state_prefetched_fav(state.current_file, &starred)) {
+			starred = library_fav_contains(state.current_file);
+		}
 	}
 
 	// The star's colour is decided here and nowhere else. This function runs
@@ -3747,6 +3987,10 @@ static void track_end_hook(void) { gui_post(track_end_async, NULL); }
 // Reads the current device state and reconciles the UI against it. This is the
 // single point that keeps the play/pause button and the progress bar from
 // going stale once a track finishes on its own.
+static const char *const PROF_UP_UI = "up_progress_ui";
+static const char *const PROF_UP_LED = "up_led";
+static const char *const PROF_UP_REMEMBER = "up_remember_note";
+
 static void update_progress(void) {
 	// Auto-advance or loop the folder when the track has played through.
 	if (device_state_take_completion()) {
@@ -3809,6 +4053,7 @@ static void update_progress(void) {
 		}
 	}
 
+	frameprof_begin(PROF_UP_UI);
 	set_progress_label(state.progress_current_secs, current_total_length);
 	wave_refresh(cover_shown_path, state.progress_current_secs);
 	lyrics_request(&state);
@@ -3823,13 +4068,16 @@ static void update_progress(void) {
 	apply_audiobook_mode(!state.live && audiobook_is_playing(),
 						 !state.live && podcastcache_is_episode(state.current_file));
 	update_format_label(&state); // the rate/bits settle shortly after the start
+	frameprof_end(PROF_UP_UI);
 
 	// The status LED follows playback promptly from here (the battery poll
 	// only comes round once a minute). Only writes when the colour changes.
 	// A podcast lights purple instead of the sample-rate colour.
+	frameprof_begin(PROF_UP_LED);
 	led_update_playback(state.status == AUDIO_STATUS_PLAYING, state.stream_sample_rate,
 						!state.live && podcastcache_is_episode(state.current_file),
 						!state.live && audio_get_dsd_multiple() > 0);
+	frameprof_end(PROF_UP_LED);
 
 	// Where the book got to. Not the same thing as "remember track" below and
 	// not subject to its switch: that setting is about which track comes back
@@ -3855,7 +4103,9 @@ static void update_progress(void) {
 	// "Remember track". The decision, and the writing, live in device_state.c:
 	// the power menu and the automatic shutdown have to do the same thing on
 	// their way out, and neither of them comes through here.
+	frameprof_begin(PROF_UP_REMEMBER);
 	device_state_remember_note();
+	frameprof_end(PROF_UP_REMEMBER);
 }
 
 static void play_btn_event_cb(lv_event_t *e) {

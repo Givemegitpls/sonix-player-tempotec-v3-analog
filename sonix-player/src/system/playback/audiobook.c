@@ -1,3 +1,4 @@
+#define _GNU_SOURCE 1 // strcasestr
 #include "audiobook.h"
 
 #include "src/system/library/audiobookdb.h"
@@ -260,6 +261,16 @@ void audiobook_track_changed(const char *filepath) {
 	serial++;
 
 	if (!filepath || !filepath[0]) {
+		pthread_mutex_unlock(&lock);
+		return;
+	}
+
+	// Every book lives under <card>/Audiobooks (the scan walks nothing else,
+	// the music scan leaves that folder out), so a path without it cannot be
+	// one and the two database lookups below -- a read from the card on the
+	// interface thread at every track change -- are not worth asking. The
+	// folder name is compared as the scanners compare it, without case.
+	if (!strcasestr(filepath, "/" AUDIOBOOKDB_FOLDER "/")) {
 		pthread_mutex_unlock(&lock);
 		return;
 	}

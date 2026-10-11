@@ -2044,6 +2044,8 @@ bool library_album_same(const char *a, const char *b) {
 	return la == lb && strncasecmp(a, b, la) == 0;
 }
 
+unsigned library_favourites_generation(void) { return __atomic_load_n(&generation[GEN_FAVOURITES], __ATOMIC_RELAXED); }
+
 bool library_fav_contains(const char *path) {
 	if (!path || !path[0]) {
 		return false;
@@ -2803,10 +2805,11 @@ bool library_index_stale(const library_index_t *ix) {
 	if (!ix) {
 		return true;
 	}
-	pthread_mutex_lock(&db_lock);
-	bool stale = ix->generation != generation[ix->domain];
-	pthread_mutex_unlock(&db_lock);
-	return stale;
+	// No lock: the handle's domain and generation are set once at open, and the
+	// counter is a word that only moves up. Every playlist_* call asks this
+	// (refresh_stale_source), so taking db_lock here made each next/prev wait
+	// for whatever transaction -- a queue write, a scan batch -- held it.
+	return ix->generation != __atomic_load_n(&generation[ix->domain], __ATOMIC_RELAXED);
 }
 
 bool library_index_buckets(const library_index_t *ix, int counts[LIBRARY_INDEX_BUCKETS]) {

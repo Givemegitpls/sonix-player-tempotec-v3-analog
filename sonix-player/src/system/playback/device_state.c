@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 // Cache of the currently loaded track's metadata, refreshed whenever a new
@@ -153,6 +154,8 @@ void device_state_remember_restored(const char *path, double position) {
 	remember.restore_ms = remember.saved_ms;
 }
 
+static void state_job_submit(const char *path, double position);
+
 void device_state_remember_note(void) {
 	if (!remember_enabled()) {
 		return;
@@ -164,7 +167,9 @@ void device_state_remember_note(void) {
 	}
 	if (remember_should_write(&remember, state.current_file, state.status, state.progress_current_secs,
 							  remember_now_ms())) {
-		library_playback_state_save(state.current_file, state.progress_current_secs);
+		// A database transaction on the card: with the file changed it is due
+		// on the first poll after every skip, so it goes to the writer thread.
+		state_job_submit(state.current_file, state.progress_current_secs);
 	}
 }
 
@@ -340,6 +345,13 @@ typedef struct {
 static pthread_mutex_t queue_job_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t queue_job_cond = PTHREAD_COND_INITIALIZER;
 static queue_job_t *queue_job_waiting;
+// The "remember track" position rides on the same thread and the same settling
+// delay: both are transactions on the one database, and written back to back
+// they cost one burst instead of two.
+static char state_job_path[512];
+static double state_job_pos;
+static bool state_job_waiting;
+static unsigned job_serial; // bumped by every submit, queue or state
 static bool queue_job_running;
 static bool queue_job_hurry; // set by queue_job_flush: no settling delay
 static bool queue_writer_started;
@@ -375,13 +387,13 @@ static void *queue_writer(void *arg) {
 	thread_be_low_priority("queue writer");
 	pthread_mutex_lock(&queue_job_lock);
 	for (;;) {
-		while (!queue_job_waiting) {
+		while (!queue_job_waiting && !state_job_waiting) {
 			pthread_cond_wait(&queue_job_cond, &queue_job_lock);
 		}
 		// Settle: until QUEUE_WRITE_DELAY_MS have passed with no newer job, or
 		// until the way out asks for it now.
 		for (;;) {
-			queue_job_t *seen = queue_job_waiting;
+			unsigned seen = job_serial;
 			struct timespec until;
 			clock_gettime(CLOCK_REALTIME, &until);
 			until.tv_sec += QUEUE_WRITE_DELAY_MS / 1000;
@@ -390,20 +402,32 @@ static void *queue_writer(void *arg) {
 				until.tv_sec++;
 				until.tv_nsec -= 1000000000L;
 			}
-			while (!queue_job_hurry && queue_job_waiting == seen &&
+			while (!queue_job_hurry && job_serial == seen &&
 				   pthread_cond_timedwait(&queue_job_cond, &queue_job_lock, &until) == 0) {
 			}
-			if (queue_job_hurry || queue_job_waiting == seen) {
+			if (queue_job_hurry || job_serial == seen) {
 				break; // asked for now, or quiet for the whole delay
 			}
 		}
 		queue_job_t *job = queue_job_waiting;
 		queue_job_waiting = NULL;
+		char state_path[sizeof(state_job_path)];
+		double state_pos = state_job_pos;
+		bool have_state = state_job_waiting;
+		if (have_state) {
+			memcpy(state_path, state_job_path, sizeof(state_path));
+			state_job_waiting = false;
+		}
 		queue_job_running = true;
 		pthread_mutex_unlock(&queue_job_lock);
 
-		queue_job_write(job);
-		queue_job_free(job);
+		if (job) {
+			queue_job_write(job);
+			queue_job_free(job);
+		}
+		if (have_state) {
+			library_playback_state_save(state_path, state_pos);
+		}
 
 		pthread_mutex_lock(&queue_job_lock);
 		queue_job_running = false;
@@ -412,8 +436,7 @@ static void *queue_writer(void *arg) {
 	return NULL;
 }
 
-// Hands a job to the writer, or writes it here when there is no writer.
-static void queue_job_submit(queue_job_t *job) {
+static bool queue_writer_ensure(void) {
 	if (!queue_writer_started) {
 		pthread_t thread;
 		queue_writer_started = pthread_create(&thread, NULL, queue_writer, NULL) == 0;
@@ -421,7 +444,12 @@ static void queue_job_submit(queue_job_t *job) {
 			pthread_detach(thread);
 		}
 	}
-	if (!queue_writer_started) {
+	return queue_writer_started;
+}
+
+// Hands a job to the writer, or writes it here when there is no writer.
+static void queue_job_submit(queue_job_t *job) {
+	if (!queue_writer_ensure()) {
 		queue_job_write(job);
 		queue_job_free(job);
 		return;
@@ -429,6 +457,22 @@ static void queue_job_submit(queue_job_t *job) {
 	pthread_mutex_lock(&queue_job_lock);
 	queue_job_free(queue_job_waiting); // superseded
 	queue_job_waiting = job;
+	job_serial++;
+	pthread_cond_broadcast(&queue_job_cond);
+	pthread_mutex_unlock(&queue_job_lock);
+}
+
+// The same for the position "remember track" keeps. Only the newest is kept.
+static void state_job_submit(const char *path, double position) {
+	if (!queue_writer_ensure()) {
+		library_playback_state_save(path, position);
+		return;
+	}
+	pthread_mutex_lock(&queue_job_lock);
+	snprintf(state_job_path, sizeof(state_job_path), "%s", path);
+	state_job_pos = position;
+	state_job_waiting = true;
+	job_serial++;
 	pthread_cond_broadcast(&queue_job_cond);
 	pthread_mutex_unlock(&queue_job_lock);
 }
@@ -439,11 +483,191 @@ static void queue_job_flush(void) {
 	pthread_mutex_lock(&queue_job_lock);
 	queue_job_hurry = true;
 	pthread_cond_broadcast(&queue_job_cond);
-	while (queue_job_waiting || queue_job_running) {
+	while (queue_job_waiting || state_job_waiting || queue_job_running) {
 		pthread_cond_wait(&queue_job_cond, &queue_job_lock);
 	}
 	queue_job_hurry = false;
 	pthread_mutex_unlock(&queue_job_lock);
+}
+
+// ---------------------------------------------------------------------------
+// Skip prefetch (device_state.h). The tags of a track are a read from the card
+// -- 25 to 55 ms measured on the device, on the interface thread, at every
+// skip -- and so is the starred flag. Both are read here, for the two tracks a
+// skip can land on, a moment after the current one is up, on a thread below the
+// interface. What the thread stores is checked again when it is used: the file
+// must still have the size and time it had, the answer is not older than
+// PREFETCH_MAX_AGE_MS (a sidecar or a cue sheet is not covered by the stat),
+// and for the star, no favourite may have changed since.
+// ---------------------------------------------------------------------------
+#define PREFETCH_SLOTS 4       // next, previous, and one more each way: a burst of skips keeps hitting
+#define PREFETCH_SETTLE_MS 150 // a burst of skips reads only where it ends
+#define PREFETCH_MAX_AGE_MS 120000
+
+typedef struct {
+	char path[512];
+	song_metadata_t meta;
+	bool used;
+	bool fav;
+	unsigned fav_gen;
+	off_t size;
+	time_t mtime;
+	uint32_t stamp_ms;
+} prefetch_slot_t;
+
+static pthread_mutex_t prefetch_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t prefetch_cond = PTHREAD_COND_INITIALIZER;
+static prefetch_slot_t prefetch_slots[PREFETCH_SLOTS];
+static char prefetch_wanted[PREFETCH_SLOTS][512];
+static unsigned prefetch_serial;
+static bool prefetch_pending;
+static bool prefetch_started;
+
+// Call with prefetch_lock held.
+static prefetch_slot_t *prefetch_find(const char *path) {
+	uint32_t now = remember_now_ms();
+	for (int i = 0; i < PREFETCH_SLOTS; i++) {
+		prefetch_slot_t *slot = &prefetch_slots[i];
+		if (slot->used && strcmp(slot->path, path) == 0 && (uint32_t)(now - slot->stamp_ms) < PREFETCH_MAX_AGE_MS) {
+			return slot;
+		}
+	}
+	return NULL;
+}
+
+// Files that are still being written (a streaming cache) or that are not
+// files at all must never be read ahead of time.
+static bool prefetch_allowed(const char *path) {
+	return path[0] == '/' && !qobuzcache_owns(path) && !tidalcache_owns(path) && !podcastcache_is_episode(path);
+}
+
+static void *prefetch_thread(void *arg) {
+	(void)arg;
+	thread_be_low_priority("skip prefetch");
+	prefetch_slot_t *fresh = malloc(sizeof(*fresh));
+	pthread_mutex_lock(&prefetch_lock);
+	for (;;) {
+		while (!prefetch_pending || !fresh) {
+			pthread_cond_wait(&prefetch_cond, &prefetch_lock);
+		}
+		for (;;) { // settle
+			unsigned seen = prefetch_serial;
+			struct timespec until;
+			clock_gettime(CLOCK_REALTIME, &until);
+			until.tv_nsec += (long)PREFETCH_SETTLE_MS * 1000000L;
+			until.tv_sec += until.tv_nsec / 1000000000L;
+			until.tv_nsec %= 1000000000L;
+			while (prefetch_serial == seen && pthread_cond_timedwait(&prefetch_cond, &prefetch_lock, &until) == 0) {
+			}
+			if (prefetch_serial == seen) {
+				break;
+			}
+		}
+		char wanted[PREFETCH_SLOTS][512];
+		memcpy(wanted, prefetch_wanted, sizeof(wanted));
+		prefetch_pending = false;
+
+		unsigned asked = prefetch_serial;
+		for (int i = 0; i < PREFETCH_SLOTS; i++) {
+			if (prefetch_serial != asked) {
+				break; // another skip: the new request settles and starts over
+			}
+			if (!wanted[i][0] || !prefetch_allowed(wanted[i])) {
+				continue;
+			}
+			prefetch_slot_t *have = prefetch_find(wanted[i]);
+			if (have) {
+				if (have != &prefetch_slots[i]) { // the other direction's answer, now this one's
+					prefetch_slot_t swap = *have;
+					*have = prefetch_slots[i];
+					prefetch_slots[i] = swap;
+				}
+				continue;
+			}
+			pthread_mutex_unlock(&prefetch_lock);
+
+			struct stat st;
+			bool ok = stat(wanted[i], &st) == 0 && S_ISREG(st.st_mode);
+			if (ok) {
+				snprintf(fresh->path, sizeof(fresh->path), "%.511s", wanted[i]);
+				fresh->size = st.st_size;
+				fresh->mtime = st.st_mtime;
+				fresh->fav_gen = library_favourites_generation(); // before the read, so a change in between shows
+				metadata_read(fresh->path, &fresh->meta);
+				fresh->fav = library_fav_contains(fresh->path);
+				fresh->stamp_ms = remember_now_ms();
+				fresh->used = true;
+			}
+
+			pthread_mutex_lock(&prefetch_lock);
+			if (ok) {
+				prefetch_slots[i] = *fresh;
+			}
+		}
+	}
+	return NULL;
+}
+
+void device_state_prefetch(const char *const *paths, int count) {
+	pthread_mutex_lock(&prefetch_lock);
+	if (!prefetch_started) {
+		pthread_t thread;
+		prefetch_started = pthread_create(&thread, NULL, prefetch_thread, NULL) == 0;
+		if (prefetch_started) {
+			pthread_detach(thread);
+		}
+	}
+	if (prefetch_started) {
+		for (int i = 0; i < PREFETCH_SLOTS; i++) {
+			const char *path = paths && i < count && paths[i] ? paths[i] : "";
+			snprintf(prefetch_wanted[i], sizeof(prefetch_wanted[i]), "%s", path);
+		}
+		prefetch_serial++;
+		prefetch_pending = true;
+		pthread_cond_broadcast(&prefetch_cond);
+	}
+	pthread_mutex_unlock(&prefetch_lock);
+}
+
+bool device_state_prefetch_peek(const char *path, song_metadata_t *out) {
+	pthread_mutex_lock(&prefetch_lock);
+	prefetch_slot_t *slot = path && path[0] ? prefetch_find(path) : NULL;
+	if (slot) {
+		*out = slot->meta;
+	}
+	pthread_mutex_unlock(&prefetch_lock);
+	return slot != NULL;
+}
+
+// The tags of `path` when they were read ahead and are still good.
+static bool prefetch_take_meta(const char *path, song_metadata_t *out) {
+	off_t size;
+	time_t mtime;
+	pthread_mutex_lock(&prefetch_lock);
+	prefetch_slot_t *slot = prefetch_find(path);
+	if (slot) {
+		*out = slot->meta;
+		size = slot->size;
+		mtime = slot->mtime;
+	}
+	pthread_mutex_unlock(&prefetch_lock);
+	if (!slot) {
+		return false;
+	}
+	struct stat st;
+	return stat(path, &st) == 0 && st.st_size == size && st.st_mtime == mtime;
+}
+
+bool device_state_prefetched_fav(const char *path, bool *starred) {
+	bool good = false;
+	pthread_mutex_lock(&prefetch_lock);
+	prefetch_slot_t *slot = path && path[0] ? prefetch_find(path) : NULL;
+	if (slot && slot->fav_gen == library_favourites_generation()) {
+		*starred = slot->fav;
+		good = true;
+	}
+	pthread_mutex_unlock(&prefetch_lock);
+	return good;
 }
 
 // Writes a library-backed queue down as its query. The position is the entry as
@@ -676,7 +900,9 @@ static void load_and_play_at(const char *filepath, double position) {
 	}
 
 	frameprof_begin(PROF_META);
-	metadata_read(current_metadata_file, &current_metadata);
+	if (!prefetch_take_meta(current_metadata_file, &current_metadata)) {
+		metadata_read(current_metadata_file, &current_metadata);
+	}
 	frameprof_end(PROF_META);
 	// Whether the loaded file is an audiobook is decided here, once per track
 	// change, and everything that dresses the player for one reads the answer
