@@ -941,6 +941,177 @@ static bool album_track_cb(const char *name, const char *path, const char *artis
 	return true;
 }
 
+// Starts the record `wanted` (an album value), its tracks in their order: on the
+// first track going forward, on the last going back. False when the record has
+// no tracks.
+static bool start_album(const char *wanted, bool forward) {
+	album_tracks_t tracks = {NULL, 0, 0};
+	library_for_each_ordered(LIBRARY_LIST_TRACKS, LIBRARY_FILTER_ALBUM, wanted, LIBRARY_ORDER_DEFAULT,
+							 album_track_cb, &tracks);
+
+	bool started = false;
+	if (tracks.count > 0) {
+		device_state_play_list((const char *const *)tracks.paths, tracks.count,
+							   forward ? 0 : tracks.count - 1);
+		playlist_set_album(wanted); // so the record beyond that one can follow too
+		char shown[256];
+		library_album_title(wanted, shown, sizeof(shown));
+		fprintf(stderr, "album: %s \"%s\" (%d tracks)\n", forward ? "on to" : "back to", shown, tracks.count);
+		started = true;
+	}
+
+	for (int i = 0; i < tracks.count; i++) {
+		free(tracks.paths[i]);
+	}
+	free(tracks.paths);
+	return started;
+}
+
+// ---------------------------------------------------------------------------
+// Records in random order
+//
+// "Play albums in random order" starts one record of a list of records picked
+// at random, its tracks in their order, and when "play albums back to back"
+// takes over at its end, the next record is another one of the same list
+// picked at random rather than the one after it by name. Back from the first
+// track goes to the record played before, while there is one.
+//
+// It holds for as long as the queue is one of the records it started: the
+// album label is what says so. Anything else that starts a queue sets a label
+// of its own, or none, and the next record is again the one after by name.
+// ---------------------------------------------------------------------------
+
+#define RANDOM_ALBUM_HISTORY 16
+#define RANDOM_ALBUM_TRIES 8
+
+static struct {
+	bool on;
+	library_filter_t filter;
+	char value[256];
+	// The records played, the one playing last.
+	char history[RANDOM_ALBUM_HISTORY][256];
+	int depth;
+} random_albums;
+
+static bool album_value_cb(const char *name, const char *path, const char *artist, void *user) {
+	(void)path;
+	(void)artist;
+	snprintf(user, 256, "%s", name ? name : "");
+	return false;
+}
+
+static bool random_albums_recent(const char *album, int how_far) {
+	for (int i = random_albums.depth - 1; i >= 0 && how_far > 0; i--, how_far--) {
+		if (library_album_same(random_albums.history[i], album)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void random_albums_push(const char *album) {
+	if (random_albums.depth == RANDOM_ALBUM_HISTORY) {
+		memmove(random_albums.history[0], random_albums.history[1],
+				(RANDOM_ALBUM_HISTORY - 1) * sizeof(random_albums.history[0]));
+		random_albums.depth--;
+	}
+	snprintf(random_albums.history[random_albums.depth++], sizeof(random_albums.history[0]), "%s", album);
+}
+
+// A record of the list at random into `out`: never `avoid`, and where the list
+// is long enough, none of the last few played either. False when the list has
+// no record to give.
+static bool random_albums_pick(const char *avoid, char *out, size_t size) {
+	library_index_t *ix = library_index_open(LIBRARY_LIST_ALBUMS, random_albums.filter,
+											 random_albums.value[0] ? random_albums.value : NULL,
+											 LIBRARY_ORDER_DEFAULT, false);
+	int count = library_index_count(ix);
+	if (count <= 0) {
+		library_index_close(ix);
+		return false;
+	}
+
+	// How many of the records played last are kept out of the draw: never all
+	// of them, or a short list would have nothing left to give.
+	int keep_out = count / 2;
+	if (keep_out > RANDOM_ALBUM_HISTORY) {
+		keep_out = RANDOM_ALBUM_HISTORY;
+	}
+
+	static bool seeded;
+	if (!seeded) {
+		srand((unsigned)time(NULL));
+		seeded = true;
+	}
+
+	char name[256] = "";
+	bool found = false;
+	for (int tries = 0; tries < RANDOM_ALBUM_TRIES && !found; tries++) {
+		name[0] = '\0';
+		library_index_window(ix, rand() % count, 1, album_value_cb, name);
+		if (!name[0]) {
+			continue;
+		}
+		bool is_avoided = avoid && avoid[0] && library_album_same(name, avoid);
+		found = count == 1 || (!is_avoided && !random_albums_recent(name, keep_out));
+	}
+	if (!found && count > 1) {
+		// Unlucky draws: the first record that is not the one playing.
+		for (int i = 0; i < count && !found; i++) {
+			name[0] = '\0';
+			library_index_window(ix, i, 1, album_value_cb, name);
+			found = name[0] && !(avoid && avoid[0] && library_album_same(name, avoid));
+		}
+	}
+	library_index_close(ix);
+	if (found) {
+		snprintf(out, size, "%s", name);
+	}
+	return found;
+}
+
+bool device_state_play_random_album(library_filter_t filter, const char *value) {
+	random_albums.on = false;
+	random_albums.depth = 0;
+	random_albums.filter = filter;
+	snprintf(random_albums.value, sizeof(random_albums.value), "%s", value ? value : "");
+
+	char album[256];
+	if (!random_albums_pick(playlist_album(), album, sizeof(album)) || !start_album(album, true)) {
+		return false;
+	}
+	random_albums_push(album);
+	random_albums.on = true;
+	return true;
+}
+
+// The record after `current` when the queue is one the random order started:
+// another at random going forward, the one before going back. False when the
+// queue is not one of those records, which leaves the step to the order by name.
+static bool random_albums_beside(const char *current, bool forward) {
+	if (!random_albums.on || random_albums.depth == 0 ||
+		!library_album_same(random_albums.history[random_albums.depth - 1], current)) {
+		random_albums.on = false;
+		return false;
+	}
+
+	if (!forward && random_albums.depth >= 2) {
+		random_albums.depth--;
+		return start_album(random_albums.history[random_albums.depth - 1], false);
+	}
+
+	char album[256];
+	if (!random_albums_pick(current, album, sizeof(album)) || !start_album(album, forward)) {
+		return false;
+	}
+	if (!forward) {
+		// Back past the first record played: a record at random before it.
+		random_albums.depth = 0;
+	}
+	random_albums_push(album);
+	return true;
+}
+
 // Starts the record either side of `album`. Going forward it opens on the first
 // track, going back on the last: "previous" from the top of a record means the
 // end of the one before it, the same way it means the end of the track before
@@ -967,27 +1138,7 @@ static bool play_album_beside(const char *album, bool forward) {
 	if (!wanted || !wanted[0]) {
 		return false;
 	}
-
-	album_tracks_t tracks = {NULL, 0, 0};
-	library_for_each_ordered(LIBRARY_LIST_TRACKS, LIBRARY_FILTER_ALBUM, wanted, LIBRARY_ORDER_DEFAULT,
-							 album_track_cb, &tracks);
-
-	bool started = false;
-	if (tracks.count > 0) {
-		device_state_play_list((const char *const *)tracks.paths, tracks.count,
-							   forward ? 0 : tracks.count - 1);
-		playlist_set_album(wanted); // so the record beyond that one can follow too
-		char shown[256];
-		library_album_title(wanted, shown, sizeof(shown));
-		fprintf(stderr, "album: %s \"%s\" (%d tracks)\n", forward ? "on to" : "back to", shown, tracks.count);
-		started = true;
-	}
-
-	for (int i = 0; i < tracks.count; i++) {
-		free(tracks.paths[i]);
-	}
-	free(tracks.paths);
-	return started;
+	return start_album(wanted, forward);
 }
 
 // Starts the folder either side of the one the queue was built from, opening on
@@ -1049,7 +1200,7 @@ static bool chain_beside(bool forward) {
 	if (album && album[0] && device_state_album_chaining()) {
 		char held[256];
 		snprintf(held, sizeof(held), "%s", album); // the queue is about to be replaced
-		if (play_album_beside(held, forward)) {
+		if (random_albums_beside(held, forward) || play_album_beside(held, forward)) {
 			return true;
 		}
 	}

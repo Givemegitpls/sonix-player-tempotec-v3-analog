@@ -926,14 +926,193 @@ int cover_mean_luma(const cover_image_t *cover) {
 	return count ? (int)(sum / count) : -1;
 }
 
-uint32_t cover_average_tone(const cover_image_t *cover) {
-	unsigned r, g, b;
-	if (!cover || !tone_weighted_average(cover, &r, &g, &b)) {
-		return 0;
+// A page painted in a sleeve's colour cannot take the plain average of
+// tone_weighted_average(): a yellow and blue sleeve averages to a grey-olive
+// that is neither, and a yellow darkened for a dark page is olive whatever is
+// done to it. So the sleeve's colours are sorted into families of hue, and the
+// page takes one family rather than a mix of all of them.
+//
+// A family is three neighbouring bins of 15 degrees, scored by how much colour
+// falls in it: each pixel counts for its distance from grey, and a pixel too
+// close to grey counts for nothing. The strongest family is always a
+// candidate, and so is any other family that does not overlap it and scores
+// at least half as much. A dark page takes the darkest candidate and a light
+// page the lightest, so the page is a colour that looks right at that
+// brightness. A sleeve with no colour worth sorting falls back to the plain
+// average, which is near grey anyway.
+#define TONE_BINS 24		  // 15 degrees of hue each
+#define TONE_FAMILY_CHROMA 32 // closer to grey than this, a pixel has no hue to vote for
+#define TONE_FAMILIES (TONE_BINS / 3)
+// A yellow family that covers this much of the sleeve, in tenths, and is this
+// bright makes a light page even on a darker sleeve: darkened, it would only
+// be olive.
+#define TONE_YELLOW_SHARE 3
+#define TONE_YELLOW_LUMA 150
+#define TONE_YELLOW_FROM 40 // degrees
+#define TONE_YELLOW_TO 75
+
+typedef struct {
+	uint64_t r, g, b, weight; // the colours, weighted as tone_weighted_average() weighs them
+	uint64_t score;			  // how much colour, for choosing between bins
+	unsigned count;			  // how many samples
+} tone_bin_t;
+
+// The hue of a colour in degrees, 0..359, or -1 for a grey.
+static int tone_hue(unsigned r, unsigned g, unsigned b) {
+	unsigned hi = r > g ? (r > b ? r : b) : (g > b ? g : b);
+	unsigned lo = r < g ? (r < b ? r : b) : (g < b ? g : b);
+	int d = (int)(hi - lo);
+	if (d == 0) {
+		return -1;
 	}
+	int h;
+	if (hi == r) {
+		h = ((int)g - (int)b) * 60 / d;
+	} else if (hi == g) {
+		h = 120 + ((int)b - (int)r) * 60 / d;
+	} else {
+		h = 240 + ((int)r - (int)g) * 60 / d;
+	}
+	return (h % 360 + 360) % 360;
+}
+
+static int tone_luma(unsigned r, unsigned g, unsigned b) { return (int)((r * 299 + g * 587 + b * 114) / 1000); }
+
+// How far apart two bins are around the circle.
+static int bin_distance(int a, int b) {
+	int d = a > b ? a - b : b - a;
+	return d < TONE_BINS - d ? d : TONE_BINS - d;
+}
+
+bool cover_page_tone(const cover_image_t *cover, int light_from, uint32_t *tone, int *luma, bool *light) {
+	int mean = cover_mean_luma(cover);
+	if (mean < 0) {
+		return false;
+	}
+	int w = (int)cover->dsc.header.w;
+	int h = (int)cover->dsc.header.h;
+	int stride = (int)cover->dsc.header.stride / 2;
+
+	tone_bin_t bins[TONE_BINS];
+	memset(bins, 0, sizeof(bins));
+	unsigned samples = 0;
+	uint64_t colour = 0;
+	// Every fourth pixel each way, as tone_weighted_average() samples it.
+	for (int y = 0; y < h; y += 4) {
+		const uint16_t *row = (const uint16_t *)cover->pixels + (size_t)y * stride;
+		for (int x = 0; x < w; x += 4) {
+			uint16_t c = row[x];
+			unsigned r5 = (c >> 11) & 0x1F, g6 = (c >> 5) & 0x3F, b5 = c & 0x1F;
+			unsigned r = (r5 << 3) | (r5 >> 2), g = (g6 << 2) | (g6 >> 4), b = (b5 << 3) | (b5 >> 2);
+			unsigned hi = r > g ? (r > b ? r : b) : (g > b ? g : b);
+			unsigned lo = r < g ? (r < b ? r : b) : (g < b ? g : b);
+			samples++;
+			if (hi - lo < TONE_FAMILY_CHROMA) {
+				continue;
+			}
+			tone_bin_t *bin = &bins[tone_hue(r, g, b) * TONE_BINS / 360];
+			unsigned k = (hi - lo) * 4 + hi / 8 + 1;
+			bin->r += (uint64_t)r * k;
+			bin->g += (uint64_t)g * k;
+			bin->b += (uint64_t)b * k;
+			bin->weight += k;
+			bin->score += hi - lo;
+			bin->count++;
+			colour += hi - lo;
+		}
+	}
+
+	bool is_light = mean >= light_from;
+	unsigned r = 0, g = 0, b = 0;
+	// On average less than an eighth of the floor's worth of colour per sample:
+	// a grey sleeve with a few coloured specks, which the plain average
+	// describes better than any one family.
+	if (colour * 8 < (uint64_t)samples * TONE_FAMILY_CHROMA) {
+		if (!tone_weighted_average(cover, &r, &g, &b)) {
+			return false;
+		}
+	} else {
+		// Each family's score, centred on each bin.
+		uint64_t score[TONE_BINS];
+		int best = 0;
+		for (int i = 0; i < TONE_BINS; i++) {
+			score[i] = bins[(i + TONE_BINS - 1) % TONE_BINS].score + bins[i].score + bins[(i + 1) % TONE_BINS].score;
+			if (score[i] > score[best]) {
+				best = i;
+			}
+		}
+
+		// The candidates, strongest first, none overlapping another.
+		int picks[TONE_FAMILIES];
+		int picked = 0;
+		picks[picked++] = best;
+		for (;;) {
+			int next = -1;
+			for (int i = 0; i < TONE_BINS; i++) {
+				if (score[i] * 2 < score[best]) {
+					continue;
+				}
+				bool apart = true;
+				for (int j = 0; j < picked; j++) {
+					if (bin_distance(i, picks[j]) < 3) {
+						apart = false;
+						break;
+					}
+				}
+				if (apart && (next < 0 || score[i] > score[next])) {
+					next = i;
+				}
+			}
+			if (next < 0 || picked == TONE_FAMILIES) {
+				break;
+			}
+			picks[picked++] = next;
+		}
+
+		// The darkest candidate for a dark page, the lightest for a light one.
+		int chosen_luma = -1;
+		unsigned chosen_count = 0;
+		for (int j = 0; j < picked; j++) {
+			uint64_t ar = 0, ag = 0, ab = 0, weight = 0;
+			unsigned count = 0;
+			for (int d = -1; d <= 1; d++) {
+				const tone_bin_t *bin = &bins[(picks[j] + d + TONE_BINS) % TONE_BINS];
+				ar += bin->r;
+				ag += bin->g;
+				ab += bin->b;
+				weight += bin->weight;
+				count += bin->count;
+			}
+			if (!weight) {
+				continue;
+			}
+			unsigned fr = (unsigned)(ar / weight), fg = (unsigned)(ag / weight), fb = (unsigned)(ab / weight);
+			int fl = tone_luma(fr, fg, fb);
+			if (chosen_luma < 0 || (is_light ? fl > chosen_luma : fl < chosen_luma)) {
+				r = fr;
+				g = fg;
+				b = fb;
+				chosen_luma = fl;
+				chosen_count = count;
+			}
+		}
+		if (chosen_luma < 0) {
+			return false;
+		}
+
+		int hue = tone_hue(r, g, b);
+		if (!is_light && hue >= TONE_YELLOW_FROM && hue <= TONE_YELLOW_TO && chosen_luma >= TONE_YELLOW_LUMA &&
+			chosen_count * 10 >= samples * TONE_YELLOW_SHARE) {
+			is_light = true;
+		}
+	}
+
 	// Never 0, which says "no sleeve": a black one comes back one step above.
-	uint32_t tone = (r << 16) | (g << 8) | b;
-	return tone ? tone : 0x010101;
+	uint32_t packed = (r << 16) | (g << 8) | b;
+	*tone = packed ? packed : 0x010101;
+	*luma = mean;
+	*light = is_light;
+	return true;
 }
 
 // A packed cover opened back out to RGB888, the form the resampler and the

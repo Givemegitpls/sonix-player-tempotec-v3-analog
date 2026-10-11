@@ -1,4 +1,5 @@
 #include "musicsettings.h"
+#include "musictiles.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -18,7 +19,6 @@
 #include "src/gui/settings/artistexceptions.h"
 #include "src/gui/settings/lastfmsettings.h"
 #include "src/gui/library/medialist.h"
-#include "src/gui/library/music.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
@@ -1499,19 +1499,6 @@ static void album_head_cb(lv_event_t *e) {
 	medialist_set_album_head(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
-// Which of Browse and Playlists the Music page puts on its sixth tile. Kept
-// here with the rest of the display options; the Music page reads it and paints
-// itself.
-static lv_obj_t *playlists_first_switch;
-
-bool musicsettings_playlists_first(void) { return config_get_bool("music", "playlists_first", false); }
-
-static void playlists_first_cb(lv_event_t *e) {
-	config_set_bool("music", "playlists_first", lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
-	config_save();
-	music_refresh_layout();
-}
-
 static lv_obj_t *nowplaying_at_boot_switch;
 
 static void nowplaying_at_boot_cb(lv_event_t *e) {
@@ -1633,8 +1620,13 @@ static void build_library_page(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(library_screen, cfg, "musicsettings_library");
 	settingsrow_title_corner_slots(settingsrow_page_title(library_screen), cfg, 0);
 
-	// On: an artist is a list of their records. Off: a flat list of their
-	// tracks, with the grouping button in the corner.
+	// Which tiles the Music page shows, and in what order.
+	musictiles_init(cfg);
+	settingsrow_add(container, "musicsettings_rearrange_main_page", NULL, switch_screen_cb, musictiles_screen);
+
+	// On: an artist, a genre or a year is a list of its records. Off: a flat
+	// list of its tracks, with the grouping button in the corner on an
+	// artist's.
 	settingsrow_toggle(container, "musicsettings_album_view", &album_view_switch, album_view_cb);
 	option_note(container, "musicsettings_artist_opens_albums_note");
 	if (medialist_album_view()) {
@@ -1659,12 +1651,6 @@ static void build_library_page(gui_config_t *cfg) {
 	option_note(container, "musicsettings_show_artist_note");
 	artist_refresh();
 	theme_register_refresh(artist_refresh);
-
-	settingsrow_toggle(container, "musicsettings_playlists_first", &playlists_first_switch, playlists_first_cb);
-	option_note(container, "musicsettings_playlists_first_note");
-	if (musicsettings_playlists_first()) {
-		lv_obj_add_state(playlists_first_switch, LV_STATE_CHECKED);
-	}
 
 	// A small mark under a track's title saying what the file is. It comes from
 	// what the scan wrote down, so a library indexed by an older build wears no

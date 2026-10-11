@@ -237,6 +237,10 @@ typedef enum {
 	LIBRARY_LIST_GENRES,
 	LIBRARY_LIST_FAVOURITES, // in order of addition, oldest first
 	LIBRARY_LIST_PLAYLIST,	 // one playlist's own table, in the order it was built
+	// The years the records came out in, latest first: one row per year that
+	// at least one album has (an album's year is its tracks' latest, as
+	// LIBRARY_ORDER_YEAR reads it). A row's name is the year. Handles only.
+	LIBRARY_LIST_YEARS,
 } library_list_t;
 
 // Fills `out` with up to `max` names, in the collation's order (see above).
@@ -254,6 +258,10 @@ typedef enum {
 	// The tracks, albums or artists whose name contains the value, matched the
 	// way library_search() matches. For the handles below only.
 	LIBRARY_FILTER_SEARCH,
+	// The albums of one year, the value being the year, and the tracks of
+	// those albums: an album whose tracks carry different years is filed under
+	// the latest of them, here as in LIBRARY_ORDER_YEAR. For the handles only.
+	LIBRARY_FILTER_YEAR,
 } library_filter_t;
 
 // Streams the whole result set, sorted by the collation, one row per call:

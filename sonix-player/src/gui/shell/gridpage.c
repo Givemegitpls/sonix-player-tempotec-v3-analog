@@ -100,6 +100,25 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 	}
 }
 
+void gridpage_set_entries(lv_obj_t *grid, gui_config_t *cfg, const grid_entry_t *entries, int count, int columns,
+						  int rows, bool clear_corner_buttons) {
+	if (!grid) {
+		return;
+	}
+	lv_obj_clean(grid);
+
+	int top = clear_corner_buttons ? settingsrow_content_top(cfg) : cfg->top_bar_height;
+	int usable_w = cfg->screen_width - (2 * cfg->padding);
+	int usable_h = (cfg->screen_height - top) - (2 * cfg->padding);
+
+	int tile_w = (usable_w - (columns - 1) * GRID_GAP) / columns;
+	int tile_h = (usable_h - (rows - 1) * GRID_GAP) / rows;
+
+	for (int i = 0; i < count; i++) {
+		add_tile(grid, &entries[i], tile_w, tile_h);
+	}
+}
+
 lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t *entries, int count, int columns,
 						 int rows, bool clear_corner_buttons) {
 	lv_obj_add_style(screen, &theme_style_screen, 0);
@@ -123,15 +142,7 @@ lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t
 	// its row, giving that page a shape no other one has.
 	lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
 
-	int usable_w = cfg->screen_width - (2 * cfg->padding);
-	int usable_h = (cfg->screen_height - top) - (2 * cfg->padding);
-
-	int tile_w = (usable_w - (columns - 1) * GRID_GAP) / columns;
-	int tile_h = (usable_h - (rows - 1) * GRID_GAP) / rows;
-
-	for (int i = 0; i < count; i++) {
-		add_tile(grid, &entries[i], tile_w, tile_h);
-	}
+	gridpage_set_entries(grid, cfg, entries, count, columns, rows, clear_corner_buttons);
 
 	// The player can be pulled in from any tiled page.
 	player_sheet_attach_drag(grid, true);
@@ -143,6 +154,19 @@ lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t
 	// on the page has to put it on this object, because nothing below it
 	// bubbles any further.
 	return grid;
+}
+
+void gridpage_set_scrolling(lv_obj_t *grid) {
+	if (!grid) {
+		return;
+	}
+	lv_obj_set_scrollable(grid, true);
+	lv_obj_set_scroll_dir(grid, LV_DIR_VER);
+	lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_ACTIVE);
+	// No give past either end, so the page does not bounce under a pull from
+	// the bottom edge, which belongs to the album carousel
+	// (coverflow_attach_edge).
+	lv_obj_set_scroll_elastic(grid, false);
 }
 
 lv_obj_t *gridpage_empty_panel(lv_obj_t *screen, gui_config_t *cfg, const lv_image_dsc_t *icon, const char *text,

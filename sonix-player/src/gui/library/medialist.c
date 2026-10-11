@@ -115,8 +115,8 @@ lv_obj_t *medialist_albums_screen;
 #define SEL_BLUR_RADIUS 18
 #define SEL_BLUR_PAD 6
 
-// The page in the sleeve's colour: the colour the sleeve looks
-// (cover_average_tone), at the brightness of the sleeve as a whole pushed away
+// The page in the sleeve's colour: one of the sleeve's colours
+// (cover_page_tone), at the brightness of the sleeve as a whole pushed away
 // from the middle, so the ink is never on a grey of its own colour. A light
 // sleeve makes a light page written in near-black, anything else a dark one
 // written in white.
@@ -207,6 +207,7 @@ typedef struct {
 	lv_obj_t *reverse_btn; // Favourites: the list reversed (newest first)
 	lv_obj_t *play_btn;	   // the circle-play corner button
 	lv_obj_t *play_menu;   // and the card it opens, one per screen
+	lv_obj_t *play_menu_random_album; // ...whose "albums in random order" row comes and goes
 	lv_obj_t *sort_btn;	   // A-Z / Z-A
 	lv_obj_t *sort_icon;
 	lv_obj_t *album_btn;   // tracks screen only: group an artist's tracks by album
@@ -807,6 +808,7 @@ static const lv_image_dsc_t *glyph_for(const panel_t *p) {
 	case LIBRARY_LIST_ALBUM_ARTISTS:
 		return &icon_artist_album;
 	case LIBRARY_LIST_GENRES:
+	case LIBRARY_LIST_YEARS:
 		return &icon_genre;
 	case LIBRARY_LIST_ALBUMS:
 		return &icon_album;
@@ -834,6 +836,7 @@ static bool panel_shows_icons(const panel_t *p) {
 	case LIBRARY_LIST_ARTISTS:
 	case LIBRARY_LIST_ALBUM_ARTISTS:
 	case LIBRARY_LIST_GENRES:
+	case LIBRARY_LIST_YEARS:
 		return false;
 	default:
 		return true;
@@ -881,6 +884,7 @@ static char np_album_value[300];
 static char np_artist[256];
 static char np_album_artist[256];
 static char np_genre[128];
+static char np_year[12];
 
 static void np_cache_refresh(void) {
 	device_state_t state;
@@ -891,6 +895,11 @@ static void np_cache_refresh(void) {
 	snprintf(np_artist, sizeof(np_artist), "%s", state.metadata.artist);
 	snprintf(np_album_artist, sizeof(np_album_artist), "%s", state.metadata.album_artist);
 	snprintf(np_genre, sizeof(np_genre), "%s", state.metadata.genre);
+	if (state.metadata.year > 0) {
+		snprintf(np_year, sizeof(np_year), "%d", state.metadata.year);
+	} else {
+		np_year[0] = '\0';
+	}
 	if (!np_path[0] || !library_track_album_value(np_path, np_album_value, sizeof(np_album_value))) {
 		np_album_value[0] = '\0';
 	}
@@ -937,6 +946,8 @@ static bool entry_is_now_playing(panel_t *p, int index) {
 		return np_album_artist[0] && strcmp(name, np_album_artist) == 0;
 	case LIBRARY_LIST_GENRES:
 		return np_genre[0] && strcmp(name, np_genre) == 0;
+	case LIBRARY_LIST_YEARS:
+		return np_year[0] && strcmp(name, np_year) == 0;
 	default:
 		return false;
 	}
@@ -1021,8 +1032,8 @@ static void row_update_quality(panel_t *p, row_t *row, const char *path) {
 }
 
 // Whether this list is one "Show artist" is on for: all the tracks, the albums
-// and the tracks inside one, a genre's albums and tracks, the favourites, or a
-// playlist. Not an artist's own lists, where the name is the page's title
+// and the tracks inside one, a year's or a genre's albums and tracks, the
+// favourites, or a playlist. Not an artist's own lists, where the name is the page's title
 // already, and not the name lists, whose rows are artists or genres themselves.
 static bool panel_shows_artist(const panel_t *p) {
 	if (!show_artist || p->from_paths) {
@@ -1031,8 +1042,8 @@ static bool panel_shows_artist(const panel_t *p) {
 	if (p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_NONE) {
 		return (artist_lists & MEDIALIST_ARTIST_TRACKS) != 0;
 	}
-	if ((p->kind == LIBRARY_LIST_ALBUMS && p->filter == LIBRARY_FILTER_NONE) ||
-		(p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_ALBUM)) {
+	if ((p->kind == LIBRARY_LIST_ALBUMS && (p->filter == LIBRARY_FILTER_NONE || p->filter == LIBRARY_FILTER_YEAR)) ||
+		(p->kind == LIBRARY_LIST_TRACKS && (p->filter == LIBRARY_FILTER_ALBUM || p->filter == LIBRARY_FILTER_YEAR))) {
 		return (artist_lists & MEDIALIST_ARTIST_ALBUMS) != 0;
 	}
 	if ((p->kind == LIBRARY_LIST_TRACKS || p->kind == LIBRARY_LIST_ALBUMS) && p->filter == LIBRARY_FILTER_GENRE) {
@@ -2368,6 +2379,8 @@ static library_filter_t filter_for(library_list_t kind) {
 		return LIBRARY_FILTER_ALBUM_ARTIST;
 	case LIBRARY_LIST_GENRES:
 		return LIBRARY_FILTER_GENRE;
+	case LIBRARY_LIST_YEARS:
+		return LIBRARY_FILTER_YEAR;
 	default:
 		return LIBRARY_FILTER_NONE;
 	}
@@ -2472,10 +2485,10 @@ static void row_clicked_cb(lv_event_t *e) {
 		return;
 	}
 
-	// An artist or a genre: its records, or its tracks when the album view is
-	// off. An album: the tracks.
+	// An artist, a genre or a year: its records, or its tracks when the album
+	// view is off. An album: the tracks.
 	bool grouped = p->kind == LIBRARY_LIST_ARTISTS || p->kind == LIBRARY_LIST_ALBUM_ARTISTS ||
-				   p->kind == LIBRARY_LIST_GENRES;
+				   p->kind == LIBRARY_LIST_GENRES || p->kind == LIBRARY_LIST_YEARS;
 	bool artist_row = p->kind == LIBRARY_LIST_ARTISTS || p->kind == LIBRARY_LIST_ALBUM_ARTISTS;
 	if (grouped && (medialist_album_view() || (artist_row && artist_records))) {
 		medialist_open(name, LIBRARY_LIST_ALBUMS, filter_for(p->kind), name);
@@ -3111,6 +3124,25 @@ static void play_menu_random_track_cb(lv_event_t *e) {
 	queue_random_track(p);
 }
 
+// One of the records on screen at random, its tracks in order, and the records
+// after it at random too (device_state_play_random_album). In order, whatever
+// the mode was: a mode changed while it plays then carries on to the records
+// after it, as any mode does.
+static void play_menu_random_album_cb(lv_event_t *e) {
+	(void)e;
+	panel_t *p = play_menu_panel;
+	play_menu_hide();
+	if (!p || p->kind != LIBRARY_LIST_ALBUMS) {
+		return;
+	}
+	playlist_set_mode(PLAYBACK_MODE_NORMAL);
+	if (!device_state_play_random_album(p->filter, p->filter_value[0] ? p->filter_value : NULL)) {
+		return;
+	}
+	player_refresh_now_playing();
+	switch_screen(player_screen);
+}
+
 static void play_menu_dismiss_cb(lv_event_t *e) {
 	(void)e;
 	play_menu_hide();
@@ -3168,6 +3200,7 @@ static void play_menu_build(panel_t *p) {
 
 	play_menu_row(card, "medialist_play_in_random_order", play_menu_shuffle_cb);
 	play_menu_row(card, "medialist_play_in_sequence", play_menu_sequence_cb);
+	p->play_menu_random_album = play_menu_row(card, "medialist_play_albums_in_random_order", play_menu_random_album_cb);
 	play_menu_row(card, "medialist_queue_random_track", play_menu_random_track_cb);
 }
 
@@ -3179,6 +3212,12 @@ static void play_menu_clicked_cb(lv_event_t *e) {
 	if (!p->play_menu) {
 		play_menu_build(p);
 	}
+	// Records in random order only where there are records to choose between,
+	// and only with the option that plays one record after another: without it
+	// the choice would be one record at random and then silence.
+	bool random_albums = p->kind == LIBRARY_LIST_ALBUMS && !p->from_paths && p->count >= 2 &&
+						 device_state_album_chaining();
+	lv_obj_set_hidden(p->play_menu_random_album, !random_albums);
 	play_menu_panel = p;
 	lv_obj_set_hidden(p->play_menu, false);
 	lv_obj_move_foreground(p->play_menu);
@@ -3860,20 +3899,23 @@ static bool tint_from_cover(panel_t *p) {
 	if (!p->head_has_cover) {
 		return false;
 	}
-	uint32_t tone = cover_average_tone(&p->head_image);
-	int luma = cover_mean_luma(&p->head_image);
-	if (!tone || luma < 0) {
+	uint32_t tone;
+	int luma;
+	bool light;
+	if (!cover_page_tone(&p->head_image, TINT_LIGHT_FROM, &tone, &luma, &light)) {
 		return false;
 	}
 
 	int r = (int)((tone >> 16) & 0xFF), g = (int)((tone >> 8) & 0xFF), b = (int)(tone & 0xFF);
 
-	bool light = luma >= TINT_LIGHT_FROM;
-	int want = light ? LV_CLAMP(TINT_LIGHT_MIN, luma, TINT_LIGHT_MAX) : LV_CLAMP(TINT_DARK_MIN, luma * 3 / 4, TINT_DARK_MAX);
+	// A light page is never darker than its colour: a yellow taken down to
+	// the sleeve's brightness turns to mustard.
+	int now = (r * 299 + g * 587 + b * 114) / 1000;
+	int want = light ? LV_CLAMP(TINT_LIGHT_MIN, LV_MAX(luma, now), TINT_LIGHT_MAX)
+					 : LV_CLAMP(TINT_DARK_MIN, luma * 3 / 4, TINT_DARK_MAX);
 
 	// To that brightness without moving the hue: down by a plain ratio, up by
 	// walking every channel the same fraction of the way to white.
-	int now = (r * 299 + g * 587 + b * 114) / 1000;
 	if (now > want && now > 0) {
 		r = r * want / now;
 		g = g * want / now;
@@ -4332,6 +4374,16 @@ static void album_extras_build(panel_t *p) {
 		head_build(p);
 	}
 	album_places_load(p);
+
+	// Building the head moves the list up to the status bar. On a list that
+	// was scrolled to its end, LVGL pulls the scroll back to fit, and the
+	// scroll event binds rows before the head has a height or the rows their
+	// track numbers: they land at the top, over the cover. row_bind() leaves a
+	// row whose index has not changed where it is, so every row is bound again
+	// now that the head and the discs are known.
+	for (int i = 0; i < ROW_POOL; i++) {
+		p->rows[i].index = -2;
+	}
 }
 
 bool medialist_album_head(void) {
@@ -4432,8 +4484,9 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// one; everything else is where a walk starts.
 	bool tracks_like =
 		(kind == LIBRARY_LIST_TRACKS || kind == LIBRARY_LIST_FAVOURITES || kind == LIBRARY_LIST_PLAYLIST);
-	bool artist_albums = kind == LIBRARY_LIST_ALBUMS && (filter == LIBRARY_FILTER_ARTIST ||
-														 filter == LIBRARY_FILTER_ALBUM_ARTIST || filter == LIBRARY_FILTER_GENRE);
+	bool artist_albums =
+		kind == LIBRARY_LIST_ALBUMS && (filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST ||
+										filter == LIBRARY_FILTER_GENRE || filter == LIBRARY_FILTER_YEAR);
 	panel_t *p = tracks_like ? &panel_tracks : (artist_albums ? &panel_artist_albums : &panel_names);
 	p->kind = kind;
 	// A playlist is a query like any other, and the query's value is its

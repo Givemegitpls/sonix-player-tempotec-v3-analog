@@ -1654,6 +1654,8 @@ static const char *filter_column(library_filter_t filter) {
 		return "album_artist";
 	case LIBRARY_FILTER_GENRE:
 		return "genre";
+	case LIBRARY_FILTER_YEAR:
+		return "year";
 	default:
 		return NULL;
 	}
@@ -1675,6 +1677,11 @@ static const char *filter_where(library_filter_t filter) {
 				   : "album_artist=?1";
 	case LIBRARY_FILTER_GENRE:
 		return genre_links ? "(genre=?1 OR path IN (SELECT path FROM GENRE_LINK WHERE genre=?1))" : "genre=?1";
+	case LIBRARY_FILTER_YEAR:
+		// The tracks of the albums of that year, by the album's year and not
+		// the track's own, so the tracks are those of the records listed.
+		return "(album, album_key) IN (SELECT g.album, g.album_key FROM ALBUM_GROUP_TABLE g WHERE " ALBUM_GROUP_YEAR
+			   " = CAST(?1 AS INTEGER))";
 	default:
 		return NULL;
 	}
@@ -2542,6 +2549,29 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 		return;
 	}
 
+	// The years, latest first: each year once, named by the row id of one of
+	// its albums, which is how row_by_id_sql() finds the year again. Counted
+	// as the distinct years, since there is no table of them to count.
+	if (kind == LIBRARY_LIST_YEARS) {
+		const char *years =
+			"SELECT g.rowid AS rid, " ALBUM_GROUP_YEAR " AS y FROM ALBUM_GROUP_TABLE g WHERE g.album <> ''";
+		if (strncmp(select, "COUNT(", 6) == 0) {
+			snprintf(sql, size, "SELECT COUNT(DISTINCT y) FROM (%s) WHERE y IS NOT NULL", years);
+		} else {
+			snprintf(sql, size, "SELECT MIN(rid), y FROM (%s) WHERE y IS NOT NULL GROUP BY y ORDER BY y DESC", years);
+		}
+		return;
+	}
+
+	// One year's records, by name.
+	if (kind == LIBRARY_LIST_ALBUMS && filter == LIBRARY_FILTER_YEAR && value) {
+		snprintf(sql, size,
+				 "SELECT %s FROM ALBUM_GROUP_TABLE g WHERE album <> '' AND " ALBUM_GROUP_YEAR
+				 " = CAST(?1 AS INTEGER) ORDER BY %s",
+				 select, list_uses_sortkey(kind) ? "sortkey" : "album COLLATE listorder");
+		return;
+	}
+
 	// One artist's or one genre's records, rather than their tracks: the album
 	// list narrowed to the albums with at least one track of theirs.
 	// ALBUM_GROUP_TABLE holds the albums and their sort keys, and which of them
@@ -2660,6 +2690,9 @@ static const char *row_by_id_sql(library_list_t kind, const char *value, char *o
 		return "SELECT album_artist, NULL, NULL FROM ALBUM_ARTIST_TABLE WHERE rowid=?";
 	case LIBRARY_LIST_GENRES:
 		return "SELECT genre, NULL, NULL FROM GENRE_TABLE WHERE rowid=?";
+	case LIBRARY_LIST_YEARS:
+		// The row is one of the year's albums, and the name is its year.
+		return "SELECT " ALBUM_GROUP_YEAR ", NULL, NULL FROM ALBUM_GROUP_TABLE g WHERE rowid=?";
 	case LIBRARY_LIST_FAVOURITES:
 		return "SELECT " FAV_NAME ", path, " FAV_ARTIST " FROM FAVOURITES WHERE rowid=?";
 	default:
@@ -2702,8 +2735,9 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 	// album/artist/genre, and an album list narrowed to one artist or genre.
 	bool bound = col && value &&
 				 (kind == LIBRARY_LIST_TRACKS ||
-				  (kind == LIBRARY_LIST_ALBUMS && (filter == LIBRARY_FILTER_ARTIST ||
-												   filter == LIBRARY_FILTER_ALBUM_ARTIST || filter == LIBRARY_FILTER_GENRE)));
+				  (kind == LIBRARY_LIST_ALBUMS &&
+				   (filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST ||
+					filter == LIBRARY_FILTER_GENRE || filter == LIBRARY_FILTER_YEAR)));
 	// A search binds the pattern the value becomes, not the value.
 	char pattern[2 * 256 + 3];
 	if (filter == LIBRARY_FILTER_SEARCH) {
@@ -2818,7 +2852,7 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 		// ordered by that letter. Favourites run by when they were starred, an
 		// album by disc position, an artist's records by album -- three lists
 		// whose order has nothing to do with the alphabet.
-		bool by_name = kind != LIBRARY_LIST_FAVOURITES && kind != LIBRARY_LIST_PLAYLIST &&
+		bool by_name = kind != LIBRARY_LIST_FAVOURITES && kind != LIBRARY_LIST_PLAYLIST && kind != LIBRARY_LIST_YEARS &&
 					   order != LIBRARY_ORDER_ALBUM && order != LIBRARY_ORDER_ADDED && order != LIBRARY_ORDER_YEAR &&
 					   order != LIBRARY_ORDER_YEAR_DESC &&
 					   !(kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_ALBUM);

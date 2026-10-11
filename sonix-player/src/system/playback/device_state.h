@@ -138,6 +138,14 @@ bool device_state_advance_auto(char *out_path, size_t out_size);
 bool device_state_album_chaining(void);
 void device_state_set_album_chaining(bool on);
 
+// Starts one record of the album list `filter`/`value` (LIBRARY_LIST_ALBUMS:
+// every record, one artist's, one genre's, one year's) picked at random, its
+// tracks in their order. With "play albums back to back" on, the record that
+// follows it is another of the same list at random, and so on, for as long as
+// the queue is one of those records. The playback mode is left as it is. False
+// when the list has no record that would play.
+bool device_state_play_random_album(library_filter_t filter, const char *value);
+
 // And the same for folders: when a folder queue runs out, playback carries on
 // into the next folder on the card instead of stopping. The order is the walk
 // playlist_next_folder() describes -- an artist's albums, then that artist's

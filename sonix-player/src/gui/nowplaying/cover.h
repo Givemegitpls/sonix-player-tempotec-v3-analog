@@ -121,11 +121,15 @@ uint32_t cover_dominant_tone(const cover_image_t *cover);
 // has to choose the ink to write on it in.
 int cover_mean_luma(const cover_image_t *cover);
 
-// The sleeve's colour as it looks, as 0xRRGGBB: the same weighted average
-// cover_dominant_tone() starts from, without the push to full strength that a
-// light needs and a painted surface does not. Zero when there is nothing to
-// look at.
-uint32_t cover_average_tone(const cover_image_t *cover);
+// The colour a page painted in the sleeve's colours takes, as 0xRRGGBB in
+// *tone, without the push to full strength that a light needs and a painted
+// surface does not. One family of the sleeve's hues rather than an average of
+// all of them, so a two-colour sleeve gives one of its two colours and not the
+// mud between them. *luma is cover_mean_luma(), and *light says whether the
+// page should be a light one: a sleeve at least light_from bright, or one
+// mostly of a bright yellow, which only darkens to olive. False when there is
+// nothing to look at.
+bool cover_page_tone(const cover_image_t *cover, int light_from, uint32_t *tone, int *luma, bool *light);
 
 // A square picture of `size` made from the player's own cover of `filepath`
 // (player_w x player_h, the size the now-playing page draws it at). The player's
