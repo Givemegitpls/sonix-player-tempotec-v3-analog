@@ -15,6 +15,7 @@
 
 #include "src/system/library/albumart.h"
 #include "src/system/streaming/podcastcache.h"
+#include "src/system/image/art_shrink.h"
 #include "src/system/image/jpeg_planes.h"
 #include "src/system/image/jpeg_scaled.h"
 #include "src/system/image/png_scaled.h"
@@ -819,12 +820,15 @@ static bool make_backdrop(const raw_image_t *src, int box_w, int box_h, bool fro
 #define TONE_CHROMA_FLOOR 14
 #define TONE_MONO 0xF2EEE8 // barely warm white: light, not paint
 
-uint32_t cover_dominant_tone(const cover_image_t *cover) {
+// The sleeve's colours averaged with each pixel weighted by how far it is from
+// grey (see above): what the eye would call the colour of the sleeve. False
+// when there is nothing to look at.
+static bool tone_weighted_average(const cover_image_t *cover, unsigned *r_out, unsigned *g_out, unsigned *b_out) {
 	int w = (int)cover->dsc.header.w;
 	int h = (int)cover->dsc.header.h;
 	int stride = (int)cover->dsc.header.stride / 2;
 	if (!cover->pixels || w <= 0 || h <= 0) {
-		return 0;
+		return false;
 	}
 
 	uint64_t ar = 0, ag = 0, ab = 0, weight = 0;
@@ -846,9 +850,19 @@ uint32_t cover_dominant_tone(const cover_image_t *cover) {
 		}
 	}
 	if (!weight) {
+		return false;
+	}
+	*r_out = (unsigned)(ar / weight);
+	*g_out = (unsigned)(ag / weight);
+	*b_out = (unsigned)(ab / weight);
+	return true;
+}
+
+uint32_t cover_dominant_tone(const cover_image_t *cover) {
+	unsigned r, g, b;
+	if (!tone_weighted_average(cover, &r, &g, &b)) {
 		return 0;
 	}
-	unsigned r = (unsigned)(ar / weight), g = (unsigned)(ag / weight), b = (unsigned)(ab / weight);
 
 	// Pull it away from grey: the gap between the strongest channel and the
 	// weakest is stretched, and the middle one moves with it, so the hue stays
@@ -884,6 +898,42 @@ uint32_t cover_dominant_tone(const cover_image_t *cover) {
 		b = b * 180 / hi;
 	}
 	return (r << 16) | (g << 8) | b;
+}
+
+int cover_mean_luma(const cover_image_t *cover) {
+	if (!cover || !cover->pixels) {
+		return -1;
+	}
+	int w = (int)cover->dsc.header.w;
+	int h = (int)cover->dsc.header.h;
+	int stride = (int)cover->dsc.header.stride / 2;
+	if (w <= 0 || h <= 0) {
+		return -1;
+	}
+
+	// Every fourth pixel each way, as cover_dominant_tone() samples it.
+	uint64_t sum = 0, count = 0;
+	for (int y = 0; y < h; y += 4) {
+		const uint16_t *row = (const uint16_t *)cover->pixels + (size_t)y * stride;
+		for (int x = 0; x < w; x += 4) {
+			uint16_t c = row[x];
+			unsigned r5 = (c >> 11) & 0x1F, g6 = (c >> 5) & 0x3F, b5 = c & 0x1F;
+			unsigned r = (r5 << 3) | (r5 >> 2), g = (g6 << 2) | (g6 >> 4), b = (b5 << 3) | (b5 >> 2);
+			sum += (r * 299 + g * 587 + b * 114) / 1000;
+			count++;
+		}
+	}
+	return count ? (int)(sum / count) : -1;
+}
+
+uint32_t cover_average_tone(const cover_image_t *cover) {
+	unsigned r, g, b;
+	if (!cover || !tone_weighted_average(cover, &r, &g, &b)) {
+		return 0;
+	}
+	// Never 0, which says "no sleeve": a black one comes back one step above.
+	uint32_t tone = (r << 16) | (g << 8) | b;
+	return tone ? tone : 0x010101;
 }
 
 // A packed cover opened back out to RGB888, the form the resampler and the
@@ -1432,6 +1482,45 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 	return ok;
 }
 
+bool cover_load_shared(const char *filepath, int player_w, int player_h, int size, cover_image_t *out) {
+	memset(out, 0, sizeof(*out));
+	if (!filepath || player_w <= 0 || player_h <= 0 || size <= 0) {
+		return false;
+	}
+
+	// The player's picture of this file: from its table, or decoded at the
+	// player's size and kept there for the player too.
+	int source_index = -1;
+	uint64_t id = player_source_id(filepath, &source_index);
+	cover_image_t big;
+	bool have = id && player_cover_load(id, player_w, player_h, &big);
+	if (!have) {
+		image_request_t req = {.w = player_w, .h = player_h, .fit = COVER_FIT_COVER, .backdrop = false};
+		int used = -1;
+		if (build_from_sources_at(filepath, false, &req, 1, &big, &used) != COVER_BUILD_OK) {
+			return false;
+		}
+		if (id && used == source_index) {
+			player_cover_store(id, player_w, player_h, &big);
+		}
+	}
+
+	// Then down to the size asked for.
+	if (player_w == size && player_h == size) {
+		*out = big;
+		return true;
+	}
+	raw_image_t raw;
+	bool ok = raw_from_cover(&big, &raw);
+	cover_free(&big);
+	if (!ok) {
+		return false;
+	}
+	ok = make_scaled(&raw, size, size, COVER_FIT_COVER, out);
+	raw_free(&raw);
+	return ok;
+}
+
 void cover_free(cover_image_t *img) {
 	if (!img)
 		return;
@@ -1965,11 +2054,20 @@ void cover_book_store(const char *path, int box_w, int box_h, const cover_image_
 // change the track.
 //
 // The backdrop is not kept; it is made from the cover (backdrop_from_cover()).
+//
+// A row holds the cover as a JPEG at quality PLAYER_COVER_QUALITY: some 60 to
+// 100 KB at 480x480 against 450 KB as pixels, which is what lets the table
+// keep five times as many in the same room. Above 90 the encoder keeps the
+// colour at full resolution, so lettering on a sleeve stays clean. Reading one
+// back is a small read and a decode at 1:1 -- far less than the poster-sized
+// picture in the file it came from. A row written as pixels by an older build
+// is still read, and written again as a JPEG.
 // ---------------------------------------------------------------------------
 
-// At 480x480 a row is 450 KB: the most recently shown covers are kept, the
-// rest deleted.
-#define PLAYER_COVER_MAX_ROWS 200
+// The most recently shown covers are kept, the rest deleted: about 90 MB at
+// 480x480.
+#define PLAYER_COVER_MAX_ROWS 1000
+#define PLAYER_COVER_QUALITY 92
 #define PLAYER_ID_MAX_ROWS 20000
 #define PLAYER_ID_PRUNE_EVERY 256
 // Part of every cover key: raising it makes every stored cover a miss.
@@ -2077,32 +2175,85 @@ static void player_cover_key(char *out, size_t out_size, uint64_t id, int w, int
 	snprintf(out, out_size, "%016llx|%dx%d|%d", (unsigned long long)id, w, h, PLAYER_COVER_EPOCH);
 }
 
+// A row's JPEG back as the cover it was made from. Its size has to be the one
+// the key says, or the row is not the picture asked for.
+static bool image_from_jpeg(const uint8_t *data, size_t size, int w, int h, cover_image_t *out) {
+	int dw = 0, dh = 0;
+	// The short side is under twice `w`, so TJpgDec decodes at 1:1.
+	uint8_t *rgb = jpeg_scaled_decode(data, size, w > h ? w : h, &dw, &dh, NULL, NULL);
+	if (!rgb) {
+		int comp = 0;
+		rgb = stbi_load_from_memory(data, (int)size, &dw, &dh, &comp, 3);
+	}
+	if (!rgb) {
+		return false;
+	}
+	bool ok = dw == w && dh == h && pack_rgb565(rgb, w, h, out);
+	free(rgb);
+	return ok;
+}
+
 static bool player_cover_load(uint64_t id, int w, int h, cover_image_t *out) {
 	memset(out, 0, sizeof(*out));
+	if (w <= 0 || h <= 0 || w > 0xFFFF || h > 0xFFFF) {
+		return false;
+	}
 	char key[64];
 	player_cover_key(key, sizeof(key), id, w, h);
 
-	bool hit = false;
+	// The row is copied out under the lock and decoded after it, so a list
+	// asking for its thumbnails is not held up behind a decode.
+	uint8_t *blob = NULL;
+	size_t blob_len = 0;
 	pthread_mutex_lock(&thumb_db_lock);
 	sqlite3_stmt *stmt = NULL;
 	if (thumb_db && sqlite3_prepare_v2(thumb_db, "SELECT w, h, pixels FROM player_covers WHERE key = ?1", -1, &stmt,
 									   NULL) == SQLITE_OK) {
 		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			hit = image_from_column(stmt, 2, sqlite3_column_int(stmt, 0), sqlite3_column_int(stmt, 1), out);
+		if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) == w && sqlite3_column_int(stmt, 1) == h) {
+			const void *data = sqlite3_column_blob(stmt, 2);
+			int len = sqlite3_column_bytes(stmt, 2);
+			if (data && len > 0 && (blob = malloc((size_t)len)) != NULL) {
+				memcpy(blob, data, (size_t)len);
+				blob_len = (size_t)len;
+			}
 		}
 		sqlite3_finalize(stmt);
 	}
-	// Moved to the front of the queue the pruning deletes from.
-	if (hit && sqlite3_prepare_v2(thumb_db,
-								  "UPDATE player_covers SET used = (SELECT IFNULL(MAX(used), 0) + 1 FROM player_covers)"
-								  " WHERE key = ?1",
-								  -1, &stmt, NULL) == SQLITE_OK) {
+	if (blob && sqlite3_prepare_v2(thumb_db,
+								   "UPDATE player_covers SET used = (SELECT IFNULL(MAX(used), 0) + 1 FROM player_covers)"
+								   " WHERE key = ?1",
+								   -1, &stmt, NULL) == SQLITE_OK) {
+		// Moved to the front of the queue the pruning deletes from.
 		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
 		sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 	}
 	pthread_mutex_unlock(&thumb_db_lock);
+	if (!blob) {
+		return false;
+	}
+
+	bool hit;
+	bool legacy = blob_len == (size_t)w * h * 2;
+	if (legacy) {
+		// Pixels, as an older build wrote them: used as they are, and the row
+		// rewritten as a JPEG.
+		hit = true;
+		memset(out, 0, sizeof(*out));
+		out->pixels = blob;
+		out->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+		out->dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+		out->dsc.header.w = (uint32_t)w;
+		out->dsc.header.h = (uint32_t)h;
+		out->dsc.header.stride = (uint32_t)w * 2;
+		out->dsc.data_size = (uint32_t)blob_len;
+		out->dsc.data = blob;
+		player_cover_store(id, w, h, out);
+	} else {
+		hit = blob_len > 2 && blob[0] == 0xFF && blob[1] == 0xD8 && image_from_jpeg(blob, blob_len, w, h, out);
+		free(blob);
+	}
 	return hit;
 }
 
@@ -2114,8 +2265,20 @@ static void player_cover_store(uint64_t id, int w, int h, const cover_image_t *i
 	player_cover_key(key, sizeof(key), id, w, h);
 	int iw = (int)img->dsc.header.w;
 	int ih = (int)img->dsc.header.h;
-	if ((int)img->dsc.header.stride != iw * 2) {
-		return; // image_from_column() reads rows back packed
+	if (iw != w || ih != h) {
+		return; // the key would not describe it
+	}
+
+	// Encoded before the lock is taken: it is the slow part.
+	raw_image_t raw;
+	if (!raw_from_cover(img, &raw)) {
+		return;
+	}
+	size_t jpeg_len = 0;
+	uint8_t *jpeg = art_encode_jpeg(raw.pixels, raw.w, raw.h, PLAYER_COVER_QUALITY, &jpeg_len);
+	raw_free(&raw);
+	if (!jpeg) {
+		return;
 	}
 
 	pthread_mutex_lock(&thumb_db_lock);
@@ -2127,7 +2290,7 @@ static void player_cover_store(uint64_t id, int w, int h, const cover_image_t *i
 		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
 		sqlite3_bind_int(stmt, 2, iw);
 		sqlite3_bind_int(stmt, 3, ih);
-		sqlite3_bind_blob(stmt, 4, img->pixels, (int)((size_t)iw * ih * 2), SQLITE_STATIC);
+		sqlite3_bind_blob(stmt, 4, jpeg, (int)jpeg_len, SQLITE_STATIC);
 		sqlite3_step(stmt); // a failure here only costs a future decode
 		sqlite3_finalize(stmt);
 
@@ -2142,4 +2305,5 @@ static void player_cover_store(uint64_t id, int w, int h, const cover_image_t *i
 		}
 	}
 	pthread_mutex_unlock(&thumb_db_lock);
+	free(jpeg);
 }

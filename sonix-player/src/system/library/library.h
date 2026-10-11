@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 // The music index.
 //
@@ -348,6 +349,25 @@ bool library_track_names(const char *path, char *title_out, size_t title_size, c
 // that track's artist when it has none -- the name the album list shows. False
 // when the album has no tracks. `album` is an album value (see above).
 bool library_album_artist(const char *album, char *out, size_t size);
+
+// What the head of an album's page says about it: the artist it is credited
+// to (as library_album_artist() names it), the genre of its first track, and
+// its year -- the latest any of its tracks carries, the same year the Albums
+// list sorts it by. Empty strings and a year of 0 for what the tags do not
+// say. False when the album has no tracks. `album` is an album value.
+typedef struct {
+	char artist[256];
+	char genre[128];
+	int year;
+} library_album_info_t;
+bool library_album_info(const char *album, library_album_info_t *out);
+
+// The disc and the track number of every track of one album, in the order its
+// track list runs (by disc, then by track number), into disc[] and track[].
+// A track with no disc tag is on disc 1 and one with no number is track 0.
+// Either array may be NULL. Returns how many tracks there are, which can be
+// more than `max`: only the first `max` are written.
+int library_album_places(const char *album, uint16_t *disc, uint16_t *track, int max);
 
 // --- Audio quality ---
 //

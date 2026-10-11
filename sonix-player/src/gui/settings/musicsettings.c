@@ -1245,6 +1245,7 @@ static lv_obj_t *detect_changes_switch;
 static lv_obj_t *display_screen;
 static lv_obj_t *library_screen;
 static lv_obj_t *album_view_switch;
+static lv_obj_t *album_head_switch;
 static lv_obj_t *quality_badges_switch;
 static lv_obj_t *go_to_current_switch;
 
@@ -1494,6 +1495,10 @@ static void album_view_cb(lv_event_t *e) {
 	medialist_set_album_view(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
+static void album_head_cb(lv_event_t *e) {
+	medialist_set_album_head(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
 // Which of Browse and Playlists the Music page puts on its sixth tile. Kept
 // here with the rest of the display options; the Music page reads it and paints
 // itself.
@@ -1634,6 +1639,14 @@ static void build_library_page(gui_config_t *cfg) {
 	option_note(container, "musicsettings_artist_opens_albums_note");
 	if (medialist_album_view()) {
 		lv_obj_add_state(album_view_switch, LV_STATE_CHECKED);
+	}
+
+	// How an album's own page is laid out: the plain list, or the cover and
+	// what the record is at the top with the tracks under it.
+	settingsrow_toggle(container, "musicsettings_album_head", &album_head_switch, album_head_cb);
+	option_note(container, "musicsettings_album_head_note");
+	if (medialist_album_head()) {
+		lv_obj_add_state(album_head_switch, LV_STATE_CHECKED);
 	}
 
 	// Who a row is by, under its title, on the lists picked here.

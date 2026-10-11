@@ -134,5 +134,10 @@ const lv_image_dsc_t *player_backdrop_image(void);
 // clears it.
 void player_set_cover_release_cb(void (*cb)(void));
 
+// The size the standard arrangement draws the cover at. A page that shows the
+// same cover asks for it at this size, so the player's table of covers serves
+// both (coverloader_request_shared). 0 x 0 before the player is built.
+void player_cover_box(int *w, int *h);
+
 
 #endif

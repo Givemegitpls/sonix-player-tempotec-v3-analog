@@ -961,6 +961,15 @@ static void (*cover_release_cb)(void);
 
 void player_set_cover_release_cb(void (*cb)(void)) { cover_release_cb = cb; }
 
+void player_cover_box(int *w, int *h) {
+	if (w) {
+		*w = cover_box_w;
+	}
+	if (h) {
+		*h = cover_box_h;
+	}
+}
+
 // The path whose artwork is currently up. A live stream refreshes its text
 // several times a minute (every new on-air title), and re-decoding the same
 // station icon each time would be pointless work on the UI thread.

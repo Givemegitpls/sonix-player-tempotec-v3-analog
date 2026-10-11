@@ -1780,6 +1780,76 @@ bool library_album_artist(const char *album, char *out, size_t size) {
 	return found;
 }
 
+bool library_album_info(const char *album, library_album_info_t *out) {
+	if (!out) {
+		return false;
+	}
+	memset(out, 0, sizeof(*out));
+	if (!album || !album[0]) {
+		return false;
+	}
+
+	// The artist and the genre of the first track, as library_album_artist()
+	// picks it; the year as ALBUM_GROUP_YEAR works it out for the Albums list.
+	pthread_mutex_lock(&db_lock);
+	bool found = false;
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db,
+								 "SELECT COALESCE(NULLIF(album_artist,''), artist), genre,"
+								 " (SELECT MAX(CASE WHEN year > 0 THEN year END) FROM MEDIA_TABLE WHERE " ALBUM_VALUE_MATCH
+								 ") FROM MEDIA_TABLE WHERE " ALBUM_VALUE_MATCH " ORDER BY COALESCE(disc,1), dis_id LIMIT 1",
+								 -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, album, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			const unsigned char *artist = sqlite3_column_text(stmt, 0);
+			const unsigned char *genre = sqlite3_column_text(stmt, 1);
+			snprintf(out->artist, sizeof(out->artist), "%s", artist ? (const char *)artist : "");
+			snprintf(out->genre, sizeof(out->genre), "%s", genre ? (const char *)genre : "");
+			out->year = sqlite3_column_type(stmt, 2) == SQLITE_NULL ? 0 : sqlite3_column_int(stmt, 2);
+			found = true;
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return found;
+}
+
+int library_album_places(const char *album, uint16_t *disc, uint16_t *track, int max) {
+	if (!album || !album[0]) {
+		return 0;
+	}
+
+	// The same rows and the same order as the album's track list (see
+	// list_sql and TRACK_ORDER_IN_ALBUM). Rows the list tells apart only by
+	// name share their disc and number, so which of them comes first does not
+	// change what is written at any position.
+	pthread_mutex_lock(&db_lock);
+	int count = 0;
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db,
+								 "SELECT COALESCE(disc,1), dis_id FROM MEDIA_TABLE WHERE " ALBUM_VALUE_MATCH
+								 " ORDER BY " TRACK_ORDER_IN_ALBUM,
+								 -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, album, -1, SQLITE_TRANSIENT);
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			if (count < max) {
+				int d = sqlite3_column_int(stmt, 0);
+				int t = sqlite3_column_int(stmt, 1);
+				if (disc) {
+					disc[count] = (uint16_t)(d < 1 ? 1 : (d > UINT16_MAX ? UINT16_MAX : d));
+				}
+				if (track) {
+					track[count] = (uint16_t)(t < 0 ? 0 : (t > UINT16_MAX ? UINT16_MAX : t));
+				}
+			}
+			count++;
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return count;
+}
+
 bool library_track_names(const char *path, char *title_out, size_t title_size, char *artist_out, size_t artist_size) {
 	if (!path || !path[0]) {
 		return false;

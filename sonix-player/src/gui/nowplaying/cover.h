@@ -114,6 +114,27 @@ bool cover_blur_fill(const cover_image_t *src, int out_w, int out_h, cover_image
 // there is nothing to look at.
 uint32_t cover_dominant_tone(const cover_image_t *cover);
 
+// How bright a sleeve looks as a whole, 0..255 (Rec. 601 luma of its average),
+// or -1 when there is nothing to look at. cover_dominant_tone() says what colour
+// a sleeve is and always answers at full strength; this says whether it is a
+// dark record or a light one, for a page that takes the sleeve's colour and
+// has to choose the ink to write on it in.
+int cover_mean_luma(const cover_image_t *cover);
+
+// The sleeve's colour as it looks, as 0xRRGGBB: the same weighted average
+// cover_dominant_tone() starts from, without the push to full strength that a
+// light needs and a painted surface does not. Zero when there is nothing to
+// look at.
+uint32_t cover_average_tone(const cover_image_t *cover);
+
+// A square picture of `size` made from the player's own cover of `filepath`
+// (player_w x player_h, the size the now-playing page draws it at). The player's
+// table of covers is asked first, so a record already played comes back
+// without its file being read; otherwise the cover is decoded at the player's
+// size and kept there, so the player finds it the first time the record plays.
+// What an album's page puts at its head. Runs on the loader thread.
+bool cover_load_shared(const char *filepath, int player_w, int player_h, int size, cover_image_t *out);
+
 void cover_free(cover_image_t *img);
 
 // How the blurred backdrop is toned down so text stays readable on top of it:
