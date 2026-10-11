@@ -570,7 +570,32 @@ static void adb_keep_controller(void) {
 // five-second-old "charging" reading sees it. The suspend rule needs the
 // truthful answer: a PC that enumerates the card must never have the gadget
 // pulled out from under it.
-bool usb_vbus_present(void) { return vbus_present(); }
+// The cable, as asked by everything that wants to know: the power tick (twice a
+// pass), the charge limit, the DAC mode, the status bar. Each used to read the
+// two sysfs nodes (a PMIC register behind them) on every call; one reading is
+// now shared for VBUS_CACHE_MS. The poll thread below still looks for itself.
+#define VBUS_CACHE_MS 750
+
+static uint32_t vbus_stamp_ms;
+static int vbus_cached = -1;
+
+static uint32_t vbus_now_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint32_t)((uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u);
+}
+
+bool usb_vbus_present(void) {
+	uint32_t now = vbus_now_ms();
+	int cached = __atomic_load_n(&vbus_cached, __ATOMIC_ACQUIRE);
+	if (cached >= 0 && (uint32_t)(now - __atomic_load_n(&vbus_stamp_ms, __ATOMIC_RELAXED)) < VBUS_CACHE_MS) {
+		return cached != 0;
+	}
+	bool present = vbus_present();
+	__atomic_store_n(&vbus_stamp_ms, now, __ATOMIC_RELAXED);
+	__atomic_store_n(&vbus_cached, present ? 1 : 0, __ATOMIC_RELEASE);
+	return present;
+}
 
 void usb_suspend_prepare(void) {
 	if (!sd_device[0]) {

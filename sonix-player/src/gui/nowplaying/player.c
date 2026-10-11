@@ -105,6 +105,7 @@ static bool sheet_open; // the player panel is the page on show
 static double progress_anchor_secs;
 static uint32_t progress_anchor_tick;
 static bool progress_running;
+static void smooth_sync(void);
 
 // How often the UI reconciles itself against the playback thread. It polls
 // slowly rather than not at all while stopped: the audio thread can report
@@ -3048,6 +3049,10 @@ static void glyph_warm_letter(const lv_font_t *font, uint32_t letter) {
 }
 
 static void glyph_warm_tick(lv_timer_t *timer) {
+	if (!power_screen_is_on()) {
+		lv_timer_pause(timer); // nobody is going to skip with the panel dark; the next track change asks again
+		return;
+	}
 	if (lv_display_get_inactive_time(NULL) < GLYPH_WARM_QUIET_MS) {
 		return; // somebody is using it
 	}
@@ -3119,6 +3124,9 @@ static void glyph_warm_tick(lv_timer_t *timer) {
 
 // A new set of tracks to get ready (the two ahead and the two behind).
 static void glyph_warm_request(const char *const *paths, int count) {
+	if (!power_screen_is_on()) {
+		return;
+	}
 	if (!glyph_warm_timer) {
 		glyph_warm_timer = lv_timer_create(glyph_warm_tick, GLYPH_WARM_PERIOD_MS, NULL);
 	}
@@ -4045,19 +4053,21 @@ static void update_progress(void) {
 	progress_anchor_secs = state.progress_current_secs;
 	progress_anchor_tick = lv_tick_get();
 	progress_running = state.status == AUDIO_STATUS_PLAYING && state.progress_total_secs > 0;
-	if (smooth_timer) {
-		if (progress_running) {
-			lv_timer_resume(smooth_timer);
-		} else {
-			lv_timer_pause(smooth_timer);
-		}
-	}
+	smooth_sync();
 
+	// With the panel dark the poll is still the heartbeat of playback (queue
+	// advance, LED, remembered position), but nothing it would paint can be
+	// seen: the labels, the slider, the waveform, the lyrics and their worker.
+	// The first poll after the wake (readied by power.c) does all of it. Books
+	// are left alone: their chapter view is worked out in set_progress_label().
+	bool paint = power_screen_is_on() || audiobook_mode || state.live;
 	frameprof_begin(PROF_UP_UI);
-	set_progress_label(state.progress_current_secs, current_total_length);
-	wave_refresh(cover_shown_path, state.progress_current_secs);
-	lyrics_request(&state);
-	lyrics_follow(state.progress_current_secs);
+	if (paint) {
+		set_progress_label(state.progress_current_secs, current_total_length);
+		wave_refresh(cover_shown_path, state.progress_current_secs);
+		lyrics_request(&state);
+		lyrics_follow(state.progress_current_secs);
+	}
 	apply_playback_status(state.status);
 	// Asked every poll rather than only on a track change: the answer comes
 	// from the audiobook index, which a scan finishing can change under a
@@ -4067,7 +4077,9 @@ static void update_progress(void) {
 	// player dressed as a podcast over a song.
 	apply_audiobook_mode(!state.live && audiobook_is_playing(),
 						 !state.live && podcastcache_is_episode(state.current_file));
-	update_format_label(&state); // the rate/bits settle shortly after the start
+	if (paint) {
+		update_format_label(&state); // the rate/bits settle shortly after the start
+	}
 	frameprof_end(PROF_UP_UI);
 
 	// The status LED follows playback promptly from here (the battery poll
@@ -4409,15 +4421,31 @@ static void progress_slider_event_cb(lv_event_t *e) {
 // playhead has crossed into another pixel. Both are compared against what was
 // last drawn rather than against what was last computed, so a tick that changes
 // nothing costs nothing.
+// The smoothing runs only while it can be seen: the track is playing, the player
+// sheet is up and the panel is lit. Asked at every poll (which a wake-up from
+// standby readies at once) and when the sheet opens or closes.
+static void smooth_sync(void) {
+	if (!smooth_timer) {
+		return;
+	}
+	if (progress_running && sheet_open && power_screen_is_on()) {
+		lv_timer_resume(smooth_timer);
+	} else {
+		lv_timer_pause(smooth_timer);
+	}
+}
+
 static void smooth_timer_cb(lv_timer_t *timer) {
-	(void)timer;
 	if (!progress_running || view_length <= 0.1) {
 		return;
 	}
 	// Nothing is drawn for a screen nobody is looking at, or for a page that is
 	// not the one on show. Drawing a dark panel is work this device cannot
-	// spare and has paid for before.
+	// spare and has paid for before. And the timer itself is not left running
+	// for it either: sixteen wake-ups a second to find that out. It is started
+	// again by smooth_sync() when the sheet opens or the screen comes back.
 	if (!sheet_open || !power_screen_is_on()) {
+		lv_timer_pause(timer);
 		return;
 	}
 
@@ -4663,6 +4691,7 @@ void player_sheet_open(bool animate) {
 		sheet_under = lv_screen_active();
 	}
 	sheet_open = true;
+	smooth_sync();
 	back_btn_player_mode(true);
 	lyrics_screen_hold_update();
 
@@ -4694,6 +4723,7 @@ static void sheet_hidden_anim_ready_cb(lv_anim_t *a) {
 void player_sheet_close(bool animate) {
 	bool was_open = sheet_open;
 	sheet_open = false;
+	smooth_sync();
 	back_btn_player_mode(false);
 	lyrics_screen_hold_update();
 	topbar_set_hidden(false);

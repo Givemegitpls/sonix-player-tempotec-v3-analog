@@ -1,5 +1,7 @@
 #include "qobuzpage.h"
 
+#include "src/system/device/power.h"
+
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
@@ -2386,7 +2388,10 @@ void qobuzpage_init(gui_config_t *cfg) {
 
 	// The queue watchdog: tells the prefetch thread which track is missing next.
 	// One second is enough -- this is about tracks, not frames.
-	lv_timer_create(queue_watch_cb, 1000, NULL);
+	// Slowed with the panel dark: what it recomputes (the Wi-Fi hold, which
+	// track the prefetch wants) is measured in tracks, and the actions that
+	// raise those are immediate.
+	power_slow_in_standby(lv_timer_create(queue_watch_cb, 1000, NULL), 5000);
 	// Created paused: the first cover request starts it.
 	art_timer = lv_timer_create(art_poll_cb, 120, NULL);
 	lv_timer_pause(art_timer);

@@ -817,6 +817,12 @@ void gui_init(gui_config_t *cfg) {
 		perror("gui: eventfd");
 	}
 	post_timer = lv_timer_create(post_drain_cb, post_wake_fd >= 0 ? POST_TIMER_MS : POST_TIMER_FALLBACK_MS, NULL);
+	// With the wake descriptor it is only the safety net (a post readies it and
+	// the main loop drains the queue itself): no need for it every second in
+	// standby. Without the descriptor it is the only way posts get served.
+	if (post_wake_fd >= 0) {
+		power_slow_in_standby(post_timer, 5000);
+	}
 
 	// The other kind of notice: the one that stays until it is over.
 	modal_init(cfg);
