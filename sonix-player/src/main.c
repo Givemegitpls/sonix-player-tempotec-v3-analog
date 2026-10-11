@@ -2038,6 +2038,11 @@ uint16_t *display_capture_frame(int *out_w, int *out_h) {
 void display_wake_begin(lv_display_t *disp) {
 	if (fb_fd >= 0) {
 		fb_flip_wait();
+		// The mode is put back with FORCE and the page panned at every wake,
+		// even when the blank left the mode as it was: on the Blaze, skipping
+		// it (and leaving the kick to the repaint's own flush) woke to a black
+		// panel. It costs ~45 ms of a wake from a blanked panel; a wake inside
+		// the fast window does not come through here.
 		fb_var.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_FORCE;
 		if (ioctl(fb_fd, FBIOPUT_VSCREENINFO, &fb_var) < 0) {
 			perror("fb: FBIOPUT_VSCREENINFO (wake)");
