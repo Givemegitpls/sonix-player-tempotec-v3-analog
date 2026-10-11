@@ -11,6 +11,7 @@
 
 #include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/fonts/glyphwarm.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/settings/musicsettings.h"
@@ -264,6 +265,7 @@ static panel_t panel_tracks;
 // it can sit between the artist list and an album's tracks.
 static panel_t panel_artist_albums;
 
+#define THUMB_STALE_RETRY_MS 1500
 static lv_timer_t *thumb_timer;
 
 // ---------------------------------------------------------------------------
@@ -483,10 +485,15 @@ static bool window_fill_cb(const char *name, const char *path, const char *artis
 // or a card coming back rewrites all of them. The handle notices; this is what
 // acts on it -- the same list, asked for again. Without it the page keeps a
 // handle that hands out nothing and never recovers.
+static uint32_t stale_refreshed_at; // lv_tick of the last time a stale list was read again
+static bool stale_refreshed_once;
+
 static void panel_refresh_stale(panel_t *p) {
 	if (p->from_paths || !p->ix || !library_index_stale(p->ix)) {
 		return;
 	}
+	stale_refreshed_at = lv_tick_get();
+	stale_refreshed_once = true;
 
 	library_index_t *fresh =
 		library_index_open(p->kind, p->filter, p->filter_value, p->list_order, p->list_desc);
@@ -1586,13 +1593,139 @@ static void thumb_timer_cb(lv_timer_t *timer) {
 	lv_obj_t *active = lv_screen_active();
 	for (size_t i = 0; i < sizeof(panels) / sizeof(panels[0]); i++) {
 		if (active == panels[i]->screen) {
+			// While the library is being scanned its generation moves with every
+			// batch, so every poll would find the list stale, open it again and
+			// bind every row again: a card read of 40-80 ms and a full repaint
+			// per poll, for covers that arrive just the same a second later.
+			// A touch (scroll_cb) is not throttled.
+			if (stale_refreshed_once && !panels[i]->from_paths && library_index_stale(panels[i]->ix) &&
+				lv_tick_elaps(stale_refreshed_at) < THUMB_STALE_RETRY_MS) {
+				lv_timer_resume(timer);
+				return;
+			}
 			window_update(panels[i]);
 			return;
 		}
 	}
 }
 
-static void window_update(panel_t *p) {
+// Rows are tied to their position in the list: index -> widget index % ROW_POOL,
+// so a one-step slide of the band rebinds exactly one row instead of renaming
+// all of them.
+static int band_first(panel_t *p, int scroll) {
+	int first = (scroll / ROW_PITCH) - 1;
+	if (first + ROW_POOL > p->count) {
+		first = p->count - ROW_POOL;
+	}
+	if (first < 0) {
+		first = 0;
+	}
+	return first;
+}
+
+// The rows of the band that are not on screen but not bound yet, bound one per
+// tick while nobody is touching the screen. See window_update_open().
+static lv_timer_t *rest_timer;
+static panel_t *rest_panel;
+#define REST_WARM_SLICE_US 5000 // of letters per tick: the row is bound once its text is warm
+static int rest_warm_index = -1;
+static int rest_warm_string;
+static uint32_t rest_warm_pos;
+static int rest_misses;	  // ticks that found the row's data not in the cached band
+static bool rest_active;  // the list just opened and is still being filled in
+static int rest_scroll;	  // where it opened: a scroll away from here ends the deferral
+
+static void rest_cb(lv_timer_t *timer) {
+	panel_t *p = rest_panel;
+	if (!p || !p->list || lv_screen_active() != p->screen || p->count == 0) {
+		rest_active = false;
+		lv_timer_pause(timer);
+		return;
+	}
+	if (lv_display_get_inactive_time(NULL) < 100) {
+		return; // a finger is on it: a scroll binds the whole band itself
+	}
+	int scroll = lv_obj_get_scroll_y(p->list);
+	int first = band_first(p, scroll < 0 ? 0 : scroll);
+	// Nearest below the screen first: that is the direction a list is read in.
+	int visible_last = ((scroll < 0 ? 0 : scroll) + lv_obj_get_height(p->list) - 1) / ROW_PITCH;
+	int best = -1;
+	for (int i = 0; i < ROW_POOL; i++) {
+		int index = first + i;
+		if (index >= p->count || p->rows[index % ROW_POOL].index == index) {
+			continue;
+		}
+		if (best < 0 || (index > visible_last && (best <= visible_last || index < best))) {
+			best = index;
+		}
+	}
+	if (best < 0) {
+		rest_active = false;
+		lv_timer_pause(timer);
+		return;
+	}
+	row_t *row = &p->rows[best % ROW_POOL];
+
+	// This timer never reads the database: row_at() would, for a row outside the
+	// cached band or on a handle that went stale (a scan batch has committed),
+	// and a card read of 40-80 ms landing every 30 ms is worse than the rows it
+	// is meant to spread. Such a row is left alone for a few ticks; if it does
+	// not come into the band by itself the deferral ends and the ordinary path
+	// binds the band, reading once as it always did.
+	bool in_band = !p->from_paths && p->window && p->window_first >= 0 && best >= p->window_first &&
+				   best < p->window_first + p->window_count && !library_index_stale(p->ix);
+	if (!p->from_paths && !in_band) {
+		if (++rest_misses >= 3) {
+			rest_active = false;
+			rest_misses = 0;
+			lv_timer_pause(timer);
+			window_update(p);
+		}
+		return;
+	}
+	rest_misses = 0;
+
+	// The letters first, a few milliseconds at a time: bound cold, a row of
+	// titles in kanji is tens of milliseconds of FreeType inside one layout.
+	if (best != rest_warm_index) {
+		rest_warm_index = best;
+		rest_warm_string = 0;
+		rest_warm_pos = 0;
+	}
+	const char *name = NULL;
+	if (row_at(p, best, &name, NULL)) {
+		char shown[sizeof(((winrow_t *)0)->name)];
+		library_album_title(name, shown, sizeof(shown));
+		const char *artist = panel_shows_artist(p) ? row_artist_at(p, best) : NULL;
+		const char *texts[2] = {shown, artist};
+		lv_obj_t *labels[2] = {row->label, row->artist};
+		while (rest_warm_string < 2) {
+			if (!texts[rest_warm_string] || !labels[rest_warm_string] ||
+				glyphwarm_text(lv_obj_get_style_text_font(labels[rest_warm_string], LV_PART_MAIN),
+							   texts[rest_warm_string], &rest_warm_pos, REST_WARM_SLICE_US)) {
+				rest_warm_string++;
+				rest_warm_pos = 0;
+				continue;
+			}
+			return; // out of budget: the next tick goes on from here
+		}
+	}
+	rest_warm_index = -1;
+	row_bind(p, row, best);
+	panel_refresh_playmarks(p);
+	thumbs_update(p);
+}
+
+// window_update(), except that rows outside the screen are left for rest_cb.
+//
+// Binding a row sets its labels, and the layout that follows measures their
+// text: on a first visit a title in kanji is mostly letters FreeType has never
+// seen at that size, and a pass that binds all twelve rows pays for the five or
+// six that are below the fold as well, before the first frame -- 380 ms on the
+// device for a list of Japanese titles. Only the rows that show are bound now.
+// Used when a list is opened; every other path binds the whole band, so a
+// scroll never finds a row empty.
+static void window_update_impl(panel_t *p, bool defer_offscreen) {
 	panel_refresh_stale(p);
 
 	if (p->count == 0) {
@@ -1606,20 +1739,37 @@ static void window_update(panel_t *p) {
 	if (scroll < 0) {
 		scroll = 0;
 	}
+	int first = band_first(p, scroll);
 
-	int first = (scroll / ROW_PITCH) - 1;
-	if (first + ROW_POOL > p->count) {
-		first = p->count - ROW_POOL;
-	}
-	if (first < 0) {
-		first = 0;
+	// Still the opening of the list, untouched: the layout and the screen-loaded
+	// event that follow the open each ask for the band again, and they must not
+	// bind what the open left for later. Any scroll ends it.
+	if (rest_active && p == rest_panel && scroll == rest_scroll) {
+		defer_offscreen = true;
+	} else if (!defer_offscreen) {
+		rest_active = false;
 	}
 
-	// index -> widget index % ROW_POOL, so a one-step slide of the band
-	// rebinds exactly one row instead of renaming all of them.
+	// The list has no height until it has been laid out, which at the moment of
+	// opening it has not: the screen's is what it will have, near enough.
+	int view_h = lv_obj_get_height(p->list);
+	if (view_h <= 0) {
+		view_h = (int)lv_display_get_vertical_resolution(NULL);
+	}
+	int visible_first = scroll / ROW_PITCH;
+	int visible_last = (scroll + view_h - 1) / ROW_PITCH;
+	bool deferred = false;
+
 	for (int i = 0; i < ROW_POOL; i++) {
 		int index = first + i;
-		row_bind(p, &p->rows[index % ROW_POOL], index < p->count ? index : -1);
+		row_t *row = &p->rows[index % ROW_POOL];
+		int want = index < p->count ? index : -1;
+		if (defer_offscreen && want >= 0 && (want < visible_first || want > visible_last) && row->index != want) {
+			row_bind(p, row, -1); // hidden, and whatever list it held before is let go of
+			deferred = true;
+			continue;
+		}
+		row_bind(p, row, want);
 	}
 
 	// row_bind() is a no-op when a row's index has not moved, so a row whose
@@ -1630,7 +1780,20 @@ static void window_update(panel_t *p) {
 	panel_refresh_playmarks(p);
 
 	thumbs_update(p);
+
+	if (deferred) {
+		rest_panel = p;
+		rest_active = true;
+		rest_misses = 0;
+		rest_scroll = scroll;
+		if (!rest_timer) {
+			rest_timer = lv_timer_create(rest_cb, 30, NULL);
+		}
+		lv_timer_resume(rest_timer);
+	}
 }
+
+static void window_update(panel_t *p) { window_update_impl(p, false); }
 
 void medialist_refresh_visible(void) {
 	panel_t *const panels[] = {&panel_names, &panel_tracks, &panel_artist_albums};
@@ -3744,7 +3907,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	}
 	lv_obj_scroll_to_y(p->list, target_scroll, LV_ANIM_OFF);
 	p->saved_scroll = target_scroll;
-	window_update(p);
+	window_update_impl(p, true);
 
 	if (open_replacing) {
 		switch_screen_no_history(p->screen);

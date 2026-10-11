@@ -195,6 +195,13 @@ void library_set_update_listener(library_update_listener_t listener);
 // would have nothing to show.
 bool library_is_open(void);
 
+// Hands every album name, artist name and track title to `cb`, in chunks, with
+// the database lock taken per chunk and not for the walk, so the interface's
+// own queries wait for a few hundred rows at most. For a background thread.
+// `cb` returns false to stop. At most `max_titles` titles are read (albums and
+// artists are few); the text is only valid during the call.
+void library_names_walk(bool (*cb)(const char *text, void *user), void *user, int max_titles);
+
 // True from the moment a scan starts until its thread has finished.
 bool library_scan_running(void);
 

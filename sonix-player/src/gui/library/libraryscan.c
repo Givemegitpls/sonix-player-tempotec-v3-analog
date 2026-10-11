@@ -1,5 +1,7 @@
 #include "libraryscan.h"
 
+#include "src/gui/fonts/glyphwarm.h"
+
 #include <dirent.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -479,6 +481,7 @@ static void update_note_cb(void *user) {
 	case LIBRARY_UPDATE_FINISHED:
 		checking = false;
 		topbar_set_library_check(TOPBAR_LIBRARY_CHECKED);
+		glyphwarm_library_refresh(); // what was added may be in another script
 		break;
 
 	case LIBRARY_UPDATE_STOPPED:
@@ -505,6 +508,7 @@ static void update_note_cb(void *user) {
 		break;
 
 	case LIBRARY_UPDATE_SCANNED:
+		glyphwarm_library_refresh();
 		// The first scan there has ever been turns Detect changes on, unless it
 		// was already set either way.
 		if (!library_detect_changes_chosen()) {
@@ -546,6 +550,7 @@ static void boot_check_cb(lv_timer_t *timer) {
 		library_set_detect_changes(true);
 	}
 	library_card_returned(sd_root);
+	glyphwarm_library_refresh(); // once after boot; again when a scan has changed the library
 }
 
 void libraryscan_init(gui_config_t *cfg) {
