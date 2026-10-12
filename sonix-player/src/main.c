@@ -1,6 +1,7 @@
 #include "lvgl/lvgl.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <malloc.h>
 #include <poll.h>
 #include <sys/mman.h>
@@ -1434,7 +1435,23 @@ uint16_t *display_capture_frame(int *out_w, int *out_h) {
 static int fb_fd = -1;
 static uint8_t *fb_mem;
 static size_t fb_page_size;
+static size_t fb_map_size;
 static struct fb_var_screeninfo fb_var;
+
+// How wide one framebuffer pixel is, and how the panel is driven. A 16-bit
+// RGB565 page is what the Blaze and the R3 Pro II scan; the V3 Analog wants 32
+// bits in BGRA order with exactly one page of memory, so it is single buffered
+// and every pixel has to be rewritten on the way out. The bits-per-pixel and
+// the page count are kept here because both the flush callback and the blit
+// branch on them, and they are only read after try_panned_display() sets them.
+static int fb_bytespp = 2;
+static bool fb_single_page;
+
+// Set when a pan was refused with EINVAL, which is what a blank or unblank does
+// to the mode underneath us: the next frame reads the screen info again before
+// it decides which page to draw into, so the copy and the pan agree with what
+// the driver now holds. See the flip thread.
+static bool fb_mode_stale;
 
 // The flip itself, on a thread of its own. FBIOPAN_DISPLAY blocks until the
 // panel takes the new page, 10 to 16 ms on the Blaze, and on the interface
@@ -1460,11 +1477,31 @@ static void *flip_thread(void *arg) {
 		struct fb_var_screeninfo var = flip_var;
 		pthread_mutex_unlock(&flip_lock);
 
+		unsigned want = var.yoffset;
 		if (ioctl(fb_fd, FBIOPAN_DISPLAY, &var) < 0) {
-			static bool warned;
-			if (!warned) {
-				perror("fb: FBIOPAN_DISPLAY");
-				warned = true;
+			// A blank/unblank cycle rewrites the mode under us: the panel's
+			// driver resets the virtual size and its descriptor when it powers
+			// down, and from then on the yoffset that was right before is
+			// refused with EINVAL -- every frame, for ever. What that looks
+			// like on the device is a lit screen showing the last frame that
+			// ever reached it while the interface behind it keeps drawing:
+			// a frozen picture, a clock that stopped, an indicator still
+			// saying what was true minutes ago. The mode is read again and the
+			// same pan tried once more, which is all it takes.
+			bool recovered = false;
+			if (errno == EINVAL && ioctl(fb_fd, FBIOGET_VSCREENINFO, &var) == 0) {
+				var.yoffset = want;
+				recovered = ioctl(fb_fd, FBIOPAN_DISPLAY, &var) == 0;
+				if (recovered) {
+					fb_mode_stale = true; // the next frame reads the mode too
+				}
+			}
+			if (!recovered) {
+				static bool warned;
+				if (!warned) {
+					perror("fb: FBIOPAN_DISPLAY");
+					warned = true;
+				}
 			}
 		}
 
@@ -1528,6 +1565,11 @@ static uint8_t *rot_page;		   // the RAM page LVGL draws into while rotated
 static bool fb_scaled;
 static uint8_t *scale_page;
 static int32_t log_w, log_h; // the resolution LVGL renders at; the panel's unless scaled
+
+// True when LVGL draws into scale_page instead of the framebuffer: always when
+// the layout is scaled down, and always at 32 bpp, where LVGL's RGB565 cannot
+// be handed to the BGRA page as it sits and has to be rewritten by the copy.
+static bool fb_ram_page;
 
 // What this frame touched, and what each framebuffer page has not been given
 // yet. Empty is x1 > x2.
@@ -1644,6 +1686,27 @@ static inline __attribute__((always_inline)) uint16_t pack16(uint32_t s) {
 	return (uint16_t)(t | (t >> 16));
 }
 
+// Writes one finished RGB565 pixel into a framebuffer page. At 16 bpp the page
+// wants the two bytes as packed. At 32 bpp the panel scans out four bytes a
+// pixel in BGRA order -- blue first and an alpha last, and it is the LCDC that
+// reads that alpha -- so the three fields are taken apart and widened, the low
+// bits repeated into the high ones so full scale stays full scale, and the
+// alpha byte is opaque: this interface has no translucency of its own to keep.
+static inline __attribute__((always_inline)) void fb_store_pixel(uint8_t *at, uint16_t pixel) {
+	// One store per pixel, in the width the page wants. The addresses handed in
+	// are always a whole number of pixels into the page, and the page is page
+	// aligned, so a 4-byte page pixel is 4-byte aligned and a 2-byte one is
+	// 2-byte aligned: the two cases are one unaligned-looking store that is not.
+	if (fb_bytespp == 4) {
+		uint32_t b = pixel & 0x1Fu, g = (pixel >> 5) & 0x3Fu, r = (pixel >> 11) & 0x1Fu;
+		uint32_t word = ((b << 3) | (b >> 2)) | ((((g << 2) | (g >> 4)) & 0xFFu) << 8) |
+						((((r << 3) | (r >> 2)) & 0xFFu) << 16) | 0xFF000000u;
+		*(uint32_t *)at = word;
+	} else {
+		*(uint16_t *)at = pixel;
+	}
+}
+
 // Shrinks a dirty rectangle of the 3:2-larger layout `src` into `dst` (a whole
 // framebuffer page), turned through 180 degrees when `rotated`. Each panel
 // pixel covers 1.5 layout pixels per axis: the nearer one weighs 3, the
@@ -1654,8 +1717,14 @@ static inline __attribute__((always_inline)) uint16_t pack16(uint32_t s) {
 // output pixel horizontally from two such folds: 3 * outer column + middle
 // column. A 3x3 block is loaded once for its four output pixels, the middle
 // row and column shared between them.
-static void blit_scaled_2_3(uint16_t *dst, const uint16_t *src, const lv_area_t *area, bool rotated) {
+//
+// The finished RGB565 pixel goes through fb_store_pixel(), which knows how wide
+// a framebuffer pixel is: the two bytes of the Blaze's page or the four of the
+// V3 Analog's BGRA. Everything above that call is the same arithmetic either
+// way, so the panel paying for 32 bits changes nothing in the filter.
+static void blit_scaled_2_3(uint8_t *dst, const uint16_t *src, const lv_area_t *area, bool rotated) {
 	int32_t pw = (int32_t)fb_var.xres, ph = (int32_t)fb_var.yres;
+	int bpp = fb_bytespp;
 	int32_t x1 = area->x1 < 0 ? 0 : area->x1;
 	int32_t y1 = area->y1 < 0 ? 0 : area->y1;
 	int32_t x2 = area->x2 >= log_w ? log_w - 1 : area->x2;
@@ -1683,8 +1752,8 @@ static void blit_scaled_2_3(uint16_t *dst, const uint16_t *src, const lv_area_t 
 		const uint16_t *r1 = r0 + log_w;				// the shared middle row
 		const uint16_t *r2 = r1 + log_w;				// outer row of the odd line
 		const uint16_t *ra = even ? r0 : r2;			// the outer row of a lone line
-		uint16_t *oe = dst + (size_t)(rotated ? ph - 1 - py : py) * pw;
-		uint16_t *oo = dst + (size_t)(rotated ? ph - 2 - py : py + 1) * pw;
+		uint8_t *oe = dst + (size_t)(rotated ? ph - 1 - py : py) * pw * bpp;
+		uint8_t *oo = dst + (size_t)(rotated ? ph - 2 - py : py + 1) * pw * bpp;
 
 		for (int32_t px = px1; px <= px2;) {
 			int32_t j = px / 2 * 3;
@@ -1700,26 +1769,27 @@ static void blit_scaled_2_3(uint16_t *dst, const uint16_t *src, const lv_area_t 
 						 o2 = 3 * spread565(r2[j + 2]) + m2;
 				if (both) {
 					int32_t xr = rotated ? xl - 1 : xl + 1;
-					oe[xl] = pack16(3 * e0 + e1);
-					oe[xr] = pack16(3 * e2 + e1);
-					oo[xl] = pack16(3 * o0 + o1);
-					oo[xr] = pack16(3 * o2 + o1);
+					fb_store_pixel(oe + (size_t)xl * bpp, pack16(3 * e0 + e1));
+					fb_store_pixel(oe + (size_t)xr * bpp, pack16(3 * e2 + e1));
+					fb_store_pixel(oo + (size_t)xl * bpp, pack16(3 * o0 + o1));
+					fb_store_pixel(oo + (size_t)xr * bpp, pack16(3 * o2 + o1));
 					px += 2;
 				} else {
-					oe[xl] = pack16(3 * (left ? e0 : e2) + e1);
-					oo[xl] = pack16(3 * (left ? o0 : o2) + o1);
+					fb_store_pixel(oe + (size_t)xl * bpp, pack16(3 * (left ? e0 : e2) + e1));
+					fb_store_pixel(oo + (size_t)xl * bpp, pack16(3 * (left ? o0 : o2) + o1));
 					px++;
 				}
 			} else {
 				uint32_t v1 = 3 * spread565(ra[j + 1]) + spread565(r1[j + 1]);
 				if (both) {
 					int32_t xr = rotated ? xl - 1 : xl + 1;
-					oe[xl] = pack16(3 * (3 * spread565(ra[j]) + spread565(r1[j])) + v1);
-					oe[xr] = pack16(3 * (3 * spread565(ra[j + 2]) + spread565(r1[j + 2])) + v1);
+					fb_store_pixel(oe + (size_t)xl * bpp, pack16(3 * (3 * spread565(ra[j]) + spread565(r1[j])) + v1));
+					fb_store_pixel(oe + (size_t)xr * bpp,
+								   pack16(3 * (3 * spread565(ra[j + 2]) + spread565(r1[j + 2])) + v1));
 					px += 2;
 				} else {
 					int32_t c = left ? j : j + 2;
-					oe[xl] = pack16(3 * (3 * spread565(ra[c]) + spread565(r1[c])) + v1);
+					fb_store_pixel(oe + (size_t)xl * bpp, pack16(3 * (3 * spread565(ra[c]) + spread565(r1[c])) + v1));
 					px++;
 				}
 			}
@@ -1728,10 +1798,13 @@ static void blit_scaled_2_3(uint16_t *dst, const uint16_t *src, const lv_area_t 
 	}
 }
 
-// Copies one dirty rectangle into `dst` (a whole framebuffer page) rotated by
-// 180 degrees: the pixel at (x, y) lands at (W-1-x, H-1-y).
-static void blit_rotated_180(uint16_t *dst, const uint16_t *src, const lv_area_t *area, int32_t width,
-							 int32_t height) {
+// Copies one dirty rectangle of `src` into `dst` (a whole framebuffer page),
+// turned through 180 degrees when `rotated`: the pixel at (x, y) lands at
+// (W-1-x, H-1-y). The pixel itself goes through fb_store_pixel(), so a 16-bit
+// page and a 32-bit one both come out right.
+static void blit_rotated_180(uint8_t *dst, const uint16_t *src, const lv_area_t *area, int32_t width,
+							 int32_t height, bool rotated) {
+	int bpp = fb_bytespp;
 	int32_t x1 = area->x1 < 0 ? 0 : area->x1;
 	int32_t y1 = area->y1 < 0 ? 0 : area->y1;
 	int32_t x2 = area->x2 >= width ? width - 1 : area->x2;
@@ -1739,9 +1812,10 @@ static void blit_rotated_180(uint16_t *dst, const uint16_t *src, const lv_area_t
 
 	for (int32_t y = y1; y <= y2; y++) {
 		const uint16_t *src_row = src + (size_t)y * width;
-		uint16_t *dst_row = dst + (size_t)(height - 1 - y) * width;
+		uint8_t *dst_row = dst + (size_t)(rotated ? height - 1 - y : y) * width * bpp;
 		for (int32_t x = x1; x <= x2; x++) {
-			dst_row[width - 1 - x] = src_row[x];
+			int32_t dx = rotated ? width - 1 - x : x;
+			fb_store_pixel(dst_row + (size_t)dx * bpp, src_row[x]);
 		}
 	}
 }
@@ -1803,41 +1877,72 @@ static void ft_frame_done(uint64_t flush_us, uint64_t wait_us, uint64_t blit_don
 }
 
 static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
-	bool second_page;
+	bool second_page = false;
 	uint64_t flush_us = ft_now_us(), wait_us = flush_us, blit_done_us = flush_us;
-	bool copied = fb_rotated || fb_scaled;
+	bool copied = fb_rotated || fb_ram_page;
 
 	if (copied) {
 		// Collect this frame's damage; the copy happens once, on the last
-		// area, into the page that is NOT on screen.
+		// area, into the framebuffer page it goes to.
 		dirty_add(&rot_frame_dirty, area);
 		if (!lv_display_flush_is_last(disp)) {
 			lv_display_flush_ready(disp);
 			return;
 		}
 
-		fb_flip_wait(); // the page about to be written may still be on screen
+		// Nothing may be written while the panel's DMA still reads the page:
+		// with two pages this waits for the flip thread to finish putting the
+		// other one on screen, and with one page there is no other page to put
+		// up, so the same call waits for the previous pan of this very page.
+		// Both are the same guarantee, that the memory below is off the panel.
+		fb_flip_wait();
 		wait_us = ft_now_us();
-		second_page = (fb_var.yoffset == 0); // flip to the other page
-		int target = second_page ? 1 : 0;
 
-		// Everything this page still owes, plus what just changed.
-		dirty_t redraw = rot_page_pending[target];
-		dirty_add_all(&redraw, &rot_frame_dirty);
+		// A pan that was refused because the mode changed (see the flip thread)
+		// leaves the copy and the pan working from a screen info the driver no
+		// longer holds: read it again before this frame is laid out.
+		if (fb_mode_stale) {
+			fb_mode_stale = false;
+			ioctl(fb_fd, FBIOGET_VSCREENINFO, &fb_var);
+		}
 
-		uint16_t *page = (uint16_t *)(fb_mem + (second_page ? fb_page_size : 0));
+		uint8_t *page;
+		dirty_t redraw;
+		int target = 0;
+		if (fb_single_page) {
+			// One page, and it keeps what was written to it, so this frame's
+			// own damage is all that has to go in and there is no second page
+			// to owe anything to. pending[0] exists only for the full redraws
+			// a rotation or scaling change asks for.
+			page = fb_mem;
+			redraw = rot_page_pending[0];
+			dirty_add_all(&redraw, &rot_frame_dirty);
+		} else {
+			second_page = (fb_var.yoffset == 0); // flip to the other page
+			target = second_page ? 1 : 0;
+			page = fb_mem + (second_page ? fb_page_size : 0);
+
+			// Everything this page still owes, plus what just changed.
+			redraw = rot_page_pending[target];
+			dirty_add_all(&redraw, &rot_frame_dirty);
+		}
+
 		for (int i = 0; i < redraw.n; i++) {
 			ft.copied_px += (uint32_t)area_size(&redraw.r[i]);
 			if (fb_scaled) {
 				blit_scaled_2_3(page, (const uint16_t *)px, &redraw.r[i], fb_rotated);
 			} else {
 				blit_rotated_180(page, (const uint16_t *)px, &redraw.r[i], (int32_t)fb_var.xres,
-								 (int32_t)fb_var.yres);
+								 (int32_t)fb_var.yres, fb_rotated);
 			}
 		}
 
-		dirty_clear(&rot_page_pending[target]);
-		dirty_add_all(&rot_page_pending[target ? 0 : 1], &rot_frame_dirty); // the other page still owes it
+		if (fb_single_page) {
+			dirty_clear(&rot_page_pending[0]);
+		} else {
+			dirty_clear(&rot_page_pending[target]);
+			dirty_add_all(&rot_page_pending[target ? 0 : 1], &rot_frame_dirty); // the other page still owes it
+		}
 		dirty_clear(&rot_frame_dirty);
 		blit_done_us = ft_now_us();
 	} else {
@@ -1892,36 +1997,70 @@ static lv_display_t *try_panned_display(void) {
 		   fb_var.xres_virtual, fb_var.yres_virtual, fb_var.bits_per_pixel, fix.line_length, fix.smem_len);
 
 	// LVGL renders with a stride of xres * bytespp; a padded framebuffer line
-	// would shear the picture, so refuse and fall back.
+	// would shear the picture, so refuse and fall back. Both 16 and 32 bits a
+	// pixel are laid out tightly on the panels this player drives -- the
+	// Blaze's RGB565 and the V3 Analog's BGRA -- and the copy below knows how
+	// to write either one.
 	uint32_t bytespp = fb_var.bits_per_pixel / 8;
-	if (bytespp != 2 || fix.line_length != fb_var.xres * bytespp) {
-		printf("fb: not 16 bits with a tight stride, so no page flipping\n");
+	if ((bytespp != 2 && bytespp != 4) || fix.line_length != fb_var.xres * bytespp) {
+		printf("fb: not 16 or 32 bits with a tight stride, so no page flipping\n");
 		close(fb_fd);
 		fb_fd = -1;
 		return NULL;
 	}
-
-	// Ask for two pages.
-	fb_var.yres_virtual = fb_var.yres * 2;
-	fb_var.xres_virtual = fb_var.xres;
-	fb_var.yoffset = 0;
-	if (ioctl(fb_fd, FBIOPUT_VSCREENINFO, &fb_var) < 0) {
-		close(fb_fd);
-		fb_fd = -1;
-		return NULL;
-	}
-	ioctl(fb_fd, FBIOGET_FSCREENINFO, &fix); // smem_len may have been updated
+	fb_bytespp = (int)bytespp;
 
 	fb_page_size = (size_t)fix.line_length * fb_var.yres;
-	if ((size_t)fix.smem_len < fb_page_size * 2) {
-		printf("fb: %u bytes of memory is under the %zu two pages need, so no page flipping\n", fix.smem_len,
-			   fb_page_size * 2);
-		close(fb_fd);
-		fb_fd = -1;
-		return NULL;
+
+	// How many whole pages the driver already has, before asking it for
+	// anything: its memory divided by one screen. This is what picks between
+	// the two display paths -- the V3 Analog reports one page, and its 32-bit
+	// panel cannot be given a second, so for it the double-height request
+	// below is skipped and the single page is panned instead.
+	size_t pages = fb_page_size ? (size_t)fix.smem_len / fb_page_size : 0;
+	fb_single_page = pages < 2;
+
+	// The model may refuse the second page even where the driver offers it
+	// (sysinfo.h, single_fb_page). The V3 Analog does, and for a reason that is
+	// worth writing down: its panel is an SLCD whose DMA reads one page, so with
+	// two the frame on the glass is the one drawn two frames ago -- the volume
+	// pill appears on the next scroll and nothing else does either -- and each
+	// page owes the other every change made while it was off screen, which on
+	// this device measured a full-screen copy (26 ms) per frame. One page, one
+	// pan, and only the damage copied.
+	if (sysinfo_model() && sysinfo_model()->single_fb_page) {
+		fb_single_page = true;
 	}
 
-	fb_mem = mmap(NULL, fb_page_size * 2, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
+	bool want_two = !fb_single_page || bytespp == 2;
+	if (want_two) {
+		// Ask for two pages.
+		fb_var.yres_virtual = fb_var.yres * 2;
+		fb_var.xres_virtual = fb_var.xres;
+		fb_var.yoffset = 0;
+		if (ioctl(fb_fd, FBIOPUT_VSCREENINFO, &fb_var) < 0) {
+			close(fb_fd);
+			fb_fd = -1;
+			return NULL;
+		}
+		ioctl(fb_fd, FBIOGET_FSCREENINFO, &fix); // smem_len may have been updated
+
+		fb_page_size = (size_t)fix.line_length * fb_var.yres;
+		if ((size_t)fix.smem_len < fb_page_size * 2) {
+			printf("fb: %u bytes of memory is under the %zu two pages need, so no page flipping\n", fix.smem_len,
+				   fb_page_size * 2);
+			close(fb_fd);
+			fb_fd = -1;
+			return NULL;
+		}
+		fb_single_page = false;
+	}
+	// With one page there is nothing to ask for: the mode is left exactly as
+	// the kernel set it up, so the panel is driven the way the stock firmware
+	// drives it.
+
+	fb_map_size = fb_page_size * (fb_single_page ? 1 : 2);
+	fb_mem = mmap(NULL, fb_map_size, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
 	if (fb_mem == MAP_FAILED) {
 		close(fb_fd);
 		fb_fd = -1;
@@ -1929,7 +2068,10 @@ static lv_display_t *try_panned_display(void) {
 	}
 
 	// A panel two thirds the size of the model's layout is drawn at the
-	// layout's size and shrunk on the way out (see blit_scaled_2_3).
+	// layout's size and shrunk on the way out (see blit_scaled_2_3). At 32 bpp
+	// there is no other way either: LVGL draws RGB565, and RGB565 cannot be
+	// memcpy()d into a BGRA page, so a 32-bit panel is always drawn into this
+	// RAM page and rewritten by the copy.
 	log_w = (int32_t)fb_var.xres;
 	log_h = (int32_t)fb_var.yres;
 	const sysinfo_model_t *model = sysinfo_model();
@@ -1944,27 +2086,62 @@ static lv_display_t *try_panned_display(void) {
 		} else {
 			fprintf(stderr, "fb: no memory for the %zu-byte layout page, drawing at the panel's size\n", size);
 		}
+	} else if (fb_bytespp == 4) {
+		// A 32-bit panel that is not the shrunk layout: the same RAM page, one
+		// pixel in for one out, so that LVGL's RGB565 can be rewritten into the
+		// BGRA the panel scans.
+		size_t size = (size_t)log_w * (size_t)log_h * 2;
+		scale_page = malloc(size);
+		if (scale_page) {
+			memset(scale_page, 0, size);
+		} else {
+			fprintf(stderr, "fb: no memory for the %zu-byte layout page at 32 bpp, drawing nothing\n", size);
+		}
+	}
+	fb_ram_page = scale_page != NULL;
+
+	// At 32 bpp there is no direct path: without the RAM page there is nothing
+	// to convert through, and letting LVGL draw RGB565 straight into the
+	// panel's BGRA would put two pixels where one belongs.
+	if (fb_bytespp == 4 && !fb_ram_page) {
+		fprintf(stderr, "fb: 32 bpp needs a RAM page to convert through, so no page flipping\n");
+		munmap(fb_mem, fb_map_size);
+		close(fb_fd);
+		fb_fd = -1;
+		return NULL;
 	}
 
 	lv_display_t *disp = lv_display_create(log_w, log_h);
 	if (!disp) {
-		munmap(fb_mem, fb_page_size * 2);
+		munmap(fb_mem, fb_map_size);
 		close(fb_fd);
 		fb_fd = -1;
 		return NULL;
 	}
 
 	lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
-	if (fb_scaled) {
+	if (fb_ram_page) {
 		// Both framebuffer pages owe a full frame.
 		dirty_clear(&rot_frame_dirty);
 		dirty_set_full(&rot_page_pending[0]);
-		dirty_set_full(&rot_page_pending[1]);
+		if (!fb_single_page) {
+			dirty_set_full(&rot_page_pending[1]);
+		}
 		lv_display_set_buffers(disp, scale_page, NULL, (uint32_t)(log_w * log_h * 2), LV_DISPLAY_RENDER_MODE_DIRECT);
-		printf("fb: interface at %dx%d, shrunk 2/3 onto the %ux%u panel\n", (int)log_w, (int)log_h, fb_var.xres,
-			   fb_var.yres);
+		if (fb_scaled && fb_single_page) {
+			// The V3 Analog's path, said in one line so the log on the device
+			// shows which of the two display paths the panel took.
+			printf("fb: %u bpp, one page: the interface at %dx%d is shrunk 2/3 onto the %ux%u panel\n",
+				   (unsigned)(fb_bytespp * 8), (int)log_w, (int)log_h, fb_var.xres, fb_var.yres);
+		} else if (fb_scaled) {
+			printf("fb: interface at %dx%d, shrunk 2/3 onto the %ux%u panel\n", (int)log_w, (int)log_h, fb_var.xres,
+				   fb_var.yres);
+		} else {
+			printf("fb: %u bpp, %s, copied one to one onto the %ux%u panel\n", (unsigned)(fb_bytespp * 8),
+				   fb_single_page ? "one page" : "two pages", fb_var.xres, fb_var.yres);
+		}
 	} else {
-		lv_display_set_buffers(disp, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
+		lv_display_set_buffers(disp, fb_mem, fb_single_page ? NULL : fb_mem + fb_page_size, (uint32_t)fb_page_size,
 							   LV_DISPLAY_RENDER_MODE_DIRECT);
 	}
 	lv_display_set_flush_cb(disp, fb_pan_flush_cb);
@@ -1972,7 +2149,11 @@ static lv_display_t *try_panned_display(void) {
 	fb_flip_start();
 	fb_display = disp;
 
-	printf("fb: double-buffered, page flip on FBIOPAN_DISPLAY (%ux%u)\n", fb_var.xres, fb_var.yres);
+	if (fb_single_page) {
+		printf("fb: single page, pan on FBIOPAN_DISPLAY (%ux%u)\n", fb_var.xres, fb_var.yres);
+	} else {
+		printf("fb: double-buffered, page flip on FBIOPAN_DISPLAY (%ux%u)\n", fb_var.xres, fb_var.yres);
+	}
 	return disp;
 }
 
@@ -1982,7 +2163,12 @@ static lv_display_t *try_panned_display(void) {
 // updates it at every swap: zero is the first page, yres the second. Nothing
 // else is needed, not even whether rotation is on, because while rotated the
 // framebuffer already holds the turned image, which is exactly what is
-// visible.
+// visible. With one page there is no second page to be showing, so the first
+// is always the one to read, whatever yoffset happens to hold.
+//
+// The block handed back is RGB565, the format the PNG writer wants. On the V3
+// Analog's 32-bit page that is not what the framebuffer holds, so the BGRA
+// pixels are unpacked and packed down to 565 here rather than copied raw.
 uint16_t *display_capture_frame(int *out_w, int *out_h) {
 	if (!fb_mem || fb_page_size == 0) {
 		return NULL; // plain fbdev fallback, no second page
@@ -1995,19 +2181,29 @@ uint16_t *display_capture_frame(int *out_w, int *out_h) {
 	// The caller must not free it (see screenshot.c): the block stays here.
 	static uint16_t *copy;
 	static size_t copy_size;
-	if (!copy || copy_size != fb_page_size) {
+	size_t want = (size_t)fb_var.xres * (size_t)fb_var.yres * sizeof(uint16_t);
+	if (!copy || copy_size != want) {
 		free(copy);
-		copy = malloc(fb_page_size);
-		copy_size = copy ? fb_page_size : 0;
+		copy = malloc(want);
+		copy_size = copy ? want : 0;
 	}
 	if (!copy) {
-		fprintf(stderr, "fb: no memory for the screen copy (%zu bytes)\n", fb_page_size);
+		fprintf(stderr, "fb: no memory for the screen copy (%zu bytes)\n", want);
 		return NULL;
 	}
 
 	fb_flip_wait();
-	const uint8_t *page = fb_mem + (fb_var.yoffset ? fb_page_size : 0);
-	memcpy(copy, page, fb_page_size);
+	const uint8_t *page = fb_mem + (!fb_single_page && fb_var.yoffset ? fb_page_size : 0);
+	if (fb_bytespp == 4) {
+		const uint8_t *src = page;
+		size_t pixels = (size_t)fb_var.xres * (size_t)fb_var.yres;
+		for (size_t i = 0; i < pixels; i++) {
+			uint8_t b = src[i * 4], g = src[i * 4 + 1], r = src[i * 4 + 2];
+			copy[i] = (uint16_t)(((r & 0xF8u) << 8) | ((g & 0xFCu) << 3) | (b >> 3));
+		}
+	} else {
+		memcpy(copy, page, want);
+	}
 
 	if (out_w) {
 		*out_w = (int)fb_var.xres;
@@ -2099,13 +2295,15 @@ void display_set_rotated(bool rotated) {
 		return;
 	}
 
-	if (fb_scaled) {
+	if (fb_ram_page) {
 		// Already drawing into a RAM page: only the copy turns, and both
 		// framebuffer pages owe a full frame the new way round.
 		fb_rotated = rotated;
 		dirty_clear(&rot_frame_dirty);
 		dirty_set_full(&rot_page_pending[0]);
-		dirty_set_full(&rot_page_pending[1]);
+		if (!fb_single_page) {
+			dirty_set_full(&rot_page_pending[1]);
+		}
 	} else if (rotated) {
 		if (!rot_page) {
 			rot_page = malloc(fb_page_size);
@@ -2120,13 +2318,15 @@ void display_set_rotated(bool rotated) {
 		// they each owe a full frame.
 		dirty_clear(&rot_frame_dirty);
 		dirty_set_full(&rot_page_pending[0]);
-		dirty_set_full(&rot_page_pending[1]);
+		if (!fb_single_page) {
+			dirty_set_full(&rot_page_pending[1]);
+		}
 
 		lv_display_set_buffers(fb_display, rot_page, NULL, (uint32_t)fb_page_size, LV_DISPLAY_RENDER_MODE_DIRECT);
 		fb_rotated = true;
 	} else {
-		lv_display_set_buffers(fb_display, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
-							   LV_DISPLAY_RENDER_MODE_DIRECT);
+		lv_display_set_buffers(fb_display, fb_mem, fb_single_page ? NULL : fb_mem + fb_page_size,
+							   (uint32_t)fb_page_size, LV_DISPLAY_RENDER_MODE_DIRECT);
 		fb_rotated = false;
 		lv_async_call(free_rot_pages_cb, NULL);
 	}
@@ -2380,13 +2580,27 @@ int main(int argc, char **argv) {
 	report_memory("startup");
 #endif
 
+	// Which player this is, read before anything is decided by it: the panel
+	// the pages are laid out for, the update file's name, the writable volume
+	// the settings go to, the card the mixer controls are on. On the simulator
+	// this also opens the window at the model's panel size, so it has to come
+	// before the display either way. (The rest of what the file carries -- the
+	// converter's name, the serial -- is read from the same load.)
+	sysinfo_load();
+
 	// Settings live on the UBIFS partition, the one writable place that is
 	// always present: the rootfs is read-only and the card may be missing.
 	// SONIX_CONFIG points it somewhere else for the host build and for testing.
 	const char *config_file = getenv("SONIX_CONFIG");
 #ifndef HOST_BUILD
 	if (!config_file) {
-		config_file = "/usr/data/device_config.ini";
+		// The writable volume's name is the model's (sysinfo.h): /usr/data on
+		// the HiBy boards and the Blaze, /data here. A path that does not exist
+		// costs the player every setting it has -- language, time zone, volume,
+		// the chosen scan folders -- silently, one "cannot write" line per save.
+		static char config_path[96];
+		snprintf(config_path, sizeof(config_path), "%s/device_config.ini", sysinfo_user_data_dir());
+		config_file = config_path;
 	}
 	struct stat config_st;
 	bool first_start = stat(config_file, &config_st) != 0;
@@ -2404,7 +2618,9 @@ int main(int argc, char **argv) {
 	const char *ebook_file = getenv("SONIX_EBOOK_CONFIG");
 #ifndef HOST_BUILD
 	if (!ebook_file) {
-		ebook_file = "/usr/data/ebook_config.ini";
+		static char ebook_path[96];
+		snprintf(ebook_path, sizeof(ebook_path), "%s/ebook_config.ini", sysinfo_user_data_dir());
+		ebook_file = ebook_path;
 	}
 #endif
 	config_store_init(config_ebook_store(), ebook_file);
@@ -2443,7 +2659,8 @@ int main(int argc, char **argv) {
 	// window opens at the panel size of the model named in the file; on the
 	// device the framebuffer answers that question itself and this is read for
 	// the update file's name, the converter's name and the serial number.
-	sysinfo_load();
+	// (sysinfo_load() itself runs earlier still, before the settings path is
+	// chosen from the model; this is only where the file is explained.)
 
 	// The streaming services' application keys, and Qobuz with them. Before
 	// the GUI builds its pages, because the Qobuz page is drawn one way or
@@ -2708,7 +2925,19 @@ int main(int argc, char **argv) {
 	// Before the radio, so a bring-up that fails is in the Bluetooth log from
 	// its first line.
 	btlog_init();
-	bluetooth_init();
+	// The Bluetooth stack is not ported to the V3 Analog yet: the firmware's own
+	// one is what runs there, with its own modules, scripts and firmware files,
+	// and the port's management of it (bring it down at boot, run its own) has
+	// nothing to talk to. Left running, it reads that stack as "the radio is on"
+	// -- which it is, just not this player's -- and retries a media-player
+	// registration against it every three seconds, forever, each attempt a failed
+	// D-Bus round trip and four lines written to the log on the card. The model
+	// says whether the stack is this port's (sysinfo.h, bluetooth_stack).
+	if (!sysinfo_model() || sysinfo_model()->bluetooth_stack) {
+		bluetooth_init();
+	} else {
+		printf("bluetooth: not this port's stack on this model; left alone\n");
+	}
 	// Its worker starts here but stays idle: no socket is opened until the
 	// switch is on, which the same config read decides.
 	sonixlink_init();
@@ -2791,8 +3020,12 @@ int main(int argc, char **argv) {
 
 	// The media player bluez shows to the headphones. After gui_init, because
 	// the transport commands it receives are sent onto the GUI thread; it does
-	// nothing at all until Bluetooth is switched on.
-	btplayer_init();
+	// nothing at all until Bluetooth is switched on -- and on a model whose
+	// Bluetooth stack is not this port's (sysinfo.h, bluetooth_stack) it is not
+	// started either, for the reason given at bluetooth_init() above.
+	if (!sysinfo_model() || sysinfo_model()->bluetooth_stack) {
+		btplayer_init();
+	}
 
 	// The status LED: aqua from power-on, exactly like the stock firmware.
 	led_init();
@@ -2806,14 +3039,34 @@ int main(int argc, char **argv) {
 	// power / display idle management (backlight, screen-off, SoC suspend).
 	// On the host build every device path is left NULL so nothing touches the
 	// developer's own backlight/framebuffer/suspend.
+#ifndef HOST_BUILD
+	// The backlight node is named by the kernel driver, not by the player: the
+	// HiBy boards register "backlight_pwm0", the V3 Analog "pwm-backlight.0".
+	// The model says which (sysinfo.h, backlight_dir). Getting it wrong is the
+	// quietest failure in the whole player: every write goes nowhere, the panel
+	// keeps whatever level the process before it left it at -- often nought,
+	// because a player that is killed on the way out does not put it back --
+	// and the screen looks dead while the interface behind it is drawing
+	// perfectly well, frame after frame, into a framebuffer nobody can see.
+	static char brightness_path[96];
+	static char max_brightness_path[96];
+	{
+		const sysinfo_model_t *model = sysinfo_model();
+		const char *dir = (model && model->backlight_dir) ? model->backlight_dir
+														  : "/sys/class/backlight/backlight_pwm0";
+		snprintf(brightness_path, sizeof(brightness_path), "%s/brightness", dir);
+		snprintf(max_brightness_path, sizeof(max_brightness_path), "%s/max_brightness", dir);
+	}
+#endif
+
 	power_config_t power_cfg = {
 #ifdef HOST_BUILD
 		.brightness_path = NULL,
 		.max_brightness_path = NULL,
 		.blank_path = NULL,
 #else
-		.brightness_path = "/sys/class/backlight/backlight_pwm0/brightness",
-		.max_brightness_path = "/sys/class/backlight/backlight_pwm0/max_brightness",
+		.brightness_path = brightness_path,
+		.max_brightness_path = max_brightness_path,
 		// Screen on/off via the framebuffer blank node -- the same mechanism
 		// Rockbox's HiBy port uses. Writing here powers the backlight, panel,
 		// and touch controller together, and is reliably reversible.
