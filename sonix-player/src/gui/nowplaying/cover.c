@@ -2398,6 +2398,32 @@ uint64_t cover_source_id(const char *filepath) {
 	return player_source_id(filepath, &index);
 }
 
+bool cover_picture_known(const char *filepath) {
+	char key[32];
+	uint64_t id = 0;
+	if (!player_id_key(filepath, key, sizeof(key)) || !player_id_lookup(key, &id)) {
+		return false;
+	}
+	// Any size of it: the rows of one picture share the id and then '|', and
+	// '}' is the character after '|', so the range is exactly those rows and
+	// is answered from the key's index.
+	char from[24], to[24];
+	snprintf(from, sizeof(from), "%016llx|", (unsigned long long)id);
+	snprintf(to, sizeof(to), "%016llx}", (unsigned long long)id);
+	bool kept = false;
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db && sqlite3_prepare_v2(thumb_db, "SELECT 1 FROM player_covers WHERE key >= ?1 AND key < ?2 LIMIT 1", -1,
+									   &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, from, -1, SQLITE_STATIC);
+		sqlite3_bind_text(stmt, 2, to, -1, SQLITE_STATIC);
+		kept = sqlite3_step(stmt) == SQLITE_ROW;
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+	return kept;
+}
+
 static void player_cover_key(char *out, size_t out_size, uint64_t id, int w, int h) {
 	snprintf(out, out_size, "%016llx|%dx%d|%d", (unsigned long long)id, w, h, PLAYER_COVER_EPOCH);
 }

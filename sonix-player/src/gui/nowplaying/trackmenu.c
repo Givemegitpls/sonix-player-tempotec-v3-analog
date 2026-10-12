@@ -723,7 +723,11 @@ static void open_album_cb(void *user) {
 
 	player_sheet_close(false);
 	medialist_open(album, LIBRARY_LIST_TRACKS, LIBRARY_FILTER_ALBUM, album);
-	switcher_set_player_return(medialist_tracks_screen);
+	// Over a track list the album takes that list's place on the same page,
+	// and the page brings the list back with the player over it itself.
+	if (!medialist_step_back_to_player()) {
+		switcher_set_player_return(medialist_tracks_screen);
+	}
 }
 
 static void open_settings_cb(void *user) {

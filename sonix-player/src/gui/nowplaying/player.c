@@ -28,6 +28,7 @@
 #include "src/system/gearboy/gearboy.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/audio/audio.h"
+#include "src/system/audio/readahead.h"
 #include "src/system/playback/audiobook.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/remote/airplay.h"
@@ -4561,6 +4562,9 @@ void player_init(gui_config_t *cfg) {
 	// The artwork decodes on the shared worker; make sure it exists before
 	// the first track can be started. Safe to call more than once.
 	coverloader_start();
+	// The next track's picture is not read ahead once the cover side has no
+	// use for it.
+	readahead_set_picture_known(cover_picture_known);
 
 	lv_obj_add_style(player_screen, &theme_style_screen, 0);
 

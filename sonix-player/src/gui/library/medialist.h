@@ -84,7 +84,18 @@ void medialist_sort_prefs(unsigned *desc_mask, unsigned *added_mask, bool *artis
 // Loads the list and switches to the right screen. For LIBRARY_LIST_TRACKS
 // the filter narrows to one album/artist/genre (LIBRARY_FILTER_NONE = all);
 // for the name kinds both filter arguments are ignored.
+//
+// A different list opened on the screen already showing -- "Show album" from
+// Favourites, say -- takes the place of the one there, and the chevron brings
+// that one back, where it was scrolled to, before it leaves the page.
 void medialist_open(const char *title, library_list_t kind, library_filter_t filter, const char *filter_value);
+
+// For the player's menu, right after its medialist_open(): true when the list
+// opened on the page already under the player -- in place of another list, or
+// over the same one. The step back then reopens what was there with the player
+// over it, so the caller must not also ask the switcher to return to the
+// player.
+bool medialist_step_back_to_player(void);
 
 // Opens one artist the way their disc button was last left: the records, or
 // the tracks strung out. What the search opens an artist with.

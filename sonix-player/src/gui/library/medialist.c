@@ -197,6 +197,21 @@ typedef struct {
 	char thumb_path[512]; // the file the picture, or the request for it, is of
 } row_t;
 
+// A list a panel showed before the one on it now, kept so the step back can
+// open it again (see panel_back_guard).
+typedef struct {
+	library_list_t kind;
+	library_filter_t filter;
+	char value[256];
+	char title[160];
+	int scroll;
+	// Replaced from the player's own menu: the step back reopens the player
+	// over it, as leaving any page opened from there does.
+	bool from_player;
+} panel_step_t;
+
+#define PANEL_BACK_DEPTH 6
+
 // Everything one of the two screens owns.
 typedef struct {
 	lv_obj_t *screen;
@@ -260,6 +275,13 @@ typedef struct {
 	// so reopening the same list puts the user back where they were.
 	char signature[600];
 	int saved_scroll;
+
+	// The lists this one replaced on the same screen, newest last. One screen
+	// shows them all in turn -- "Show album" from Favourites opens the album
+	// where Favourites was -- so the switcher's history cannot step back
+	// between them; the panel's back guard does, before the page is left.
+	panel_step_t back[PANEL_BACK_DEPTH];
+	int back_count;
 
 	// Inside one album: what sits above the rows and between them. The rows
 	// are still the list's rows one for one -- row i is track i of the queue a
@@ -4490,7 +4512,125 @@ static int current_row(panel_t *p) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Stepping back on one screen
+// ---------------------------------------------------------------------------
+
+// Set while a list is reopened by the step back: it is not a step forward, and
+// it comes back where it was scrolled to (step_back_scroll).
+static bool opening_step_back;
+static int step_back_scroll = -1;
+
+// What the last medialist_open() did to the screen it opened on, for
+// medialist_step_back_to_player(): the panel whose list it stacked, or the
+// panel it left showing the same list it already showed.
+static panel_t *last_stacked;
+static panel_t *last_unchanged;
+
+// Called by medialist_open() before the panel takes the new list. A different
+// list opened on the screen that is already showing stacks the one it
+// replaces; one opened from another screen starts the panel's steps afresh,
+// since the switcher's history is what leads back there. Re-reading the same
+// list, a re-sort and the disc button's swap are not steps.
+static void panel_push_step(panel_t *p) {
+	if (p->back_count == PANEL_BACK_DEPTH) {
+		// The oldest goes: past this many the way back is the page before.
+		memmove(&p->back[0], &p->back[1], (size_t)(PANEL_BACK_DEPTH - 1) * sizeof(p->back[0]));
+		p->back_count--;
+	}
+	panel_step_t *step = &p->back[p->back_count++];
+	step->kind = p->kind;
+	step->filter = p->filter;
+	snprintf(step->value, sizeof(step->value), "%s", p->filter_value);
+	snprintf(step->title, sizeof(step->title), "%s", p->title);
+	step->scroll = lv_obj_get_scroll_y(p->list);
+	step->from_player = false;
+}
+
+static void panel_note_step(panel_t *p, const char *signature) {
+	last_stacked = NULL;
+	last_unchanged = NULL;
+	if (opening_step_back || open_replacing || reopening_resorted) {
+		return;
+	}
+	if (lv_screen_active() != p->screen) {
+		p->back_count = 0;
+		return;
+	}
+	if (p->from_paths || !p->signature[0]) {
+		return;
+	}
+	if (strcmp(p->signature, signature) == 0) {
+		last_unchanged = p;
+		return;
+	}
+	panel_push_step(p);
+	last_stacked = p;
+}
+
+static panel_t *panel_on_screen(void) {
+	lv_obj_t *active = lv_screen_active();
+	panel_t *const panels[] = {&panel_names, &panel_tracks, &panel_artist_albums};
+	for (size_t i = 0; i < sizeof(panels) / sizeof(panels[0]); i++) {
+		if (panels[i]->screen == active) {
+			return panels[i];
+		}
+	}
+	return NULL;
+}
+
+// Whether the step back stays on this screen; the swipe-back asks before it
+// draws what is underneath.
+static bool panel_back_peek(void) {
+	panel_t *p = panel_on_screen();
+	return p && p->back_count > 0 && library_is_open();
+}
+
+// The chevron on a list screen: the list this one replaced comes back first,
+// where it was scrolled to; only with none left does the page go.
+static bool panel_back_guard(void) {
+	panel_t *p = panel_on_screen();
+	if (!p || p->back_count == 0) {
+		return false;
+	}
+	if (!library_is_open()) {
+		p->back_count = 0; // nothing can be reopened without the card
+		return false;
+	}
+	panel_step_t step = p->back[--p->back_count];
+	opening_step_back = true;
+	step_back_scroll = step.scroll;
+	medialist_open(step.title, step.kind, step.filter, step.value[0] ? step.value : NULL);
+	opening_step_back = false;
+	step_back_scroll = -1;
+	if (step.from_player) {
+		player_sheet_open(false);
+	}
+	return true;
+}
+
+bool medialist_step_back_to_player(void) {
+	panel_t *stacked = last_stacked;
+	panel_t *unchanged = last_unchanged;
+	last_stacked = NULL;
+	last_unchanged = NULL;
+	// The list asked for was already the one on the page under the player:
+	// the step back is to that same list, with the player over it.
+	if (unchanged && lv_screen_active() == unchanged->screen) {
+		panel_push_step(unchanged);
+		stacked = unchanged;
+	}
+	if (!stacked || stacked->back_count == 0 || lv_screen_active() != stacked->screen) {
+		return false;
+	}
+	stacked->back[stacked->back_count - 1].from_player = true;
+	return true;
+}
+
 void medialist_open(const char *title, library_list_t kind, library_filter_t filter, const char *filter_value) {
+	last_stacked = NULL;
+	last_unchanged = NULL;
+
 	// Nothing to open without the card. The index lives on it, so every list
 	// here would come up empty -- and an empty list under a title, with "scan
 	// the library" written across it, tells the user to do the one thing that
@@ -4509,6 +4649,11 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 		kind == LIBRARY_LIST_ALBUMS && (filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST ||
 										filter == LIBRARY_FILTER_GENRE || filter == LIBRARY_FILTER_YEAR);
 	panel_t *p = tracks_like ? &panel_tracks : (artist_albums ? &panel_artist_albums : &panel_names);
+
+	char signature[600];
+	snprintf(signature, sizeof(signature), "%d|%d|%s", (int)kind, (int)filter, filter_value ? filter_value : "");
+	panel_note_step(p, signature);
+
 	p->kind = kind;
 	// A playlist is a query like any other, and the query's value is its
 	// name -- which is also what the ellipsis needs to know to offer taking a
@@ -4532,8 +4677,6 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 
 	// Coming back to the very list that was open before? Then put the user
 	// back where they left it instead of at the top.
-	char signature[600];
-	snprintf(signature, sizeof(signature), "%d|%d|%s", (int)kind, (int)filter, filter_value ? filter_value : "");
 	bool same_list = strcmp(signature, p->signature) == 0;
 	snprintf(p->signature, sizeof(p->signature), "%s", signature);
 
@@ -4687,6 +4830,10 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 			target_scroll = 0;
 		}
 	}
+	// The step back: where the list was left, playing track or not.
+	if (opening_step_back && step_back_scroll >= 0) {
+		target_scroll = step_back_scroll;
+	}
 	int max_scroll = body_height(p) - view_height;
 	if (target_scroll > max_scroll) {
 		target_scroll = max_scroll > 0 ? max_scroll : 0;
@@ -4813,6 +4960,12 @@ void medialist_init(gui_config_t *cfg) {
 	build_panel(&panel_names, cfg, false, SLOT_BASE_NAMES);
 	build_panel(&panel_tracks, cfg, true, SLOT_BASE_TRACKS);
 	build_panel(&panel_artist_albums, cfg, false, SLOT_BASE_ARTIST_ALBUMS);
+
+	panel_t *const panels[] = {&panel_names, &panel_tracks, &panel_artist_albums};
+	for (size_t i = 0; i < sizeof(panels) / sizeof(panels[0]); i++) {
+		switcher_set_back_guard(panels[i]->screen, panel_back_guard);
+		switcher_set_back_guard_peek(panels[i]->screen, panel_back_peek);
+	}
 	// The records of one artist carry the disc button too, lit, to go back to
 	// the tracks; leftmost, as on the track list.
 	panel_artist_albums.album_btn =

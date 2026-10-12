@@ -84,6 +84,11 @@ bool cover_load_image_memory(const void *data, size_t size, int box_w, int box_h
 // the file's path, size and mtime, and the picture is not read again.
 uint64_t cover_source_id(const char *filepath);
 
+// True when the player will not need the picture embedded in `filepath` at
+// all: its id is kept (see above), and so is a cover made from it. Reads
+// neither the picture nor the cover, only the two tables. Any thread.
+bool cover_picture_known(const char *filepath);
+
 // Builds both images the player screen needs: the artwork itself, and the
 // upside-down blurred copy drawn behind the controls. A picture already shown
 // at this size comes out of the thumbnail database (one row per picture, shared
