@@ -2026,6 +2026,12 @@ void input_host_button(int code, bool down) {
 #ifndef HOST_BUILD
 static void start_builtin_input_threads(void) {
 	static const char *const NAMES[] = {"md-gpio-keys", "jz adc keyboard"};
+	// The model's own name joins the list rather than replacing it: the two
+	// above are the family's, and a board that names something else -- the V3
+	// Analog, whose keys arrive from "gpio-keys" -- is still watched for what
+	// it really registers.
+	const sysinfo_model_t *model = sysinfo_model();
+	const char *model_name = model ? model->buttons_device_name : NULL;
 	const char *touch = panel_touch_device();
 	int found = 0;
 
@@ -2056,6 +2062,11 @@ static void start_builtin_input_threads(void) {
 				found++;
 				break;
 			}
+		}
+		if (model_name && model_name[0] && strcmp(name, model_name) == 0) {
+			printf("input: %s is this model's button device (%s)\n", node, name);
+			start_input_thread(node, false);
+			found++;
 		}
 	}
 	if (d) {
