@@ -100,15 +100,13 @@ static bool sheet_open; // the player panel is the page on show
 
 // "Always show the status bar" (Settings > Appearance): the bar stays up over
 // the player too. Over the picture that runs to the top edge -- Standard and
-// Waveform -- it wears a strip of that picture, blurred and dimmed like the
+// Waveform -- it blurs and dims what lies under it as it is drawn, like the
 // block behind the controls; Studio, whose whole background is that blurred
 // picture already, moves down under it instead, the chevron and the heading
 // with it (back_btn_player_below_bar).
 static bool bar_always;
-static int bar_height;			// the status bar's, from the config
-static cover_image_t bar_strip; // the top of the cover, blurred, behind the bar
+static int bar_height; // the status bar's, from the config
 static void bar_over_player_update(void);
-static void bar_detach(void);
 static double progress_anchor_secs;
 static uint32_t progress_anchor_tick;
 static bool progress_running;
@@ -2625,7 +2623,7 @@ static void apply_layout(void) {
 	align_title_with_star(); // the title may have just left its row, or come back to it
 
 	paint_alt_tint();
-	bar_over_player_update(); // Studio's bar has no strip of its own
+	bar_over_player_update(); // Studio's bar blurs nothing of its own
 }
 
 // Decides which arrangement the thing now playing gets, and moves the pieces
@@ -2860,7 +2858,6 @@ static void reload_cover(const char *filepath) {
 	if (layout_studio_now && studio_bg) {
 		lv_image_set_src(studio_bg, NULL); // Studio's points at the backdrop freed below
 	}
-	bar_detach(); // the strip behind the status bar is made from the cover going away
 	cover_free(&current_cover);
 	cover_free(&current_backdrop);
 	bar_over_player_update();
@@ -4346,17 +4343,8 @@ bool player_sheet_is_open(void) { return sheet_open; }
 
 bool player_sheet_drag_active(void) { return drag_committed; }
 
-// Lets go of the strip behind the status bar, the bar first.
-static void bar_detach(void) {
-	if (!bar_strip.pixels) {
-		return;
-	}
-	topbar_set_over_artwork(false, NULL);
-	cover_free(&bar_strip);
-}
-
-// The status bar over the open player, when it stays up there: on the strip
-// of the cover under it, on nothing in Studio -- the blurred picture behind
+// The status bar over the open player, when it stays up there: blurring the
+// cover under it, on nothing in Studio -- the blurred picture behind
 // everything is already there -- and in the page's own colours while there is
 // no picture at all, where white would be lost on a light theme.
 static void bar_over_player_update(void) {
@@ -4365,27 +4353,10 @@ static void bar_over_player_update(void) {
 	}
 	topbar_set_hidden(false);
 	if (!current_cover.pixels) {
-		bar_detach();
-		topbar_set_over_artwork(false, NULL);
+		topbar_set_over_artwork(false, false);
 		return;
 	}
-	if (layout_studio_now) {
-		bar_detach();
-		topbar_set_over_artwork(true, NULL);
-		return;
-	}
-	if (!bar_strip.pixels) {
-		// The cover's top rows, looked at in place: a copy of the descriptor
-		// with a shorter height, nothing copied.
-		cover_image_t band = current_cover;
-		int h = bar_height < (int)band.dsc.header.h ? bar_height : (int)band.dsc.header.h;
-		band.dsc.header.h = (uint32_t)h;
-		band.dsc.data_size = band.dsc.header.stride * (uint32_t)h;
-		if (!cover_blur_fill(&band, (int)band.dsc.header.w, h, &bar_strip)) {
-			memset(&bar_strip, 0, sizeof(bar_strip));
-		}
-	}
-	topbar_set_over_artwork(true, bar_strip.pixels ? &bar_strip.dsc : NULL);
+	topbar_set_over_artwork(true, !layout_studio_now);
 }
 
 bool player_statusbar_always(void) { return bar_always; }
@@ -4413,9 +4384,8 @@ void player_set_statusbar_always(bool on) {
 	lyrics_layout();
 
 	if (!on) {
-		bar_detach();
 		if (sheet_open) {
-			topbar_set_over_artwork(false, NULL);
+			topbar_set_over_artwork(false, false);
 			topbar_set_hidden(true);
 		}
 		return;
@@ -4477,7 +4447,7 @@ void player_sheet_close(bool animate) {
 	sheet_open = false;
 	back_btn_player_mode(false);
 	lyrics_screen_hold_update();
-	topbar_set_over_artwork(false, NULL);
+	topbar_set_over_artwork(false, false);
 	topbar_set_hidden(false);
 	// The tab does not travel with the page: coming back to a player with a
 	// panel hanging open is not what leaving it looked like.
