@@ -67,6 +67,21 @@ __asm__(".symver log,log@GLIBC_2.0");
 __asm__(".symver exp2,exp2@GLIBC_2.2");
 __asm__(".symver log2,log2@GLIBC_2.2");
 
+// ---------------------------------------------------------------------------
+// TempoTec V3 Analog: glibc 2.16, not 2.22.
+//
+// clock_gettime moved out of librt into libc in glibc 2.17, and this toolchain
+// (2.27) references the libc copy -- GLIBC_2.17, which the device's libc does
+// not export at all. The device's librt.so.1 does export it, as GLIBC_2.2, so
+// ask for that name and link -lrt (see TARGET_LDFLAGS in the Makefile).
+//
+// Without both halves the binary links and then does not start: the loader
+// stops on `version `GLIBC_2.17' not found`, and the device boot loops.
+//
+// clock_getres, clock_nanosleep and timer_* live in the same place and would
+// need the same treatment if anything calls them.
+__asm__(".symver clock_gettime,clock_gettime@GLIBC_2.2");
+
 #endif
 
 #endif /* GLIBC_COMPAT_H */
