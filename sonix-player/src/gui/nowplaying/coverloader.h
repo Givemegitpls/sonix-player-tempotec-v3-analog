@@ -99,6 +99,12 @@ void coverloader_request_player_id(const char *path);
 // 0 when the track has no artwork at all.
 bool coverloader_take_player_id(uint64_t *id, bool *finished);
 
+// Makes the player's cover of `path` at cover_w x cover_h and keeps it in the
+// cache (cover_prefetch_player()), for the track that is likely to come next.
+// Nothing comes back. The lowest priority there is: it waits for every other
+// job, and a newer request replaces one not yet started.
+void coverloader_prefetch_player(const char *path, int cover_w, int cover_h);
+
 // ---------------------------------------------------------------------------
 // The screensaver's photograph -- the full-screen picture and the blurred block
 // over its lower part.
