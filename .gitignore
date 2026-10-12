@@ -39,3 +39,12 @@ sonix-packer/sonix_player
 sonix-packer/r3proii_original.upt
 sonix-packer/r1_original.upt
 sonix-packer/sonix_launch
+
+# The V3 Analog port: the simulator's own resource tree (fonts and languages,
+# the same files sonix-player/assets/ carries), the pseudo-sysroot built to
+# cross-compile the Bluetooth userland, and the packages and tarballs it is
+# assembled from.
+sonix-player/usr/
+sysroot/
+*.deb
+*.tar.*

@@ -35,6 +35,16 @@ static const sysinfo_model_t MODELS[] = {
 		.one_flank = false,
 		.media_keys_swapped = true,
 		.one_boot_logo = false,
+		.boot_logo_flash = true,
+		.backlight_dir = NULL,
+		.mixer_card = 0,
+		.user_data_dir = NULL,
+		.buttons_device_name = NULL,
+		.bluetoothd_path = NULL,
+		.bt_firmware_dir = NULL,
+		.bluetooth_stack = true,
+		.single_fb_page = false,
+		.pcm_device = NULL,
 	},
 	{
 		.name = "HiBy R1",
@@ -50,6 +60,16 @@ static const sysinfo_model_t MODELS[] = {
 		.one_flank = true,
 		.media_keys_swapped = false,
 		.one_boot_logo = false,
+		.boot_logo_flash = true,
+		.backlight_dir = NULL,
+		.mixer_card = 0,
+		.user_data_dir = NULL,
+		.buttons_device_name = NULL,
+		.bluetoothd_path = NULL,
+		.bt_firmware_dir = NULL,
+		.bluetooth_stack = true,
+		.single_fb_page = false,
+		.pcm_device = NULL,
 	},
 	{
 		// Charger in the AXP2101 PMIC; AK4493SEQ DAC with 3.5 mm and 4.4 mm.
@@ -71,6 +91,88 @@ static const sysinfo_model_t MODELS[] = {
 		// TempoTec's own logo is /etc/logo.jpeg. logo1 and logo2 are HiBy's,
 		// left over from the base firmware and sized for other panels.
 		.one_boot_logo = true,
+		.boot_logo_flash = true,
+		.backlight_dir = NULL,
+		.mixer_card = 0,
+		.user_data_dir = NULL,
+		.buttons_device_name = NULL,
+		.bluetoothd_path = NULL,
+		.bt_firmware_dir = NULL,
+		.bluetooth_stack = true,
+		.single_fb_page = false,
+		.pcm_device = NULL,
+	},
+	{
+		// TempoTec Variations V3 Analog (V3-A) -- the 2024 firmware
+		// generation: glibc 2.16, Ingenic X1000E, the same 320x480 glass as the
+		// Blaze and the same dual AK4493SEQ behind it, but a different machine
+		// underneath.
+		//
+		// What is its own here, all of it measured on the device rather than
+		// guessed:
+		//   * the codec's controls and the analogue output are on card 1 -- card
+		//     0 is "sa_spdif", a dummy the optical route shares (hw:1);
+		//   * /dev/i2c-0 does not exist, so the AXP2101 charge limit cannot be
+		//     written the way axpcharge.c does it; the stock player goes through
+		//     /sys/class/axppower and /sys/class/power_supply/usb instead. Until
+		//     that is written, the switch is off rather than writing nothing and
+		//     saying it did;
+		//   * /dev/mtd5 is the /data UBI volume, not a scratch partition, so the
+		//     boot logo marker must never be written there (boot_logo_flash);
+		//   * no /etc/logo.jpeg (TempoTec's own logo is on the Blaze only), so
+		//     the logo selector keeps its default;
+		//   * the three skip/volume keys are one arrangement with KEY_NEXTSONG
+		//     going forward -- not yet confirmed against the case, so this is the
+		//     stock ordering and a device test is owed.
+		.name = "TempoTec V3 Analog",
+		.panel_width = 480,
+		.panel_height = 720,
+		.update_stem = "v3_analog",
+		.serial_prefix = "",
+		.pmic_charger = false,
+		.cs43131 = false,
+		.ak4493 = true,
+		.remap_list = true,
+		.tap_wake = false,
+		.one_flank = false,
+		// The key the kernel calls NEXTSONG is the one the case prints as back,
+		// as on the R3 Pro II. Said by the user watching the list move the wrong
+		// way when the forward button was pressed.
+		.media_keys_swapped = true,
+		.one_boot_logo = false,
+		.boot_logo_flash = false,
+		// The kernel driver registers "pwm-backlight.0" here; the stock firmware
+		// writes the same node. The HiBy boards' "backlight_pwm0" does not exist
+		// on this one, which is why the model carries the name at all.
+		.backlight_dir = "/sys/class/backlight/pwm-backlight.0",
+		.mixer_card = 1,
+		// The writable volume, mounted at /data (ubi1_0). The Blaze's /usr/data
+		// does not exist here, and a settings file that cannot be written is a
+		// player that forgets the language, the time zone and the volume on
+		// every boot -- which is what the log said before this line existed.
+		.user_data_dir = "/data",
+		// The kernel registers the case keys as "gpio-keys"; the family names
+		// have never matched it, so this board watched no key device at all.
+		.buttons_device_name = "gpio-keys",
+		// The stock firmware's own bluetoothd path (its init starts that one) and
+		// its own firmware directory: the .hcd sits in /lib/firmware, not in a
+		// bt_bcm subdirectory.
+		.bluetoothd_path = "/usr/sbin/bluetoothd",
+		.bt_firmware_dir = "/lib/firmware",
+		// The firmware's own Bluetooth stack runs here, not this port's: its
+		// modules, its scripts, its firmware files. Talking to it from the port
+		// gets a failed registration every three seconds and nothing else, so the
+		// port keeps its hands off until that is really ported.
+		.bluetooth_stack = true,
+		// Two pages, and the frame on the glass is the one drawn two frames ago:
+		// the user turns the volume down, nothing appears, and the pill shows up
+		// on the next scroll -- measured on the device, 2026-10-13. One page and
+		// no debt between the two.
+		.single_fb_page = true,
+		// plughw and not hw: the codec's PCM accepts a narrow set of formats and
+		// rates, and what it takes exactly has not been measured yet, so the
+		// plug is what keeps a 24/96 track from being refused outright.
+		.pcm_device = "plughw:1,0",
 	},
 };
 
@@ -191,6 +293,11 @@ const char *sysinfo_ota_repo(void) { return ota_repo; }
 // Matched without regard to case or to the spelling of "HiBy": the name is
 // typed by hand into a text file, and "Hiby R1" is the same player as
 // "HiBy R1".
+const char *sysinfo_user_data_dir(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	return (model && model->user_data_dir) ? model->user_data_dir : "/usr/data";
+}
+
 const sysinfo_model_t *sysinfo_model(void) {
 	if (!device_name[0]) {
 		return NULL;

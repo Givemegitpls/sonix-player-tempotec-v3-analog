@@ -76,7 +76,44 @@ typedef struct {
 	bool one_flank;			   // every button on the right flank (remap.c)
 	bool media_keys_swapped;   // KEY_NEXTSONG is the upper skip key, not next (system.c)
 	bool one_boot_logo;		   // /etc/logo.jpeg whatever the theme; logo1/logo2 are not its own (bootlogo.h)
+	bool boot_logo_flash;	   // the theme marker is written into the flash (bootlogo.c). False where the
+							   // partition that holds it is a filesystem in use, as on the V3 Analog, where
+							   // /dev/mtd5 is the UBI volume /data is mounted from.
+	const char *backlight_dir; // /sys/class/backlight/<this>, whose brightness and max_brightness the
+							   // player writes (main.c). The name belongs to the kernel driver, not to
+							   // the player: NULL keeps the HiBy boards' own "backlight_pwm0", and a
+							   // wrong one here is silent -- the writes go nowhere and the screen stays
+							   // at the level the last process left it at.
+	bool bluetooth_stack;	   // the Bluetooth stack this port manages is the one that runs here
+							   // (main.c). False where the firmware's own stack is a different
+							   // one -- the V3 Analog's -- so nothing talks to it, and nothing
+							   // retries a registration against it every three seconds either.
+	bool single_fb_page;	   // drive the panel from one framebuffer page instead of two (main.c).
+							   // The V3 Analog's panel is an SLCD whose DMA reads one page; with two the
+							   // frame the user is looking at is always the one written two frames ago,
+							   // and each page owes the other everything that changed while it was off
+							   // screen, which is a full-screen copy per frame. One page and no debt.
+	int mixer_card;			   // the ALSA card whose mixer controls this board's codec (alsa-controls.c):
+							   // 0 on the HiBy boards and the Blaze, 1 on the V3 Analog
+	const char *user_data_dir; // where the settings and the reader's file are written; NULL is
+							   // "/usr/data" (sysinfo_user_data_dir)
+	const char *bluetoothd_path; // the BlueZ daemon this port starts, and where the controller's
+							   // firmware file lives (bluetooth.c). NULL keeps the HiBy boards'
+	const char *bt_firmware_dir; // own "/usr/libexec/bluetooth/bluetoothd" and "/lib/firmware/bt_bcm";
+							   // the V3 Analog's are "/usr/sbin/bluetoothd" and "/lib/firmware".
+	const char *buttons_device_name; // the input device the case's keys arrive from, by the name the
+							   // kernel gives it (system.c). NULL is the HiBy boards' own pair,
+							   // "md-gpio-keys"/"jz adc keyboard"; the V3 Analog's is "gpio-keys",
+							   // which neither list holds -- and a key device nothing reads is a
+							   // player whose volume and skip buttons do nothing at all
+	const char *pcm_device;	   // the ALSA name the built-in output is opened as; NULL is "default"
 } sysinfo_model_t;
+
+// The writable user area: /usr/data on the HiBy boards and the Blaze, /data on
+// the V3 Analog (a UBIFS volume of its own, mounted, empty and writable). The
+// settings and the reader's file live here; sysinfo_user_data_dir() is the
+// resolved path, "/usr/data" when the model does not name one.
+const char *sysinfo_user_data_dir(void);
 
 // The entry for the name in the file, or NULL when the file says nothing or
 // names a player this binary does not know. NULL is not a failure to paper
