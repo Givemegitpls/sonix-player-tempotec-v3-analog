@@ -1,6 +1,7 @@
 #include "bluetooth.h"
 
 #include "src/system/core/respath.h"
+#include "src/system/device/sysinfo.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -58,6 +59,35 @@
 // The address the firmware generated once and wrote down. It is the device's
 // Bluetooth identity: change it and every pair of headphones on the shelf sees
 // a device it has never met, and the link keys they hold stop matching.
+// Where the controller's firmware lives and which bluetoothd to start: both are
+// the kernel driver's and the firmware image's business, not the player's, so the
+// model carries them (sysinfo.h). The V3 Analog keeps the stock firmware's own
+// paths -- /lib/firmware for the .hcd and /usr/sbin/bluetoothd, the binary the
+// firmware's init itself starts.
+static const char *bluetoothd_bin(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	return (model && model->bluetoothd_path) ? model->bluetoothd_path : "/usr/libexec/bluetooth/bluetoothd";
+}
+
+static const char *bt_firmware_dir(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	return (model && model->bt_firmware_dir) ? model->bt_firmware_dir : "/lib/firmware/bt_bcm";
+}
+
+// The address this device presents is made once and kept beside the settings:
+// the writable volume's name is the model's too (sysinfo_user_data_dir()).
+static const char *bt_mac_file(void) {
+	static char path[128];
+	snprintf(path, sizeof(path), "%s/bt_macaddr.txt", sysinfo_user_data_dir());
+	return path;
+}
+
+static const char *bt_alsa_conf(void) {
+	static char path[128];
+	snprintf(path, sizeof(path), "%s/alsa.conf", sysinfo_user_data_dir());
+	return path;
+}
+
 #define BT_MAC_FILE "/usr/data/bt_macaddr.txt"
 
 // What the address is derived from when that file is not there. The Wi-Fi
@@ -644,9 +674,9 @@ static void firmware_name(char *out, size_t size) {
 	// at all, takes the AP6212 blob -- which is the same choice the firmware's
 	// script makes.
 	if (slurp(BT_CHIPVENDOR, vendor, sizeof(vendor)) && strncmp(vendor, "0x81", 4) != 0) {
-		snprintf(out, size, BT_FIRMWARE_DIR "/" BT_FIRMWARE_AP);
+		snprintf(out, size, "%s/" BT_FIRMWARE_AP, bt_firmware_dir());
 	} else {
-		snprintf(out, size, BT_FIRMWARE_DIR "/" BT_FIRMWARE_AW);
+		snprintf(out, size, "%s/" BT_FIRMWARE_AW, bt_firmware_dir());
 	}
 }
 
@@ -746,27 +776,27 @@ static bool address_from_random(char *out, size_t size) {
 // would match again.
 static bool device_address(char *out, size_t size) {
 	char stored[64];
-	if (slurp(BT_MAC_FILE, stored, sizeof(stored))) {
+	if (slurp(bt_mac_file(), stored, sizeof(stored))) {
 		stored[strcspn(stored, "\r\n")] = '\0';
 		if (address_is_shaped(stored)) {
 			snprintf(out, size, "%s", stored);
 			return true;
 		}
-		fprintf(stderr, "bluetooth: the address in %s is not an address; making one\n", BT_MAC_FILE);
+		fprintf(stderr, "bluetooth: the address in %s is not an address; making one\n", bt_mac_file());
 	} else {
-		fprintf(stderr, "bluetooth: %s is not there; making an address for this device\n", BT_MAC_FILE);
+		fprintf(stderr, "bluetooth: %s is not there; making an address for this device\n", bt_mac_file());
 	}
 
 	if (!address_from_wifi(out, size) && !address_from_random(out, size)) {
 		return false;
 	}
 
-	int fd = open(BT_MAC_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	int fd = open(bt_mac_file(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (fd < 0) {
 		// The radio still comes up; it is the next boot that will have to make
 		// the address again, and the headphones paired in between will not know
 		// this device when it does.
-		fprintf(stderr, "bluetooth: %s could not be written; %s will not survive a reboot\n", BT_MAC_FILE, out);
+		fprintf(stderr, "bluetooth: %s could not be written; %s will not survive a reboot\n", bt_mac_file(), out);
 		return true;
 	}
 	char line[32];
@@ -853,7 +883,7 @@ static bool ensure_bluetoothd(void) {
 		if (btlog_enabled()) {
 			argv[3] = (char *)"-d";
 		}
-		spawn_daemon(BLUETOOTHD_BIN, argv);
+		spawn_daemon(bluetoothd_bin(), argv);
 	}
 
 	if (!btstack_wait_service("org.bluez", WAIT_BLUETOOTHD_MS)) {
@@ -1366,11 +1396,11 @@ static bool name_is_just_address(const char *name, const char *mac) {
 // the stock player rewrites whenever a sink connects. Kept in step here for the
 // same reason: it is the file the patched bluealsa reads its LDAC and UAT
 // quality settings from.
-#define BT_ALSA_CONF "/usr/data/alsa.conf"
+#define BT_ALSA_CONF_LEGACY "/usr/data/alsa.conf"
 
 static void rewrite_alsa_conf(const char *mac) {
 	char before[4096];
-	if (!slurp(BT_ALSA_CONF, before, sizeof(before))) {
+	if (!slurp(bt_alsa_conf(), before, sizeof(before))) {
 		return; // no template on this firmware; nothing to keep in step
 	}
 
@@ -1401,7 +1431,7 @@ static void rewrite_alsa_conf(const char *mac) {
 		used += (size_t)written;
 	}
 
-	FILE *f = fopen(BT_ALSA_CONF, "w");
+	FILE *f = fopen(bt_alsa_conf(), "w");
 	if (!f) {
 		return;
 	}
