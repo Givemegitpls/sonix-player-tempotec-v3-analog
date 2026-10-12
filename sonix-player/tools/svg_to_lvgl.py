@@ -241,6 +241,8 @@ ICONS = [
     ("circle-alert.svg", "circle_alert", 64), # ...and what a failure shows instead
     ("book-headphones.svg", "book_headphones", 128),
     ("book-headphones.svg", "book_headphones_row", 64), # audiobook rows with no cover
+    # Music and Audiobooks with no card in the slot, or the card at a computer.
+    ("sd-card.svg", "sd_card", 128),
     # The same glyph the podcast rows use, at the size the three the player
     # stands in with are drawn: an episode with no artwork gets this one.
     ("podcast-list.svg", "podcast_cover", 128),

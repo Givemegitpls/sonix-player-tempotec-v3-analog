@@ -141,6 +141,7 @@ extern const lv_image_dsc_t icon_circle_check;
 extern const lv_image_dsc_t icon_circle_alert;
 extern const lv_image_dsc_t icon_book_headphones;
 extern const lv_image_dsc_t icon_book_headphones_row;
+extern const lv_image_dsc_t icon_sd_card;
 extern const lv_image_dsc_t icon_podcast_cover;
 extern const lv_image_dsc_t icon_shuffle;
 extern const lv_image_dsc_t icon_shuffle_repeat;
