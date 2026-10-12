@@ -97,6 +97,18 @@ static lv_timer_t *sleep_timer;
 // lv_tick_get()'s, which is the same clock the timer is driven by.
 static lv_timer_t *smooth_timer;
 static bool sheet_open; // the player panel is the page on show
+
+// "Always show the status bar" (Settings > Appearance): the bar stays up over
+// the player too. Over the picture that runs to the top edge -- Standard and
+// Waveform -- it wears a strip of that picture, blurred and dimmed like the
+// block behind the controls; Studio, whose whole background is that blurred
+// picture already, moves down under it instead, the chevron and the heading
+// with it (back_btn_player_below_bar).
+static bool bar_always;
+static int bar_height;			// the status bar's, from the config
+static cover_image_t bar_strip; // the top of the cover, blurred, behind the bar
+static void bar_over_player_update(void);
+static void bar_detach(void);
 static double progress_anchor_secs;
 static uint32_t progress_anchor_tick;
 static bool progress_running;
@@ -178,6 +190,10 @@ static lv_obj_t *below_slider_obj; // the two clocks under the bar
 // share. One number, because they replace each other in that corner and a
 // difference between them would read as the mark jumping.
 #define BADGE_INSET 14
+
+// Where the marks sit over the artwork: in its corner, under the status bar
+// when the bar stays up.
+static int badge_top(void) { return BADGE_INSET + (bar_always ? bar_height : 0); }
 
 static lv_obj_t *live_badge;	   // live indicator, top right over the artwork
 static lv_obj_t *qobuz_badge;	   // the Qobuz mark, in the same corner
@@ -975,6 +991,21 @@ void player_cover_box(int *w, int *h) {
 	if (h) {
 		*h = cover_box_h;
 	}
+}
+
+bool player_cover_copy(int size, cover_image_t *out, uint64_t *id) {
+	*id = 0;
+	// Only a settled cover: while one is coming, or a track change is still
+	// asking whether its picture is the same, what is up may be the last
+	// track's.
+	if (!current_cover.pixels || cover_request_outstanding || cover_id_state != COVER_ID_IDLE) {
+		return false;
+	}
+	if (!cover_scaled_copy(&current_cover, size, out)) {
+		return false;
+	}
+	*id = cover_shown_id;
+	return true;
 }
 
 // The path whose artwork is currently up. A live stream refreshes its text
@@ -2390,7 +2421,7 @@ static void studio_take_back(void) {
 		for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
 			if (marks[i]) {
 				lv_obj_set_parent(marks[i], cover_panel);
-				lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
+				lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 			}
 		}
 		set_over_cover(current_cover.pixels != NULL);
@@ -2594,6 +2625,7 @@ static void apply_layout(void) {
 	align_title_with_star(); // the title may have just left its row, or come back to it
 
 	paint_alt_tint();
+	bar_over_player_update(); // Studio's bar has no strip of its own
 }
 
 // Decides which arrangement the thing now playing gets, and moves the pieces
@@ -2828,8 +2860,10 @@ static void reload_cover(const char *filepath) {
 	if (layout_studio_now && studio_bg) {
 		lv_image_set_src(studio_bg, NULL); // Studio's points at the backdrop freed below
 	}
+	bar_detach(); // the strip behind the status bar is made from the cover going away
 	cover_free(&current_cover);
 	cover_free(&current_backdrop);
+	bar_over_player_update();
 
 	cover_show(false);
 	// Studio holds pointers to both of those, so it is told in the same breath:
@@ -3006,6 +3040,7 @@ static void apply_cover_result(void) {
 		cover_shown_id = 0; // nothing to compare the next track against
 		lyrics_bg_forget(); // no picture, nothing to blur
 	}
+	bar_over_player_update();
 	if (lyrics_progress > 0) {
 		lyrics_look(true); // Studio's backdrop has arrived, or there is none
 	}
@@ -4311,6 +4346,83 @@ bool player_sheet_is_open(void) { return sheet_open; }
 
 bool player_sheet_drag_active(void) { return drag_committed; }
 
+// Lets go of the strip behind the status bar, the bar first.
+static void bar_detach(void) {
+	if (!bar_strip.pixels) {
+		return;
+	}
+	topbar_set_over_artwork(false, NULL);
+	cover_free(&bar_strip);
+}
+
+// The status bar over the open player, when it stays up there: on the strip
+// of the cover under it, on nothing in Studio -- the blurred picture behind
+// everything is already there -- and in the page's own colours while there is
+// no picture at all, where white would be lost on a light theme.
+static void bar_over_player_update(void) {
+	if (!sheet_open || !bar_always) {
+		return;
+	}
+	topbar_set_hidden(false);
+	if (!current_cover.pixels) {
+		bar_detach();
+		topbar_set_over_artwork(false, NULL);
+		return;
+	}
+	if (layout_studio_now) {
+		bar_detach();
+		topbar_set_over_artwork(true, NULL);
+		return;
+	}
+	if (!bar_strip.pixels) {
+		// The cover's top rows, looked at in place: a copy of the descriptor
+		// with a shorter height, nothing copied.
+		cover_image_t band = current_cover;
+		int h = bar_height < (int)band.dsc.header.h ? bar_height : (int)band.dsc.header.h;
+		band.dsc.header.h = (uint32_t)h;
+		band.dsc.data_size = band.dsc.header.stride * (uint32_t)h;
+		if (!cover_blur_fill(&band, (int)band.dsc.header.w, h, &bar_strip)) {
+			memset(&bar_strip, 0, sizeof(bar_strip));
+		}
+	}
+	topbar_set_over_artwork(true, bar_strip.pixels ? &bar_strip.dsc : NULL);
+}
+
+bool player_statusbar_always(void) { return bar_always; }
+
+void player_set_statusbar_always(bool on) {
+	if (on == bar_always) {
+		return;
+	}
+	bar_always = on;
+	back_btn_player_below_bar(on);
+
+	// The marks in the artwork's corner, and everything lined up with the
+	// chevron, follow it down or back up.
+	if (!studio_up) {
+		lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge};
+		for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
+			if (marks[i]) {
+				lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
+			}
+		}
+	}
+	if (layout_studio_now) {
+		studio_place();
+	}
+	lyrics_layout();
+
+	if (!on) {
+		bar_detach();
+		if (sheet_open) {
+			topbar_set_over_artwork(false, NULL);
+			topbar_set_hidden(true);
+		}
+		return;
+	}
+	bar_over_player_update();
+}
+
 void player_sheet_open(bool animate) {
 	// Nothing to show while another mode owns the sound: the sheet is about a
 	// track this player is playing, and in Bluetooth receiver mode the track is
@@ -4338,8 +4450,13 @@ void player_sheet_open(bool animate) {
 	lv_obj_move_background(player_screen);
 
 	// Artwork runs to the top edge here, so the bar steps aside. It is hidden
-	// rather than moved, which is why nothing slides during the drag.
-	topbar_set_hidden(true);
+	// rather than moved, which is why nothing slides during the drag. Unless
+	// it is to stay up: then it goes over the artwork.
+	if (bar_always) {
+		bar_over_player_update();
+	} else {
+		topbar_set_hidden(true);
+	}
 
 	sheet_move_to(0, animate);
 }
@@ -4360,6 +4477,7 @@ void player_sheet_close(bool animate) {
 	sheet_open = false;
 	back_btn_player_mode(false);
 	lyrics_screen_hold_update();
+	topbar_set_over_artwork(false, NULL);
 	topbar_set_hidden(false);
 	// The tab does not travel with the page: coming back to a player with a
 	// panel hanging open is not what leaving it looked like.
@@ -4953,7 +5071,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(live_badge, 6, 0);
 	lv_obj_set_style_pad_hor(live_badge, 10, 0);
 	lv_obj_set_style_pad_ver(live_badge, 5, 0);
-	lv_obj_align(live_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
+	lv_obj_align(live_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(live_badge, true);
 
 	// The Qobuz mark, in the same corner and for the same reason: say where
@@ -4962,20 +5080,20 @@ void player_init(gui_config_t *cfg) {
 	// it into a solid square).
 	qobuz_badge = lv_image_create(cover_panel);
 	lv_image_set_src(qobuz_badge, &icon_qobuz_badge);
-	lv_obj_align(qobuz_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
+	lv_obj_align(qobuz_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(qobuz_badge, true);
 
 	// Same corner, same size: the marks replace each other instead of sitting
 	// side by side, and update_qobuz_badge() decides which.
 	tidal_badge = lv_image_create(cover_panel);
 	lv_image_set_src(tidal_badge, &icon_tidal_badge);
-	lv_obj_align(tidal_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
+	lv_obj_align(tidal_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(tidal_badge, true);
 
 	// And the third, same corner and same size as the other two.
 	podcast_badge = lv_image_create(cover_panel);
 	lv_image_set_src(podcast_badge, &icon_podcast_badge);
-	lv_obj_align(podcast_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
+	lv_obj_align(podcast_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(podcast_badge, true);
 
 	// Shown while there is no artwork for the current track.
@@ -5161,6 +5279,10 @@ void player_init(gui_config_t *cfg) {
 	// The backdrop over a loaded cover is always the dark treatment -- same
 	// look in both themes; only the no-cover panel follows the theme.
 	cover_set_backdrop_light(false);
+
+	// The status bar over the player, as it was left.
+	bar_height = (int)cfg->top_bar_height;
+	player_set_statusbar_always(config_get_int("screen", "statusbar_always", 0) != 0);
 
 	// Whichever arrangement was left selected, now that every widget it moves
 	// exists.

@@ -128,7 +128,14 @@ static lv_style_t tint_icon_style;
 
 // The battery shell's colour: the ink, or the theme's, and quieter when the
 // level is not known.
+// Up over the player's artwork (topbar_set_over_artwork): white on the
+// picture, whatever the theme or the page underneath says.
+static bool over_art;
+
 static lv_color_t shell_color(bool known) {
+	if (over_art) {
+		return known ? lv_color_white() : lv_color_make(200, 200, 200);
+	}
 	if (tint_active) {
 		return known ? tint_ink : lv_color_mix(tint_ink, tint_bg, 140);
 	}
@@ -1087,8 +1094,8 @@ void topbar_set_battery_percent(bool shown) {
 
 // Puts the bar in the tint or back in the theme, for the page now shown.
 static void tint_apply(void) {
-	if (!top_bar) {
-		return;
+	if (!top_bar || over_art) {
+		return; // the artwork's look holds for as long as the player is up
 	}
 	bool active = tint_screen && tint_page == tint_screen;
 	if (active == tint_active && !active) {
@@ -1112,6 +1119,36 @@ static void tint_apply(void) {
 
 	// The shell carries its colour on itself; it is painted now, and the next
 	// poll paints the whole indicator again.
+	lv_obj_set_style_image_recolor(bat_shell, shell_color(last_battery_percent >= 0), 0);
+	last_battery_percent = -2;
+}
+
+void topbar_set_over_artwork(bool on, const lv_image_dsc_t *bg) {
+	if (!top_bar) {
+		return;
+	}
+	if (on) {
+		over_art = true;
+		lv_obj_set_style_bg_opa(top_bar, LV_OPA_TRANSP, 0);
+		lv_obj_set_style_bg_image_src(top_bar, bg, 0);
+		lv_obj_set_style_bg_image_opa(top_bar, LV_OPA_COVER, 0);
+		lv_style_set_text_color(&tint_text_style, lv_color_white());
+		lv_style_set_image_recolor(&tint_icon_style, lv_color_white());
+		lv_style_set_image_recolor_opa(&tint_icon_style, LV_OPA_COVER);
+		lv_obj_report_style_change(&tint_text_style);
+		lv_obj_report_style_change(&tint_icon_style);
+	} else if (over_art) {
+		over_art = false;
+		lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BG_OPA, 0);
+		lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BG_IMAGE_SRC, 0);
+		lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BG_IMAGE_OPA, 0);
+		// Whatever the page underneath wants, from scratch: the tint's styles
+		// hold the artwork's white until this puts them back.
+		tint_active = true;
+		tint_apply();
+	} else {
+		return;
+	}
 	lv_obj_set_style_image_recolor(bat_shell, shell_color(last_battery_percent >= 0), 0);
 	last_battery_percent = -2;
 }

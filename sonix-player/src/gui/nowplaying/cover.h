@@ -164,6 +164,15 @@ uint32_t cover_tone_stretched(uint32_t tone);
 // What an album's page puts at its head. Runs on the loader thread.
 bool cover_load_shared(const char *filepath, int player_w, int player_h, int size, cover_image_t *out);
 
+// A copy of `src` scaled to fill a square of `size`, with its colour kept. For
+// a picture already on screen that another page wants smaller, on the spot:
+// a scale, no decode.
+bool cover_scaled_copy(const cover_image_t *src, int size, cover_image_t *out);
+
+// The id cover_source_id() keeps for `filepath`, when it keeps one: from the
+// table only, nothing is read. False for a track not seen yet.
+bool cover_known_id(const char *filepath, uint64_t *id);
+
 void cover_free(cover_image_t *img);
 
 // How the blurred backdrop is toned down so text stays readable on top of it:

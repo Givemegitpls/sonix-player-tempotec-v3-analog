@@ -1740,6 +1740,23 @@ bool cover_load_shared(const char *filepath, int player_w, int player_h, int siz
 	return ok;
 }
 
+bool cover_scaled_copy(const cover_image_t *src, int size, cover_image_t *out) {
+	memset(out, 0, sizeof(*out));
+	raw_image_t raw;
+	if (size <= 0 || !raw_from_cover(src, &raw)) {
+		return false;
+	}
+	bool ok = make_scaled(&raw, size, size, COVER_FIT_COVER, out);
+	raw_free(&raw);
+	if (ok) {
+		out->has_tone = src->has_tone;
+		out->tone = src->tone;
+		out->tone_luma = src->tone_luma;
+		out->tone_light = src->tone_light;
+	}
+	return ok;
+}
+
 void cover_free(cover_image_t *img) {
 	if (!img)
 		return;
@@ -2398,10 +2415,14 @@ uint64_t cover_source_id(const char *filepath) {
 	return player_source_id(filepath, &index);
 }
 
-bool cover_picture_known(const char *filepath) {
+bool cover_known_id(const char *filepath, uint64_t *id) {
 	char key[32];
+	return player_id_key(filepath, key, sizeof(key)) && player_id_lookup(key, id);
+}
+
+bool cover_picture_known(const char *filepath) {
 	uint64_t id = 0;
-	if (!player_id_key(filepath, key, sizeof(key)) || !player_id_lookup(key, &id)) {
+	if (!cover_known_id(filepath, &id)) {
 		return false;
 	}
 	// Any size of it: the rows of one picture share the id and then '|', and

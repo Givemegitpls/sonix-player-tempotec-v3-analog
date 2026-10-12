@@ -50,8 +50,8 @@ static gui_config_t *grid_cfg;
 // Which tiles, in which order
 //
 // Every tile is in use to begin with, in the order of TILES. The user can put
-// them in another order and leave some out (Music settings > Display options
-// > Library > Rearrange main page); at least one always stays. Both lists are
+// them in another order and leave some out (Music settings > Library >
+// Rearrange main page); at least one always stays. Both lists are
 // kept in the config by the tiles' names, so a tile added by a later build is
 // simply one the saved lists do not mention, and joins the end of the tiles in
 // use.

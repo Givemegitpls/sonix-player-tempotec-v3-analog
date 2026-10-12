@@ -38,7 +38,7 @@
 #define COVERLOADER_COVERFLOW_BASE 84
 
 // The big cover above an album's tracks, when the album page is laid out with
-// one (Music > Display options > Library). One picture, the size of most of the
+// one (Music > Library). One picture, the size of most of the
 // screen's width.
 #define COVERLOADER_ALBUM_HEAD 90
 

@@ -50,6 +50,11 @@ void topbar_page_shown(lv_obj_t *screen);
 // Shows or hides the status bar. Pages that want the full screen height (the
 // player, with its artwork flush to the top) hide it on entry.
 void topbar_set_hidden(bool hidden);
+
+// The bar laid over the player's artwork: `bg` behind it -- a blurred strip of
+// the picture underneath, or NULL for nothing at all -- and its text and
+// glyphs in white. Off gives it back the colours of the page underneath.
+void topbar_set_over_artwork(bool on, const lv_image_dsc_t *bg);
 bool topbar_is_hidden(void);
 
 // Draws the bar above everything else on the top layer. The control centre

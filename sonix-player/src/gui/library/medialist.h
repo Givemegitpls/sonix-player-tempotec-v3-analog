@@ -27,7 +27,7 @@ extern lv_obj_t *medialist_albums_screen;
 void medialist_init(gui_config_t *cfg);
 
 // Whether tapping an artist or a genre opens its records or its tracks. On by
-// default; Music > Display options turns it off, and an artist or genre page is
+// default; Music > Library turns it off, and an artist or genre page is
 // then a flat list of tracks (an artist's with the album grouping on the corner
 // button).
 bool medialist_album_view(void);
@@ -37,17 +37,24 @@ void medialist_set_album_view(bool on);
 // cover, title, artist, genre and year and three buttons -- shuffle, play and a
 // track into the queue, circle-play's choices -- which scrolls away with the
 // rows. The page takes the sleeve's colour, and the rows carry track numbers
-// instead of covers. Off by default; Music > Display options > Library. On a record of more than one disc there is a
-// "Disc N" heading above the first track of each disc either way.
+// instead of covers. Off by default; Music > Library. On a record of more
+// than one disc there is a "Disc N" heading above the first track of each disc
+// either way.
 bool medialist_album_head(void);
 void medialist_set_album_head(bool on);
 
 // "Go to the current track": All tracks, Albums, Artists, Album artists and
 // Genres open scrolled to the row of what is playing -- the track itself in
 // All tracks, its album, artist, album artist or genre in the others. Off by
-// default; Music > Display options.
+// default; Music > Library.
 bool medialist_go_to_current(void);
 void medialist_set_go_to_current(bool on);
+
+// "Allow deleting tracks": selection mode on a list of tracks gets a bin, which
+// deletes the chosen tracks from the card and from the library after asking.
+// Off by default; Music > Library.
+bool medialist_allow_delete(void);
+void medialist_set_allow_delete(bool on);
 
 // Whether a track row wears a small badge saying what it is -- lossy, CD,
 // hi-res or DSD -- under its title. Off by default.
