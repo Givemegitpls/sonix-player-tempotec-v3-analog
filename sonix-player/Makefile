@@ -163,7 +163,9 @@ HOST_LDFLAGS = $(TIMER_WRAP) $(shell sdl2-config --libs) -lpthread -lm -ldl -las
 			   $(shell pkg-config --libs opusfile wavpack)
 #
 # --gc-sections: the other half of -ffunction-sections (see TARGET_CFLAGS).
-TARGET_LDFLAGS = $(TIMER_WRAP) $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS) -lpthread -lm -ldl -lasound \
+# -lrt: the V3 Analog's glibc 2.16 has clock_gettime in librt, not in libc
+# (it moved in 2.17). glibc_compat.h asks for it by its librt name.
+TARGET_LDFLAGS = $(TIMER_WRAP) $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS) -lpthread -lm -ldl -lasound -lrt \
 				 $(GB_LDFLAGS) -Wl,--gc-sections
 
 # FreeType for the target, built static: the rootfs has no libfreetype.so. The
@@ -351,7 +353,11 @@ CROSS_READELF ?= $(ROCKBOX_TOOLCHAIN_DIR)/bin/mipsel-rockbox-linux-gnu-readelf
 
 # The device's glibc, as major.minor.
 DEVICE_GLIBC_MAJOR = 2
-DEVICE_GLIBC_MINOR = 22
+# The TempoTec V3 Analog carries glibc 2.16 (the Blaze, the R3 Pro II and the R1
+# 2.22). The toolchain is 2.27 with --enable-oldest-abi=2.16, so most symbols
+# resolve to the old names by themselves; the ones that do not are named in
+# glibc_compat.h.
+DEVICE_GLIBC_MINOR = 16
 
 .PHONY: check-abi
 check-abi:
