@@ -107,9 +107,18 @@ static void *write_main(void *arg) {
 }
 
 void bootlogo_follow_theme(bool dark) {
+	// Where the marker lives is a flash partition, and on some boards that
+	// partition is a filesystem in use: on the V3 Analog /dev/mtd5 is the UBI
+	// volume /data is mounted from, and an eraseblock erased there takes the
+	// media library with it. A model that says so is left alone -- the boot logo
+	// simply keeps whatever the firmware image holds.
+	const sysinfo_model_t *model = sysinfo_model();
+	if (model && !model->boot_logo_flash) {
+		return;
+	}
+
 	// logo1 is the pale image, logo2 the dark one. A player whose own logo is
 	// logo.jpeg alone gets a marker the script matches neither way.
-	const sysinfo_model_t *model = sysinfo_model();
 	int want = (model && model->one_boot_logo) ? 0 : (dark ? 2 : 1);
 
 	if (access(MTD_DEVICE, W_OK) != 0) {
