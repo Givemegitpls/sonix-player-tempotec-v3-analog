@@ -7,9 +7,15 @@ kernel, drivers and recovery. Everything Sonix does on the HiBy R3 Pro II and
 R1 is here, laid out for the Blaze's 320x480 panel and its AK4493 DAC, plus the
 fixes and speed-ups listed below.
 
-Only for the **V3 Blaze**, not the older V3 Analog. Flashing always carries
-some risk: read [Going back to stock and recovery](#going-back-to-stock-and-recovery)
-first.
+> **This branch is the V3 Analog fork.** It is built from the Blaze port and
+> adapted to the older `v3_analog` hardware -- glibc 2.16, a 32-bit SLCD panel,
+> the codec on ALSA card 1, a BlueZ 5 userland. What changed and what is not
+> done yet is in [docs/V3-ANALOG.md](docs/V3-ANALOG.md); the text below is the
+> Blaze port's own README, kept as the base.
+
+The Blaze port itself is only for the **V3 Blaze**, not the older V3 Analog.
+Flashing always carries some risk: read
+[Going back to stock and recovery](#going-back-to-stock-and-recovery) first.
 
 The upstream README, with the full build documentation and the source tree, is
 in [UPSTREAM-README.md](UPSTREAM-README.md). Features are in
