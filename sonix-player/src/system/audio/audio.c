@@ -11,6 +11,7 @@
 #include "src/system/audio/decimate.h"
 #include "src/system/core/config.h"
 #include "src/system/device/power.h"
+#include "src/system/device/sysinfo.h"
 #include "src/system/core/utils.h"
 
 #include <pthread.h>
@@ -161,14 +162,24 @@ typedef struct {
 #define WAV_UNSUPPORTED -2 // a sound WAV in an encoding this path does not read
 
 // The ALSA device playback opens. "default" is the DAC behind the jacks;
-// Bluetooth swaps in a bluealsa PCM name so the stream goes to the
-// headphones instead. Read under the mutex, because it is set from the
-// interface thread while the playback thread may be about to open a file.
+// Bluetooth swaps in a bluealsa PCM name so the stream goes to the headphones
+// instead. Read under the mutex, because it is set from the interface thread
+// while the playback thread may be about to open a file.
 // It gets a lock of its own rather than sharing audio_mutex: open_pcm_device()
 // runs on the playback thread at points where that mutex is already held, and
 // a second acquisition there would be a deadlock rather than a bug report.
-#define AUDIO_DEFAULT_PCM "default"
-static char output_pcm[160] = AUDIO_DEFAULT_PCM;
+//
+// Which name that is comes from the model, not from this file: on the HiBy
+// boards and the Blaze the analogue output is what "default" resolves to, while
+// on the V3 Analog "default" is card 0 -- the S/PDIF dummy -- and the analogue
+// output is card 1, so the model names plughw:1,0 (see sysinfo.h).
+#define AUDIO_FALLBACK_PCM "default"
+static const char *default_pcm(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	const char *name = model ? model->pcm_device : NULL;
+	return (name && name[0]) ? name : AUDIO_FALLBACK_PCM;
+}
+static char output_pcm[160] = AUDIO_FALLBACK_PCM;
 
 // ---------------------------------------------------------------------------
 // 32-bit samples on the built-in card
@@ -199,7 +210,7 @@ static char output_pcm[160] = AUDIO_DEFAULT_PCM;
 // own name, so it is right for a handle that fell back to the card.
 static bool pcm_takes_s24(snd_pcm_t *pcm, int bits) {
 	const char *name = (pcm && bits == 32) ? snd_pcm_name(pcm) : NULL;
-	return name && strcmp(name, AUDIO_DEFAULT_PCM) == 0;
+	return name && strcmp(name, default_pcm()) == 0;
 }
 
 typedef struct {
@@ -1056,7 +1067,7 @@ static void gapless_hold(snd_pcm_t *pcm, int channels, int rate, int bits, snd_p
 	// moved on, and then the next track would be handed a PCM to somewhere it
 	// did not ask for.
 	const char *opened_as = pcm_device_name(pcm);
-	snprintf(held_device, sizeof(held_device), "%s", opened_as ? opened_as : AUDIO_DEFAULT_PCM);
+	snprintf(held_device, sizeof(held_device), "%s", opened_as ? opened_as : default_pcm());
 	fprintf(stderr, "audio[%ld]: gapless: holding the PCM (%d ch, %d Hz, %d bit)%s\n", log_ms(), channels, rate, bits,
 			empty ? ", emptied for a skip" : "");
 }
@@ -1382,7 +1393,7 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	if (bluetooth && !bluetooth_audio_active()) {
 		fprintf(stderr, "audio: '%s' has no sink any more; the jack takes it back\n", device);
 		audio_set_output_device(NULL);
-		snprintf(device, sizeof(device), "%s", AUDIO_DEFAULT_PCM);
+		snprintf(device, sizeof(device), "%s", default_pcm());
 		bluetooth = false;
 	}
 
@@ -1437,10 +1448,10 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	// Headphones that walked out of range take their PCM with them, and a
 	// track that refuses to start is a worse outcome than one coming out of
 	// the wrong hole. Fall back to the jack, and say so in the log.
-	if (err < 0 && strcmp(device, AUDIO_DEFAULT_PCM) != 0) {
-		fprintf(stderr, "audio: '%s' would not open (%s); falling back to " AUDIO_DEFAULT_PCM "\n", device,
-				snd_strerror(err));
-		err = snd_pcm_open(&pcm_handle, AUDIO_DEFAULT_PCM, SND_PCM_STREAM_PLAYBACK, 0);
+	if (err < 0 && strcmp(device, default_pcm()) != 0) {
+		fprintf(stderr, "audio: '%s' would not open (%s); falling back to '%s'\n", device, snd_strerror(err),
+				default_pcm());
+		err = snd_pcm_open(&pcm_handle, default_pcm(), SND_PCM_STREAM_PLAYBACK, 0);
 
 		// And stop asking for it, so the dead name does not stay installed and
 		// cost every following track the same wait while the interface, the
@@ -4051,6 +4062,13 @@ int audio_init(void) {
 
 	growfile_set_reader_abort_cb(playback_reader_should_abort);
 
+	// The built-in output's name is the model's, not the literal "default"
+	// (sysinfo.h): on the V3 Analog "default" is the S/PDIF dummy on card 0 and
+	// the analogue output is card 1, so the model names plughw:1,0. Installed
+	// here, once, so no track can open the wrong card before Bluetooth has had a
+	// chance to move the route somewhere else.
+	audio_set_output_device(NULL);
+
 	set_volume_percent(40); // a sane, audible default on the new dB taper
 	// Not on the Blaze: its stock player leaves the card unrouted -- amplifier
 	// off, output muted -- until the first track, and so does this. A board
@@ -4481,7 +4499,7 @@ void audio_set_output_device(const char *pcm) {
 	if (pcm && pcm[0]) {
 		snprintf(output_pcm, sizeof(output_pcm), "%s", pcm);
 	} else {
-		snprintf(output_pcm, sizeof(output_pcm), "%s", AUDIO_DEFAULT_PCM);
+		snprintf(output_pcm, sizeof(output_pcm), "%s", default_pcm());
 	}
 	// Only when it really moved, and on stderr. This line is how a log answers
 	// "did the sound stop going to the headphones, or did it stop coming out of

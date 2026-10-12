@@ -294,6 +294,19 @@ long alsa_volume_gain_db100(int percent) {
 
 // Every mixer control the card publishes, with its range and its value now.
 //
+// The card the codec's mixer controls are on. 0 on the HiBy boards and the
+// Blaze; on the V3 Analog the codec and the analogue output are card 1, with
+// card 0 given to "sa_spdif" (the optical route's dummy), so opening hw:0 there
+// would list controls from the wrong card -- and snd_ctl_elem_write on it would
+// fail, leaving the DAC at whatever the stock player left behind.
+static const char *mixer_card_name(void) {
+	static char name[16];
+	const sysinfo_model_t *model = sysinfo_model();
+	int card = model ? model->mixer_card : 0;
+	snprintf(name, sizeof(name), "hw:%d", card);
+	return name;
+}
+
 // Two things can only be answered from the card itself: whether "Output Port
 // Switch" accepts a 4 at all (a maximum of 3 means there is no digital route on
 // this hardware), and whether the "SPDIF Output" control the stock binary
@@ -307,8 +320,9 @@ void alsa_list_controls(char *out, size_t out_size) {
 	}
 	out[0] = '\0';
 
-	if (snd_ctl_open(&ctl, "hw:0", 0) < 0) {
-		snprintf(out, out_size, "  (no hw:0 card)\n");
+	const char *card = mixer_card_name();
+	if (snd_ctl_open(&ctl, card, 0) < 0) {
+		snprintf(out, out_size, "  (no %s card)\n", card);
 		return;
 	}
 
@@ -376,7 +390,7 @@ int alsa_set_control(const char *name, long value) {
 	snd_ctl_elem_value_t *elem;
 	int err;
 
-	err = snd_ctl_open(&ctl, "hw:0", 0);
+	err = snd_ctl_open(&ctl, mixer_card_name(), 0);
 	if (err < 0) {
 		return err;
 	}
