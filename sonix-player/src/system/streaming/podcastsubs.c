@@ -9,6 +9,7 @@
 
 #include "src/system/core/utils.h"
 #include "src/system/db/sqlite3.h"
+#include "src/system/streaming/podcastrss.h"
 
 // Followed podcasts, in an SQLite database: <card>/.local/podcast.db.
 //
@@ -152,6 +153,8 @@ static void load(void) {
 			snprintf(feed.author, sizeof(feed.author), "%s", author ? author : "");
 			snprintf(feed.image, sizeof(feed.image), "%s", image ? image : "");
 			snprintf(feed.url, sizeof(feed.url), "%s", url ? url : "");
+			// A podcast read from its feed is found again by this address.
+			podcastrss_remember(feed.id, feed.url);
 			subs[subs_count++] = feed;
 		}
 		sqlite3_finalize(stmt);
@@ -292,10 +295,18 @@ bool podcastsubs_is_followed(long long feed_id) {
 	return false;
 }
 
-void podcastsubs_follow(const podcast_feed_t *feed) {
-	if (!feed || feed->id <= 0) {
+void podcastsubs_follow(const podcast_feed_t *given) {
+	if (!given || given->id <= 0) {
 		return;
 	}
+	// The player's star follows from the sidecar, which has no address: a
+	// podcast read from its feed this run still has it.
+	podcast_feed_t copy = *given;
+	if (!copy.url[0]) {
+		podcastrss_url_for(copy.id, copy.url, sizeof(copy.url));
+	}
+	podcastrss_remember(copy.id, copy.url);
+	const podcast_feed_t *feed = &copy;
 
 	// Already followed: refresh the stored entry (the title may have changed)
 	// and move it to the head, which is the order the list is read in. The
@@ -350,6 +361,7 @@ int podcastsubs_follow_batch(const podcast_feed_t *feeds, int count) {
 		if (feed->id <= 0 || podcastsubs_is_followed(feed->id)) {
 			continue;
 		}
+		podcastrss_remember(feed->id, feed->url);
 		memmove(&subs[1], &subs[0], sizeof(subs[0]) * (size_t)subs_count);
 		subs[0] = *feed;
 		subs_count++;
