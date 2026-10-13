@@ -1,0 +1,90 @@
+#!/bin/sh
+#
+# Keeps adb reachable when the player is not there to do it.
+#
+# On this firmware adb is a USB mode of the legacy android gadget, and the thing
+# that selects it is the player: the stock firmware has no script that starts
+# adb at boot at all (its K90adb runs at shutdown), so with a player that never
+# starts there is no adb, and with no adb there is nothing to look at -- the
+# device shows its boot logo and stops, which is exactly what a firmware that
+# hangs looks like. That happened once here and cost a flash to find out.
+#
+# So this watches, and it decides by the player: while sonix_player or
+# sonix_launch is running, the gadget belongs to it (DAC mode, storage mode,
+# whatever the interface asked for) and this script does nothing. When neither
+# is running -- it never started, or it exited -- nothing owns the gadget, and
+# the gadget is set to adb and adbd started, so the device answers.
+#
+# /mnt/sd_0/disable_adb pauses it for one session, for the case where the card
+# itself is wanted as a storage device.
+#
+# Report: /mnt/sd_0/adb_boot.log; adbd's own output: /mnt/sd_0/adbd.log.
+
+GADGET=/sys/class/android_usb/android0
+STOP=/mnt/sd_0/disable_adb
+LOG=/mnt/sd_0/adb_boot.log
+PERIOD=8
+
+log() { echo "$(date '+%H:%M:%S') $*" >> "$LOG" 2>/dev/null; }
+
+adbd_pid() {
+	for p in /proc/[0-9]*; do
+		if [ "$(cat "$p/comm" 2>/dev/null)" = "adbd" ]; then
+			echo "${p#/proc/}"
+			return 0
+		fi
+	done
+	return 1
+}
+
+player_running() {
+	pidof sonix_player > /dev/null 2>&1 && return 0
+	pidof sonix_launch > /dev/null 2>&1 && return 0
+	return 1
+}
+
+# The order matters: the gadget has to be disabled before its functions are
+# rewritten, and enabled after.
+set_adb_mode() {
+	echo 0 > "$GADGET/enable" 2>/dev/null
+	sleep 1
+	echo 18d1 > "$GADGET/idVendor" 2>/dev/null
+	echo 0d02 > "$GADGET/idProduct" 2>/dev/null
+	echo adb > "$GADGET/functions" 2>/dev/null
+	echo 1 > "$GADGET/enable" 2>/dev/null
+	sleep 2
+	[ "$(cat "$GADGET/functions" 2>/dev/null)" = "adb" ]
+}
+
+start_adbd() {
+	adbd_pid > /dev/null && return 0
+	/sbin/adbd >> /mnt/sd_0/adbd.log 2>&1 &
+	sleep 1
+	log "adbd started, pid $(adbd_pid)"
+}
+
+watchdog() {
+	log "--- boot: player=$(pidof sonix_player) functions=$(cat $GADGET/functions 2>/dev/null)"
+	while :; do
+		if [ -f "$STOP" ] || player_running; then
+			sleep "$PERIOD"
+			continue
+		fi
+		if [ "$(cat "$GADGET/functions" 2>/dev/null)" != "adb" ] || ! adbd_pid > /dev/null; then
+			if set_adb_mode; then
+				start_adbd
+				log "adb restored (no player): functions=$(cat $GADGET/functions 2>/dev/null) adbd=$(adbd_pid)"
+			else
+				log "could not set the gadget to adb"
+			fi
+		fi
+		sleep "$PERIOD"
+	done
+}
+
+case "$1" in
+start) watchdog & ;;
+stop) ;;
+esac
+
+exit 0

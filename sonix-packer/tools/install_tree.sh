@@ -18,10 +18,17 @@ MODEL=assets/V3ANALOG  # and what is this device's own
 [ -d "$MODEL" ] || { echo "install_tree: $MODEL is missing" >&2; exit 1; }
 
 # A file is rewritten through a temporary rather than with sed -i, which is
-# spelled differently from one sed to the next.
+# spelled differently from one sed to the next -- and the temporary is given the
+# original's mode before it takes its place. That is not a detail: this script
+# rewrites the init script that starts the player, and a rewrite that drops the
+# executable bit leaves a firmware whose init silently skips it, which looks
+# exactly like a device that hangs on the boot logo.
 rewrite() {
 	local expression="$1" file="$2"
+	local mode
+	mode="$(stat -c%a "$file")"
 	sed -E "$expression" "$file" > "$file.packer.tmp"
+	chmod "$mode" "$file.packer.tmp"
 	mv "$file.packer.tmp" "$file"
 }
 
@@ -130,7 +137,8 @@ grep -q '"TempoTec V3 Analog"' "$TREE/usr/resource/sonix/components/system-info.
 # executable is a player that never starts, which reads as a boot loop.
 chown -R 1004:1004 "$TREE"
 chmod 775 "$TREE/usr/bin/sonix_player" "$TREE/usr/bin/sonix_player.sh" \
-	"$TREE/usr/bin/bluealsa" "$TREE/usr/sbin/bluetoothd" "$TREE/usr/bin/bt_init"
+	"$TREE/usr/bin/bluealsa" "$TREE/usr/sbin/bluetoothd" "$TREE/usr/bin/bt_init" \
+	"$TREE/etc/init.d/S92_03_start_music_player" "$TREE/etc/init.d/S98adb_debug"
 chmod 755 "$TREE/usr/lib/libbluetooth.so.3"
 chmod 644 "$TREE/usr/lib/libfdk-aac.so.2" "$TREE/usr/lib/libopenaptx.so.0" \
 	"$TREE/usr/lib/libldacBT_enc.so.2" "$TREE/usr/lib/libldacBT_abr.so.2" \
