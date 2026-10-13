@@ -68,6 +68,15 @@ typedef struct {
 	int panel_height;
 	const char *update_stem; // "<stem>.upt" is the update file this player accepts
 	const char *serial_prefix; // what the number on the box starts with
+	const char *serial_node;   // the efuse node the box's number is read from; NULL is the HiBy
+							   // boards' own "/proc/jz/efuse/efuse_chip_id", whose line reads
+							   // "CHIP_ID: <32 hex>". The V3 Analog has no such node: its serial
+							   // number sits in "/proc/jz/efuse/efuse_serial_nb", which is what
+							   // the stock player reads for its About page.
+	int serial_digits;		   // how many leading characters of the node make the number: 8 on
+							   // the HiBy boards (the first eight hex of the chip id, which is
+							   // what their box shows). 0 means the node's whole first line is
+							   // the number, which is the shape the V3 Analog's serial node has.
 	bool pmic_charger;		   // charged by the AXP2101 alone, no MP2731 (axpcharge.h)
 	bool cs43131;			   // one CS43131, 3.5 mm only, no HBC3000 (alsa-controls.h)
 	bool ak4493;			   // dual AK4493 behind the HBC3000: six filters, no DRE/NOS (alsa-controls.h)

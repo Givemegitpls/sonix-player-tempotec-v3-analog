@@ -956,9 +956,13 @@ bool volume_limit_enabled(void) {
 	return limit_on;
 }
 
+// The ceiling in force, which is also the value the page shows. With the limit
+// off every output's ceiling is 100 (see the note in the header), so a caller
+// that is about to clamp a level can use this directly -- limit_ceiling() above
+// is the same answer and the two must not drift apart.
 int volume_limit(volume_output_t out) {
 	limit_load();
-	if (!output_in_range(out) || !LIMIT_KEYS[out]) {
+	if (!limit_on || !output_in_range(out) || !LIMIT_KEYS[out]) {
 		return 100;
 	}
 	return limit_level[out];
@@ -1065,8 +1069,36 @@ void volume_profile_persist_now(void) {
 	write_profiles();
 }
 
+// The output the sound is really going to, from what the routes say rather than
+// from the PCM name alone.
+//
+// The caller (btaudio.c) names the output from the PCM string, and on this
+// board that string cannot tell the analogue route from the USB one: the
+// analogue output is itself a "plughw:" PCM -- card 1, because "default" here
+// is card 0's S/PDIF dummy (see pcm_device in the model) -- so every analogue
+// track would be taken for USB. usbaudio.c owns the USB card it found and
+// clears it the moment the port empties, so its answer is the one to trust,
+// with the jack switch settling which analogue socket it is.
+//
+// Getting this wrong is not cosmetic. limit_enforce() only bites on the profile
+// in force, so a route read as USB makes the USB ceiling the only one that is
+// ever applied -- and applied through apply_volume_hw(), which writes the
+// codec's own attenuation, i.e. the jacks. That is the whole of the reported
+// bug: the 3.5 mm and 4.4 mm sliders did nothing while the USB one moved both
+// of them.
+static volume_output_t resolve_output(volume_output_t asked) {
+	if (asked != VOLUME_OUTPUT_USB || usbaudio_active()) {
+		return asked;
+	}
+	return headphone_jack_state() == JACK_BALANCED ? VOLUME_OUTPUT_BALANCED : VOLUME_OUTPUT_PHONES;
+}
+
 void volume_profile_set_output(volume_output_t out) {
-	if (!output_in_range(out) || out == profile_out) {
+	if (!output_in_range(out)) {
+		return;
+	}
+	out = resolve_output(out);
+	if (out == profile_out) {
 		return;
 	}
 
