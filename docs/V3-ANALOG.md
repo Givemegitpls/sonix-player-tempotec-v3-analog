@@ -93,6 +93,14 @@ With one page and a pan, only the frame's own damage is copied: **about 2 ms**
 for the same frame. `single_fb_page` keeps the Blaze/R3 Pro II path
 byte-for-byte.
 
+A blank or unblank rewrites the mode underneath the player: the driver resets the
+virtual size and the descriptor when the panel powers down, and from then on the
+`yoffset` that was right before is refused with `EINVAL` -- every frame, for ever.
+On the device that is a lit screen showing the last frame that ever reached it
+while the interface behind it keeps drawing: a frozen picture, a clock that
+stopped, an indicator still saying what was true minutes ago. The pan is retried
+once after re-reading the mode (`fb_mode_stale`), which is all it takes.
+
 ## Sound: card 1, and the analogue output is `plughw:1,0`
 
 Card 0 on this device is `sa_spdif`, a dummy the optical route shares. The
@@ -165,15 +173,152 @@ suitable versions come from Debian's mipsel packages (`glib` 2.42.1,
   is `/usr/etc`. A config in `/etc` is silently ignored and the daemon starts
   in dual mode and falls into the GATT failure above.
 
+## USB audio (DAC mode): the firmware's own gadget
+
+The Blaze port builds a configfs gadget (`/sys/kernel/config/usb_gadget/android0`)
+and creates a UAC function in it. The V3 Analog's kernel does not offer that
+function there at all (`mkdir .../functions/uac_sa.a` fails with
+`Function not implemented`), but it does have the same UAC function in its
+**legacy** android USB gadget -- `/sys/class/android_usb/f_uac_sa`, which is what
+`/dev/uac_sa` belongs to. The stock player switches modes by writing into that
+gadget, and DAC mode is one of them:
+
+```
+DAC/Audio:  idVendor=22E1 idProduct=F008 functions=uac_sa,hid
+Storage:    idVendor=22E1 idProduct=0101 functions=mass_storage
+ADB/Dock:   idVendor=18D1 idProduct=0D02 functions=adb
+```
+
+`usbdac.c` grew a second path for it (`usb_gadget_legacy`, `usb_audio_vendor`,
+`usb_audio_product`, `usb_audio_functions` in the model): disable the gadget,
+write the ids and the function list, enable it again, and put the previous mode
+back on the way out. The function list can only be written while the gadget is
+disabled; a write that is refused silently leaves the old list in place.
+
+Two things to know when testing it: the **host re-reads the descriptors only
+after the cable is replugged** (the pullup cycle alone was not enough here), and
+**ADB is unavailable while DAC mode is on** -- `adb` is not in the function list,
+exactly as on the stock firmware. Leaving the page restores the previous mode;
+a reboot restores everything.
+
+Verified on the device: the host sees `22e1:f008 TempoTec V3` and a
+`[V3]: USB-Audio - V3` sound card, and audio plays through the player.
+
+## LDAC receive, from the firmware's own library
+
+Newer AOSP `libldac` ships the encoder and ABR only; the decoder was removed, so
+a decoder has to come from somewhere else. It is already on the device: the
+stock firmware's `/usr/lib/libldacBT.so` is a **combined** library (encoder,
+decoder and ABR in one) that HiBy's own Bluetooth plugin loads, and its ABI is
+`GLIBC_2.2` at most with `libc` as its only dependency -- it runs on this
+device's glibc 2.16 as it is.
+
+Enabling it is a build change only: put that `.so` in the cross sysroot, add the
+two decode prototypes to `ldacBT.h` (the AOSP header has the encoder only) and an
+`ldacBT-dec.pc` (`Libs: -lldacBT`), then rebuild bluealsa with `--enable-ldac`.
+The link needs `-Wl,--allow-shlib-undefined`: the stock library has unresolved
+`ptn0`, `ptn3` and `AS` symbols that nothing in the firmware defines -- they are
+not called (lazy binding), and the stock player lives with them. Nothing is
+copied to the device: the library is the stock one, already in `/usr/lib`.
+
+The library is in place and bluealsa does negotiate LDAC as a sink -- the phone
+picks it, the endpoint is configured, and the daemon starts its decoder thread:
+
+```
+bluealsa: D: bluez.c:313: A2DP Sink (LDAC) configured for device ...
+bluealsa: D: a2dp-ldac.c:334: IO loop: START: a2dp_ldac_dec_thread
+```
+
+and no audio comes out of it. Measured on 2026-10-13, with `bluetoothd` running
+at debug level and a client reading the capture PCM:
+
+- the AVDTP stream reaches `OPEN -> STREAMING` (the phone sends `START_CMD`), the
+  transport becomes `ACTIVE`, and then the controller drops the ACL link:
+  `dev_disconnected() Device ... disconnected, reason 3` -- HCI hardware
+  failure. The phone reconnects and the cycle repeats, which is what the phone
+  shows as the music pausing every few seconds;
+- bluealsa is idle while this happens: 0.44% of a core over a 45 s attempt, so
+  the decoder is not too slow;
+- the same setup does receive aptX-HD, and the link survives longer the lower
+  the bitrate -- SBC/AAC in the player's receiver, aptX-HD for a couple of
+  seconds, LDAC not at all.
+
+So the failure scales with the bitrate and ends with the controller reporting a
+hardware failure, not with anything bluealsa logs. Two candidates are left, and
+both need a run on the device:
+
+- **Coexistence with Wi-Fi.** `wlan0` is associated here, and this is a combo
+  chip with one antenna. Test: `ifconfig wlan0 down`, then receive LDAC.
+- **The stock stack's own LDAC handling.** The firmware's `bluetoothd` is BlueZ
+  4.101 with `a2dp_ldac_support`, `ldac_getcap_ind` and `ldac_setconf_ind` in
+  it: on this board LDAC has always been a BlueZ 4 feature. If BlueZ 5.66 plus
+  bluealsa is missing an AVDTP step the phone expects, the phone is the side
+  that gives up.
+
+`tools/rxprobe.c` is the instrument for this: it opens the receiver's PCM,
+reads as fast as the daemon produces, re-opens it when a transport dies, and
+prints the frames and the audio seconds it got.
+
+## The image: `v3_analog.upt`
+
+The port is a firmware, not a folder on a card: `sonix-packer/v3_analog_packer.sh`
+builds an image that boots it, taking the stock firmware as the starting point.
+
+```
+cd sonix-packer
+STOCK="../tempotec v3/v3_analog.upt" ./v3_analog_packer.sh
+```
+
+What it does, in order: unpacks the stock `.upt` (an ISO) and extracts
+`SYSTEM.UBI` (the UBIFS rootfs) from it; deletes `usr/bin/hiby_player` and
+installs `sonix_player`; installs the launcher (`usr/bin/sonix_player.sh`) and
+`sonix_launch` and points `etc/init.d/S92_03_start_music_player` at them; copies
+`assets/BLAZE/` -- the player's own interface, its fonts, languages, images and
+Bluetooth userland -- and then `assets/V3ANALOG/` over it; writes the build
+stamp into `system-info.json`; deletes the stock interface's own resources
+(`litegui`, `layout`, `str`, `fonts`); repacks the rootfs with `mkfs.ubifs`
+(`-c 480 -e 0x1F000 -m 0x800`, the geometry of this device's rootfs volume),
+recomputes the rootfs digest in `UPDATE.TXT`, and rebuilds the ISO with
+`genisoimage`. Then it unpacks its own result and checks it: the digest, the
+files, their modes, and that the Bluetooth userland in the image is the one the
+assets carry and not the stock's.
+
+`UBOOT.BIN` is carried across untouched, deliberately: writing the bootloader is
+the one way to brick this device, and the update route does not need it.
+
+The tools live in the docker image the sibling project builds
+(`docker build -t tempotec-fw-tools "../tempotec v3/docker"`): 7z, ubi_reader,
+mkfs.ubifs and genisoimage, none of which this host has.
+
+The result is `out/v3_analog.upt`. To flash it: copy it to the card **as
+`v3_analog.upt`** -- the name is what the recovery looks for -- and enter
+recovery with Power + Prev. What it replaces is the rootfs; `/data` (the
+settings and the media database) and the card are not touched.
+
+What the image carries and the stock firmware does not: BlueZ 5.66's
+`bluetoothd` and `libbluetooth.so.3` (the stock is BlueZ 4.101), `bluealsa` with
+the AAC, aptX, aptX-HD and LDAC codecs, the ALSA plugin and its
+`usr/share/alsa/alsa.conf.d/20-bluealsa.conf`, the D-Bus policy that lets
+bluealsa own its name, `usr/etc/bluetooth/main.conf` with
+`ControllerMode = bredr` (the stock config in `/etc` is ignored: this BlueZ is
+built with `--prefix=/usr`), and a `usr/bin/bt_init` that only attaches the
+controller -- the stock one also starts BlueZ 4's `bt-agent` and `bt-monitor`,
+which cannot talk to a BlueZ 5 daemon, and doing the attach twice is what leaves
+this controller with no index at all.
+
+Because the resources are inside the image, the bind mount the port needed while
+it lived on the card
+(`mount --bind /mnt/sd_0/sonix-res/usr/resource/sonix /usr/resource/sonix`) is
+not part of the picture any more, and neither is the card being there at boot.
+
 ## What does not work, and what is not verified
 
 Not working, with the reason:
 
-- **USB-DAC** (the player as a sound card for a computer): the kernel does not
-  offer the UAC function. Creating the configfs gadget node fails with
-  `Function not implemented`, there is no `/dev/uac*`, and the kernel has no
-  `u_audio`/`usb_f_uac*` modules (all drivers are built in, none are shipped).
-  This needs a different kernel -- a project of its own.
+- **LDAC receive**: the phone negotiates LDAC, bluealsa starts its decoder, and
+  the controller then drops the link with a hardware failure before any audio
+  arrives. The measurements and the next two tests are in the LDAC section
+  above. SBC, AAC, aptX and aptX-HD receive all work.
 - **Charge limit**: the AXP2101 is not reachable over I2C here (`/dev/i2c-0`
   does not exist); the stock firmware goes through
   `/sys/class/axppower` and `/sys/class/power_supply/usb` instead. Until that
@@ -182,15 +327,18 @@ Not working, with the reason:
   `/proc/jz/efuse/efuse_serial_nb`, not the `efuse_chip_id` the port reads.
 - **Optical / S/PDIF**: the route to card 0 (`sa_spdif`) on the `digital_dt2`
   switch is not implemented.
-- **LDAC receive**: newer AOSP `libldac` ships the encoder and ABR only; the
-  decoder is gone, so LDAC can be sent but not received.
-- **A flashable image**: this repository carries the source changes, not a
-  packed `.upt`.
+- **Smoothness of page opens**: the first frame of a new page takes 96-135 ms
+  (widget building, font rasterisation, the blurred backdrop); scrolling is at
+  about 45 fps. Profiling and the cheap wins are still to be done.
 
-Not yet verified on the device (owed a test):
+Verified on the device:
 
-- the physical keys (volume and skip) and `media_keys_swapped` -- the model
-  keeps the stock ordering until the case is checked;
-- sound by ear on the `plughw:1,0` route and the `headset`/`balance` switches;
-- the exact formats and rates `plughw:1,0` accepts;
-- screen-off and wake through the framebuffer blank node.
+- the physical keys, including `media_keys_swapped = true` (the kernel calls the
+  upper skip key `KEY_NEXTSONG`, so it has to be read as "back", as on the
+  R3 Pro II);
+- sound by ear: wired 3.5 mm and 4.4 mm, Bluetooth out (A2DP), Bluetooth in
+  (receiver), and optical;
+- screen-off and wake through the framebuffer blank node, with the pan fix above;
+- Bluetooth: pairing, AVRCP volume, A2DP out, A2DP in (SBC, AAC, aptX,
+  aptX-HD), and LDAC out. LDAC **in** does not work yet -- see the LDAC section
+  above.
