@@ -218,6 +218,8 @@ want("etc/init.d/S92_03_start_music_player", True)
 # The adb watchdog: executable, or it cannot keep the device reachable when the
 # player does not come up.
 want("etc/init.d/S98adb_debug", True)
+# The script the player's ADB switch calls on a legacy-gadget firmware.
+want("etc/init.d/adb/S310adb", True)
 want("usr/bin/bluealsa", True)
 want("usr/sbin/bluetoothd", True)
 want("usr/bin/bt_init", True)
