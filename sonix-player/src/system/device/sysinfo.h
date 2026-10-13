@@ -77,6 +77,12 @@ typedef struct {
 							   // the HiBy boards (the first eight hex of the chip id, which is
 							   // what their box shows). 0 means the node's whole first line is
 							   // the number, which is the shape the V3 Analog's serial node has.
+	bool serial_check_digit;   // append the EAN/UPC-style check digit the stock player computes:
+							   // base-36 value of every character of prefix+serial, weight 3 on
+							   // every other one counting from the right, and (10 - sum%10) % 10 as a
+							   // decimal digit. Set where the result was checked against the box
+							   // (the V3 Analog); the stock applies it on every model, but the
+							   // other models' About pages are not ours to change unverified.
 	bool pmic_charger;		   // charged by the AXP2101 alone, no MP2731 (axpcharge.h)
 	bool cs43131;			   // one CS43131, 3.5 mm only, no HBC3000 (alsa-controls.h)
 	bool ak4493;			   // dual AK4493 behind the HBC3000: six filters, no DRE/NOS (alsa-controls.h)
