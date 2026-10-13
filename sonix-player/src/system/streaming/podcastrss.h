@@ -32,7 +32,8 @@ long long podcastrss_feed_id(const char *url);
 
 // Where the podcast `feed_id` is read from, kept for this run: every feed read
 // is remembered, and the followed ones are told at startup. False when the
-// address is not known.
+// address is not known; podcast.c then asks podcastsubs_address(), which keeps
+// them across restarts.
 void podcastrss_remember(long long feed_id, const char *url);
 bool podcastrss_url_for(long long feed_id, char *out, size_t size);
 

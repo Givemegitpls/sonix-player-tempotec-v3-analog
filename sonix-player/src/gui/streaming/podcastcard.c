@@ -735,8 +735,18 @@ static void titles_done_cb(void *user) {
 typedef struct {
 	unsigned generation;
 	int count;
-	char **paths; // copies: the array may be rebuilt meanwhile
+	char **paths;	 // copies: the array may be rebuilt meanwhile
+	uint8_t *stateless; // per path: no state was found under the file
 } titles_job_t;
+
+static void titles_job_free(titles_job_t *job) {
+	for (int i = 0; i < job->count; i++) {
+		free(job->paths[i]);
+	}
+	free(job->paths);
+	free(job->stateless);
+	free(job);
+}
 
 static void *titles_main(void *arg) {
 	titles_job_t *job = arg;
@@ -748,6 +758,11 @@ static void *titles_main(void *arg) {
 		pthread_mutex_unlock(&titles_lock);
 		if (stale) {
 			break;
+		}
+		// A download whose episode was played before it was saved: its state
+		// still names the other file. Once it names this one the page redraws.
+		if (job->stateless[i]) {
+			podcaststate_downloaded(podcastcache_episode_id(job->paths[i]), job->paths[i]);
 		}
 		char title[PODCAST_TITLE_MAX] = "";
 		if (!podcastcache_tag(job->paths[i], "title", title, sizeof(title))) {
@@ -774,12 +789,16 @@ static void *titles_main(void *arg) {
 	}
 	free(m);
 	gui_post(titles_done_cb, (void *)(uintptr_t)job->generation);
-	for (int i = 0; i < job->count; i++) {
-		free(job->paths[i]);
-	}
-	free(job->paths);
-	free(job);
+	titles_job_free(job);
 	return NULL;
+}
+
+static void titles_job_add(titles_job_t *job, const episode_t *e) {
+	job->paths[job->count] = strdup(e->path);
+	if (job->paths[job->count]) {
+		job->stateless[job->count] = e->touched == 0;
+		job->count++;
+	}
 }
 
 static void titles_start(void) {
@@ -789,8 +808,9 @@ static void titles_start(void) {
 		return;
 	}
 	job->paths = calloc((size_t)(p->count > 0 ? p->count : 1), sizeof(char *));
-	if (!job->paths) {
-		free(job);
+	job->stateless = calloc((size_t)(p->count > 0 ? p->count : 1), 1);
+	if (!job->paths || !job->stateless) {
+		titles_job_free(job);
 		return;
 	}
 	// A reader still at work on an older list notices the generation has moved
@@ -800,10 +820,7 @@ static void titles_start(void) {
 	pthread_mutex_unlock(&titles_lock);
 	// The order shown, so the rows on screen get their titles first.
 	for (int k = 0; k < p->shown_count; k++) {
-		job->paths[job->count] = strdup(p->episodes[p->shown[k]].path);
-		if (job->paths[job->count]) {
-			job->count++;
-		}
+		titles_job_add(job, &p->episodes[p->shown[k]]);
 	}
 	for (int i = 0; i < p->count; i++) {
 		bool listed = false;
@@ -811,21 +828,14 @@ static void titles_start(void) {
 			listed = p->shown[k] == i;
 		}
 		if (!listed) {
-			job->paths[job->count] = strdup(p->episodes[i].path);
-			if (job->paths[job->count]) {
-				job->count++;
-			}
+			titles_job_add(job, &p->episodes[i]);
 		}
 	}
 	pthread_t thread;
 	if (pthread_create(&thread, NULL, titles_main, job) == 0) {
 		pthread_detach(thread);
 	} else {
-		for (int i = 0; i < job->count; i++) {
-			free(job->paths[i]);
-		}
-		free(job->paths);
-		free(job);
+		titles_job_free(job);
 	}
 }
 
@@ -1738,6 +1748,8 @@ void podcastcard_feed_loaded(unsigned ticket, int count, const char *error, cons
 		if (info->episode_count > 0) {
 			open_feed.episode_count = info->episode_count;
 		}
+		// A followed podcast's row in the list says the same.
+		podcastsubs_update(&open_feed);
 		if (!open_feed.title[0] && info->title[0]) {
 			snprintf(open_feed.title, sizeof(open_feed.title), "%s", info->title);
 			lv_label_set_text(p->page_title, open_feed.title);
@@ -1776,7 +1788,7 @@ void podcastcard_open_feed(const podcast_feed_t *feed) {
 		}
 		lv_label_set_text(p->page_title, open_feed.title[0] ? open_feed.title : tr("podcasts"));
 		podcastpage_set_browsing(&open_feed);
-		feed_request(PODCASTPAGE_FEED_STEP, !open_feed.author[0] || !open_feed.image[0]);
+		feed_request(PODCASTPAGE_FEED_STEP, !open_feed.author[0] || !open_feed.image[0] || open_feed.episode_count <= 0);
 		refill(p, false);
 	} else {
 		// The same podcast again: whatever this record knows that the page
@@ -2061,7 +2073,7 @@ static void feed_loaded_cb(lv_event_t *e) {
 	(void)e;
 	page_t *p = &feed_page;
 	if (!feed_loaded && !feed_loading && open_feed.id > 0) {
-		feed_request(PODCASTPAGE_FEED_STEP, !open_feed.author[0] || !open_feed.image[0]);
+		feed_request(PODCASTPAGE_FEED_STEP, !open_feed.author[0] || !open_feed.image[0] || open_feed.episode_count <= 0);
 		refill(p, false);
 		return;
 	}

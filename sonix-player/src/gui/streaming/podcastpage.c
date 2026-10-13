@@ -3815,44 +3815,81 @@ void podcastpage_open_followed(void) {
 }
 
 // ---------------------------------------------------------------------------
-// the feed addresses of podcasts followed before they were kept
+// the feed addresses and episode counts of followed podcasts
 //
 // Asked of the catalogue once per run, in the background, the first time the
-// page opens with a network: one request per podcast missing it.
+// page opens with a network: one request per podcast missing either. The
+// player's star follows with neither, and a list kept before they were has
+// none at all.
 // ---------------------------------------------------------------------------
-
-typedef struct {
-	long long id;
-	char url[PODCAST_FEED_URL_MAX];
-} backfill_t;
 
 static bool backfill_done;
 
 static void backfill_apply_cb(void *user) {
-	backfill_t *b = user;
-	podcastsubs_set_url(b->id, b->url);
-	free(b);
+	podcast_feed_t *feed = user;
+	podcastsubs_update(feed);
+	free(feed);
+}
+
+// The followed list on screen takes the counts and authors in at the end, all
+// at once and in place: the rows keep their covers and the list where it was
+// scrolled.
+static void backfill_finished_cb(void *user) {
+	(void)user;
+	if (list_kind != JOB_FOLLOWED) {
+		return;
+	}
+	pthread_mutex_lock(&job_lock);
+	bool busy = have_pending || result_pending;
+	pthread_mutex_unlock(&job_lock);
+	if (busy || inflight_valid) {
+		return;
+	}
+	podcast_feed_t *subs = malloc(sizeof(*subs) * PODCASTSUBS_MAX);
+	if (!subs) {
+		return;
+	}
+	int n = podcastsubs_list(subs, PODCASTSUBS_MAX);
+	for (int i = 0; i < list_count; i++) {
+		for (int k = 0; k < n; k++) {
+			if (subs[k].id == result_feeds[i].id) {
+				result_feeds[i].episode_count = subs[k].episode_count;
+				snprintf(result_feeds[i].author, sizeof(result_feeds[i].author), "%s", subs[k].author);
+				break;
+			}
+		}
+	}
+	free(subs);
+	for (int i = 0; i < ROW_POOL; i++) {
+		rows[i].index = -2;
+	}
+	window_update();
 }
 
 static void *backfill_main(void *arg) {
 	long long *ids = arg;
 	thread_be_background("podcast urls");
+	bool any = false;
 	for (int i = 0; ids[i] > 0; i++) {
-		podcast_feed_t feed;
-		if (!podcast_feed(ids[i], &feed) || !feed.url[0]) {
-			continue;
-		}
-		backfill_t *b = calloc(1, sizeof(*b));
-		if (!b) {
+		podcast_feed_t *feed = calloc(1, sizeof(*feed));
+		if (!feed) {
 			break;
 		}
-		b->id = ids[i];
-		snprintf(b->url, sizeof(b->url), "%s", feed.url);
-		if (!gui_post(backfill_apply_cb, b)) {
-			free(b);
+		if (!podcast_feed(ids[i], feed) || (!feed->url[0] && feed->episode_count <= 0)) {
+			free(feed);
+			continue;
+		}
+		feed->id = ids[i];
+		if (gui_post(backfill_apply_cb, feed)) {
+			any = true;
+		} else {
+			free(feed);
 		}
 	}
 	free(ids);
+	if (any) {
+		gui_post(backfill_finished_cb, NULL);
+	}
 	return NULL;
 }
 
@@ -3865,7 +3902,7 @@ static void backfill_start(void) {
 	if (!ids) {
 		return;
 	}
-	int n = podcastsubs_missing_urls(ids, PODCASTSUBS_MAX);
+	int n = podcastsubs_missing_details(ids, PODCASTSUBS_MAX);
 	if (n == 0) {
 		free(ids);
 		return;

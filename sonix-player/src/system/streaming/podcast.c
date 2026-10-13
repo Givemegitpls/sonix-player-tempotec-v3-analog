@@ -12,6 +12,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/core/sha1.h"
 #include "src/system/streaming/podcastrss.h"
+#include "src/system/streaming/podcastsubs.h"
 #include "src/system/streaming/streamkeys.h"
 
 // The default endpoint. Configurable for the same reason the Qobuz and Tidal
@@ -295,7 +296,11 @@ int podcast_search(const char *query, podcast_feed_t *out, int max) {
 		if (podcast_configured() && podcast_feed_by_url(query, out) > 0) {
 			return 1;
 		}
-		return podcastrss_read_feed(query, out) ? 1 : -1;
+		if (!podcastrss_read_feed(query, out)) {
+			return -1;
+		}
+		podcastsubs_keep_address(out->id, query);
+		return 1;
 	}
 	char encoded[512];
 	http_url_encode(query, encoded, sizeof(encoded));
@@ -327,11 +332,22 @@ int podcast_trending(podcast_feed_t *out, int max) {
 	return n;
 }
 
+// A podcast read from its feed is found by its address, which the reader
+// holds only for the feeds met since startup: the others are asked of the
+// database it was kept in.
+static void rss_find(long long feed_id) {
+	char url[PODCAST_FEED_URL_MAX];
+	if (!podcastrss_url_for(feed_id, url, sizeof(url)) && podcastsubs_address(feed_id, url, sizeof(url))) {
+		podcastrss_remember(feed_id, url);
+	}
+}
+
 int podcast_episodes(long long feed_id, podcast_episode_t *out, int max) {
 	if (feed_id <= 0 || !out || max <= 0) {
 		return -1;
 	}
 	if (podcastrss_is_id(feed_id)) {
+		rss_find(feed_id);
 		return podcastrss_episodes(feed_id, out, max, &last_raw_count);
 	}
 	char path[128];
@@ -345,6 +361,7 @@ bool podcast_feed(long long feed_id, podcast_feed_t *out) {
 		return false;
 	}
 	if (podcastrss_is_id(feed_id)) {
+		rss_find(feed_id);
 		return podcastrss_feed(feed_id, out);
 	}
 	char path[128];
@@ -454,6 +471,7 @@ bool podcast_episode(long long episode_id, podcast_episode_t *out) {
 
 bool podcast_episode_in_feed(long long feed_id, long long episode_id, podcast_episode_t *out) {
 	if (podcastrss_is_id(episode_id)) {
+		rss_find(feed_id);
 		return podcastrss_episode(feed_id, episode_id, out);
 	}
 	return podcast_episode(episode_id, out);
