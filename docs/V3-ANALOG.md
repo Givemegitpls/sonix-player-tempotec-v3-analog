@@ -331,6 +331,39 @@ it lived on the card
 (`mount --bind /mnt/sd_0/sonix-res/usr/resource/sonix /usr/resource/sonix`) is
 not part of the picture any more, and neither is the card being there at boot.
 
+## Volume limits, one per output
+
+The board has three ways out, and the stock firmware caps each on its own: the
+3.5 mm single-ended jack, the 4.4 mm balanced one, and the USB-C port in DAC
+mode. The port's Settings → Music → Volume limit has a slider per output, and
+the caps are meant to be independent: a ceiling chosen for headphones must not
+follow the user to the line out, or to a PC on the other end of the cable.
+
+Getting that wrong once produced two symptoms at the same time, and both came
+from one line: the routing watcher classified the current output by the PCM's
+name and treated anything starting with `plughw:` as the USB port. On this board
+the analogue output *is* `plughw:1,0` (card 0 is `sa_spdif`, the optical dummy),
+so the profile was always "USB". Its ceiling was then the only one ever enforced
+-- and it was enforced through the codec's attenuation, which is what the jacks
+are plugged into -- while the 3.5 mm and 4.4 mm sliders stored a value that
+nothing applied. The values were never shared; the *classification* was.
+
+The classification now lives where the outputs are known (`resolve_output()` in
+`alsa-controls.c`): the USB port is `usbaudio_active()`, and with no USB card
+attached the route is whichever jack is in (`headphone_jack_state()`, giving
+balanced or phones). Each ceiling is applied on its own route -- the jacks
+through the AK4493's `Left/Right Playback Volume` on `hw:1`, the USB port
+through its own volume control or, when the USB card has none, a software
+multiplier -- and each slider writes only its own key in `device_config.ini`
+(`volume_limit_phones`, `volume_limit_balanced`, `volume_limit_usb`).
+
+The stock player names its ceilings the same way and applies them at their own
+outputs (`USB_OUT_MAX_VOLUME`, `SPDIF_MAX_VOLUME`, `DOP_MAX_VOLUME` in
+`hiby_player`); it never had this bug because it never collapsed the ceilings
+onto one "current output".
+
+Verified in code and by build; not yet verified on the device.
+
 ## What does not work, and what is not verified
 
 Not working, with the reason:

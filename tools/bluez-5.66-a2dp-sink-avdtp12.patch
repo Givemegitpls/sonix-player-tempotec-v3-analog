@@ -1,0 +1,26 @@
+--- bzfresh/bluez-5.66/profiles/audio/a2dp.c	2022-11-10 23:24:03.000000000 +0300
++++ bt-src/bluez-5.66/profiles/audio/a2dp.c	2026-10-13 16:37:33.156489648 +0300
+@@ -1582,6 +1582,23 @@
+ 	uint16_t lp = AVDTP_UUID;
+ 	uint16_t a2dp_ver = 0x0103, avdtp_ver = 0x0103, feat = 0x000f;
+ 
++	/*
++	 * The sink record advertises A2DP/AVDTP 1.2, as the stock firmware's
++	 * does, and not 1.3. The version decides which capability request the
++	 * phone sends: at 1.3 it asks for GET_ALL_CAPABILITIES, and BlueZ
++	 * answers that with a Delay Reporting capability that our endpoint then
++	 * has to honour. At 1.2 it asks for GET_CAPABILITIES and never learns
++	 * about delay reporting at all -- which is exactly what the stock sink
++	 * does (its audio.conf has no DelayReporting, so its SEPs are registered
++	 * with delay_reporting false and its server version is 0x0102). The
++	 * source record keeps 1.3 so that nothing changes for the headphones the
++	 * player plays out to.
++	 */
++	if (type == AVDTP_SEP_TYPE_SINK) {
++		a2dp_ver = 0x0102;
++		avdtp_ver = 0x0102;
++	}
++
+ 	record = sdp_record_alloc();
+ 	if (!record)
+ 		return NULL;

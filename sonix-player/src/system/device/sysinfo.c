@@ -143,7 +143,15 @@ static const sysinfo_model_t MODELS[] = {
 		.panel_width = 480,
 		.panel_height = 720,
 		.update_stem = "v3_analog",
-		.serial_prefix = "",
+		.serial_prefix = "V3",
+		// The stock player's own node for the number printed on the box (its
+		// About page reads the same file), and the box's number starts with the
+		// model's own "V3". The HiBy boards' efuse_chip_id holds a different
+		// number, which is why the prefix and the node travel together here.
+		.serial_node = "/proc/jz/efuse/efuse_serial_nb",
+		// The node holds the number itself, with no chip-id line around it, so
+		// the whole line is the serial's own part (the box adds "V3" in front).
+		.serial_digits = 0,
 		.pmic_charger = false,
 		.cs43131 = false,
 		.ak4493 = true,
@@ -410,9 +418,66 @@ void sysinfo_format_size(uint64_t bytes, char *out, size_t out_size) {
 // serial number
 // ---------------------------------------------------------------------------
 
+// The serial number's own part out of one efuse node.
+//
+// `digits` above zero takes that many leading hex characters, upper case, which
+// is the shape the HiBy boards' node has: "CHIP_ID: 90a70a428496c4012f146c04
+// 04000001", where the box shows the model's prefix and the first eight
+// ("R3PII" + 90A70A42, verified on a real R3 Pro II). Zero takes the node's
+// whole first line instead, trimmed and uppercased, which is the shape the V3
+// Analog's serial node has: the number itself and nothing else. Either way the
+// answer is "" when the node is absent, empty, or holds less than was asked
+// for, and the caller has a second node to try.
+static void efuse_serial_part(const char *node, int digits, char *out, size_t out_size) {
+	out[0] = '\0';
+
+	FILE *f = fopen(node, "r");
+	if (!f) {
+		return; // the host build, or a firmware without the efuse module
+	}
+	char line[96] = "";
+	bool got = fgets(line, sizeof(line), f) != NULL;
+	fclose(f);
+	if (!got) {
+		return;
+	}
+
+	// A node that prefixes its number ("CHIP_ID: ...") is read past the colon.
+	const char *at = strchr(line, ':');
+	at = at ? at + 1 : line;
+	while (*at == ' ' || *at == '\t') {
+		at++;
+	}
+
+	if (digits <= 0) {
+		size_t n = strcspn(at, "\r\n");
+		while (n > 0 && (at[n - 1] == ' ' || at[n - 1] == '\t')) {
+			n--;
+		}
+		if (n == 0 || n >= out_size) {
+			return;
+		}
+		for (size_t i = 0; i < n; i++) {
+			out[i] = (char)toupper((unsigned char)at[i]);
+		}
+		out[n] = '\0';
+		return;
+	}
+
+	int n = 0;
+	while (n < digits && isxdigit((unsigned char)at[n]) && (size_t)n + 1 < out_size) {
+		out[n] = (char)toupper((unsigned char)at[n]);
+		n++;
+	}
+	out[n] = '\0';
+	if (n != digits) {
+		out[0] = '\0'; // fewer characters than a serial has: not a serial
+	}
+}
+
 const char *sysinfo_serial_number(void) {
 	// Read once and kept: the efuses are burned at the factory.
-	static char serial[24];
+	static char serial[64];
 	static bool tried;
 	if (tried) {
 		return serial;
@@ -425,35 +490,20 @@ const char *sysinfo_serial_number(void) {
 		return serial; // no prefix to build it from
 	}
 
-	FILE *f = fopen("/proc/jz/efuse/efuse_chip_id", "r");
-	if (!f) {
-		return serial; // build host, or firmware without the efuse module
+	// The model's own node first, with the model's own idea of how much of it is
+	// the number. A model that names no node reads the HiBy boards' node and
+	// nothing else, so those boards behave exactly as they did; a model that
+	// names one gets the HiBy node as a second try, since a path or a shape that
+	// is not what was expected must not leave the About page without a serial
+	// number at all.
+	char part[40];
+	efuse_serial_part(model->serial_node ? model->serial_node : "/proc/jz/efuse/efuse_chip_id",
+					  model->serial_node ? model->serial_digits : 8, part, sizeof(part));
+	if (!part[0] && model->serial_node) {
+		efuse_serial_part("/proc/jz/efuse/efuse_chip_id", 8, part, sizeof(part));
 	}
-	char line[96] = "";
-	if (!fgets(line, sizeof(line), f)) {
-		fclose(f);
-		return serial;
-	}
-	fclose(f);
-
-	// "CHIP_ID: 90a70a428496c4012f146c0404000001" -- the serial printed on the
-	// box is the model's prefix plus the first eight hex digits, uppercased
-	// (verified on a real R3 Pro II).
-	const char *hex = strchr(line, ':');
-	hex = hex ? hex + 1 : line;
-	while (*hex == ' ' || *hex == '\t') {
-		hex++;
-	}
-
-	char id[9];
-	int n = 0;
-	while (n < 8 && isxdigit((unsigned char)hex[n])) {
-		id[n] = (char)toupper((unsigned char)hex[n]);
-		n++;
-	}
-	id[n] = '\0';
-	if (n == 8) {
-		snprintf(serial, sizeof(serial), "%s%s", model->serial_prefix, id);
+	if (part[0]) {
+		snprintf(serial, sizeof(serial), "%s%s", model->serial_prefix, part);
 	}
 	return serial;
 }

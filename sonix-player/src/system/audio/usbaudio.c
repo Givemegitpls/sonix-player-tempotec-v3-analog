@@ -491,6 +491,15 @@ void usbaudio_apply_volume(int percent) {
 		swvolume_clear_usb_gain();
 		return;
 	}
+	// Never above this port's own ceiling. apply_volume_hw() writes the device
+	// on every volume change, including the ones made while the sound is on a
+	// jack -- and a level that is legal there answers to that jack's ceiling,
+	// not this one. Clamping here is what keeps the port at its limit no matter
+	// which output the level was chosen for.
+	int ceiling = volume_limit(VOLUME_OUTPUT_USB);
+	if (percent > ceiling) {
+		percent = ceiling;
+	}
 	if (percent < 0) {
 		percent = 0;
 	}
