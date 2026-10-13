@@ -1,0 +1,50 @@
+#!/bin/sh
+#
+# The controller's transport, and nothing else.
+#
+# The stock script does the whole stack in one go: it starts dbus-daemon, turns
+# the radio on, attaches the chip with brcm_patchram_plus, brings hci0 up, then
+# starts bluetoothd, bt-agent and bt-monitor and sets the adapter's name. The
+# last three are BlueZ 4 clients: on this device bluetoothd is BlueZ 5 (this
+# image installs it), so they cannot talk to it at all, and the pairing agent
+# they would be is the player itself.
+#
+# What the port cannot do for itself is the attach: brcm_patchram_plus and its
+# .hcd are the firmware's, and they are what makes hci0 appear at all. So that
+# part stays, dbus-daemon stays with it (the stock firmware starts the bus from
+# here and nowhere else), and bluetoothd, bt-agent and bt-monitor are left out.
+# The player starts bluetoothd with the flags this kernel needs (-E -C) and
+# starts bluealsa itself.
+#
+# Running twice would be fatal and is the reason for the check below: two
+# brcm_patchram_plus on one UART leave the controller with no index at all
+# ("hci0 command 0x1003 tx timeout", then no adapter), and the port calls this
+# script again whenever it finds hci0 missing.
+#
+# /sys/class/rfkill/rfkill0 is the Bluetooth radio on this board; the stock
+# script writes the same node.
+
+# Already attached: brcm_patchram_plus holds the UART and hci0 is registered.
+if pidof brcm_patchram_plus > /dev/null 2>&1 || [ -e /sys/class/bluetooth/hci0 ]; then
+	exit 0
+fi
+
+# The bus, before anything that wants to talk over it.
+if ! pidof dbus-daemon > /dev/null 2>&1; then
+	mkdir -p /tmp/dbus
+	mkdir -p /var/lib/dbus
+	[ -f /var/lib/dbus/machine-id ] || dbus-uuidgen > /var/lib/dbus/machine-id
+	dbus-daemon --config-file=/etc/dbus-1/system.conf
+fi
+
+# Radio on, then the firmware.
+echo 1 > /sys/class/rfkill/rfkill0/state
+sleep 1
+
+bt_addr=$(sa_config bt_addr)
+brcm_patchram_plus --enable_hci --baudrate 3000000 --no2bytes \
+	--patchram /lib/firmware/BCM4343A1_001.002.009.0122.0538.hcd /dev/ttyS0 \
+	--tosleep=50000 --use_baudrate_for_download --enable_lpm --bd_addr "$bt_addr" &
+sleep 3
+
+hciconfig hci0 up
