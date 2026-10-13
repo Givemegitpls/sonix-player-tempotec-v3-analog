@@ -115,6 +115,176 @@ static void usb_inquiry_string(char *out, size_t out_size) {
 bool usb_storage_active(void) { return storage_active; }
 
 // ---------------------------------------------------------------------------
+// The legacy android_usb gadget
+//
+// The V3 Analog's kernel has no configfs gadget at all. Its USB is the
+// firmware's own android_usb one -- a single gadget with a fixed set of
+// functions, whose mode is chosen by writing the function list -- and
+// sysinfo_model()->usb_gadget_legacy says which boards those are. Everything
+// below this point is configfs work and does nothing there: no gadget is
+// created, no UDC is bound, and a PC never sees the player. usbdac.c already
+// drives the same gadget for DAC mode; this is the storage half of it.
+//
+// The whole difference is that the one gadget carries the card and adb at the
+// same time, which is how the stock firmware did it: its own strings name
+// `mass_storage` and `mass_storage,adb`, and its adb mode writes functions=adb.
+// So there is no second gadget to bind, no controller to hand over and no
+// composite dance -- and adb is kept in the list of every mode this file sets,
+// because rewriting that list is exactly what used to take adb away until the
+// next boot.
+//
+// The mass-storage function's attributes hang off the gadget itself here, not
+// under /sys/class/android_usb/f_mass_storage where the UAC function's are.
+// ---------------------------------------------------------------------------
+#define LEGACY_GADGET "/sys/class/android_usb/android0"
+#define LEGACY_LUN LEGACY_GADGET "/f_mass_storage/lun/file"
+#define LEGACY_LUN1 LEGACY_GADGET "/f_mass_storage/lun1/file"
+#define LEGACY_INQUIRY LEGACY_GADGET "/f_mass_storage/inquiry_string"
+
+// The stock firmware's own storage mode: the card and adb together, exactly
+// the combination its strings carry. adb stays in the list so a mode change or
+// a re-enumeration cannot take it away.
+#define LEGACY_STORAGE_FUNCTIONS "mass_storage,adb"
+
+// Which model this is, asked once: the table does not change while the player
+// runs, and the question comes from the watcher, the standby path and the
+// export path alike.
+static bool legacy_gadget(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const sysinfo_model_t *model = sysinfo_model();
+		cached = (model && model->usb_gadget_legacy) ? 1 : 0;
+	}
+	return cached == 1;
+}
+
+// One line of a gadget attribute, trimmed; false when the node cannot be read.
+// The functions node is read back after a write because the legacy gadget
+// refuses a list silently while it is enabled, and a list without mass_storage
+// in it is a PC that sees no card.
+static bool legacy_read(const char *path, char *out, size_t out_size) {
+	out[0] = '\0';
+	char *content = read_file_content(path);
+	if (!content) {
+		return false;
+	}
+	content[strcspn(content, "\r\n")] = '\0';
+	snprintf(out, out_size, "%s", content);
+	free(content);
+	return true;
+}
+
+static bool legacy_write(const char *path, const char *value) {
+	FILE *f = fopen(path, "w");
+	if (!f) {
+		return false;
+	}
+	bool ok = fprintf(f, "%s\n", value) >= 0;
+	if (fclose(f) != 0) {
+		ok = false; // the driver refusing the write surfaces here, at close
+	}
+	return ok;
+}
+
+// The LUN the card goes into. The stock's strings name both lun and lun1; the
+// card is one medium, so the first of the two that is there and writable is
+// used, and the same one is read back when the host ejects.
+static const char *legacy_lun_path(void) {
+	static const char *const PATHS[] = {LEGACY_LUN, LEGACY_LUN1, NULL};
+	for (int i = 0; PATHS[i]; i++) {
+		if (access(PATHS[i], W_OK) == 0) {
+			return PATHS[i];
+		}
+	}
+	return LEGACY_LUN;
+}
+
+// The configfs attributes take "0x32BB"; the legacy gadget takes the hex the
+// stock scripts write, "18d1" and not "0x18d1".
+static const char *legacy_hex(const char *id) {
+	return (id[0] == '0' && (id[1] == 'x' || id[1] == 'X')) ? id + 2 : id;
+}
+
+// What the gadget was in before the card reader was put into it, so a refused
+// rewrite can be put back and the log can say what was replaced -- the same
+// save/restore usbdac.c does around DAC mode. One gadget, one mode.
+static char legacy_saved_functions[64];
+static char legacy_saved_vendor[8];
+static char legacy_saved_product[8];
+static bool legacy_saved;
+
+static void legacy_restore(void) {
+	if (!legacy_saved) {
+		return;
+	}
+	legacy_write(LEGACY_GADGET "/enable", "0");
+	if (legacy_saved_functions[0]) {
+		legacy_write(LEGACY_GADGET "/functions", legacy_saved_functions);
+	}
+	if (legacy_saved_vendor[0]) {
+		legacy_write(LEGACY_GADGET "/idVendor", legacy_saved_vendor);
+	}
+	if (legacy_saved_product[0]) {
+		legacy_write(LEGACY_GADGET "/idProduct", legacy_saved_product);
+	}
+	legacy_write(LEGACY_GADGET "/enable", "1");
+	legacy_saved = false;
+	fprintf(stderr, "usb: the legacy gadget is back to %s\n",
+			legacy_saved_functions[0] ? legacy_saved_functions : "its previous mode");
+}
+
+// Puts the legacy gadget into the card-reader mode: this player's storage ids
+// and a function list that carries the card and adb together, with an empty
+// medium so a PC enumerates a card reader with no card in it (that emptiness
+// is what tells a PC apart from a wall charger). Idempotent, so it both sets
+// the mode at startup and repairs it after the adb switch or DAC mode changed
+// it.
+static void ensure_legacy_storage_mode(void) {
+	char current[64];
+	if (legacy_read(LEGACY_GADGET "/functions", current, sizeof(current)) &&
+		strcmp(current, LEGACY_STORAGE_FUNCTIONS) == 0) {
+		// Already the card reader. Rewriting the list would drop and
+		// re-enumerate the whole device, adb included, for nothing.
+		return;
+	}
+
+	legacy_read(LEGACY_GADGET "/functions", legacy_saved_functions, sizeof(legacy_saved_functions));
+	legacy_read(LEGACY_GADGET "/idVendor", legacy_saved_vendor, sizeof(legacy_saved_vendor));
+	legacy_read(LEGACY_GADGET "/idProduct", legacy_saved_product, sizeof(legacy_saved_product));
+	legacy_saved = true;
+
+	// The function list cannot be written while the gadget is enabled, and a
+	// write that is refused leaves the old list in place -- which is a mode
+	// without mass_storage in it, and a card the host can never see.
+	legacy_write(LEGACY_GADGET "/enable", "0");
+	legacy_write(LEGACY_GADGET "/idVendor", legacy_hex(USB_ID_VENDOR));
+	legacy_write(LEGACY_GADGET "/idProduct", legacy_hex(USB_ID_PRODUCT));
+	if (!legacy_write(LEGACY_GADGET "/functions", LEGACY_STORAGE_FUNCTIONS)) {
+		fprintf(stderr, "usb: could not set the legacy gadget to %s; leaving it as it was\n",
+				LEGACY_STORAGE_FUNCTIONS);
+		legacy_restore();
+		return;
+	}
+
+	// What a SCSI INQUIRY answers, so the host names the reader after this
+	// player instead of "Linux File-Stor Gadget" -- the same string the configfs
+	// path writes.
+	char inquiry[32];
+	usb_inquiry_string(inquiry, sizeof(inquiry));
+	legacy_write(LEGACY_INQUIRY, inquiry);
+
+	// The medium stays empty until a host is there: it is what makes the
+	// controller's state mean "a PC enumerated us" rather than "something
+	// supplied power".
+	legacy_write(legacy_lun_path(), "");
+
+	legacy_write(LEGACY_GADGET "/enable", "1");
+	fprintf(stderr, "usb: legacy gadget is %s, ids %s:%s (was %s)\n", LEGACY_STORAGE_FUNCTIONS,
+			legacy_hex(USB_ID_VENDOR), legacy_hex(USB_ID_PRODUCT),
+			legacy_saved_functions[0] ? legacy_saved_functions : "unknown");
+}
+
+// ---------------------------------------------------------------------------
 // UI notifications: the worker thread must not touch LVGL, so everything the
 // user sees goes through gui_post onto the interface thread.
 // ---------------------------------------------------------------------------
@@ -199,7 +369,11 @@ void usb_set_dac_mode(bool on) {
 		// ADB on it goes back to that one (adb_keep_controller(), at the next
 		// poll): binding the card reader first would only be undone a second
 		// later.
-		if (adb_switched_on() && adb_is_running()) {
+		//
+		// On the legacy gadget there is no separate ADB gadget to go back to --
+		// the one gadget carries the card and adb both -- so the card reader is
+		// put back whatever adb is doing, and its function list keeps adb in it.
+		if (!legacy_gadget() && adb_switched_on() && adb_is_running()) {
 			fprintf(stderr, "usb: ADB is on; its gadget gets the controller back\n");
 		} else {
 			ensure_storage_gadget();
@@ -309,6 +483,13 @@ static void ensure_storage_gadget(void) {
 	// controller that is going to be the peripheral end of the cable.
 	typec_force_sink();
 
+	// The legacy gadget needs none of the configfs work below: it already
+	// exists, and its mode is one write of the function list.
+	if (legacy_gadget()) {
+		ensure_legacy_storage_mode();
+		return;
+	}
+
 	char inquiry[32];
 	usb_inquiry_string(inquiry, sizeof(inquiry));
 	const char *product = usb_product();
@@ -362,6 +543,19 @@ static void ensure_storage_gadget(void) {
 // controller with no such node, where the medium simply appears the way it
 // always has.
 static void storage_reenumerate(void) {
+	if (legacy_gadget()) {
+		// The legacy gadget has no soft_disconnect. Dropping its enable and
+		// raising it again is the same electrical unplug, and the mode -- the
+		// function list and the ids -- survives an enable toggle, so adb stays
+		// in the list across it and the host is asked to look again with the
+		// medium already in.
+		legacy_write(LEGACY_GADGET "/enable", "0");
+		usleep(300 * 1000);
+		legacy_write(LEGACY_GADGET "/enable", "1");
+		fprintf(stderr, "usb: re-enumerated with the medium in, via %s/enable\n", LEGACY_GADGET);
+		return;
+	}
+
 	static const char *const PATHS[] = {
 		"/sys/class/usb_gadget/android0/soft_disconnect",
 		STORAGE_GADGET "/soft_disconnect",
@@ -409,6 +603,20 @@ static bool first_udc(char *out, size_t out_size) {
 }
 
 static bool udc_configured(void) {
+	if (legacy_gadget()) {
+		// The legacy gadget is not in /sys/class/udc at all; its own state node
+		// is the answer, and CONFIGURED is the same "a host enumerated us" the
+		// controller's state gives on the other boards.
+		char *content = read_file_content(LEGACY_GADGET "/state");
+		if (!content) {
+			return false;
+		}
+		content[strcspn(content, "\r\n")] = '\0';
+		bool configured = strcasecmp(content, "configured") == 0;
+		free(content);
+		return configured;
+	}
+
 	char *content = read_file_content("/sys/class/udc/13500000.otg_new/state");
 	if (!content) {
 		// Firmware revision with another controller name: take the first one.
@@ -460,12 +668,27 @@ static bool gadget_write_udc(const char *text) {
 	return ok;
 }
 
-static void gadget_unbind(void) { gadget_write_udc(""); }
+static void gadget_unbind(void) {
+	if (legacy_gadget()) {
+		// There is nothing to unbind. The one legacy gadget is never taken off
+		// the controller from here: doing so would take adb down with it and
+		// leave the mode to be rewritten by whatever binds next, which on this
+		// model is how adb kept disappearing until the next boot.
+		return;
+	}
+	gadget_write_udc("");
+}
 
 // Puts the gadget back on the controller. False when there is no gadget to put
 // back -- it has never been built, or something removed it -- and the caller
 // falls back to building one.
 static bool gadget_rebind(void) {
+	if (legacy_gadget()) {
+		// Same as gadget_unbind(): the legacy gadget never left the controller.
+		// False sends the caller to ensure_storage_gadget(), which puts the
+		// card reader mode back if it is not already there.
+		return false;
+	}
 	char udc[NAME_MAX + 1];
 	if (access(STORAGE_GADGET "/UDC", W_OK) != 0 || !first_udc(udc, sizeof(udc))) {
 		return false;
@@ -482,6 +705,13 @@ static bool gadget_rebind(void) {
 void usb_gadget_yield_to_adb(void) {
 	take_card_back("ADB is starting");
 	owner_changed();
+	if (legacy_gadget()) {
+		// One gadget carries adb and the card both, so there is no controller
+		// to hand over and nothing is unbound. The firmware's own S310adb then
+		// rewrites the function list to adb; the reclaim below puts the card
+		// back in it when the switch goes off.
+		return;
+	}
 	gadget_unbind();
 }
 
@@ -492,6 +722,15 @@ void usb_gadget_yield_to_adb(void) {
 // hands it to the host again through the card reader, if a host is there.
 void usb_gadget_reclaim_from_adb(void) {
 	take_card_back("ADB stopped");
+	if (legacy_gadget()) {
+		// S310adb's stop leaves the one gadget in adb mode. Put the card
+		// reader back into it -- adb included, so the next mode change does not
+		// cost the adb session. Nothing to rebind: the gadget never left the
+		// controller.
+		owner_changed();
+		ensure_storage_gadget();
+		return;
+	}
 	// The composite restore binds ADB's gadget again, and with adbd gone that
 	// gadget has nothing left to carry but still holds the controller.
 	if (!adb_is_running()) {
@@ -520,6 +759,12 @@ void usb_gadget_reclaim_from_adb(void) {
 // nothing is written unless the gadget is ready to bind (its functionfs is
 // mounted, which adbd needs before it can write its descriptors).
 static void adb_keep_controller(void) {
+	if (legacy_gadget()) {
+		// The adb function is already part of the one legacy gadget's list;
+		// there is no second gadget that could hold the controller away from
+		// it, and nothing here writes the function list.
+		return;
+	}
 	if (!adb_switched_on() || adb_gadget_bound() || access(ADB_GADGET "/functions/ffs.adb", F_OK) != 0) {
 		return;
 	}
@@ -601,6 +846,21 @@ void usb_suspend_prepare(void) {
 	if (!sd_device[0]) {
 		return; // USB mode was never started (host build, or no card)
 	}
+	if (legacy_gadget()) {
+		// The legacy equivalent of unbinding the UDC: dropping enable
+		// disconnects the gadget from the controller, which is what stops the
+		// SoC answering a reset instead of a resume. It can be done without
+		// losing the mode -- ids and function list, adb included, survive the
+		// toggle -- so this does exactly what the configfs path does, in the
+		// one way this gadget offers.
+		//
+		// The suspend is only ever reached with no cable, no export and no adb
+		// session (power.c refuses `mem` otherwise), so nothing is left talking
+		// to a gadget that is about to go away.
+		legacy_write(LEGACY_GADGET "/enable", "0");
+		fprintf(stderr, "usb: legacy gadget disabled for suspend\n");
+		return;
+	}
 	// Every gadget, not just ours: with ADB on it is adbd's gadget that holds
 	// the controller.
 	int rc = system("for u in /sys/kernel/config/usb_gadget/*/UDC; do echo '' > $u 2>/dev/null; done");
@@ -611,6 +871,13 @@ void usb_suspend_prepare(void) {
 void usb_resume_restore(void) {
 	if (!sd_device[0]) {
 		return;
+	}
+	if (legacy_gadget()) {
+		// enable=0 was written for the sleep and the mode is still in the
+		// gadget, so raising enable reconnects and re-enumerates it. The call
+		// below then repairs the mode if the adb switch or DAC mode changed it
+		// while the SoC was down.
+		legacy_write(LEGACY_GADGET "/enable", "1");
 	}
 	ensure_storage_gadget();
 	fprintf(stderr, "usb: storage gadget rebound after resume\n");
@@ -690,9 +957,14 @@ static bool mount_still_up(void) {
 // empty. That is the signal to take the card back -- otherwise the player
 // sits saying "no card" until the cable is physically pulled.
 static bool host_ejected(void) {
-	const char *lun_file = (export_mode == EXPORT_ADB_COMPOSITE)
-							   ? ADB_GADGET "/functions/mass_storage.0/lun.0/file"
-							   : STORAGE_GADGET "/functions/mass_storage.0/lun.0/file";
+	const char *lun_file;
+	if (legacy_gadget()) {
+		lun_file = legacy_lun_path();
+	} else if (export_mode == EXPORT_ADB_COMPOSITE) {
+		lun_file = ADB_GADGET "/functions/mass_storage.0/lun.0/file";
+	} else {
+		lun_file = STORAGE_GADGET "/functions/mass_storage.0/lun.0/file";
+	}
 
 	char *content = read_file_content(lun_file);
 	if (!content) {
@@ -773,7 +1045,18 @@ static void storage_export(void) {
 	// too -- a second gadget can never bind. Otherwise the player's own,
 	// already-bound gadget just gets the medium inserted: one write into
 	// lun.0/file.
-	if (adb_gadget_bound()) {
+	//
+	// The legacy gadget is that "otherwise" case with a difference: the one
+	// gadget already carries adb in the same function list as the card, so
+	// there is no composite to build and nothing to hand over -- the medium is
+	// inserted straight into the legacy LUN.
+	if (legacy_gadget()) {
+		const char *lun = legacy_lun_path();
+		bool ok = legacy_write(lun, sd_device);
+		fprintf(stderr, "usb: medium inserted into %s (%s), %s\n", lun, sd_device, ok ? "ok" : "failed");
+		export_mode = EXPORT_OWN_GADGET;
+		storage_reenumerate();
+	} else if (adb_gadget_bound()) {
 		composite_export();
 		export_mode = EXPORT_ADB_COMPOSITE;
 	} else {
@@ -807,7 +1090,13 @@ static void storage_export(void) {
 static void storage_restore(void) {
 	fprintf(stderr, "usb: host detached, reclaiming %s\n", sd_device);
 
-	if (export_mode == EXPORT_ADB_COMPOSITE) {
+	if (legacy_gadget()) {
+		// Take the medium out of the legacy LUN; the gadget stays enabled and
+		// its mode untouched (the PC now sees a card reader with no card, which
+		// is exactly the truth, and adb is still in the function list).
+		bool ok = legacy_write(legacy_lun_path(), "");
+		fprintf(stderr, "usb: medium removed, %s\n", ok ? "ok" : "failed");
+	} else if (export_mode == EXPORT_ADB_COMPOSITE) {
 		composite_restore();
 	} else {
 		// Take the medium out; the gadget stays bound (the PC now sees a card
@@ -915,6 +1204,13 @@ static void *usb_thread(void *arg) {
 	(void)arg;
 	thread_be_background("usb watcher");
 
+	// The one gadget the legacy boards have carries the card and adb together,
+	// which changes two things below: adb running is not a reason to keep the
+	// card away (the card is offered with adb still in the list), and the
+	// gadget is never taken off the controller to save the PHY in standby
+	// (that would take adb down for as long as the device slept).
+	const bool legacy = legacy_gadget();
+
 	bool exported = false;
 	// Set after the PC ejects the medium: the card is back but the cable is
 	// still in, and re-exporting now would undo the eject the user just asked
@@ -1010,7 +1306,13 @@ static void *usb_thread(void *arg) {
 				continue;
 			}
 
-			if (!parked && !power_screen_is_on() && !adb_is_running()) {
+			//
+			// Not on the legacy gadget, where the card and adb share the one
+			// mode: disabling it to save the PHY would take adb away for the
+			// whole sleep, and adb on this model is the only way in. The mode
+			// survives an enable toggle either way, so nothing is lost by
+			// leaving the gadget where it is.
+			if (!legacy && !parked && !power_screen_is_on() && !adb_is_running()) {
 				gadget_unbind();
 				parked = true;
 				fprintf(stderr, "usb: no cable and the screen is dark; gadget unbound\n");
@@ -1060,7 +1362,13 @@ static void *usb_thread(void *arg) {
 		// which is why /mnt/sd_0 came back "Read-only file system" over ADB --
 		// and the stock firmware does not do it either. Leave the card where
 		// it is.
-		if (adb_is_running()) {
+		//
+		// Not on the legacy gadget: there adb and the card are one mode, adbd
+		// is started at boot by the firmware's own watchdog and runs while the
+		// player does, so this test would keep the card away for good. The
+		// storage mode keeps adb in its function list, so offering the card
+		// does not cost the adb session the way it does on the configfs path.
+		if (!legacy && adb_is_running()) {
 			if (!said_adb) {
 				fprintf(stderr, "usb: ADB is running; the card stays mounted (no mass storage)\n");
 				said_adb = true;
@@ -1075,6 +1383,14 @@ static void *usb_thread(void *arg) {
 		// that has enumerated the gadget counts.
 		if (!udc_configured()) {
 			continue;
+		}
+
+		if (legacy) {
+			// The adb switch (S310adb) and DAC mode both rewrite the one
+			// gadget's function list, so it may no longer be the card reader.
+			// Put the card back into it before offering the medium; the list
+			// carries adb, so this does not cost the adb session.
+			ensure_storage_gadget();
 		}
 
 		locked_export();
@@ -1100,7 +1416,10 @@ void usb_start(const char *device, const char *mount_point) {
 		fprintf(stderr, "usb: no VBUS node found; USB mode disabled\n");
 		return;
 	}
-	if (access("/sys/kernel/config", F_OK) != 0) {
+	// The legacy gadget lives entirely in /sys/class/android_usb and needs no
+	// configfs, which this firmware does not offer for USB at all; only the
+	// configfs path below needs the mount.
+	if (!legacy_gadget() && access("/sys/kernel/config", F_OK) != 0) {
 		fprintf(stderr, "usb: no configfs on this kernel; USB mode disabled\n");
 		return;
 	}
@@ -1118,7 +1437,11 @@ void usb_start(const char *device, const char *mount_point) {
 	// "Owns" includes the moment before adbd has bound it: started just
 	// before this, it may not have got that far, and a card reader bound now
 	// would keep it off the controller (see adb_keep_controller()).
-	if (!adb_gadget_bound() && !(adb_switched_on() && adb_is_running())) {
+	//
+	// On the legacy gadget the one mode carries the card and adb together, so
+	// there is nothing adb could own away from it: the card reader goes in
+	// whatever adb is doing, and its function list keeps adb.
+	if (legacy_gadget() || (!adb_gadget_bound() && !(adb_switched_on() && adb_is_running()))) {
 		ensure_storage_gadget();
 	}
 

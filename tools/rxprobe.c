@@ -166,6 +166,15 @@ int main(int argc, char **argv) {
 			if (now_seconds() - started >= seconds) {
 				break;
 			}
+			// A PCM is bound to one transport, and a phone that reconnects
+			// makes a new one. Waiting on a binding that has gone quiet is how
+			// the first version of this probe reported "0 frames" about a
+			// stream that was playing: it was reading a transport that no
+			// longer existed. Give up on a silent binding and take a fresh one.
+			if (session_frames == 0 && elapsed >= 4.0) {
+				fprintf(stderr, "rxprobe: session %d heard nothing in %.0f s; taking a fresh PCM\n", sessions, elapsed);
+				break;
+			}
 
 			snd_pcm_sframes_t got = snd_pcm_readi(pcm, buf, 4096);
 			if (got > 0) {

@@ -245,6 +245,20 @@ info = tree / "usr/resource/sonix/components/system-info.json"
 if info.exists() and '"TempoTec V3 Analog"' not in info.read_text():
     problems.append("system-info.json does not name the V3 Analog")
 
+# The D-Bus policy has to be valid XML: dbus-daemon drops a malformed file
+# whole, silently, and a double hyphen inside an XML comment is enough to make
+# it malformed. That is how this port shipped a firmware in which bluealsa
+# could not own its name, so nothing A2DP worked at all.
+policy = tree / "etc/dbus-1/system.d/sonix-player.conf"
+if policy.exists():
+    import xml.dom.minidom
+    try:
+        xml.dom.minidom.parse(str(policy))
+    except Exception as exc:
+        problems.append(f"the D-Bus policy is not valid XML: {exc}")
+    if 'own="org.bluealsa"' not in policy.read_text():
+        problems.append("the D-Bus policy does not let bluealsa own its name")
+
 launcher = tree / "usr/bin/sonix_player.sh"
 if launcher.exists() and "SONIX_LOG" not in launcher.read_text():
     problems.append("the launcher does not set SONIX_LOG")
