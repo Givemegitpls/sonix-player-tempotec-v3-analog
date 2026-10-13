@@ -287,7 +287,6 @@ assets carry and not the stock's.
 the one way to brick this device, and the update route does not need it.
 
 Two things the verify step exists for, both learned the hard way:
-
 - **The executable bit on the init script.** The packer rewrites
   `etc/init.d/S92_03_start_music_player` in place, and a rewrite that drops its
   mode leaves a firmware whose init skips it -- busybox init does not run a
@@ -314,6 +313,30 @@ The result is `out/v3_analog.upt`. To flash it: copy it to the card **as
 `v3_analog.upt`** -- the name is what the recovery looks for -- and enter
 recovery with Power + Prev. What it replaces is the rootfs; `/data` (the
 settings and the media database) and the card are not touched.
+
+Recovery can also be asked for from a shell, which is how the update menu does
+it and how a session over adb flashes without touching the device:
+
+```
+echo recovery > /proc/jz/reset/reset
+```
+
+The SoC then boots the recovery kernel, which takes `v3_analog.upt` off the card
+and writes it. On the device this took about 75 seconds, adb returning with the
+new build. Nothing else has to be written first, and one thing in particular
+must not be:
+
+**`/data/recovery_all` is a factory reset, not part of the update.** The init
+script `S39_recovery.recovery` reads that file on *every* boot and runs
+`recovery_all.sh`, which clears `/var/lib/bluetooth`, `/var/lib/dbus`,
+`/usr/var` and then `rm -rf /data/*`: the settings, the Bluetooth pairings, and
+whatever else lives there. The word inside chooses how much: `recovery_all`
+erases everything, `recovery_data` spares only the stock firmware's
+`usrlocal_media.db`. The stock binary's strings put the two next to each other,
+which is how a firmware update came to be run with a factory reset attached --
+see `sonix-player/src/system/device/factoryreset.c`, which documents the whole
+mechanism, and the `v3-adb-flash` skill. (The player's own media database is on
+the card, in `.local/library.db`, and survives either way.)
 
 What the image carries and the stock firmware does not: BlueZ 5.66's
 `bluetoothd` and `libbluetooth.so.3` (the stock is BlueZ 4.101), `bluealsa` with
@@ -362,7 +385,8 @@ outputs (`USB_OUT_MAX_VOLUME`, `SPDIF_MAX_VOLUME`, `DOP_MAX_VOLUME` in
 `hiby_player`); it never had this bug because it never collapsed the ceilings
 onto one "current output".
 
-Verified in code and by build; not yet verified on the device.
+Verified on the device (2026-10-13): each slider takes effect on its own
+output, and moving one no longer moves another.
 
 ## What does not work, and what is not verified
 

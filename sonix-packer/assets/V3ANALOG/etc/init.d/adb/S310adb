@@ -26,6 +26,20 @@ GADGET=/sys/class/android_usb/android0
 
 case "$1" in
 start)
+	# If the gadget already carries the adb function there is nothing to set up.
+	#
+	# This port's storage mode is "mass_storage,adb", so adb is in the function
+	# list from the moment the card reader is built -- which is why turning adb
+	# on must not rewrite that list. The write needs the gadget disabled first,
+	# and disabling it takes the card away from a computer that may be reading
+	# it right now: the user sees the card drop the instant they switch adb on.
+	# Starting the daemon is all that is needed; adbd writes the functionfs
+	# descriptors and the function is already there to receive them.
+	if grep -q adb "$GADGET/functions" 2>/dev/null; then
+		/sbin/adbserver.sh &
+		exit 0
+	fi
+
 	echo 0 > "$GADGET/enable" 2>/dev/null
 	sleep 1
 	echo 18d1 > "$GADGET/idVendor" 2>/dev/null

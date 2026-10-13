@@ -136,9 +136,30 @@ void firmware_update_start(void) {
 	// Two commands: erase the first block of /dev/mtd5, write "ota:kernel2"
 	// into it. That is the whole of the stock firmware's bootmode.sh, and it
 	// is what U-Boot reads to decide which kernel to start.
+	//
+	// That script is not on every firmware of this family: the V3 Analog's
+	// rootfs has no /usr/bin/bootmode.sh at all, and there `system()` returns
+	// non-zero and the reboot below is an ordinary reboot -- the update menu
+	// then does nothing but restart the player, which is how it behaved on the
+	// device. Where the script is missing, the SoC's own reset node is used
+	// instead: writing "recovery" to it asks for the recovery kernel, which
+	// then takes <update_stem>.upt off the card and writes it. This is the
+	// route the stock player uses, and it is the whole of it.
+	//
+	// Nothing is written to /data/recovery_all. That name looks like part of
+	// this procedure and is not: the init script S39_recovery.recovery reads
+	// that file at every boot and runs recovery_all.sh, which is `rm -rf
+	// /data/*` -- the factory reset (see factoryreset.c). Asking for the
+	// recovery kernel needs no note of any kind, and writing one turns a
+	// firmware update into a firmware update plus a wipe of the user's
+	// settings, media database and Bluetooth pairings.
 	int rc = system("/usr/bin/bootmode.sh Recovery");
 	if (rc != 0) {
-		printf("firmware: bootmode.sh Recovery failed (rc=%d)\n", rc);
+		printf("firmware: no bootmode.sh; asking the SoC for the recovery kernel\n");
+		int prc = system("echo recovery > /proc/jz/reset/reset");
+		if (prc != 0) {
+			printf("firmware: could not ask for recovery (rc=%d)\n", prc);
+		}
 	}
 
 	sync();

@@ -1219,6 +1219,10 @@ static void *usb_thread(void *arg) {
 
 	// Said once, not once a second.
 	bool said_adb = false;
+	// Whether the "the card is shared and adb came on" note was given for this
+	// attachment; the other flag covers the "adb is on, so the card stays with
+	// the player" case.
+	bool said_adb_shared = false;
 
 	// The gadget is unbound from the controller while the device sits in
 	// standby with no cable (see below).
@@ -1357,33 +1361,56 @@ static void *usb_thread(void *arg) {
 			continue;
 		}
 
+		// VBUS alone is not a PC -- a wall charger raises it too, and taking
+		// the card away (stopping the music with it) for a power brick was
+		// exactly the "track would not start while charging" bug. Only a host
+		// that has enumerated the gadget counts. No host also means the next
+		// attachment gets its own notification.
+		if (!udc_configured()) {
+			said_adb = false;
+			said_adb_shared = false;
+			continue;
+		}
+
 		// ADB is on: the cable is here to carry a shell, not to be a card
-		// reader. Exporting the card now unmounts it from under that shell --
-		// which is why /mnt/sd_0 came back "Read-only file system" over ADB --
-		// and the stock firmware does not do it either. Leave the card where
-		// it is.
+		// reader, and exporting the card now unmounts it from under that shell
+		// (which is how /mnt/sd_0 once came back "Read-only file system" over
+		// ADB). The card stays with the player, where the music and the logs
+		// are, and the user is told why the computer sees a card reader with no
+		// card in it -- once per attachment, not once per second.
 		//
-		// Not on the legacy gadget: there adb and the card are one mode, adbd
-		// is started at boot by the firmware's own watchdog and runs while the
-		// player does, so this test would keep the card away for good. The
-		// storage mode keeps adb in its function list, so offering the card
-		// does not cost the adb session the way it does on the configfs path.
-		if (!legacy && adb_is_running()) {
-			if (!said_adb) {
-				fprintf(stderr, "usb: ADB is running; the card stays mounted (no mass storage)\n");
+		// This used to be the configfs models' rule only. On this board adb is
+		// a mode of the same gadget as the card, and adbd is started by the
+		// firmware's own scripts, so the rule was left out for it; but the
+		// point of the rule is the user's intent, and here the intent is
+		// exactly the same: adb on means "I am working on this device", and the
+		// card should not disappear from under the work.
+		if (adb_is_running()) {
+			if (storage_active) {
+				// The card is with the host and adb has just come on: take it
+				// back, on purpose, so the player keeps its music and its logs
+				// while the user works on the device over adb. The host sees the
+				// medium ejected. (Left to itself the card came back anyway --
+				// adb's own script used to rewrite the gadget, which dropped the
+				// media function -- but relying on that would make the behaviour
+				// a side effect of a reboot of the USB mode rather than a
+				// decision.)
+				if (!said_adb_shared) {
+					fprintf(stderr, "usb: ADB came on; taking the card back to the player\n");
+					locked_restore();
+					gui_notify_popup("usb_adb_took_card_back");
+					said_adb_shared = true;
+					said_adb = true; // the note above is the one for this attachment
+				}
+			} else if (!said_adb) {
+				fprintf(stderr, "usb: ADB is running; the card stays with the player (no mass storage)\n");
+				gui_notify_popup("usb_adb_debug_mode");
 				said_adb = true;
 			}
 			continue;
 		}
 		said_adb = false;
-
-		// VBUS alone is not a PC -- a wall charger raises it too, and taking
-		// the card away (stopping the music with it) for a power brick was
-		// exactly the "track would not start while charging" bug. Only a host
-		// that has enumerated the gadget counts.
-		if (!udc_configured()) {
-			continue;
-		}
+		said_adb_shared = false;
 
 		if (legacy) {
 			// The adb switch (S310adb) and DAC mode both rewrite the one

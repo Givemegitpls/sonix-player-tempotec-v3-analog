@@ -1466,6 +1466,57 @@ static pthread_cond_t flip_cond = PTHREAD_COND_INITIALIZER;
 static bool flip_pending, flip_thread_on;
 static struct fb_var_screeninfo flip_var;
 
+// Whether the panel has refused the last pan and has not been woken since.
+static bool fb_pan_stalled;
+
+// Ask the panel to show what has been written into the page.
+//
+// On a single-page panel the pan is not a page change: it is the driver's cue
+// to re-read the page it is displaying. Without it the glass keeps whatever it
+// latched last, which is why a refused pan looks like a frozen picture sitting
+// on top of a perfectly live interface -- the buttons work, the clock in the
+// buffer is right, and none of it is on the glass.
+//
+// A refusal has two causes. The ordinary one: the panel is blanked, the driver
+// says so ("pan_display: lcd is disable?"), and it has also reset the mode, so
+// the offset that was right before no longer fits. Re-applying that offset --
+// which is what this used to do -- refuses every frame for the rest of the
+// session, because nothing ever changes it back. So on a refusal the mode is
+// read again, the offset is recomputed for the mode the driver now holds, and
+// the pan is retried once.
+//
+// The other cause is that the panel is off and stays off: then even a correct
+// offset is refused, and the thing to do is to stop asking until it is woken.
+// That is what fb_pan_stalled is for; the frame path clears it once the screen
+// is on again.
+static void fb_pan_show(unsigned yoffset) {
+	if (fb_pan_stalled) {
+		return;
+	}
+
+	fb_var.yoffset = yoffset;
+	if (ioctl(fb_fd, FBIOPAN_DISPLAY, &fb_var) == 0) {
+		return;
+	}
+
+	unsigned want = yoffset;
+	ioctl(fb_fd, FBIOGET_VSCREENINFO, &fb_var);
+	if (fb_var.yres_virtual >= fb_var.yres * 2 && want >= fb_var.yres && want < fb_var.yres_virtual) {
+		fb_var.yoffset = want; // the second page is still there and still this far in
+	} else {
+		fb_var.yoffset = 0; // one page (or a shorter one): the top of it is all there is
+	}
+	if (ioctl(fb_fd, FBIOPAN_DISPLAY, &fb_var) == 0) {
+		fb_mode_stale = true; // the next frame lays itself out against this mode
+		return;
+	}
+
+	if (!fb_pan_stalled) {
+		fprintf(stderr, "fb: the panel refused the pan twice; waiting for it to be woken (offset %u)\n", want);
+		fb_pan_stalled = true;
+	}
+}
+
 static void *flip_thread(void *arg) {
 	(void)arg;
 	thread_be_realtime("fb flip", 5);
@@ -1477,33 +1528,7 @@ static void *flip_thread(void *arg) {
 		struct fb_var_screeninfo var = flip_var;
 		pthread_mutex_unlock(&flip_lock);
 
-		unsigned want = var.yoffset;
-		if (ioctl(fb_fd, FBIOPAN_DISPLAY, &var) < 0) {
-			// A blank/unblank cycle rewrites the mode under us: the panel's
-			// driver resets the virtual size and its descriptor when it powers
-			// down, and from then on the yoffset that was right before is
-			// refused with EINVAL -- every frame, for ever. What that looks
-			// like on the device is a lit screen showing the last frame that
-			// ever reached it while the interface behind it keeps drawing:
-			// a frozen picture, a clock that stopped, an indicator still
-			// saying what was true minutes ago. The mode is read again and the
-			// same pan tried once more, which is all it takes.
-			bool recovered = false;
-			if (errno == EINVAL && ioctl(fb_fd, FBIOGET_VSCREENINFO, &var) == 0) {
-				var.yoffset = want;
-				recovered = ioctl(fb_fd, FBIOPAN_DISPLAY, &var) == 0;
-				if (recovered) {
-					fb_mode_stale = true; // the next frame reads the mode too
-				}
-			}
-			if (!recovered) {
-				static bool warned;
-				if (!warned) {
-					perror("fb: FBIOPAN_DISPLAY");
-					warned = true;
-				}
-			}
-		}
+		fb_pan_show(var.yoffset);
 
 		pthread_mutex_lock(&flip_lock);
 		flip_pending = false;
@@ -1960,15 +1985,14 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 		pthread_mutex_unlock(&flip_lock);
 		ft_frame_done(flush_us, wait_us, blit_done_us, blit_done_us);
 	} else if (lv_display_flush_is_last(disp)) {
-		fb_var.yoffset = second_page ? fb_var.yres : 0;
-		if (ioctl(fb_fd, FBIOPAN_DISPLAY, &fb_var) < 0) {
-			// One warning, not one per frame.
-			static bool warned;
-			if (!warned) {
-				perror("fb: FBIOPAN_DISPLAY");
-				warned = true;
-			}
+		// A panel that refused the pan (it is off, or its mode was reset under
+		// us) is not asked again until the screen has been switched back on;
+		// then the mode is read once more and the frame is laid out against it.
+		if (fb_pan_stalled && power_screen_is_on()) {
+			fb_pan_stalled = false;
+			fb_mode_stale = true;
 		}
+		fb_pan_show(second_page ? fb_var.yres : 0);
 		ft_frame_done(flush_us, wait_us, blit_done_us, ft_now_us());
 	}
 	lv_display_flush_ready(disp);
