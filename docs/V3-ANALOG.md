@@ -360,5 +360,6 @@ Verified on the device:
   (receiver), and optical;
 - screen-off and wake through the framebuffer blank node, with the pan fix above;
 - Bluetooth: pairing, AVRCP volume, A2DP out, A2DP in (SBC, AAC, aptX,
-  aptX-HD), and LDAC out. LDAC **in** does not work yet -- see the LDAC section
-  above.
+  aptX-HD), and **LDAC out** (confirmed by ear on LDAC headphones, not only by
+  the player's own codec report). LDAC **in** does not work yet -- see the LDAC
+  section above.
