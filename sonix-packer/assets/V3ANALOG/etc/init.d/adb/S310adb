@@ -1,0 +1,46 @@
+#!/bin/sh
+#
+# The firmware's side of the player's ADB switch.
+#
+# The player's ADB switch (src/system/device/adb.c) does not build a gadget
+# itself on a firmware whose USB is the legacy android_usb one: it looks for
+# /sys/class/android_usb/android0/functions and, when it is there, runs
+# /etc/init.d/adb/S310adb start -- the name the stock firmware's own USB
+# scripts use. This device's stock firmware has no /etc/init.d/adb at all: its
+# adb mode is one branch of K90adb, which the boot never runs (K scripts are
+# for shutdown). So the switch went on, found no script, and nothing happened.
+#
+# What follows is that branch, with the same values the stock writes: the
+# gadget disabled first (its function list cannot be rewritten while it is
+# enabled), then 18d1:0d02 with the adb function, then enabled again. adbd is
+# left running in a loop by the firmware's own /sbin/adbserver.sh, which is
+# also what puts the functionfs descriptors in place -- the gadget is useless
+# without them.
+#
+# On stop the daemon goes and the gadget is left in adb mode: the mode is the
+# player's to change (its storage path sets the gadget it wants), and a switch
+# that is turned off and on again must not leave the host with a device that
+# never comes back.
+
+GADGET=/sys/class/android_usb/android0
+
+case "$1" in
+start)
+	echo 0 > "$GADGET/enable" 2>/dev/null
+	sleep 1
+	echo 18d1 > "$GADGET/idVendor" 2>/dev/null
+	echo 0d02 > "$GADGET/idProduct" 2>/dev/null
+	echo adb > "$GADGET/functions" 2>/dev/null
+	echo 1 > "$GADGET/enable" 2>/dev/null
+	/sbin/adbserver.sh &
+	;;
+stop)
+	/sbin/kill_adbserver.sh &
+	;;
+*)
+	echo "Usage: $0 {start|stop}"
+	exit 1
+	;;
+esac
+
+exit 0

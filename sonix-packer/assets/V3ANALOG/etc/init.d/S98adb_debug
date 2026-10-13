@@ -65,6 +65,22 @@ start_adbd() {
 
 watchdog() {
 	log "--- boot: player=$(pidof sonix_player) functions=$(cat $GADGET/functions 2>/dev/null)"
+
+	# adb first, before the player is the only thing that can bring it up.
+	#
+	# The player's own ADB switch builds a configfs gadget, and this kernel
+	# refuses configfs functions: the switch goes on and nothing appears. So adb
+	# is set here, once, through the firmware's legacy gadget -- the same nodes
+	# the stock firmware's own adb script writes. From this point on the mode
+	# belongs to the player: if the interface asks for DAC or storage, that wins,
+	# and the loop below keeps out of the way while the player runs.
+	if [ ! -f "$STOP" ] && set_adb_mode; then
+		start_adbd
+		log "adb set at boot: functions=$(cat $GADGET/functions 2>/dev/null) adbd=$(adbd_pid)"
+	else
+		log "adb was not set at boot"
+	fi
+
 	while :; do
 		if [ -f "$STOP" ] || player_running; then
 			sleep "$PERIOD"
