@@ -286,6 +286,26 @@ assets carry and not the stock's.
 `UBOOT.BIN` is carried across untouched, deliberately: writing the bootloader is
 the one way to brick this device, and the update route does not need it.
 
+Two things the verify step exists for, both learned the hard way:
+
+- **The executable bit on the init script.** The packer rewrites
+  `etc/init.d/S92_03_start_music_player` in place, and a rewrite that drops its
+  mode leaves a firmware whose init skips it -- busybox init does not run a
+  script without the bit. The player then never starts, and what stays on the
+  screen is the boot logo, which the bootloader draws from the `logo`
+  partition, not the player. It looks exactly like a player that hangs. The
+  rewrite preserves the mode and the check refuses an image where any of
+  `S92_03_start_music_player`, `S98adb_debug`, `sonix_player`,
+  `sonix_player.sh` or `sonix_launch` is not executable.
+- **Adb when the player is not there.** On this firmware adb is a USB mode that
+  only the player selects (the stock has no script that starts it at boot), so a
+  player that does not come up leaves no adb either, and nothing to look at. The
+  image carries `etc/init.d/S98adb_debug`, which puts the gadget into adb mode
+  and starts `adbd` whenever neither `sonix_player` nor `sonix_launch` is
+  running, and stays out of the way while the player runs -- the player owns the
+  gadget's mode otherwise (DAC mode, storage mode). `/mnt/sd_0/disable_adb`
+  pauses it.
+
 The tools live in the docker image the sibling project builds
 (`docker build -t tempotec-fw-tools "../tempotec v3/docker"`): 7z, ubi_reader,
 mkfs.ubifs and genisoimage, none of which this host has.
