@@ -75,6 +75,9 @@
 #define RECOVERY_FLAG_ALT "/usr/data/recovery_all"
 #define RECOVERY_SCRIPT "/usr/bin/recovery_all.sh"
 #define RECOVERY_INIT "/etc/init.d/S39_recovery.recovery"
+// The same script under this family's other name: the Blaze's rootfs calls it
+// S39_recovery.recovery, the V3 Analog's calls it S39_recovery.
+#define RECOVERY_INIT_ALT "/etc/init.d/S39_recovery"
 
 // This player's own configuration. Deleting it here rather than leaving it to
 // the script is deliberate: on a rootfs missing the two pieces above, the reset
@@ -142,7 +145,16 @@ static bool write_flag(void) {
 
 bool factoryreset_supported(void) {
 	struct stat st;
-	return stat(RECOVERY_SCRIPT, &st) == 0 && stat(RECOVERY_INIT, &st) == 0;
+	if (stat(RECOVERY_SCRIPT, &st) != 0) {
+		return false;
+	}
+	// Either name of the init script that reads the note counts. Requiring the
+	// Blaze's name alone made this come out false on the V3 Analog, and the
+	// warning below then said that Bluetooth pairings and Wi-Fi networks would
+	// survive the reset -- while the device's own S39_recovery was about to
+	// erase them along with the rest of /data. A warning that understates what
+	// is about to happen is worse than no warning at all.
+	return stat(RECOVERY_INIT, &st) == 0 || stat(RECOVERY_INIT_ALT, &st) == 0;
 }
 
 void factoryreset_run(void) {
@@ -157,8 +169,8 @@ void factoryreset_run(void) {
 		// device restarts with initial settings. Worth reporting, because it
 		// explains why Bluetooth pairings and Wi-Fi networks survive the
 		// reboot.
-		printf("factoryreset: warning, %s or %s are missing: only the configuration will be restored\n",
-			   RECOVERY_SCRIPT, RECOVERY_INIT);
+		printf("factoryreset: warning, %s or %s or %s are missing: only the configuration will be restored\n",
+			   RECOVERY_SCRIPT, RECOVERY_INIT, RECOVERY_INIT_ALT);
 	}
 
 	// Everything holding a file open on the card goes down first: the same four
