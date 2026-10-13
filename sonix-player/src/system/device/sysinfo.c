@@ -152,6 +152,9 @@ static const sysinfo_model_t MODELS[] = {
 		// The node holds the number itself, with no chip-id line around it, so
 		// the whole line is the serial's own part (the box adds "V3" in front).
 		.serial_digits = 0,
+		// The box's number carries the check digit the stock player computes,
+		// and on this unit the computed digit matches the box exactly.
+		.serial_check_digit = true,
 		.pmic_charger = false,
 		.cs43131 = false,
 		.ak4493 = true,
@@ -475,6 +478,30 @@ static void efuse_serial_part(const char *node, int digits, char *out, size_t ou
 	}
 }
 
+// The stock player's check digit: an EAN/UPC-style one over the whole string it
+// displays (prefix and serial together). Every character is worth its base-36
+// value (the serial is hex, the prefix is letters and digits), every other
+// character counting from the right is weighted 3, and the digit is
+// (10 - sum % 10) % 10. The stock appends it on every model; this port only
+// where the result has been checked against the box, which is the V3 Analog.
+static char serial_check_digit(const char *text, size_t length) {
+	unsigned sum = 0;
+	for (size_t i = 0; i < length; i++) {
+		unsigned char c = (unsigned char)text[i];
+		unsigned value = 0;
+		if (c >= '0' && c <= '9') {
+			value = (unsigned)(c - '0');
+		} else if (c >= 'A' && c <= 'Z') {
+			value = (unsigned)(c - 'A') + 10;
+		} else if (c >= 'a' && c <= 'z') {
+			value = (unsigned)(c - 'a') + 10;
+		}
+		// The rightmost character is weighted 3, the one before it 1, and so on.
+		sum += ((length - 1 - i) % 2 == 0) ? 3u * value : value;
+	}
+	return (char)('0' + (10u - sum % 10u) % 10u);
+}
+
 const char *sysinfo_serial_number(void) {
 	// Read once and kept: the efuses are burned at the factory.
 	static char serial[64];
@@ -503,7 +530,11 @@ const char *sysinfo_serial_number(void) {
 		efuse_serial_part("/proc/jz/efuse/efuse_chip_id", 8, part, sizeof(part));
 	}
 	if (part[0]) {
-		snprintf(serial, sizeof(serial), "%s%s", model->serial_prefix, part);
+		int n = snprintf(serial, sizeof(serial), "%s%s", model->serial_prefix, part);
+		if (model->serial_check_digit && n > 0 && (size_t)n + 2 < sizeof(serial)) {
+			serial[n] = serial_check_digit(serial, (size_t)n);
+			serial[n + 1] = '\0';
+		}
 	}
 	return serial;
 }
