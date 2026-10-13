@@ -40,6 +40,13 @@ sonix-packer/r3proii_original.upt
 sonix-packer/r1_original.upt
 sonix-packer/sonix_launch
 
+# The V3 Analog port's own packer: the stock firmware it starts from, the trees
+# it works in and the image it writes. The assets and the scripts next to them
+# are the sources; these are the outputs, and the image is tens of megabytes.
+sonix-packer/v3_analog_original.upt
+sonix-packer/build/
+sonix-packer/out/
+
 # The V3 Analog port: the simulator's own resource tree (fonts and languages,
 # the same files sonix-player/assets/ carries), the pseudo-sysroot built to
 # cross-compile the Bluetooth userland, and the packages and tarballs it is
