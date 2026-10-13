@@ -101,6 +101,23 @@ typedef struct {
 							   // firmware file lives (bluetooth.c). NULL keeps the HiBy boards'
 	const char *bt_firmware_dir; // own "/usr/libexec/bluetooth/bluetoothd" and "/lib/firmware/bt_bcm";
 							   // the V3 Analog's are "/usr/sbin/bluetoothd" and "/lib/firmware".
+
+	// USB audio ("DAC mode"). The HiBy boards and the Blaze build a configfs
+	// gadget and create a UAC function in it; the V3 Analog's firmware has a
+	// legacy android_usb gadget instead, one of whose modes carries the same UAC
+	// function -- the stock player switches to it by writing these ids and the
+	// function list (usbdac.c).
+	bool usb_gadget_legacy;
+	// The controller's transport (the UART attach that loads the chip's firmware)
+	// belongs to the firmware on this board: its own /usr/bin/bt_init does it at
+	// boot, and doing it a second time from here -- or killing the one that is
+	// running -- leaves the controller with no index at all, which is a radio
+	// that bluez cannot see. True means: leave it alone, and ask the firmware to
+	// attach it when it is not up.
+	bool bt_chip_by_firmware;
+	const char *usb_audio_vendor;	 // 22E1 on the V3 Analog, as the stock writes it
+	const char *usb_audio_product;	 // F008
+	const char *usb_audio_functions; // uac_sa,hid -- the stock's own list
 	const char *buttons_device_name; // the input device the case's keys arrive from, by the name the
 							   // kernel gives it (system.c). NULL is the HiBy boards' own pair,
 							   // "md-gpio-keys"/"jz adc keyboard"; the V3 Analog's is "gpio-keys",
