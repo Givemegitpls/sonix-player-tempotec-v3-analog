@@ -198,7 +198,20 @@ static void publish_format(const char *device, const bt_stream_t *info) {
 // the capture loop
 // ---------------------------------------------------------------------------
 
-static snd_pcm_t *open_capture(const char *mac, unsigned rate, unsigned channels, unsigned bits) {
+// Opens the capture PCM for a sender, and answers with the format the PCM
+// actually took -- not with the one the sender was said to be sending.
+//
+// That description is a cache (bluetooth_receiver_stream()), and on a codec that
+// negotiates it is a moment behind the transport: a phone that has just moved to
+// LDAC at 96 kHz/32 bit is still described as 44.1 kHz/16 bit for a second, and
+// an open at the wrong format fails with EINVAL. That failure is not a failed
+// open on this side: the transport is dropped with it, the phone pauses, and the
+// page shows the codec it was showing all along -- which looks like the
+// connection breaking for no reason.
+//
+// So the format, the rate and the channels are asked of the PCM itself: whatever
+// bluealsa decodes the stream into is what the read loop then works with.
+static snd_pcm_t *open_capture(const char *mac, unsigned *rate, unsigned *channels, unsigned *bits) {
 	char device[96];
 	snprintf(device, sizeof(device), "bluealsa:DEV=%s,PROFILE=a2dp", mac);
 
@@ -213,20 +226,55 @@ static snd_pcm_t *open_capture(const char *mac, unsigned rate, unsigned channels
 		return NULL;
 	}
 
-	// 24 bits is aptX HD, which bluealsa decodes into S24_4LE: the sample in the
-	// low three bytes of a 32-bit word. Asked for as 16 bits it is read at the
-	// wrong frame size and comes out as noise.
-	snd_pcm_format_t format = bits == 32   ? SND_PCM_FORMAT_S32_LE
-							  : bits == 24 ? SND_PCM_FORMAT_S24_LE
-										   : SND_PCM_FORMAT_S16_LE;
-	err = snd_pcm_set_params(pcm, format, SND_PCM_ACCESS_RW_INTERLEAVED, (unsigned)channels, (unsigned)rate,
-							 0, // no resampling: the rate is the sender's and has to stay it
-							 (unsigned)capture_ms() * 1000u);
-	if (err < 0) {
-		fprintf(stderr, "btreceiver: %u Hz %u ch %u bit refused: %s\n", rate, channels, bits, snd_strerror(err));
+	snd_pcm_hw_params_t *hw;
+	snd_pcm_hw_params_alloca(&hw);
+	if (snd_pcm_hw_params_any(pcm, hw) < 0 ||
+		snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED) < 0) {
+		fprintf(stderr, "btreceiver: %s has no usable configuration\n", device);
 		snd_pcm_close(pcm);
 		return NULL;
 	}
+
+	// 32 first, then 24 (aptX HD, decoded into S24_LE: the sample in the low
+	// three bytes of a 32-bit word) and 16 (SBC and AAC). Whichever the PCM
+	// reports as available is the one it decodes into.
+	static const snd_pcm_format_t formats[] = {SND_PCM_FORMAT_S32_LE, SND_PCM_FORMAT_S24_LE,
+											   SND_PCM_FORMAT_S16_LE};
+	snd_pcm_format_t chosen = SND_PCM_FORMAT_UNKNOWN;
+	for (size_t i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
+		if (snd_pcm_hw_params_test_format(pcm, hw, formats[i]) == 0) {
+			chosen = formats[i];
+			break;
+		}
+	}
+	if (chosen == SND_PCM_FORMAT_UNKNOWN || snd_pcm_hw_params_set_format(pcm, hw, chosen) < 0) {
+		fprintf(stderr, "btreceiver: %s takes none of S32/S24/S16\n", device);
+		snd_pcm_close(pcm);
+		return NULL;
+	}
+
+	unsigned got_channels = *channels;
+	if (snd_pcm_hw_params_set_channels_near(pcm, hw, &got_channels) < 0) {
+		got_channels = *channels;
+	}
+	unsigned got_rate = *rate;
+	int dir = 0;
+	snd_pcm_hw_params_set_rate_near(pcm, hw, &got_rate, &dir);
+	unsigned buffer_us = (unsigned)capture_ms() * 1000u;
+	snd_pcm_hw_params_set_buffer_time_near(pcm, hw, &buffer_us, NULL);
+
+	if ((err = snd_pcm_hw_params(pcm, hw)) < 0) {
+		fprintf(stderr, "btreceiver: %u Hz %u ch %u bit refused: %s\n", got_rate, got_channels,
+				chosen == SND_PCM_FORMAT_S16_LE ? 16u : chosen == SND_PCM_FORMAT_S24_LE ? 24u : 32u, snd_strerror(err));
+		snd_pcm_close(pcm);
+		return NULL;
+	}
+
+	*rate = got_rate;
+	*channels = got_channels;
+	*bits = chosen == SND_PCM_FORMAT_S16_LE ? 16 : chosen == SND_PCM_FORMAT_S24_LE ? 24 : 32;
+	fprintf(stderr, "btreceiver: capture open at %u Hz %u ch %u bit (%s)\n", *rate, *channels, *bits,
+			snd_pcm_format_name(chosen));
 	return pcm;
 }
 
@@ -275,7 +323,7 @@ static session_t capture_session(const char *mac, const char *name, bool may_gue
 	unsigned in_bits = info.bits ? info.bits : FALLBACK_BITS;
 	publish_format(name, &info);
 
-	snd_pcm_t *pcm = open_capture(mac, rate, channels, in_bits);
+	snd_pcm_t *pcm = open_capture(mac, &rate, &channels, &in_bits);
 	if (!pcm) {
 		return SESSION_NO_PCM;
 	}

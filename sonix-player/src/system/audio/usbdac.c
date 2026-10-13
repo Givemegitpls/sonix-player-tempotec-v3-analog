@@ -8,6 +8,7 @@
 #include "src/system/device/power.h"
 #include "src/system/device/system.h"
 #include "src/system/device/usb.h"
+#include "src/system/device/sysinfo.h"
 
 #include <errno.h>
 #include <dirent.h>
@@ -254,8 +255,80 @@ static bool first_udc(char *out, size_t out_size) {
 // Each step separately, with each failure named: a build that fails has to say
 // which write failed and with what errno, because every one has a different
 // cause.
+// The V3 Analog's firmware does not build a configfs gadget. Its USB modes are
+// the legacy android_usb gadget's, and one of them carries the same UAC
+// function this file speaks to (the kernel's f_uac_sa, which is what /dev/uac_sa
+// belongs to). The stock player switches to that mode by writing the vendor and
+// product ids and the function list into the gadget, with the gadget disabled
+// first: the function list cannot be written while it is enabled, and a list
+// without uac_sa in it takes the audio interface away. The mode that was in
+// force is remembered and put back on the way out, which is what the stock does
+// when DAC mode is left.
+#define LEGACY_GADGET "/sys/class/android_usb/android0"
+#define LEGACY_UAC_FUNC "/sys/class/android_usb/f_uac_sa"
+
+static char saved_functions[64];
+static char saved_vendor[8];
+static char saved_product[8];
+static bool legacy_saved;
+
+static void legacy_gadget_teardown(void) {
+	if (!legacy_saved) {
+		return;
+	}
+	write_file(LEGACY_GADGET "/enable", "0");
+	if (saved_functions[0]) {
+		write_file(LEGACY_GADGET "/functions", saved_functions);
+	}
+	if (saved_vendor[0]) {
+		write_file(LEGACY_GADGET "/idVendor", saved_vendor);
+	}
+	if (saved_product[0]) {
+		write_file(LEGACY_GADGET "/idProduct", saved_product);
+	}
+	write_file(LEGACY_GADGET "/enable", "1");
+	legacy_saved = false;
+	printf("usbdac: the gadget is back to %s\n", saved_functions[0] ? saved_functions : "its previous mode");
+}
+
+static bool legacy_gadget_build(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+
+	// The function directory is the kernel's own answer to "can this firmware
+	// do USB audio at all", the same question the configfs mkdir answers on the
+	// other boards.
+	if (!model || !model->usb_audio_vendor || !path_exists(LEGACY_UAC_FUNC)) {
+		set_error(tr("usbdac_no_uac"), tr("no USB audio function"));
+		return false;
+	}
+
+	read_first_line(LEGACY_GADGET "/functions", saved_functions, sizeof(saved_functions));
+	read_first_line(LEGACY_GADGET "/idVendor", saved_vendor, sizeof(saved_vendor));
+	read_first_line(LEGACY_GADGET "/idProduct", saved_product, sizeof(saved_product));
+	legacy_saved = true;
+
+	write_file(LEGACY_GADGET "/enable", "0");
+	write_file(LEGACY_GADGET "/idVendor", model->usb_audio_vendor);
+	write_file(LEGACY_GADGET "/idProduct", model->usb_audio_product);
+	if (!write_file(LEGACY_GADGET "/functions", model->usb_audio_functions)) {
+		set_error(tr("usbdac_gadget_failed"), strerror(errno));
+		legacy_gadget_teardown();
+		return false;
+	}
+	write_file(LEGACY_GADGET "/enable", "1");
+
+	printf("usbdac: the gadget is %s, ids %s:%s\n", model->usb_audio_functions, model->usb_audio_vendor,
+		   model->usb_audio_product);
+	return true;
+}
+
 static bool gadget_build(void) {
 	char path[512];
+
+	const sysinfo_model_t *model = sysinfo_model();
+	if (model && model->usb_gadget_legacy) {
+		return legacy_gadget_build();
+	}
 
 	// Off the controller first: one controller takes one gadget, and a bound
 	// configuration cannot be changed. Neither write is required to succeed --
@@ -395,6 +468,12 @@ static bool gadget_build(void) {
 }
 
 static void gadget_teardown(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	if (model && model->usb_gadget_legacy) {
+		legacy_gadget_teardown();
+		return;
+	}
+
 	write_file(GADGET "/UDC", "\n");
 	unlink_functions();
 	rmdir(UAC_FUNC);

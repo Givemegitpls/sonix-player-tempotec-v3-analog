@@ -41,6 +41,7 @@
 // bt_init/bt_resume/bt_suspend scripts are not used: everything they do is done
 // here and in btstack.c, over D-Bus and over the HCI ioctls.
 #define BT_TRANSPORT_BIN "/usr/bin/brcm_patchram_plus"
+#define BT_FIRMWARE_ATTACH_BIN "/usr/bin/bt_init"
 #define BT_TRANSPORT_TTY "/dev/ttyS0"
 #define BT_FIRMWARE_DIR "/lib/firmware/bt_bcm"
 #define BT_FIRMWARE_AW "BCM4343A1_001.002.009.0122.0538.hcd" // chipvendor 0x81
@@ -807,9 +808,40 @@ static bool device_address(char *out, size_t size) {
 	return true;
 }
 
+// True when the controller's UART attach is the firmware's own (sysinfo.h).
+static bool bt_chip_by_firmware(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	return model && model->bt_chip_by_firmware;
+}
+
 static bool ensure_transport(void) {
 	if (hci_up()) {
 		return true;
+	}
+
+	// On this board the UART attach is the firmware's own business (sysinfo.h,
+	// bt_chip_by_firmware): its /usr/bin/bt_init loads the chip's firmware at
+	// boot, and the controller is then there for anyone to use. Attaching it a
+	// second time from here, or killing the one that is running, leaves the
+	// controller with no index at all -- bluez then reports zero controllers and
+	// no adapter ever appears. So when it is down, the firmware is asked to do
+	// it again, and nothing else touches the port.
+	if (bt_chip_by_firmware()) {
+		fprintf(stderr, "bluetooth: asking the firmware to attach the controller\n");
+		char *attach[] = {(char *)"bt_init", NULL};
+		if (!spawn_daemon(BT_FIRMWARE_ATTACH_BIN, attach)) {
+			return false;
+		}
+		uint32_t began = now_ms();
+		for (int waited = 0; waited < WAIT_TRANSPORT_MS; waited += 100) {
+			if (hci_up()) {
+				fprintf(stderr, "bluetooth: hci0 up after %u ms\n", now_ms() - began);
+				return true;
+			}
+			sleep_ms(100);
+		}
+		fprintf(stderr, "bluetooth: hci0 did not arrive in %d ms\n", WAIT_TRANSPORT_MS);
+		return false;
 	}
 
 	write_file(BT_RFKILL, "1");
@@ -2355,7 +2387,7 @@ static void bring_stack_down(bool deliberate) {
 	// The transport only for a deliberate switch-off. A park has to come back
 	// in a hurry and re-uploading the chip's firmware would put a second and a
 	// half in front of every wake with headphones connected.
-	if (deliberate) {
+	if (deliberate && !bt_chip_by_firmware()) {
 		hci_down();
 		if (stop_process("brcm_patchram_plus")) {
 			write_file(BT_RFKILL, "0");
@@ -2378,9 +2410,11 @@ void bluetooth_power_down_stack(void) {
 	stop_process("bluealsa");
 	stop_process("bluetoothd");
 	stop_process("bt-agent");
-	hci_down();
-	if (stop_process("brcm_patchram_plus")) {
-		write_file(BT_RFKILL, "0");
+	if (!bt_chip_by_firmware()) {
+		hci_down();
+		if (stop_process("brcm_patchram_plus")) {
+			write_file(BT_RFKILL, "0");
+		}
 	}
 	fprintf(stderr, "bluetooth: the boot-time stack is down, about %ld KB back\n", freed);
 }

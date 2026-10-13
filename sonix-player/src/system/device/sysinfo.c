@@ -42,6 +42,11 @@ static const sysinfo_model_t MODELS[] = {
 		.buttons_device_name = NULL,
 		.bluetoothd_path = NULL,
 		.bt_firmware_dir = NULL,
+		.bt_chip_by_firmware = false,
+		.usb_gadget_legacy = false,
+		.usb_audio_vendor = NULL,
+		.usb_audio_product = NULL,
+		.usb_audio_functions = NULL,
 		.bluetooth_stack = true,
 		.single_fb_page = false,
 		.pcm_device = NULL,
@@ -67,6 +72,11 @@ static const sysinfo_model_t MODELS[] = {
 		.buttons_device_name = NULL,
 		.bluetoothd_path = NULL,
 		.bt_firmware_dir = NULL,
+		.bt_chip_by_firmware = false,
+		.usb_gadget_legacy = false,
+		.usb_audio_vendor = NULL,
+		.usb_audio_product = NULL,
+		.usb_audio_functions = NULL,
 		.bluetooth_stack = true,
 		.single_fb_page = false,
 		.pcm_device = NULL,
@@ -98,6 +108,11 @@ static const sysinfo_model_t MODELS[] = {
 		.buttons_device_name = NULL,
 		.bluetoothd_path = NULL,
 		.bt_firmware_dir = NULL,
+		.bt_chip_by_firmware = false,
+		.usb_gadget_legacy = false,
+		.usb_audio_vendor = NULL,
+		.usb_audio_product = NULL,
+		.usb_audio_functions = NULL,
 		.bluetooth_stack = true,
 		.single_fb_page = false,
 		.pcm_device = NULL,
@@ -159,6 +174,14 @@ static const sysinfo_model_t MODELS[] = {
 		// bt_bcm subdirectory.
 		.bluetoothd_path = "/usr/sbin/bluetoothd",
 		.bt_firmware_dir = "/lib/firmware",
+		// DAC mode goes through the firmware's legacy android_usb gadget: its
+		// uac_sa function is one of the modes there, with these ids and this
+		// function list (the stock player's own values).
+		.bt_chip_by_firmware = true,
+		.usb_gadget_legacy = true,
+		.usb_audio_vendor = "22E1",
+		.usb_audio_product = "F008",
+		.usb_audio_functions = "uac_sa,hid",
 		// The firmware's own Bluetooth stack runs here, not this port's: its
 		// modules, its scripts, its firmware files. Talking to it from the port
 		// gets a failed registration every three seconds and nothing else, so the
