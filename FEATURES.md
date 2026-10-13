@@ -143,7 +143,8 @@ certificate checking, and HLS.
   > Pictures need to be exactly 480x720 jpegs non progressive.
 
 - **Power** - standby, LED behaviour, automatic power-off from thirty seconds to
-  six hours, and a charge limit from 80 to 100 %.
+  six hours, and a charge limit from 80 to 100 %. A warning at 5 % battery, and
+  a shutdown with a ten second countdown at 1 %, also checked during standby.
 - **Date and time** - set by hand and written to the RTC, 24-hour clock, and a
   time zone with its own standard and daylight choice.
 - **Language** - English, Italiano, Deutsch, Español, Français, Russian, Chinese,
