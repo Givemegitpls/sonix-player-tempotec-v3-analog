@@ -236,6 +236,7 @@ ICONS = [
     ("move-vertical.svg", "reorder", 34), # turns on reordering in a playlist
     ("now-playing.svg", "now_playing", 32), # the playing row in the queue
     ("plus.svg", "plus", 36),
+    ("minus.svg", "minus", 36),             # the metronome: one beat per minute slower
     ("import.svg", "import", 34), # brings an .m3u from the card into the player's folder
     ("reset.svg", "reset", 36),             # MSEB / equalizer: back to flat
     ("circle-check.svg", "circle_check", 64), # the confirmation popup
@@ -436,6 +437,7 @@ COLOR_ICONS = [
     ("flappy-bird.png", "menu_flappy_bird", SECTION_ICON_SIZE),
     ("ebook.png", "menu_books", SECTION_ICON_SIZE),
     ("file-explorer.png", "menu_file_explorer", SECTION_ICON_SIZE),
+    ("metronome.png", "menu_metronome", SECTION_ICON_SIZE),
 
     # The service badges in the player's top right corner, where the radio puts
     # its LIVE mark. They sit over the cover art, so these are the outlined

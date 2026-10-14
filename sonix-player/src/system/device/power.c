@@ -42,6 +42,7 @@
 #include "src/system/device/usb.h"
 #include "src/system/audio/usbdac.h"
 #include "src/system/gearboy/gearboy.h"
+#include "src/system/audio/metronome.h"
 #include "src/system/device/led.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/device/axpcharge.h"
@@ -1688,7 +1689,10 @@ static void power_timer_cb(lv_timer_t *timer) {
 	// comes in over A2DP, so neither of the first two answers says anything
 	// about it. Streaming rather than merely active, because the mode left on
 	// with the phone paused is exactly the idle state the timer exists for.
-	bool playing = (audio_get_status() == AUDIO_STATUS_PLAYING) || radio_is_playing() || btreceiver_is_streaming();
+	// The metronome counts as music: a player clicking in a pocket with the
+	// screen dark must not go to sleep under it.
+	bool playing = (audio_get_status() == AUDIO_STATUS_PLAYING) || radio_is_playing() || btreceiver_is_streaming() ||
+				   metronome_running();
 	if (playing) {
 		g_last_playing_ms = now;
 	}

@@ -19,6 +19,7 @@
 #include "src/gui/bluetooth/btsettings.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/corners.h"
+#include "src/gui/settings/bootlogopage.h"
 #include "src/gui/settings/kblayoutpage.h"
 #include "src/gui/settings/screensaver.h"
 #include "src/gui/library/audiobookextras.h"
@@ -697,6 +698,7 @@ void gui_init(gui_config_t *cfg) {
 	processespage_init(cfg); // the processes page the devoptions entry opens
 	// after devoptions: the system entry opens the page that can unlock it
 	systempage_init(cfg);
+	bootlogopage_init(cfg); // before appearance: its row carries the screen
 	appearance_init(cfg);
 	language_init(cfg);
 	libraryscan_init(cfg);
