@@ -1541,6 +1541,16 @@ void power_screen_off(void) {
 	fprintf(stderr, "power: screen off\n");
 }
 
+void power_keep_animations_paused(void) {
+	if (g_screen_on) {
+		return;
+	}
+	lv_timer_t *anim_timer = lv_anim_get_timer();
+	if (anim_timer && !lv_timer_get_paused(anim_timer)) {
+		lv_timer_pause(anim_timer);
+	}
+}
+
 void power_screen_on(void) {
 	waveform_set_screen_on(true);
 	if (g_screen_on) {
@@ -1603,6 +1613,11 @@ void power_screen_on(void) {
 	if (anim_timer) {
 		lv_timer_resume(anim_timer);
 	}
+	// Animations started or left running in the dark have been standing still
+	// (see power_keep_animations_paused). One pass brings each to where its
+	// clock says it is, and runs the completion of the ones already over, so
+	// the wake frame below shows a closed sheet closed rather than half way.
+	lv_anim_refr_now();
 	// ... and force an immediate, full repaint of the framebuffer. The blank
 	// cleared the panel to black, so the whole UI must be redrawn; this is not
 	// gated on g_refr_timer, and lv_refr_now() draws even if the timer is paused.

@@ -2063,6 +2063,16 @@ static const char *const INDEX_TEXT[INDEX_BUCKETS] = {"#", "A", "B", "C", "D", "
 													  "T", "U", "V", "W", "X", "Y", "Z", "\xE2\x80\xA6"};
 
 
+// Takes the strip and the big letter away again (index_timer_cb). It runs only
+// while one of them is up: whatever shows them starts it.
+static lv_timer_t *index_timer;
+
+static void index_timer_start(void) {
+	if (index_timer) {
+		lv_timer_resume(index_timer);
+	}
+}
+
 static void index_show_bar(panel_t *p, bool shown) {
 	if (!p->index_bar) {
 		return;
@@ -2070,6 +2080,7 @@ static void index_show_bar(panel_t *p, bool shown) {
 	if (shown) {
 		lv_obj_set_hidden(p->index_bar, false);
 		lv_obj_move_foreground(p->index_bar);
+		index_timer_start();
 	} else {
 		lv_obj_set_hidden(p->index_bar, true);
 	}
@@ -2096,6 +2107,7 @@ static void index_hint_show(panel_t *p, int slot) {
 	lv_obj_set_hidden(p->index_hint, false);
 	lv_obj_move_foreground(p->index_hint);
 	p->index_hint_at = lv_tick_get();
+	index_timer_start();
 }
 
 // Rebuilds the letter -> row map from the model, and decides whether this list
@@ -2359,9 +2371,10 @@ static bool index_guard_ok(panel_t *p) {
 // Takes the strip and the big letter away once nothing has asked for them for
 // a moment. One timer for all three panels; only the one on screen can be
 // showing anything.
-static void index_tick(panel_t *p) {
+// True while the panel still shows the strip or the letter.
+static bool index_tick(panel_t *p) {
 	if (!index_guard_ok(p)) {
-		return;
+		return false;
 	}
 	if (p->index_bar && !lv_obj_is_hidden(p->index_bar) && lv_tick_elaps(p->index_wanted_at) > INDEX_HIDE_MS) {
 		index_show_bar(p, false);
@@ -2369,15 +2382,18 @@ static void index_tick(panel_t *p) {
 	if (p->index_hint && !lv_obj_is_hidden(p->index_hint) && lv_tick_elaps(p->index_hint_at) > INDEX_HINT_MS) {
 		lv_obj_set_hidden(p->index_hint, true);
 	}
+	return (p->index_bar && !lv_obj_is_hidden(p->index_bar)) || (p->index_hint && !lv_obj_is_hidden(p->index_hint));
 }
 
 static void index_timer_cb(lv_timer_t *timer) {
-	(void)timer;
 	// All three: the artist's albums has a strip of its own, and a panel left
 	// out here has nothing to hide its strip again once it has shown.
-	index_tick(&panel_names);
-	index_tick(&panel_tracks);
-	index_tick(&panel_artist_albums);
+	bool showing = index_tick(&panel_names);
+	showing = index_tick(&panel_tracks) || showing;
+	showing = index_tick(&panel_artist_albums) || showing;
+	if (!showing) {
+		lv_timer_pause(timer);
+	}
 }
 
 // The reorder button's glyph: the accent while the list is being reordered,
@@ -5170,7 +5186,8 @@ void medialist_init(gui_config_t *cfg) {
 	// Registered for standby: with the screen dark there is no strip to take
 	// away and nobody to see it go, and five wake-ups a second all night is
 	// exactly the sort of thing power_screen_off() exists to stop.
-	lv_timer_t *index_timer = lv_timer_create(index_timer_cb, 200, NULL);
+	index_timer = lv_timer_create(index_timer_cb, 200, NULL);
+	lv_timer_pause(index_timer); // nothing to take away until a strip is shown
 	power_pause_in_standby(index_timer);
 	theme_register_refresh(index_theme_refresh);
 	theme_register_refresh(head_theme_refresh);
