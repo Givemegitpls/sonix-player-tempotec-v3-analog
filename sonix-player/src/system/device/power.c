@@ -1394,6 +1394,7 @@ static void panel_blank_now(void) {
 	}
 	g_panel_lit_dark = false;
 	screen_power(false);
+	display_panel_disarmed(); // the blank took the panel's DMA down with it
 	// The level the panel's driver brings the backlight back at on the next
 	// unblank: the dim one a blank always left before the fast window, not
 	// the nought written for it, which the driver does not keep.
@@ -1431,6 +1432,7 @@ void power_screen_off(void) {
 		g_panel_lit_until = lv_tick_get() + (uint32_t)fast_s * 1000u;
 	} else {
 		screen_power(false);
+		display_panel_disarmed(); // the blank took the panel's DMA down with it
 	}
 
 	// With the panel dark, draw what the next wake should open on straight
@@ -1911,6 +1913,11 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 		g_cfg.brightness = cur >= BRIGHTNESS_ON_FLOOR ? cur : brightness_max();
 	}
 	screen_power(true); // make sure the panel is unblanked (in case a prior run left it off)
+	// An unblank does not arm the panel's DMA (only a fresh
+	// FBIOPUT_VSCREENINFO does), so a run that starts on a panel a previous
+	// run blanked would otherwise come up with a live interface and a dead
+	// glass. display_wake_begin is the one place that arms it and pans.
+	display_wake_begin(disp);
 	backlight_write(g_cfg.brightness);
 
 

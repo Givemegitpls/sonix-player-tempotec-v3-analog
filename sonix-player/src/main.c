@@ -1466,8 +1466,41 @@ static pthread_cond_t flip_cond = PTHREAD_COND_INITIALIZER;
 static bool flip_pending, flip_thread_on;
 static struct fb_var_screeninfo flip_var;
 
-// Whether the panel has refused the last pan and has not been woken since.
-static bool fb_pan_stalled;
+// Whether the last pan was refused (only for saying so once, not for deciding
+// whether to keep asking).
+static bool fb_pan_refused;
+
+// Whether the panel's own DMA is armed.
+//
+// Only FBIOPUT_VSCREENINFO arms it. An unblank on its own brings
+// LCDC_CTRL.ENA back but leaves SLCDC_CTRL.DMA_EN at 0, and a pan in that
+// state is *accepted* and transfers nothing: the picture stops while every
+// register looks healthy. Measured on the device (2026-10-13): after
+// FB_BLANK_POWERDOWN, ENA=1 / DMA_EN=0 and a pan reports success with no
+// SLCDC activity at all; after the PUT, DMA_EN=1 and the frame goes. The
+// registers are identical in the working and the wedged state, so the state
+// cannot be read back -- the port keeps it itself: every blank disarms, every
+// PUT arms.
+static bool fb_armed;
+
+// Told by the power path that the panel has just been blanked, so the next
+// wake knows it has to arm it again.
+void display_panel_disarmed(void) {
+	fb_armed = false;
+}
+
+// Unblank and put the mode back with FORCE, in that order: the pair is what
+// arms the SLCDC. No pan here, so a caller that wants the picture on the glass
+// pans afterwards.
+static void fb_arm(void) {
+	ioctl(fb_fd, FBIOBLANK, FB_BLANK_UNBLANK);
+	fb_var.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_FORCE;
+	if (ioctl(fb_fd, FBIOPUT_VSCREENINFO, &fb_var) < 0) {
+		perror("fb: FBIOPUT_VSCREENINFO (arm)");
+		return;
+	}
+	fb_armed = true;
+}
 
 // Ask the panel to show what has been written into the page.
 //
@@ -1485,17 +1518,15 @@ static bool fb_pan_stalled;
 // read again, the offset is recomputed for the mode the driver now holds, and
 // the pan is retried once.
 //
-// The other cause is that the panel is off and stays off: then even a correct
-// offset is refused, and the thing to do is to stop asking until it is woken.
-// That is what fb_pan_stalled is for; the frame path clears it once the screen
-// is on again.
+// The other cause is that the panel is disarmed (a blank did it, and an
+// unblank does not undo it). Then even a correct offset is refused, and the
+// thing to do is to arm the panel and ask again -- what this must never do is
+// go quiet, because a port that has stopped asking on a disarmed panel is
+// exactly the frozen picture this whole path exists for.
 static void fb_pan_show(unsigned yoffset) {
-	if (fb_pan_stalled) {
-		return;
-	}
-
 	fb_var.yoffset = yoffset;
 	if (ioctl(fb_fd, FBIOPAN_DISPLAY, &fb_var) == 0) {
+		fb_pan_refused = false;
 		return;
 	}
 
@@ -1508,12 +1539,25 @@ static void fb_pan_show(unsigned yoffset) {
 	}
 	if (ioctl(fb_fd, FBIOPAN_DISPLAY, &fb_var) == 0) {
 		fb_mode_stale = true; // the next frame lays itself out against this mode
+		fb_pan_refused = false;
 		return;
 	}
 
-	if (!fb_pan_stalled) {
-		fprintf(stderr, "fb: the panel refused the pan twice; waiting for it to be woken (offset %u)\n", want);
-		fb_pan_stalled = true;
+	// Still refused. While the screen is meant to be on, arm the panel and
+	// ask once more; while it is off, stay quiet (the backlight is off, the
+	// panel is meant to be blanked, and arming it would only power it).
+	if (!power_screen_is_on()) {
+		fb_pan_refused = false;
+		return;
+	}
+	if (!fb_pan_refused) {
+		fprintf(stderr, "fb: the panel refused the pan twice; arming it and asking again (offset %u)\n", want);
+		fb_pan_refused = true;
+	}
+	fb_arm();
+	if (ioctl(fb_fd, FBIOPAN_DISPLAY, &fb_var) == 0) {
+		fb_mode_stale = true;
+		fb_pan_refused = false;
 	}
 }
 
@@ -1985,13 +2029,8 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 		pthread_mutex_unlock(&flip_lock);
 		ft_frame_done(flush_us, wait_us, blit_done_us, blit_done_us);
 	} else if (lv_display_flush_is_last(disp)) {
-		// A panel that refused the pan (it is off, or its mode was reset under
-		// us) is not asked again until the screen has been switched back on;
-		// then the mode is read once more and the frame is laid out against it.
-		if (fb_pan_stalled && power_screen_is_on()) {
-			fb_pan_stalled = false;
-			fb_mode_stale = true;
-		}
+		// The pan path itself arms a disarmed panel and asks again (see
+		// fb_pan_show): a refused pan is never a reason to stop asking.
 		fb_pan_show(second_page ? fb_var.yres : 0);
 		ft_frame_done(flush_us, wait_us, blit_done_us, ft_now_us());
 	}
@@ -2263,10 +2302,11 @@ void display_wake_begin(lv_display_t *disp) {
 		// it (and leaving the kick to the repaint's own flush) woke to a black
 		// panel. It costs ~45 ms of a wake from a blanked panel; a wake inside
 		// the fast window does not come through here.
-		fb_var.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_FORCE;
-		if (ioctl(fb_fd, FBIOPUT_VSCREENINFO, &fb_var) < 0) {
-			perror("fb: FBIOPUT_VSCREENINFO (wake)");
-		}
+		//
+		// It is also the only thing that arms the panel again: a blank
+		// disarms it, an unblank does not undo that, and the pan that
+		// follows here is what puts the frame on the glass.
+		fb_arm();
 		if (ioctl(fb_fd, FBIOPAN_DISPLAY, &fb_var) < 0) {
 			perror("fb: FBIOPAN_DISPLAY (wake)");
 		}

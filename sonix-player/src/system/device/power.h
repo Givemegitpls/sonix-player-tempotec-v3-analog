@@ -64,6 +64,11 @@ void power_init(const power_config_t *cfg, lv_display_t *disp);
 void display_wake_begin(lv_display_t *disp);
 void display_wake_end(lv_display_t *disp);
 
+// Told by the power path that the panel has just been blanked: the panel's own
+// DMA is disarmed by a blank and only a fresh FBIOPUT_VSCREENINFO arms it
+// again, so the next wake has to do that (see display_wake_begin).
+void display_panel_disarmed(void);
+
 // Screen rotation: turns the picture (and the touch panel with it) through
 // 180 degrees. Also implemented by main.c, for the same reason -- only the
 // display owner knows how the framebuffer is being fed. LVGL 9.1 has no
