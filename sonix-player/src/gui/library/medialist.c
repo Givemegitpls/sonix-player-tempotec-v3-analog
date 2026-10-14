@@ -1548,9 +1548,9 @@ static void sel_add_cb(lv_event_t *e) {
 	path_list_free(&list);
 }
 
-// Each track right after the one playing, the first chosen first -- see
-// playlist_insert_next() -- and the queue on disk written now rather than at
-// the next track change.
+// Each track where "add to queue" puts it, the first chosen first -- see
+// playlist_enqueue() -- and the queue on disk written now rather than at the
+// next track change.
 static void sel_queue_cb(lv_event_t *e) {
 	panel_t *p = lv_event_get_user_data(e);
 	if (!p || !p->selecting || p->sel_count == 0) {
@@ -1560,7 +1560,7 @@ static void sel_queue_cb(lv_event_t *e) {
 	sel_gather(p, &list);
 	int queued = 0;
 	for (int i = 0; i < list.count; i++) {
-		queued += playlist_insert_next(list.paths[i]) ? 1 : 0;
+		queued += playlist_enqueue(list.paths[i]) ? 1 : 0;
 	}
 	if (queued > 0) {
 		device_state_queue_changed();
@@ -3271,7 +3271,7 @@ static void queue_random_track(panel_t *p) {
 		library_index_close(ix);
 	}
 
-	if (path[0] && playlist_insert_next(path)) {
+	if (path[0] && playlist_enqueue(path)) {
 		device_state_queue_changed();
 		// Said in full: "added to the queue" alone, after a button that stands
 		// beside Play under an album's cover, reads as the whole album added.
@@ -3457,8 +3457,8 @@ static void menu_playlist_action(void *user) {
 	}
 }
 
-// "Add to queue": the track goes in right after the one playing, and a second
-// one after that -- see playlist_insert_next().
+// "Add to queue": the track goes where the setting puts it, right after the one
+// playing or at the end -- see playlist_enqueue().
 //
 // And the queue on disk is refreshed here rather than left to the next track
 // change: the mirror only writes it when a track is loaded, so a track queued
@@ -3468,7 +3468,7 @@ static void menu_queue_action(void *user) {
 	if (!menu_path[0]) {
 		return;
 	}
-	if (playlist_insert_next(menu_path)) {
+	if (playlist_enqueue(menu_path)) {
 		device_state_queue_changed();
 		toast_success("added_to_the_queue");
 	}

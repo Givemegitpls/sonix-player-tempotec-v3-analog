@@ -54,6 +54,19 @@ void playlist_load_paths_ordered(const char *const *list, int count, int start_i
 // Returns false only when the track could not be stored (out of memory).
 bool playlist_insert_next(const char *path);
 
+// "Add to queue" from the library, the search and the browser, where the
+// user's setting puts it (Music settings > Playback options, [player]
+// queue_add_end): right after the track playing, as playlist_insert_next(), or
+// at the end of the queue, after everything already in it. Several added one
+// after another keep the order they were added in either way. Returns false
+// only when the track could not be stored (out of memory).
+bool playlist_enqueue(const char *path);
+
+// Whether playlist_enqueue() adds at the end. Read and written through the
+// configuration, so the setting page and the queue agree without a cache.
+bool playlist_enqueue_at_end(void);
+void playlist_set_enqueue_at_end(bool at_end);
+
 // The same, but at a slot chosen by the caller rather than after the current
 // track. For putting a saved queue back exactly as it was left.
 //
