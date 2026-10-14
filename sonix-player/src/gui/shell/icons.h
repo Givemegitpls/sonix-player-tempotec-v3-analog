@@ -135,6 +135,7 @@ extern const lv_image_dsc_t icon_folder_new;
 extern const lv_image_dsc_t icon_grip;
 extern const lv_image_dsc_t icon_reorder;
 extern const lv_image_dsc_t icon_now_playing;
+extern const lv_image_dsc_t icon_select_mode;
 extern const lv_image_dsc_t icon_plus;
 extern const lv_image_dsc_t icon_minus;
 extern const lv_image_dsc_t icon_import;

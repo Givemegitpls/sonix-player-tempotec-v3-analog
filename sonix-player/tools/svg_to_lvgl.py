@@ -237,6 +237,9 @@ ICONS = [
     ("grip-horizontal.svg", "grip", 36),
     ("move-vertical.svg", "reorder", 34), # turns on reordering in a playlist
     ("now-playing.svg", "now_playing", 32), # the playing row in the queue
+    # The queue's corner, after a long press on a row: choose rows to take out.
+    # Moving them by hand is arrow_down_up, next to it.
+    ("circle-dashed-check.svg", "select_mode", 34),
     ("plus.svg", "plus", 36),
     ("minus.svg", "minus", 36),             # the metronome: one beat per minute slower
     ("import.svg", "import", 34), # brings an .m3u from the card into the player's folder

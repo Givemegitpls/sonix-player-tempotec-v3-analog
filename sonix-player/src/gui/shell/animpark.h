@@ -16,8 +16,9 @@
 // is not visible (lv_obj_is_visible) or the screen is off, checked twice a
 // second. It is given back by `unpark` at the start of the first refresh that
 // would draw it, before anything is drawn, so it never shows parked: a
-// scrolling title and a spinner carry on from where they stopped. Parking is not meant to be seen at all; what is not on the panel
-// cannot tell the difference.
+// scrolling title and a spinner carry on from where they stopped. Parking is
+// not meant to be seen at all; what is not on the panel cannot tell the
+// difference.
 //
 // The object's animation is expected to be running when it is watched. Both
 // callbacks touch only the object's own animation and never delete anything.

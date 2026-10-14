@@ -85,6 +85,13 @@ bool playlist_insert_at(const char *path, int slot);
 // The queue becomes a custom list of paths. False when nothing was taken out.
 bool playlist_remove(const int *indices, int count);
 
+// Moves the entry at `from` to `to` (positions in playback order; `to` is
+// where it ends up). Playback stays on the track it is on, and the queue
+// becomes a custom list of paths, as with a removal. False when either
+// position is out of range, they are the same, or the library list under the
+// queue changed meanwhile and the positions no longer stand for the same tracks.
+bool playlist_move(int from, int to);
+
 // True while the queue is a custom list rather than a folder.
 bool playlist_is_custom(void);
 
