@@ -183,6 +183,8 @@ ICONS = [
     ("delete.svg", "delete", 30),
     ("space.svg", "space", 34),
     ("chevron-up.svg", "chevron_up", 32), # built, and currently unused
+    # The Music page's "more below", shown for a moment when the page opens.
+    ("chevron-down.svg", "chevron_down", 36),
     # The control centre's close hint, drawn the way iOS draws its home
     # indicator. Big because the glyph's line spans only the middle 14 of its
     # 24 units, so 56 px of bitmap is a ~33 px bar.

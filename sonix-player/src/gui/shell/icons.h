@@ -103,6 +103,7 @@ extern const lv_image_dsc_t icon_caps_lock;
 extern const lv_image_dsc_t icon_delete;
 extern const lv_image_dsc_t icon_space;
 extern const lv_image_dsc_t icon_chevron_up;
+extern const lv_image_dsc_t icon_chevron_down;
 extern const lv_image_dsc_t icon_control_center_line;
 extern const lv_image_dsc_t icon_mseb;
 extern const lv_image_dsc_t icon_equalizer;

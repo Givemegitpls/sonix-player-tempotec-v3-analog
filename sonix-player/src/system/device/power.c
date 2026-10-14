@@ -1541,6 +1541,20 @@ void power_screen_off(void) {
 	fprintf(stderr, "power: screen off\n");
 }
 
+// LVGL starts the refresh timer again from its own handler of this event, sent
+// whenever anything is invalidated -- the elapsed time in the player, a title
+// that changes -- so the pause put on it at the blank lasted only until the
+// first of those, and from there every change was drawn into a framebuffer
+// nobody could see. Added after LVGL's handler, this puts the pause back at
+// once. Nothing is lost: the areas stay marked, and power_screen_on() redraws
+// the whole screen anyway; lv_refr_now() does not depend on the timer.
+static void refr_request_cb(lv_event_t *e) {
+	(void)e;
+	if (!g_screen_on && g_refr_timer) {
+		lv_timer_pause(g_refr_timer);
+	}
+}
+
 void power_keep_animations_paused(void) {
 	if (g_screen_on) {
 		return;
@@ -1594,6 +1608,14 @@ void power_screen_on(void) {
 	if (g_wake_hook) {
 		(void)g_wake_hook();
 	}
+
+	// Nothing is drawn while the panel is dark (refr_request_cb), and the
+	// unblank below presents whatever the framebuffer holds: the page as it was
+	// at the blank, with the last track's title and time on it, until the
+	// repaint further down. What changed in the meantime is drawn now, while the
+	// panel is still off -- only the areas that changed, as the dark used to
+	// draw them as they came.
+	lv_refr_now(g_disp);
 
 	screen_power(true);			 // panel, backlight and touch controller back up
 	usleep(SCREEN_ON_SETTLE_US); // let the panel + backlight finish re-initializing
@@ -1896,6 +1918,9 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	g_disp = disp;
 	g_refr_timer = disp ? lv_display_get_refr_timer(disp) : NULL;
 	g_screen_on = true;
+	if (disp) {
+		lv_display_add_event_cb(disp, refr_request_cb, LV_EVENT_REFR_REQUEST, NULL);
+	}
 
 	// discover the panel's maximum backlight level
 	g_max_brightness = g_cfg.max_brightness_path ? read_long_from_file(g_cfg.max_brightness_path) : -1;
