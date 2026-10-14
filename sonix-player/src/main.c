@@ -3131,10 +3131,14 @@ int main(int argc, char **argv) {
 #else
 		.brightness_path = brightness_path,
 		.max_brightness_path = max_brightness_path,
-		// Screen on/off via the framebuffer blank node -- the same mechanism
-		// Rockbox's HiBy port uses. Writing here powers the backlight, panel,
-		// and touch controller together, and is reliably reversible.
-		.blank_path = "/sys/class/graphics/fb0/blank",
+		// Screen on/off through the framebuffer blank node -- the same
+		// mechanism Rockbox's HiBy port uses, and right where a blank is
+		// really just a blank. Not on the V3 Analog: its stock player writes
+		// no blank at all (see sysinfo.h, blank_panel), because on that panel
+		// the blank leaves the SLCDC disarmed in a way an unblank does not
+		// undo -- and the glass then shows nothing until something
+		// power-cycles the panel.
+		.blank_path = (sysinfo_model() && sysinfo_model()->blank_panel) ? "/sys/class/graphics/fb0/blank" : NULL,
 		// The suspend-to-RAM prototype writes "mem" here. NULL on the host
 		// build like every other device path, so nothing touches the
 		// developer's own machine.

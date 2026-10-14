@@ -49,6 +49,7 @@ static const sysinfo_model_t MODELS[] = {
 		.usb_audio_functions = NULL,
 		.bluetooth_stack = true,
 		.single_fb_page = false,
+		.blank_panel = true,
 		.pcm_device = NULL,
 	},
 	{
@@ -79,6 +80,7 @@ static const sysinfo_model_t MODELS[] = {
 		.usb_audio_functions = NULL,
 		.bluetooth_stack = true,
 		.single_fb_page = false,
+		.blank_panel = true,
 		.pcm_device = NULL,
 	},
 	{
@@ -115,6 +117,7 @@ static const sysinfo_model_t MODELS[] = {
 		.usb_audio_functions = NULL,
 		.bluetooth_stack = true,
 		.single_fb_page = false,
+		.blank_panel = true,
 		.pcm_device = NULL,
 	},
 	{
@@ -203,6 +206,17 @@ static const sysinfo_model_t MODELS[] = {
 		// on the next scroll -- measured on the device, 2026-10-13. One page and
 		// no debt between the two.
 		.single_fb_page = true,
+		// And the panel is never blanked through the framebuffer node -- the
+		// stock player on this device does not write one at all (its binary has
+		// no FBIOBLANK, no FBIOPAN_DISPLAY and no FBIOPUT_VSCREENINFO in it:
+		// it dims the backlight and leaves the panel scanning its last frame).
+		// The driver's blank drops LCDC_CTRL.ENA and SLCDC_CTRL.DMA_EN, and the
+		// unblank brings back only the first, so a blanked-then-unblanked panel
+		// can sit armed with DMA_EN=1 and show nothing at all -- the frozen
+		// picture this flag exists to keep out. Measured on the device: the
+		// freeze always followed a blank, and only a panel power/reset cycle
+		// (a reboot, or the kernel's own resume path) cleared it.
+		.blank_panel = false,
 		// plughw and not hw: the codec's PCM accepts a narrow set of formats and
 		// rates, and what it takes exactly has not been measured yet, so the
 		// plug is what keeps a 24/96 track from being refused outright.
