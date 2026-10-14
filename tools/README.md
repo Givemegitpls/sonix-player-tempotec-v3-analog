@@ -73,6 +73,68 @@ reading a device that is.
 mipsel-rockbox-linux-gnu-gcc -static -O2 -o tprobe tprobe.c
 ```
 
+## ldacdec-test
+
+Is the firmware's own `libldacBT.so` decode path usable from this build?
+
+```
+ldacdec-test [channel_mode] [sampling_freq] [file-of-a-frame]
+```
+
+It takes a handle, initializes the decoder and feeds it a frame -- either 0x5a
+nonsense (a working decoder answers with an error code) or a file, which is how
+the two LDAC problems were told apart: linked against the combined library only,
+a captured frame decodes (`used 220, decoded 1024`); linked against AOSP's
+`libldacBT_enc`/`libldacBT_abr` as well, the same frame segfaults. The payloads
+come from a capture with `analysis/v3-bt-scripts/btsnoop-payloads.py`.
+
+```
+mipsel-rockbox-linux-gnu-gcc -O2 -o ldacdec-test ldacdec-test.c \
+    -I<sysroot>/usr/include/ldac -L<sysroot>/usr/lib -lldacBT \
+    -Wl,--allow-shlib-undefined
+```
+
+## btadm
+
+BlueZ 5 over D-Bus, which is what bluetoothctl would do if the device had it
+(it does not: no readline, and the firmware's own `bluetoothd` is BlueZ 4).
+
+```
+btadm adapters | devices            what the adapter knows
+btadm discover <seconds>            start discovery, name what turns up
+btadm set <property> <bool>         powered, discoverable, pairable, ...
+btadm pair|connect|disconnect <MAC> Device1 methods
+btadm trust <MAC> yes|no            Device1.Trusted
+btadm remove <MAC>                  Adapter1.RemoveDevice
+btadm wait <MAC> <seconds>          watch one device's state
+btadm agent [capability]            answer pairing requests (default NoInputNoOutput)
+btadm players | player <MAC> play   the phone's player, over AVRCP
+btadm pcm <MAC>                     bluealsa's transports, with codec and rate
+```
+
+`agent` is what makes a headless receiver work: with the player stopped nothing
+would answer a pairing request. `player <MAC> play` starts the phone playing --
+which is also how a drop gets recovered, since the phone pauses when the link
+goes. `pcm` dumps the transport's properties (codec, sampling, delay) from
+bluealsa, which is how "did the phone actually send anything" is answered
+without a sniffer.
+
+```
+mipsel-rockbox-linux-gnu-gcc -O2 -o btadm btadm.c \
+    -I<sysroot>/usr/include/dbus-1.0 -I<sysroot>/usr/lib/dbus-1.0/include \
+    -L<sysroot>/usr/lib -ldbus-1
+```
+
+## The patches
+
+- `bluez-5.66-a2dp-sink-avdtp12.patch` -- the sink's SDP record advertises
+  A2DP/AVDTP 1.2 like the stock firmware's, so a phone asks for capabilities
+  rather than "all capabilities" (which would drag delay reporting in).
+- `bluez-5.66-avdtp-transport-mtu.patch` -- an AVDTP channel announces a receive
+  MTU. Without it the media channel carries no MTU option, a phone falls back to
+  the L2CAP default (672) and its LDAC encoder refuses the 660 that leaves
+  (LDAC needs 679 and up), so no LDAC audio is ever sent.
+
 ## glibc216_shim.c
 
 Not a program: two symbol definitions compiled into the Bluetooth userland
