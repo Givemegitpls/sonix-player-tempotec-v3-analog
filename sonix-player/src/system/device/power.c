@@ -1393,6 +1393,9 @@ static void panel_blank_now(void) {
 		return;
 	}
 	g_panel_lit_dark = false;
+	if (!g_cfg.blank_path) {
+		return; // a model that never blanks has no panel to take down
+	}
 	screen_power(false);
 	display_panel_disarmed(); // the blank took the panel's DMA down with it
 	// The level the panel's driver brings the backlight back at on the next
@@ -1413,24 +1416,33 @@ void power_screen_off(void) {
 	// starts here, unless activity keeps pushing it back.
 	g_mem_active_ms = g_screen_off_at;
 
-	// Written right before the blank, either way round: the touch driver reads
-	// this flag when the blank reaches it, and chooses doze or a full
-	// power-off from it. Off has to be written too, not merely left as the
-	// settings page last put it, or the controller dozes on a night when
-	// nothing is listening for the gesture.
+	// The touch controller's gesture switch, for the models that have one (the
+	// V3 Analog does not: the node is absent and this call is a no-op there).
+	// On a model that blanks, the driver reads the flag when the blank reaches
+	// it and chooses doze or a full power-off from it; off has to be written
+	// too, not merely left as the settings page last put it. On a model that
+	// never blanks there is no blank to read it, so the gesture wake is not
+	// available -- that is the price of keeping the panel up.
 	power_set_double_tap_wake(g_double_tap_wake);
 
 	set_indevs_enabled(false); // no touch events into LVGL while the panel is down
 	fade_to(BRIGHTNESS_MIN);   // smooth dim down
-	long fast_s = g_double_tap_wake ? 0 : config_get_int("power", "wake_fast_seconds", WAKE_FAST_DEFAULT_S);
+	// The backlight goes out either way: on a model that blanks the panel, the
+	// fast window keeps it powered for a while and only the backlight is off;
+	// on one that never blanks (the V3 Analog), this is the whole of the
+	// screen-off -- the panel stays armed and keeps scanning the frame it was
+	// last given, exactly as the stock player leaves it.
+	if (g_cfg.brightness_path) {
+		write_long_to_file(g_cfg.brightness_path, 0); // below BRIGHTNESS_MIN: the backlight off
+	}
+	g_hw_brightness = 0;
+	long fast_s = (!g_cfg.blank_path || g_double_tap_wake)
+					  ? 0
+					  : config_get_int("power", "wake_fast_seconds", WAKE_FAST_DEFAULT_S);
 	if (fast_s > 0) {
-		if (g_cfg.brightness_path) {
-			write_long_to_file(g_cfg.brightness_path, 0); // below BRIGHTNESS_MIN: the backlight off
-		}
-		g_hw_brightness = 0;
 		g_panel_lit_dark = true;
 		g_panel_lit_until = lv_tick_get() + (uint32_t)fast_s * 1000u;
-	} else {
+	} else if (g_cfg.blank_path) {
 		screen_power(false);
 		display_panel_disarmed(); // the blank took the panel's DMA down with it
 	}
@@ -1568,7 +1580,7 @@ void power_screen_on(void) {
 	g_panel_lit_dark = false;
 
 	frameprof_begin(PROF_WAKE_UNBLANK);
-	if (!lit) {
+	if (!lit && g_cfg.blank_path) {
 		screen_power(true); // panel, backlight and touch controller back up
 		// The unblank lights the backlight before there is a picture: dark
 		// until the repaint below is up, or the panel shows black first.
@@ -1583,7 +1595,7 @@ void power_screen_on(void) {
 	// restore are done, so no wait is needed by default. [power]
 	// wake_settle_ms puts one back, should a panel ever show it was wanted.
 	long settle_us = config_get_int("power", "wake_settle_ms", 0) * 1000;
-	if (!lit && settle_us > 0) {
+	if (!lit && g_cfg.blank_path && settle_us > 0) {
 		frameprof_begin(PROF_WAKE_SETTLE);
 		usleep((useconds_t)settle_us);
 		frameprof_end(PROF_WAKE_SETTLE);
@@ -1618,7 +1630,7 @@ void power_screen_on(void) {
 	// depends on which display path is active, so main.c owns the rest: it
 	// checks that the blank left the video mode (the page-flipping display's
 	// double-height virtual resolution) alone, and puts it back if not.
-	if (!lit) {
+	if (!lit && g_cfg.blank_path) {
 		display_wake_begin(g_disp);
 	}
 	WAKE_STEP("fb_begin");
@@ -1630,7 +1642,7 @@ void power_screen_on(void) {
 	lv_obj_invalidate(lv_layer_top());
 	lv_refr_now(g_disp);
 	frameprof_end(PROF_WAKE_DRAW);
-	if (!lit) {
+	if (!lit && g_cfg.blank_path) {
 		display_wake_end(g_disp);
 	}
 	WAKE_STEP("draw");
@@ -1912,12 +1924,18 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 		long cur = g_cfg.brightness_path ? read_long_from_file(g_cfg.brightness_path) : -1;
 		g_cfg.brightness = cur >= BRIGHTNESS_ON_FLOOR ? cur : brightness_max();
 	}
-	screen_power(true); // make sure the panel is unblanked (in case a prior run left it off)
-	// An unblank does not arm the panel's DMA (only a fresh
-	// FBIOPUT_VSCREENINFO does), so a run that starts on a panel a previous
-	// run blanked would otherwise come up with a live interface and a dead
-	// glass. display_wake_begin is the one place that arms it and pans.
-	display_wake_begin(disp);
+	if (g_cfg.blank_path) {
+		screen_power(true); // make sure the panel is unblanked (in case a prior run left it off)
+		// An unblank does not arm the panel's DMA (only a fresh
+		// FBIOPUT_VSCREENINFO does), so a run that starts on a panel a previous
+		// run blanked would otherwise come up with a live interface and a dead
+		// glass. display_wake_begin is the one place that arms it and pans.
+		display_wake_begin(disp);
+	}
+	// A model that never blanks (the V3 Analog) needs none of that here: the
+	// panel was never taken down, and on a fresh boot the kernel's own first
+	// open of the framebuffer runs its resume path -- lcd_power_on, the panel's
+	// init table, and enable -- before this code ever runs.
 	backlight_write(g_cfg.brightness);
 
 
@@ -1953,9 +1971,9 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	g_power_timer = lv_timer_create(power_timer_cb, POWER_TICK_MS, NULL);
 	power_slow_in_standby(g_power_timer, POWER_TICK_STANDBY_MS);
 
-	printf("power: initialized (max_brightness=%ld, on=%ld, screen_off=%s/%ums, mem=%s/%lus)\n", g_max_brightness,
-		   g_cfg.brightness, g_cfg.screen_off_enabled ? "on" : "off", g_cfg.screen_off_timeout_ms,
-		   g_mem_enabled ? "TEST" : "no", (unsigned long)mem_secs);
+	printf("power: initialized (max_brightness=%ld, on=%ld, screen_off=%s/%ums, mem=%s/%lus, panel_blank=%s)\n",
+		   g_max_brightness, g_cfg.brightness, g_cfg.screen_off_enabled ? "on" : "off", g_cfg.screen_off_timeout_ms,
+		   g_mem_enabled ? "TEST" : "no", (unsigned long)mem_secs, g_cfg.blank_path ? "yes" : "no");
 }
 
 bool power_radios_parked(void) { return g_wifi_parked || g_bt_parked; }

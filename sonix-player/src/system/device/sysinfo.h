@@ -108,6 +108,15 @@ typedef struct {
 							   // frame the user is looking at is always the one written two frames ago,
 							   // and each page owes the other everything that changed while it was off
 							   // screen, which is a full-screen copy per frame. One page and no debt.
+	bool blank_panel;		   // screen-off writes the framebuffer blank node (power.h, power.c).
+							   // False where the stock player never writes it: the panel is then
+							   // left powered and scanning its last frame, and the backlight alone
+							   // makes the screen dark. That is the V3 Analog's own behaviour -- its
+							   // stock player has no FBIOBLANK, no FBIOPAN_DISPLAY and no
+							   // FBIOPUT_VSCREENINFO in it at all -- and on that panel the blank is
+							   // what wedges the glass (LCDC_CTRL.ENA comes back on unblank, but
+							   // SLCDC_CTRL.DMA_EN does not, and a panel in that state shows nothing
+							   // until something power-cycles it).
 	int mixer_card;			   // the ALSA card whose mixer controls this board's codec (alsa-controls.c):
 							   // 0 on the HiBy boards and the Blaze, 1 on the V3 Analog
 	const char *user_data_dir; // where the settings and the reader's file are written; NULL is
