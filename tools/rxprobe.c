@@ -54,8 +54,12 @@ static snd_pcm_t *open_waiting(const char *device, int *attempts) {
 static int configure(snd_pcm_t *pcm, unsigned *rate, unsigned *channels, snd_pcm_format_t *format) {
 	snd_pcm_hw_params_t *hw;
 	snd_pcm_hw_params_alloca(&hw);
-	if (snd_pcm_hw_params_any(pcm, hw) < 0 ||
-			snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED) < 0) {
+	if (snd_pcm_hw_params_any(pcm, hw) < 0) {
+		fprintf(stderr, "rxprobe: hw_params_any: %s\n", snd_strerror(-1));
+		return -1;
+	}
+	if (snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED) < 0) {
+		fprintf(stderr, "rxprobe: set_access RW_INTERLEAVED refused\n");
 		return -1;
 	}
 
@@ -68,18 +72,39 @@ static int configure(snd_pcm_t *pcm, unsigned *rate, unsigned *channels, snd_pcm
 		}
 	}
 	if (chosen == SND_PCM_FORMAT_UNKNOWN) {
+		fprintf(stderr, "rxprobe: the PCM takes none of S32/S24/S16\n");
 		return -1;
 	}
-	snd_pcm_hw_params_set_format(pcm, hw, chosen);
+	if (snd_pcm_hw_params_set_format(pcm, hw, chosen) < 0) {
+		fprintf(stderr, "rxprobe: set_format %s refused\n", snd_pcm_format_name(chosen));
+		return -1;
+	}
 
 	unsigned rate_wanted = *rate ? *rate : 44100;
-	snd_pcm_hw_params_set_rate_near(pcm, hw, &rate_wanted, NULL);
+	int err = snd_pcm_hw_params_set_rate_near(pcm, hw, &rate_wanted, NULL);
+	if (err < 0) {
+		fprintf(stderr, "rxprobe: set_rate_near %u: %s\n", rate_wanted, snd_strerror(err));
+		return -1;
+	}
 	unsigned channels_wanted = *channels ? *channels : 2;
-	snd_pcm_hw_params_set_channels_near(pcm, hw, &channels_wanted);
+	err = snd_pcm_hw_params_set_channels_near(pcm, hw, &channels_wanted);
+	if (err < 0) {
+		fprintf(stderr, "rxprobe: set_channels_near %u: %s\n", channels_wanted, snd_strerror(err));
+		return -1;
+	}
+	// The buffer time is a request, not a requirement: the transport is the
+	// one that decides what it can do, and a refused buffer size must not be
+	// the thing that hides a PCM that would otherwise open.
 	unsigned buffer_us = 200000;
-	snd_pcm_hw_params_set_buffer_time_near(pcm, hw, &buffer_us, NULL);
+	err = snd_pcm_hw_params_set_buffer_time_near(pcm, hw, &buffer_us, NULL);
+	if (err < 0) {
+		fprintf(stderr, "rxprobe: set_buffer_time_near %u us: %s (going on)\n", buffer_us, snd_strerror(err));
+	}
 
-	if (snd_pcm_hw_params(pcm, hw) < 0) {
+	err = snd_pcm_hw_params(pcm, hw);
+	if (err < 0) {
+		fprintf(stderr, "rxprobe: hw_params: %s (format %s, %u Hz, %u ch)\n", snd_strerror(err),
+				snd_pcm_format_name(chosen), rate_wanted, channels_wanted);
 		return -1;
 	}
 

@@ -216,48 +216,60 @@ device's glibc 2.16 as it is.
 Enabling it is a build change only: put that `.so` in the cross sysroot, add the
 two decode prototypes to `ldacBT.h` (the AOSP header has the encoder only) and an
 `ldacBT-dec.pc` (`Libs: -lldacBT`), then rebuild bluealsa with `--enable-ldac`.
-The link needs `-Wl,--allow-shlib-undefined`: the stock library has unresolved
-`ptn0`, `ptn3` and `AS` symbols that nothing in the firmware defines -- they are
-not called (lazy binding), and the stock player lives with them. Nothing is
-copied to the device: the library is the stock one, already in `/usr/lib`.
+The link needs `-Wl,--allow-shlib-undefined`: the stock library's `ptn0`, `ptn3`
+and `AS` are undefined and nothing in the firmware defines them -- nothing
+references them either (no relocations), and the stock player lives with them.
+Nothing is copied to the device: the library is the stock one, already in
+`/usr/lib`.
 
-The library is in place and bluealsa does negotiate LDAC as a sink -- the phone
-picks it, the endpoint is configured, and the daemon starts its decoder thread:
+**The library must be the only LDAC implementation in the process.** The
+encoder side is built from AOSP's `libldac` (`libldacBT_enc`, `libldacBT_abr`),
+and those libraries export the same `ldacBT_*` names as the stock combined one.
+Both in one process means `ldacBT_get_handle()` resolves to one library while
+the handle is used by the other's functions: different handle layouts, and the
+receiver dies with SIGSEGV on the first real frame (the phone shows that as the
+music stopping). So all three pkg-config files -- `ldacBT-enc.pc`,
+`ldacBT-abr.pc` and `ldacBT-dec.pc` -- point at `-lldacBT`, the combined
+library, which has the encoder too. `tools/ldacdec-test.c` is the small program
+that shows the difference in isolation.
+
+### The phone's LDAC encoder needs an MTU of 679 and up
+
+BlueZ 5.66 announces no receive MTU for an AVDTP channel: `bt_io_accept()` on
+the incoming media channel takes no options, and `l2cap_connect()` passes
+`BT_IO_OPT_IMTU, 0` ("auto-tune"). An L2CAP configuration with no MTU option
+means the L2CAP default, 672, and a phone feeding an LDAC stream hands its
+encoder that value minus the 12-byte AVDTP media header: 660. libldac refuses
+anything below 679, so the encoder is never initialized:
 
 ```
-bluealsa: D: bluez.c:313: A2DP Sink (LDAC) configured for device ...
-bluealsa: D: a2dp-ldac.c:334: IO loop: START: a2dp_ldac_dec_thread
+E/a2dp_vendor_ldac_encoder: error initializing the LDAC encoder: -1
+    api_error = 1027 ... error_code = 0x40300000
+I/a2dp_vendor_ldac_encoder: MTU=660, peer_mtu=660
 ```
 
-and no audio comes out of it. Measured on 2026-10-13, with `bluetoothd` running
-at debug level and a client reading the capture PCM:
+`1027` is `LDACBT_ERR_ILL_MTU_SIZE`. What the user sees: the phone sends
+`Start`, the AVDTP stream reaches `OPEN -> STREAMING`, no audio arrives at all,
+and then the phone suspends or drops the link -- which it also does with SBC
+when nothing drains the transport.
 
-- the AVDTP stream reaches `OPEN -> STREAMING` (the phone sends `START_CMD`), the
-  transport becomes `ACTIVE`, and then the controller drops the ACL link:
-  `dev_disconnected() Device ... disconnected, reason 3` -- HCI hardware
-  failure. The phone reconnects and the cycle repeats, which is what the phone
-  shows as the music pausing every few seconds;
-- bluealsa is idle while this happens: 0.44% of a core over a 45 s attempt, so
-  the decoder is not too slow;
-- the same setup does receive aptX-HD, and the link survives longer the lower
-  the bitrate -- SBC/AAC in the player's receiver, aptX-HD for a couple of
-  seconds, LDAC not at all.
+`tools/bluez-5.66-avdtp-transport-mtu.patch` fixes it: `AVDTP_TRANSPORT_IMTU`
+(1024, what a phone announces for its own side) is announced on both paths that
+create an AVDTP channel -- the accepted media channel and the connected one.
 
-So the failure scales with the bitrate and ends with the controller reporting a
-hardware failure, not with anything bluealsa logs. Two candidates are left, and
-both need a run on the device:
+With both fixes in place the receiver runs at real time, measured on the device
+(2026-10-13) with `tools/rxprobe.c` reading the PCM:
 
-- **Coexistence with Wi-Fi.** `wlan0` is associated here, and this is a combo
-  chip with one antenna. Test: `ifconfig wlan0 down`, then receive LDAC.
-- **The stock stack's own LDAC handling.** The firmware's `bluetoothd` is BlueZ
-  4.101 with `a2dp_ldac_support`, `ldac_getcap_ind` and `ldac_setconf_ind` in
-  it: on this board LDAC has always been a BlueZ 4 feature. If BlueZ 5.66 plus
-  bluealsa is missing an AVDTP step the phone expects, the phone is the side
-  that gives up.
+```
+rxprobe: at 5 s: 125685 frames, 2.85 s of audio
+rxprobe: at 10 s: 346185 frames, 7.85 s of audio
+rxprobe: at 15 s: 567126 frames, 12.86 s of audio
+```
 
-`tools/rxprobe.c` is the instrument for this: it opens the receiver's PCM,
-reads as fast as the daemon produces, re-opens it when a transport dies, and
-prints the frames and the audio seconds it got.
+`analysis/v3-bt-scripts/` holds the stand the runs were made with (headless
+receiver, HCI capture, phone driven over adb) and `tools/btadm.c` is the D-Bus
+tool it needs: adapters, discovery, pairing agent, connect, and a dump of
+bluealsa's transports.
 
 ## The image: `v3_analog.upt`
 
@@ -392,10 +404,6 @@ output, and moving one no longer moves another.
 
 Not working, with the reason:
 
-- **LDAC receive**: the phone negotiates LDAC, bluealsa starts its decoder, and
-  the controller then drops the link with a hardware failure before any audio
-  arrives. The measurements and the next two tests are in the LDAC section
-  above. SBC, AAC, aptX and aptX-HD receive all work.
 - **Charge limit**: the AXP2101 is not reachable over I2C here (`/dev/i2c-0`
   does not exist); the stock firmware goes through
   `/sys/class/axppower` and `/sys/class/power_supply/usb` instead. Until that
@@ -418,5 +426,14 @@ Verified on the device:
 - screen-off and wake through the framebuffer blank node, with the pan fix above;
 - Bluetooth: pairing, AVRCP volume, A2DP out, A2DP in (SBC, AAC, aptX,
   aptX-HD), and **LDAC out** (confirmed by ear on LDAC headphones, not only by
-  the player's own codec report). LDAC **in** does not work yet -- see the LDAC
-  section above.
+  the player's own codec report);
+- **LDAC in**: fixed and verified on 2026-10-13 -- a phone's LDAC stream runs at
+  real time through the receiver (`rxprobe` numbers in the LDAC section above).
+  Two defects had to go: BlueZ announcing no receive MTU for the media channel
+  (the phone's encoder refused 660 against LDAC's 679 minimum) and two LDAC
+  implementations in one process (the AOSP encoder libraries next to the
+  stock combined one). Both fixes are in
+  `tools/bluez-5.66-avdtp-transport-mtu.patch` and in the bluealsa build
+  (all three LDAC pkg-config files point at the combined library). Verified
+  headless, with the receiver's userland driven from the card; hearing it
+  through the player's own receiver page is the last check.

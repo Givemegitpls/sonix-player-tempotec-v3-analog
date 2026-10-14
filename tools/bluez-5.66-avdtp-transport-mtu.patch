@@ -1,0 +1,63 @@
+--- a/profiles/audio/avdtp.h
++++ b/profiles/audio/avdtp.h
+@@ -17,6 +17,16 @@
+ 
+ struct avdtp;
+ struct avdtp_server;
++/*
++ * The receive MTU announced for AVDTP channels, in bytes. An L2CAP
++ * configuration that carries no MTU option means the L2CAP default (672), and
++ * a phone feeding an LDAC stream hands its encoder that value minus the media
++ * header -- 660 -- which the encoder refuses: LDAC needs 679 and up
++ * (LDACBT_ERR_ILL_MTU_SIZE) and stops the stream before a single packet.
++ * 1024 is what a phone announces for its own receive side.
++ */
++#define AVDTP_TRANSPORT_IMTU 1024
++
+ struct avdtp_stream;
+ struct avdtp_local_sep;
+ struct avdtp_remote_sep;
+--- a/profiles/audio/avdtp.c
++++ b/profiles/audio/avdtp.c
+@@ -2481,8 +2481,7 @@
+ 					BT_IO_OPT_PSM, AVDTP_PSM,
+ 					BT_IO_OPT_MODE, mode,
+ 					BT_IO_OPT_SEC_LEVEL, BT_IO_SEC_MEDIUM,
+-					/* Set Input MTU to 0 to auto-tune */
+-					BT_IO_OPT_IMTU, 0,
++					BT_IO_OPT_IMTU, AVDTP_TRANSPORT_IMTU,
+ 					BT_IO_OPT_INVALID);
+ 	else
+ 		io = bt_io_connect(avdtp_connect_cb, session,
+@@ -2493,6 +2492,7 @@
+ 					BT_IO_OPT_PSM, AVDTP_PSM,
+ 					BT_IO_OPT_MODE, mode,
+ 					BT_IO_OPT_SEC_LEVEL, BT_IO_SEC_MEDIUM,
++					BT_IO_OPT_IMTU, AVDTP_TRANSPORT_IMTU,
+ 					BT_IO_OPT_INVALID);
+ 	if (!io) {
+ 		error("%s", err->message);
+--- a/profiles/audio/a2dp.c
++++ b/profiles/audio/a2dp.c
+@@ -2545,6 +2545,21 @@
+ 			goto drop;
+ 		}
+ 
++		/*
++		 * Announce this side's receive MTU for the media channel before
++		 * the connection is accepted. The kernel's default (672) is what
++		 * a peer falls back to when the configuration carries no MTU
++		 * option, and the LDAC encoder refuses anything below 679
++		 * (LDACBT_ERR_ILL_MTU_SIZE) and stops the stream: 1024 is what
++		 * a phone announces for its own side.
++		 */
++		if (!bt_io_set(io, &err, BT_IO_OPT_IMTU, AVDTP_TRANSPORT_IMTU,
++						BT_IO_OPT_INVALID)) {
++			error("bt_io_set: %s", err->message);
++			g_error_free(err);
++			goto drop;
++		}
++
+ 		if (!bt_io_accept(io, transport_cb, setup, NULL, &err)) {
+ 			error("bt_io_accept: %s", err->message);
+ 			g_error_free(err);
