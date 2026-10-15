@@ -1,0 +1,7 @@
+$ /tmp/bluealsa-new -p a2dp-source --io-rt-priority=100
+/tmp/bluealsa-new: E: Invalid IO thread RT priority [1, 99]: 100
+exit=1
+
+$ /tmp/bluealsa-new -p a2dp-source --io-rt-priority=0
+/tmp/bluealsa-new: E: Invalid IO thread RT priority [1, 99]: 0
+exit=1

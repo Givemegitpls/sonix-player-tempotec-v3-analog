@@ -1,0 +1,5 @@
+Name: libpcre
+Description: stub (private dependency of glib/gio, not used for dynamic linking)
+Version: 1
+Libs:
+Cflags:

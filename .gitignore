@@ -55,3 +55,24 @@ sonix-player/usr/
 sysroot/
 *.deb
 *.tar.*
+
+# The bluealsa rebuild inputs (see AGENTS.md). The patches, .pc files and READMEs belong
+# in git; the extracted trees, sysroots and libraries pulled off the device do not.
+bt-src/build/
+bt-src/sysroot/
+bt-src/debs/
+bt-src/libs/
+bt-src/third-party/
+bt-src/out/
+bt-src/src/bluez-alsa-4.0.0/
+bt-src/src/bluez-alsa-4.2.0/
+bt-src/src/bluez-alsa-4.0.0.patched/
+
+# The kernel is a clone of an upstream tree; what matters is saved under patch/.
+kernel-src/
+
+# Backups the tools make next to the files they replace (bluealsa, the ALSA plugin).
+*.prev
+
+# Python caches from the tools in patch/ and tools/.
+__pycache__/

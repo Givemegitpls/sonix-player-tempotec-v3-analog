@@ -1,0 +1,11 @@
+prefix=/usr
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: bluez
+Description: Bluetooth library (headers from the bluez-5.66 tarball, lib from the device)
+Version: 5.66
+Requires:
+Libs: -L${libdir} -lbluetooth
+Cflags: -I${includedir}
