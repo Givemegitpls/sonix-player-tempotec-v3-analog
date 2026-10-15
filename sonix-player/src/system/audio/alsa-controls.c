@@ -587,6 +587,21 @@ void alsa_suspend_restore(void) {
 	fprintf(stderr, "alsa: DAC level restored after suspend\n");
 }
 
+void alsa_pause_quiet(bool quiet) {
+	if (!alsa_board_is_cs43131()) {
+		return;
+	}
+#ifndef HOST_BUILD
+	if (quiet) {
+		alsa_set_control("Right Playback Volume", 255);
+		alsa_set_control("Left Playback Volume", 255);
+		usleep(30 * 1000); // the codec's own volume ramp, with the stream still playing
+	} else {
+		write_dac_attenuation();
+	}
+#endif
+}
+
 int alsa_dsd_gain_index(void) { return dsd_gain_index; }
 
 void alsa_set_dsd_gain_index(int index) {

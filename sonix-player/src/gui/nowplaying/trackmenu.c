@@ -35,6 +35,7 @@
 #include "src/system/library/library.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/core/utils.h"
+#include "src/system/device/system.h"
 #include "lvgl/src/core/lv_obj_scroll_private.h"
 
 lv_obj_t *queue_screen;
@@ -106,6 +107,9 @@ static library_history_item_t *queue_hist;
 static int queue_hist_count;
 static int *queue_hist_y;
 static int queue_hist_end; // where the history ends and Now playing begins
+// The history is off the page while choosing or reordering: neither acts on
+// it, and the page is not to be scrolled up into it meanwhile.
+static bool queue_hist_hidden;
 static struct {
 	int y;
 	long long when; // the time of the first entry under it
@@ -285,6 +289,25 @@ static void queue_mode_show(void) {
 	queue_paint_rows();
 }
 
+static void queue_layout(void);
+static void queue_scroll_to(int scroll, lv_anim_enable_t anim);
+static void queue_window_update(void);
+
+// Takes the history off the page, or puts it back, with the page staying on
+// what it shows: what is below Now playing moves by as much as the history
+// above it grew or shrank.
+static void queue_history_hide(bool hidden) {
+	if (hidden == queue_hist_hidden) {
+		return;
+	}
+	int scroll = lv_obj_get_scroll_y(queue_list);
+	int top = queue_now_top();
+	queue_hist_hidden = hidden;
+	queue_layout();
+	queue_scroll_to(scroll + queue_now_top() - top, LV_ANIM_OFF);
+	queue_window_update();
+}
+
 static void queue_mode_set(queue_mode_t mode) {
 	if (mode != QUEUE_SELECT) {
 		free(queue_chosen);
@@ -292,6 +315,7 @@ static void queue_mode_set(queue_mode_t mode) {
 		queue_chosen_count = 0;
 	}
 	queue_mode = mode;
+	queue_history_hide(mode != QUEUE_IDLE);
 	queue_mode_show();
 }
 
@@ -308,6 +332,7 @@ static bool queue_selection_start(void) {
 	}
 	queue_chosen_count = 0;
 	queue_mode = QUEUE_SELECT;
+	queue_history_hide(true);
 	queue_mode_show();
 	return true;
 }
@@ -537,7 +562,7 @@ static void queue_history_layout(void) {
 	queue_hist_y = NULL;
 	queue_seps = NULL;
 	queue_sep_count = 0;
-	queue_hist_count = library_history_items(&queue_hist);
+	queue_hist_count = queue_hist_hidden ? 0 : library_history_items(&queue_hist);
 	if (queue_hist_count > 0) {
 		queue_hist_y = malloc((size_t)queue_hist_count * sizeof(*queue_hist_y));
 		queue_seps = malloc((size_t)queue_hist_count * sizeof(*queue_seps));
@@ -1393,6 +1418,21 @@ static void details_add_row(const char *name, const char *value) {
 // the player's own menu).
 static char details_path[512];
 
+// The path as it is on the card: the mount point in front of it is the same
+// on every track and says nothing. A file anywhere else keeps its whole path.
+static const char *details_card_path(const char *file) {
+	static const char *const ROOTS[] = {"/mnt/sd_0", "/data/mnt/sd_0", "/usr/data/mnt/sd_0"};
+	const char *mounted = storage_sd_root();
+	for (int i = -1; i < (int)(sizeof(ROOTS) / sizeof(ROOTS[0])); i++) {
+		const char *root = i < 0 ? mounted : ROOTS[i];
+		size_t length = root ? strlen(root) : 0;
+		if (length > 0 && strncmp(file, root, length) == 0 && file[length] == '/') {
+			return file + length + 1;
+		}
+	}
+	return file;
+}
+
 // The common tail of both variants: tags, format, size, path.
 // `codec` is the name the decoder reports ("MP3", "AAC", "ALAC"...), empty when
 // it has none; `kbps` is the bitrate the file declares, 0 when it declares
@@ -1505,7 +1545,7 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 	} else if (tidalcache_owns(file)) {
 		details_add_row("trackmenu_source", "tidal");
 	} else {
-		details_add_row("trackmenu_file", file);
+		details_add_row("trackmenu_file", details_card_path(file));
 	}
 }
 
