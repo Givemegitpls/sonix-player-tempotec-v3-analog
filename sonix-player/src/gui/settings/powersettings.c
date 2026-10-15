@@ -81,8 +81,9 @@ void powersettings_apply(void) {
 
 	power_set_auto_off(config_get_bool("power", "auto_off", false), (uint32_t)AUTO_OFF[auto_off_index()].minutes);
 
-	// Suspend-to-RAM standby, off unless it has been asked for: this board's
-	// panel is not put to sleep by default (see POWER_STANDBY_MEM_DEFAULT).
+	// Suspend-to-RAM standby, on unless it has been switched off: the panel's
+	// screen-off is the backlight alone, and this is what actually sleeps the
+	// device (see POWER_STANDBY_MEM_DEFAULT).
 	power_set_standby_enabled(config_get_bool("power", "standby_mem", POWER_STANDBY_MEM_DEFAULT));
 
 	// The LED master switch comes first: with it off there is nothing for the

@@ -14,6 +14,12 @@ void settings_init(gui_config_t *cfg);
 // page calls it again whenever the slider moves.
 void settings_apply_screen_off(void);
 
+// The screen-off timeout the Screen page starts from, and the one power_init
+// applies before that page has been built: [power] screen_off_seconds. Both
+// readers share this one value, so the startup line in the log cannot report a
+// timeout the player is not using.
+#define SCREEN_OFF_DEFAULT_S 30
+
 // Shows or hides the developer options entry according to whether it has been
 // unlocked. The page is built once at startup, so it has to be told when the
 // five taps on the build number unlock it.

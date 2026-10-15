@@ -154,10 +154,9 @@ static const struct {
 	{60, "power_1_minute"},	 {120, "power_2_minutes"}, {300, "power_5_minutes"},
 };
 #define SCREEN_OFF_COUNT ((int)(sizeof(SCREEN_OFF) / sizeof(SCREEN_OFF[0])))
-#define SCREEN_OFF_DEFAULT 30
 
 static int screen_off_index(void) {
-	int seconds = (int)config_get_int("power", "screen_off_seconds", SCREEN_OFF_DEFAULT);
+	int seconds = (int)config_get_int("power", "screen_off_seconds", SCREEN_OFF_DEFAULT_S);
 	for (int i = 0; i < SCREEN_OFF_COUNT; i++) {
 		if (SCREEN_OFF[i].seconds == seconds) {
 			return i;
