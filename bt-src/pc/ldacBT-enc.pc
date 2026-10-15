@@ -1,0 +1,10 @@
+prefix=/usr
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: ldacBT-enc
+Description: LDAC Bluetooth library (enc); all three point at the device's combined libldacBT.so
+Version: 2.0.0
+Libs: -L${libdir} -lldacBT
+Cflags: -I${includedir}/ldac

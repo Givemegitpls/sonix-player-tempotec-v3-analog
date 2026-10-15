@@ -22,6 +22,9 @@
 #   assets/BLAZE/              the player's own interface assets: fonts,
 #                              languages, images, and the Bluetooth userland
 #   assets/V3ANALOG/           and what is this device's own, over them
+#   kernel/UIMAGE.BIN          a kernel to install instead of the stock one
+#                              (optional, $KERNEL_IMAGE to point elsewhere; the
+#                              stock kernel is carried through without it)
 #   tools/install_tree.sh      the tree work, run inside the container
 #   tools/fix_update_md5.py    the digest the updater checks
 #
@@ -45,6 +48,12 @@ STOCK="${STOCK:-$SCRIPT_DIR/v3_analog_original.upt}"
 PLAYER_BIN="$SCRIPT_DIR/sonix_player"
 LAUNCH_BIN="$SCRIPT_DIR/sonix_launch"
 DOCKER_IMAGE="${DOCKER_IMAGE:-tempotec-fw-tools}"
+
+# A kernel to install instead of the stock one. Optional: without it the stock
+# UIMAGE.BIN is carried through untouched. When it is there its size must not
+# grow past the stock image (the kernel partition is sized for the stock), and
+# UPDATE.TXT's kernel md5 is recomputed from it -- the updater checks it.
+KERNEL_IMAGE="${KERNEL_IMAGE:-$SCRIPT_DIR/kernel/UIMAGE.BIN}"
 
 BUILD="$SCRIPT_DIR/build"
 ISO_DIR="$BUILD/iso"	 # the stock ISO, unpacked
@@ -97,6 +106,11 @@ check_inputs() {
 	say "    player: $(stat -c%s "$PLAYER_BIN") bytes, built $BUILD_STAMP"
 	[ -f "$LAUNCH_BIN" ] || die "no sonix_launch next to this script: build it with 'make target' in sonix-player/."
 	say "    launch: $(stat -c%s "$LAUNCH_BIN") bytes"
+	if [ -f "$KERNEL_IMAGE" ]; then
+		say "    kernel: $(stat -c%s "$KERNEL_IMAGE") bytes, md5 $(md5sum "$KERNEL_IMAGE" | cut -d' ' -f1) -- installed instead of the stock one"
+	else
+		say "    kernel: the stock UIMAGE.BIN, unchanged"
+	fi
 	say ""
 }
 
@@ -120,6 +134,15 @@ unpack_stock() {
 	fw ubireader_extract_files -k -o "build/SYSTEM" "build/iso/SYSTEM.UBI"
 	[ -d "$TREE/usr/bin" ] || die "the rootfs did not extract."
 	say "    rootfs: $(fw du -sh build/SYSTEM | cut -f1)"
+
+	if [ -f "$KERNEL_IMAGE" ]; then
+		stock_size="$(stat -c%s "$ISO_DIR/UIMAGE.BIN")"
+		new_size="$(stat -c%s "$KERNEL_IMAGE")"
+		[ "$new_size" -le "$stock_size" ] ||
+			die "kernel/UIMAGE.BIN is $new_size bytes, the stock kernel $stock_size: it may not grow past the stock image."
+		cp -f "$KERNEL_IMAGE" "$ISO_DIR/UIMAGE.BIN"
+		say "    kernel: replaced with $new_size bytes (stock $stock_size)"
+	fi
 	say ""
 }
 
@@ -137,7 +160,7 @@ pack_image() {
 	fw mkfs.ubifs -x lzo -d build/SYSTEM -e 0x1F000 -c 480 -m 0x800 -o build/iso/SYSTEM.UBI ||
 		die "the rootfs does not fit in the volume (too many files?)."
 
-	fw python3 tools/fix_update_md5.py build/iso/UPDATE.TXT build/iso/SYSTEM.UBI
+	fw python3 tools/fix_update_md5.py build/iso/UPDATE.TXT build/iso/SYSTEM.UBI build/iso/UIMAGE.BIN
 
 	fw genisoimage -l -o out/v3_analog.upt \
 		build/iso/SYSTEM.UBI build/iso/UIMAGE.BIN build/iso/UBOOT.BIN \
@@ -169,17 +192,22 @@ from pathlib import Path
 
 iso = Path("build/verify")
 text = (iso / "UPDATE.TXT").read_text()
-block = text[text.find("rootfs={"):]
-declared = re.search(r"md5=([0-9a-fA-F]{32})", block).group(1)
 
-digest = hashlib.md5()
-with (iso / "SYSTEM.UBI").open("rb") as fh:
-    for chunk in iter(lambda: fh.read(1 << 20), b""):
-        digest.update(chunk)
-found = digest.hexdigest()
+def md5_of(path):
+    digest = hashlib.md5()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-print(f"    rootfs md5: UPDATE.TXT {declared}, image {found}")
-sys.exit(0 if declared == found else 1)
+ok = True
+for block_name, image in (("rootfs", "SYSTEM.UBI"), ("kernel", "UIMAGE.BIN")):
+    block = text[text.find(f"{block_name}={{"):]
+    declared = re.search(r"md5=([0-9a-fA-F]{32})", block).group(1)
+    found = md5_of(iso / image)
+    print(f"    {block_name} md5: UPDATE.TXT {declared}, image {found}")
+    ok = ok and declared == found
+sys.exit(0 if ok else 1)
 PY
 
 	fw ubireader_extract_files -k -o "build/verify/SYSTEM" "build/verify/SYSTEM.UBI"

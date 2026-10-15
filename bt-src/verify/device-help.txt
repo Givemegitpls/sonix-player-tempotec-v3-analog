@@ -1,0 +1,39 @@
+Usage:
+  /tmp/bluealsa-new -p PROFILE [OPTION]...
+
+Options:
+  -h, --help			print this help and exit
+  -V, --version			print version and exit
+  -B, --dbus=NAME		D-Bus service name suffix
+  -S, --syslog			send output to syslog
+  -i, --device=hciX		HCI device(s) to use
+  -p, --profile=NAME		set enabled BT profiles
+  -c, --codec=NAME		set enabled BT audio codecs
+  --initial-volume=NUM		initial volume level [0-100]
+  --keep-alive=SEC		keep Bluetooth transport alive
+  --io-rt-priority=NUM		real-time priority for IO threads
+  --a2dp-force-mono		try to force monophonic sound
+  --a2dp-force-audio-cd		try to force 44.1 kHz sampling
+  --a2dp-volume			native volume control by default
+  --sbc-quality=MODE		set SBC encoder quality mode
+  --aac-afterburner		enable FDK AAC afterburner
+  --aac-bitrate=BPS		CBR bitrate or max peak for VBR
+  --aac-latm-version=NUM	select LATM syntax version
+  --aac-true-bps		enable true bit-per-second bit rate
+  --aac-vbr			prefer VBR mode over CBR mode
+  --ldac-abr			enable LDAC adaptive bit rate
+  --ldac-quality=MODE		set LDAC encoder quality mode
+  --xapl-resp-name=NAME		set product name used by XAPL
+
+Available BT profiles:
+  - a2dp-source	Advanced Audio Source (v1.3)
+  - a2dp-sink	Advanced Audio Sink (v1.3)
+  - hfp-ag	Hands-Free Audio Gateway (v1.7)
+  - hfp-hf	Hands-Free (v1.7)
+  - hsp-ag	Headset Audio Gateway (v1.2)
+  - hsp-hs	Headset (v1.2)
+
+Available BT audio codecs:
+  a2dp-source:	SBC, AAC, aptX, aptX-HD, LDAC
+  a2dp-sink:	SBC, AAC, aptX, aptX-HD, LDAC
+  hfp-*:	CVSD

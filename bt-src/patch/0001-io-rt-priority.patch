@@ -1,0 +1,95 @@
+diff -ruN bluez-alsa-4.0.0/src/ba-transport.c bluez-alsa-4.0.0.patched/src/ba-transport.c
+--- bluez-alsa-4.0.0/src/ba-transport.c	2022-06-03 21:38:53.000000000 +0300
++++ bluez-alsa-4.0.0.patched/src/ba-transport.c	2026-10-16 00:49:02.562381227 +0300
+@@ -13,6 +13,7 @@
+ #include <errno.h>
+ #include <math.h>
+ #include <poll.h>
++#include <sched.h>
+ #include <stdbool.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -1490,6 +1491,14 @@
+ 		return -1;
+ 	}
+ 
++	if (config.io_thread_rt_priority != 0) {
++		struct sched_param param = { .sched_priority = config.io_thread_rt_priority };
++		if ((ret = pthread_setschedparam(th->id, SCHED_FIFO, &param)) != 0)
++			warn("Couldn't set IO thread RT priority: %s", strerror(ret));
++		/* It's not a fatal error if we can't set thread priority. */
++		ret = 0;
++	}
++
+ 	pthread_setname_np(th->id, name);
+ 	debug("Created new IO thread [%s]: %s",
+ 			name, ba_transport_type_to_string(t->type));
+diff -ruN bluez-alsa-4.0.0/src/bluealsa-config.c bluez-alsa-4.0.0.patched/src/bluealsa-config.c
+--- bluez-alsa-4.0.0/src/bluealsa-config.c	2022-06-03 21:38:53.000000000 +0300
++++ bluez-alsa-4.0.0.patched/src/bluealsa-config.c	2026-10-16 00:48:37.767384847 +0300
+@@ -31,6 +31,8 @@
+ 
+ 	.keep_alive_time = 0,
+ 
++	.io_thread_rt_priority = 0,
++
+ 	.volume_init_level = 0,
+ 
+ 	/* CVSD is a mandatory codec */
+diff -ruN bluez-alsa-4.0.0/src/bluealsa-config.h bluez-alsa-4.0.0.patched/src/bluealsa-config.h
+--- bluez-alsa-4.0.0/src/bluealsa-config.h	2022-06-03 21:38:53.000000000 +0300
++++ bluez-alsa-4.0.0.patched/src/bluealsa-config.h	2026-10-16 00:48:37.767384847 +0300
+@@ -65,6 +65,9 @@
+ 	 * infinite time. This option applies for the source profile only. */
+ 	int keep_alive_time;
+ 
++	/* real-time scheduling priority of transport IO threads */
++	int io_thread_rt_priority;
++
+ 	/* the initial volume level */
+ 	int volume_init_level;
+ 
+diff -ruN bluez-alsa-4.0.0/src/main.c bluez-alsa-4.0.0.patched/src/main.c
+--- bluez-alsa-4.0.0/src/main.c	2022-06-03 21:38:53.000000000 +0300
++++ bluez-alsa-4.0.0.patched/src/main.c	2026-10-16 00:48:51.682382814 +0300
+@@ -13,6 +13,7 @@
+ #endif
+ 
+ #include <getopt.h>
++#include <sched.h>
+ #include <signal.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+@@ -154,6 +155,7 @@
+ 		{ "codec", required_argument, NULL, 'c' },
+ 		{ "initial-volume", required_argument, NULL, 17 },
+ 		{ "keep-alive", required_argument, NULL, 8 },
++		{ "io-rt-priority", required_argument, NULL, 3 },
+ 		{ "a2dp-force-mono", no_argument, NULL, 6 },
+ 		{ "a2dp-force-audio-cd", no_argument, NULL, 7 },
+ 		{ "a2dp-volume", no_argument, NULL, 9 },
+@@ -219,6 +221,7 @@
+ 					"  -c, --codec=NAME\t\tset enabled BT audio codecs\n"
+ 					"  --initial-volume=NUM\t\tinitial volume level [0-100]\n"
+ 					"  --keep-alive=SEC\t\tkeep Bluetooth transport alive\n"
++					"  --io-rt-priority=NUM\t\treal-time priority for IO threads\n"
+ 					"  --a2dp-force-mono\t\ttry to force monophonic sound\n"
+ 					"  --a2dp-force-audio-cd\t\ttry to force 44.1 kHz sampling\n"
+ 					"  --a2dp-volume\t\t\tnative volume control by default\n"
+@@ -376,6 +379,16 @@
+ 			config.keep_alive_time = atof(optarg) * 1000;
+ 			break;
+ 
++		case 3 /* --io-rt-priority=NUM */ :
++			config.io_thread_rt_priority = atoi(optarg);
++			const int min = sched_get_priority_min(SCHED_FIFO);
++			const int max = sched_get_priority_max(SCHED_FIFO);
++			if (config.io_thread_rt_priority < min || max < config.io_thread_rt_priority) {
++				error("Invalid IO thread RT priority [%d, %d]: %s", min, max, optarg);
++				return EXIT_FAILURE;
++			}
++			break;
++
+ 		case 6 /* --a2dp-force-mono */ :
+ 			config.a2dp.force_mono = true;
+ 			break;
