@@ -22,8 +22,8 @@ lv_obj_t *chapters_screen;
 // is plainly rebuilt each time it opens, like the audiobook index itself. The
 // cap is there for a pathological file, not for any real book.
 #define MAX_ROWS 400
-#define ROW_HEIGHT 68
-#define ROW_RADIUS 12
+#define ROW_HEIGHT SC(68)
+#define ROW_RADIUS SC(12)
 
 static lv_obj_t *chapter_list;
 static lv_obj_t *empty_label;
@@ -113,8 +113,8 @@ static lv_obj_t *make_row(int i, const char *title, const char *clock, bool play
 	lv_obj_set_style_radius(row, ROW_RADIUS, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_all(row, 14, 0);
-	lv_obj_set_style_pad_column(row, 12, 0);
+	lv_obj_set_style_pad_all(row, SC(14), 0);
+	lv_obj_set_style_pad_column(row, SC(12), 0);
 	lv_obj_set_event_bubble(row, true);
 	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -122,7 +122,7 @@ static lv_obj_t *make_row(int i, const char *title, const char *clock, bool play
 
 	lv_obj_t *number = lv_label_create(row);
 	lv_label_set_text_fmt(number, "%d", i + 1);
-	lv_obj_set_width(number, 44);
+	lv_obj_set_width(number, SC(44));
 	lv_obj_set_style_text_align(number, LV_TEXT_ALIGN_RIGHT, 0);
 	lv_obj_add_style(number, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(number, &font_ui_24, 0);
@@ -133,7 +133,7 @@ static lv_obj_t *make_row(int i, const char *title, const char *clock, bool play
 	lv_obj_set_flex_grow(label, 1);
 	// One line, then dots. Without a height the label wraps instead, and a
 	// long chapter name then grows past the fixed row it lives in.
-	lv_obj_set_height(label, 32);
+	lv_obj_set_height(label, SC(32));
 	lv_obj_add_style(label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(label, &font_ui_24, 0);
 
@@ -202,7 +202,7 @@ static void rebuild(void) {
 		lv_obj_set_width(empty_label, lv_pct(100));
 		lv_obj_add_style(empty_label, &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(empty_label, &font_ui_24, 0);
-		lv_obj_set_style_pad_top(empty_label, 80, 0);
+		lv_obj_set_style_pad_top(empty_label, SC(80), 0);
 		return;
 	}
 
@@ -258,7 +258,7 @@ void chapters_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(chapter_list, 0, 0);
 	lv_obj_set_style_pad_hor(chapter_list, cfg->padding, 0);
 	lv_obj_set_style_pad_ver(chapter_list, 0, 0);
-	lv_obj_set_style_pad_gap(chapter_list, 8, 0);
+	lv_obj_set_style_pad_gap(chapter_list, SC(8), 0);
 	lv_obj_set_scroll_dir(chapter_list, LV_DIR_VER);
 	lv_obj_set_flex_flow(chapter_list, LV_FLEX_FLOW_COLUMN);
 	// Set here, not in the row builder: a book with no chapters creates no

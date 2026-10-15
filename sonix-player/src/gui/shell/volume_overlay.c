@@ -3,7 +3,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/screensaver.h"
 #include "src/gui/shell/theme.h"
@@ -16,9 +16,9 @@
 // The pill follows the theme rather than being dark in both: it sits over the
 // controls block as well as over artwork, and a fixed dark pill would be the
 // only black thing on a light screen.
-#define OVERLAY_WIDTH 340
-#define OVERLAY_HEIGHT 72
-#define OVERLAY_TOP_Y 96 // clear of the artwork
+#define OVERLAY_WIDTH SC(340)
+#define OVERLAY_HEIGHT SC(72)
+#define OVERLAY_TOP_Y SC(96) // clear of the artwork
 #define OVERLAY_RADIUS (OVERLAY_HEIGHT / 2)
 #define OVERLAY_HIDE_MS 1600
 
@@ -181,9 +181,9 @@ void volume_overlay_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(overlay, OVERLAY_RADIUS, 0);
 	lv_obj_set_style_border_width(overlay, 0, 0);
 	lv_obj_set_style_shadow_width(overlay, 0, 0);
-	lv_obj_set_style_pad_hor(overlay, 22, 0);
+	lv_obj_set_style_pad_hor(overlay, SC(22), 0);
 	lv_obj_set_style_pad_ver(overlay, 0, 0);
-	lv_obj_set_style_pad_gap(overlay, 16, 0);
+	lv_obj_set_style_pad_gap(overlay, SC(16), 0);
 	lv_obj_set_scrollable(overlay, false);
 	lv_obj_set_event_bubble(overlay, false);
 
@@ -197,13 +197,13 @@ void volume_overlay_init(gui_config_t *cfg) {
 	overlay_label = lv_label_create(overlay);
 	lv_label_set_text(overlay_label, "0");
 	lv_obj_set_style_text_font(overlay_label, &font_ui_24, 0);
-	lv_obj_set_width(overlay_label, 42);
+	lv_obj_set_width(overlay_label, SC(42));
 	lv_obj_set_style_text_align(overlay_label, LV_TEXT_ALIGN_CENTER, 0);
 
 	// The scale: an Adwaita slider (slim trough, accent fill, white knob) that
 	// takes the finger directly.
 	overlay_slider = lv_slider_create(overlay);
-	lv_obj_set_height(overlay_slider, 10);
+	lv_obj_set_height(overlay_slider, SC(10));
 	lv_obj_set_flex_grow(overlay_slider, 1);
 	lv_slider_set_range(overlay_slider, 0, 100);
 
@@ -214,14 +214,15 @@ void volume_overlay_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(overlay_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 	lv_obj_set_style_bg_color(overlay_slider, lv_color_white(), LV_PART_KNOB);
 	lv_obj_set_style_bg_opa(overlay_slider, LV_OPA_COVER, LV_PART_KNOB);
-	lv_obj_set_style_pad_all(overlay_slider, 7, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(overlay_slider, 6, LV_PART_KNOB);
+	lv_obj_set_style_pad_all(overlay_slider, SC(7), LV_PART_KNOB);
+	theme_inset_slider_knob(overlay_slider); // the knob stops at the trough's end
+	lv_obj_set_style_shadow_width(overlay_slider, SC(6), LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(overlay_slider, LV_OPA_30, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(overlay_slider, lv_color_black(), LV_PART_KNOB);
 
 	// A slim trough is a hard touch target; give the finger the pill's whole
 	// height to land on.
-	lv_obj_set_ext_click_area(overlay_slider, (OVERLAY_HEIGHT - 6) / 2);
+	lv_obj_set_ext_click_area(overlay_slider, (OVERLAY_HEIGHT - SC(6)) / 2);
 	lv_obj_add_event_cb(overlay_slider, slider_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
 	hide_timer = lv_timer_create(hide_cb, OVERLAY_HIDE_MS, NULL);

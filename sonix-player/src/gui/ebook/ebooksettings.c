@@ -166,9 +166,9 @@ void ebooksettings_init(gui_config_t *cfg) {
 	lv_obj_set_pos(preview_paper, cfg->padding, list_top);
 	lv_obj_set_style_bg_color(preview_paper, lv_color_hex(PAPER_COLOUR), 0);
 	lv_obj_set_style_bg_opa(preview_paper, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(preview_paper, 12, 0);
-	lv_obj_set_style_pad_all(preview_paper, 14, 0);
-	lv_obj_set_style_pad_row(preview_paper, 10, 0);
+	lv_obj_set_style_radius(preview_paper, SC(12), 0);
+	lv_obj_set_style_pad_all(preview_paper, SC(14), 0);
+	lv_obj_set_style_pad_row(preview_paper, SC(10), 0);
 	lv_obj_set_scrollable(preview_paper, false);
 	lv_obj_set_flex_flow(preview_paper, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_event_bubble(preview_paper, true);
@@ -178,14 +178,14 @@ void ebooksettings_init(gui_config_t *cfg) {
 	for (int i = 0; i < 2; i++) {
 		lv_obj_t *line = lv_obj_create(preview_paper);
 		lv_obj_remove_style_all(line);
-		lv_obj_set_size(line, lv_pct(i == 0 ? 100 : 72), 10);
-		lv_obj_set_style_radius(line, 5, 0);
+		lv_obj_set_size(line, lv_pct(i == 0 ? SC(100) : SC(72)), SC(10));
+		lv_obj_set_style_radius(line, SC(5), 0);
 		lv_obj_set_style_bg_color(line, lv_color_hex(PAPER_INK), 0);
 		lv_obj_set_style_bg_opa(line, LV_OPA_20, 0);
 		lv_obj_set_scrollable(line, false);
 	}
 
-	ebookbar_create(&preview, preview_paper, (int32_t)cfg->screen_width - 2 * cfg->padding - 28);
+	ebookbar_create(&preview, preview_paper, (int32_t)cfg->screen_width - 2 * cfg->padding - SC(28));
 
 	// --- and the switches, in what scrolls
 	option_list = lv_obj_create(ebooksettings_screen);
@@ -195,10 +195,10 @@ void ebooksettings_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(option_list, 0, 0);
 	lv_obj_set_style_radius(option_list, 0, 0);
 	lv_obj_set_style_pad_hor(option_list, cfg->padding, 0);
-	lv_obj_set_style_pad_top(option_list, 12, 0);
+	lv_obj_set_style_pad_top(option_list, SC(12), 0);
 	lv_obj_set_flex_flow(option_list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(option_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(option_list, 12, 0);
+	lv_obj_set_style_pad_gap(option_list, SC(12), 0);
 
 	for (int i = 0; i < EBOOKBAR_COUNT; i++) {
 		if (i == EBOOKBAR_PROGRESS) {

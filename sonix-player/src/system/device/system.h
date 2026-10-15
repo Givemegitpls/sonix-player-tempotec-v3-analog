@@ -2,6 +2,7 @@
 #define SYSTEM_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 typedef struct {
 	// Preferred block device, e.g. "/dev/mmcblk0p1". May be NULL: the player
@@ -58,6 +59,19 @@ void system_start_services(system_config_t *cfg, system_notification_cb_t notifi
 // read: hardcoding a path guesses wrong on firmwares that arrange the
 // /mnt -> /data/mnt -> /usr/data/mnt symlinks differently.
 const char *storage_sd_root(void);
+
+// Every name this firmware may give the card's directory -- /mnt/sd_0,
+// /data/mnt/sd_0, /usr/data/mnt/sd_0 (see SD_ROOT_CANDIDATES in system.c).
+// Which of them are symlinks to which differs between builds, and the card can
+// end up mounted under any one of them; the storage layer resolves the real one
+// at startup and storage_sd_root() answers with it.
+//
+// Exposed because code that stores paths on the card (the library index) has to
+// tell "the same file reached by another of these names" from "another file":
+// the mount point can change between runs, and rows filed under one name are
+// invisible to a scan running under another. `*count` receives the number of
+// names.
+const char *const *storage_sd_root_aliases(size_t *count);
 
 // Whether the card can be written to. False for a card mounted read-only -- an
 // NTFS one where ntfs-3g is not on the device, or an adapter with its

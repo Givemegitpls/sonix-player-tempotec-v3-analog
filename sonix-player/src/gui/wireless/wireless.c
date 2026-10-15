@@ -7,7 +7,7 @@
 #include "src/gui/wireless/dlna.h"
 #include "src/gui/shell/gridpage.h"
 #include "src/gui/wireless/sonixlink.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/wireless/wifisettings.h"
 #include "src/gui/wireless/wifitransfer.h"

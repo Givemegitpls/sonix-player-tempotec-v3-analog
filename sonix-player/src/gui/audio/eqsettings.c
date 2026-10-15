@@ -6,7 +6,7 @@
 
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
@@ -149,14 +149,14 @@ static bool add_preset_row(const char *name, void *user) {
 	}
 
 	lv_obj_t *row = lv_btn_create(list_container);
-	lv_obj_set_size(row, lv_pct(100), 84);
+	lv_obj_set_size(row, lv_pct(100), SC(84));
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, SC(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_column(row, 14, 0);
+	lv_obj_set_style_pad_hor(row, SC(16), 0);
+	lv_obj_set_style_pad_column(row, SC(14), 0);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_add_event_cb(row, preset_clicked_cb, LV_EVENT_CLICKED, owned);
@@ -180,7 +180,7 @@ static bool add_preset_row(const char *name, void *user) {
 								0);
 
 	lv_obj_t *menu_btn = lv_btn_create(row);
-	lv_obj_set_size(menu_btn, 44, 44);
+	lv_obj_set_size(menu_btn, SC(44), SC(44));
 	lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(menu_btn, 0, 0);
 	lv_obj_set_style_shadow_width(menu_btn, 0, 0);
@@ -283,10 +283,10 @@ static void build_name_dialog(gui_config_t *cfg) {
 	lv_label_set_text(heading, tr("preset_name"));
 	lv_obj_add_style(heading, &theme_style_text, 0);
 	lv_obj_set_style_text_font(heading, &font_ui_24, 0);
-	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
+	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding + SC(56) + SC(14), cfg->padding + cfg->top_bar_height + SC(10));
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
-	lv_obj_set_size(cancel, 56, 56);
+	lv_obj_set_size(cancel, SC(56), SC(56));
 	lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(cancel, 0, 0);
@@ -303,18 +303,18 @@ static void build_name_dialog(gui_config_t *cfg) {
 	lv_textarea_set_one_line(name_field, true);
 	lv_textarea_set_max_length(name_field, PRESET_NAME_MAX);
 	lv_textarea_set_placeholder_text(name_field, tr("name"));
-	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, SC(62));
 	lv_obj_set_scrollbar_mode(name_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 60);
+	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + SC(60));
 	lv_obj_add_style(name_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(name_field, 12, 0);
+	lv_obj_set_style_radius(name_field, SC(12), 0);
 	lv_obj_set_style_border_width(name_field, 0, 0);
 	lv_obj_set_style_shadow_width(name_field, 0, 0);
-	lv_obj_set_style_pad_all(name_field, 14, 0);
+	lv_obj_set_style_pad_all(name_field, SC(14), 0);
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
-	name_keyboard = keyboard_create(name_layer, cfg->screen_width, 316, name_field, NULL, "ok", name_accept_cb, NULL);
+	name_keyboard = keyboard_create(name_layer, cfg->screen_width, SC(316), name_field, NULL, "ok", name_accept_cb, NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +331,7 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(list_empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(list_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
-	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 100);
+	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + SC(100));
 	lv_obj_set_hidden(list_empty, true);
 
 	switcher_attach_back_gesture(list_screen);

@@ -5,7 +5,7 @@
 #include "src/gui/library/audiobooks.h"
 #include "src/gui/shell/gridpage.h"
 #include "src/gui/shell/gui.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/morepage.h"
 #include "src/gui/library/music.h"
 #include "src/gui/settings/settings.h"

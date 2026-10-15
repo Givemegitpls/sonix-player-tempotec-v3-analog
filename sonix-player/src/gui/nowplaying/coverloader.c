@@ -146,20 +146,21 @@ static void *worker(void *arg) {
 	thread_be_low_priority("coverloader");
 
 	for (;;) {
-		// Where in the background this thread sits, decided again before every
-		// job.
+		// The bottom of the pile, always.
 		//
-		// SCHED_IDLE gets almost nothing from a core the interface is keeping
-		// busy, so pictures only arrive once the finger stops; a plain nice
-		// value gives it enough to keep up with a scroll.
+		// It used to sit at nice 10 while the screen was on, so that pictures
+		// kept arriving during a scroll. A profile on the device showed what
+		// that cost: this thread was a fifth of the CPU while the finger was
+		// moving, on a single core, and the interface it was taking that from
+		// was the thing the user was actually watching. SCHED_IDLE is the
+		// opposite trade -- against a busy interface it gets scraps, so a
+		// picture lands a few frames after the finger stops instead of during
+		// the scroll, which is what a picture is worth. With the interface idle
+		// this thread has the core to itself and decodes as fast as ever, so
+		// nothing that is standing still got slower.
 		//
-		// That share is not free with the screen off, where the only thing this
-		// thread can be racing is playback -- and over Bluetooth playback is the
-		// one stream with no clock behind it: a block written late is a block
-		// lost, and after two seconds without progress the link is taken for
-		// gone. A picture for a screen nobody can see is not worth that, so with
-		// the screen off the thread goes back to the bottom of the pile.
-		thread_set_background_level(power_screen_is_on());
+		// The same as the cover warmer, and for the same reason.
+		thread_set_background_level(false);
 
 		pthread_mutex_lock(&lock);
 

@@ -8,7 +8,7 @@
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/settings/musicsettings.h"
 #include "src/gui/audio/peqpage.h"
 #include "src/gui/library/audiobooks.h"
@@ -57,27 +57,27 @@
 // against the roughly 400 px the card leaves inside its padding, so a fifth
 // does not fit however tight the gap gets: the extra controls wrap onto a
 // second line rather than shrinking.
-#define CIRCLE_BUTTON_SIZE 88
-#define CIRCLE_BUTTON_GAP 14
+#define CIRCLE_BUTTON_SIZE SC(88)
+#define CIRCLE_BUTTON_GAP SC(14)
 #define QP_BUTTONS_PER_LINE 4
 
 // How the sheet divides the screen up: a strip for the close hint at the
 // bottom, small gaps at the top and between the cards, and the rest split
 // evenly between them. The leftover space goes to the cards rather than around
 // them, or on a 720 px panel everything sits high.
-#define CARD_PADDING 20
-#define HINT_STRIP_H 52 // room under the cards for the close line
-#define CARD_TOP_GAP 12 // between the status bar and the first card
-#define CARD_GAP 16	   // between the two cards
-#define CARD_ROW_GAP 12 // between the blocks inside the controls card
-#define HANDLE_ROOM 24	// added under the slider when the card has a handle
-#define BRIGHT_ROW_H 44
+#define CARD_PADDING SC(20)
+#define HINT_STRIP_H SC(52) // room under the cards for the close line
+#define CARD_TOP_GAP SC(12) // between the status bar and the first card
+#define CARD_GAP SC(16)	   // between the two cards
+#define CARD_ROW_GAP SC(12) // between the blocks inside the controls card
+#define HANDLE_ROOM SC(24)	// added under the slider when the card has a handle
+#define BRIGHT_ROW_H SC(44)
 
 // The sheet's own padding. The cards are aligned inside the content area, so
 // every y below is measured from there and not from the top of the screen;
 // measuring from the screen puts the close line over the second card.
 #define PANEL_PAD_TOP(cfg) ((cfg)->padding + 8)
-#define PANEL_PAD_BOTTOM 8
+#define PANEL_PAD_BOTTOM SC(8)
 
 static lv_obj_t *veil;	// dims the page still showing while the sheet is part-way in
 static lv_obj_t *panel; // the full-screen sheet, parked above the top edge
@@ -173,14 +173,14 @@ static uint32_t drag_begin_ms;
 // against -- so the sheet followed the finger and then snapped back, which from
 // the outside is a control centre that ignores a quick swipe. The floor keeps
 // the wobble of a tap out of it.
-#define FLICK_MIN_PX 40
+#define FLICK_MIN_PX SC(40)
 #define FLICK_SPEED_PX_S 500
 
 // How far a drag has to travel before the release opens or closes rather than
 // snapping back. Fixed pixels and not a share of the panel: both players have
 // the same 480-wide glass, so the same gesture decides the same way on the
 // 720-tall R3 Pro II and the 800-tall R1. 180 is a quarter of 720.
-#define DRAG_COMMIT_PX 180
+#define DRAG_COMMIT_PX SC(180)
 
 // ---------------------------------------------------------------------------
 // The stretch of the controls card
@@ -1420,6 +1420,7 @@ static lv_obj_t *make_circle_button(lv_obj_t *parent, const lv_image_dsc_t *glyp
 	lv_obj_add_style(icon, &theme_style_icon, 0);
 	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
 	lv_obj_center(icon);
+	printf("ICONDBG w=%d h=%d scale=%lu src=%p\n", (int)lv_obj_get_width(icon), (int)lv_obj_get_height(icon), (unsigned long)lv_image_get_scale(icon), (void*)glyph);
 
 	return btn;
 }
@@ -1895,7 +1896,7 @@ static lv_obj_t *make_card(lv_obj_t *parent, int width, int height, int top_y) {
 	lv_obj_set_size(card, width, height);
 	lv_obj_align(card, LV_ALIGN_TOP_MID, 0, top_y);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 20, 0);
+	lv_obj_set_style_radius(card, SC(20), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, CARD_PADDING, 0);
@@ -1930,7 +1931,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_hor(panel, cfg->padding, 0);
 	lv_obj_set_style_pad_top(panel, PANEL_PAD_TOP(cfg), 0);
 	lv_obj_set_style_pad_bottom(panel, PANEL_PAD_BOTTOM, 0);
-	lv_obj_set_style_pad_gap(panel, 14, 0);
+	lv_obj_set_style_pad_gap(panel, SC(14), 0);
 	lv_obj_set_scrollable(panel, false);
 	lv_obj_set_event_bubble(panel, false);
 	lv_obj_set_clickable(panel, true);
@@ -2076,8 +2077,8 @@ void quickpanel_init(gui_config_t *cfg) {
 	// it falls past the end of the track; the row clips its children, which would
 	// slice the knob down the middle. Keeping the track 13 px short of the row's
 	// right edge gives it room.
-	lv_obj_set_style_pad_right(bright_row, 13, 0);
-	lv_obj_set_style_pad_gap(bright_row, 18, 0);
+	lv_obj_set_style_pad_right(bright_row, SC(13), 0);
+	lv_obj_set_style_pad_gap(bright_row, SC(18), 0);
 	lv_obj_set_scrollable(bright_row, false);
 	lv_obj_set_event_bubble(bright_row, true);
 	lv_obj_set_flex_flow(bright_row, LV_FLEX_FLOW_ROW);
@@ -2089,7 +2090,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_image_recolor_opa(sun, LV_OPA_COVER, 0);
 
 	brightness_slider = lv_slider_create(bright_row);
-	lv_obj_set_height(brightness_slider, 10);
+	lv_obj_set_height(brightness_slider, SC(10));
 	lv_obj_set_flex_grow(brightness_slider, 1);
 	lv_slider_set_range(brightness_slider, 5, 100);
 	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
@@ -2100,11 +2101,12 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 	lv_obj_set_style_bg_color(brightness_slider, lv_color_white(), LV_PART_KNOB);
 	theme_apply_slider_knob(brightness_slider);
-	lv_obj_set_style_pad_all(brightness_slider, 8, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(brightness_slider, 8, LV_PART_KNOB);
+	lv_obj_set_style_pad_all(brightness_slider, SC(8), LV_PART_KNOB);
+	theme_inset_slider_knob(brightness_slider); // the knob stops at the trough's end
+	lv_obj_set_style_shadow_width(brightness_slider, SC(8), LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(brightness_slider, LV_OPA_30, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(brightness_slider, lv_color_black(), LV_PART_KNOB);
-	lv_obj_set_ext_click_area(brightness_slider, 18);
+	lv_obj_set_ext_click_area(brightness_slider, SC(18));
 	lv_obj_add_event_cb(brightness_slider, brightness_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 	lv_obj_add_event_cb(brightness_slider, brightness_released_cb, LV_EVENT_RELEASED, NULL);
 
@@ -2144,7 +2146,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	// it is the same drag as anywhere else.
 	expand_handle = lv_obj_create(controls_card);
 	lv_obj_set_ignore_layout(expand_handle, true);
-	lv_obj_set_size(expand_handle, 160, HANDLE_ROOM + CARD_PADDING);
+	lv_obj_set_size(expand_handle, SC(160), HANDLE_ROOM + CARD_PADDING);
 	lv_obj_align(expand_handle, LV_ALIGN_BOTTOM_MID, 0, CARD_PADDING);
 	lv_obj_set_style_bg_opa(expand_handle, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(expand_handle, 0, 0);
@@ -2155,7 +2157,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(expand_handle, expand_handle_clicked_cb, LV_EVENT_CLICKED, NULL);
 
 	expand_pill = lv_obj_create(expand_handle);
-	lv_obj_set_size(expand_pill, 36, 5);
+	lv_obj_set_size(expand_pill, SC(36), SC(5));
 	lv_obj_center(expand_pill);
 	lv_obj_set_style_radius(expand_pill, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(expand_pill, theme()->text_primary, 0);
@@ -2168,7 +2170,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	np_card = make_card(panel, card_w, card_h, top_inset + card_h + CARD_GAP);
 	lv_obj_set_flex_flow(np_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(np_card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(np_card, 6, 0);
+	lv_obj_set_style_pad_gap(np_card, SC(6), 0);
 
 	// Title and artist are centred and scroll when too long, the same treatment
 	// as the player's now-playing lines. Each is exactly one line of its own
@@ -2192,7 +2194,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	scrolltext_apply(np_artist);
 
 	lv_obj_t *transport = lv_obj_create(np_card);
-	lv_obj_set_size(transport, lv_pct(100), 96);
+	lv_obj_set_size(transport, lv_pct(100), SC(96));
 	lv_obj_set_style_bg_opa(transport, 0, 0);
 	lv_obj_set_style_border_width(transport, 0, 0);
 	lv_obj_set_style_pad_all(transport, 0, 0);
@@ -2200,19 +2202,19 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_event_bubble(transport, true);
 	lv_obj_set_flex_flow(transport, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(transport, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(transport, 4, 0);
-	lv_obj_set_style_pad_top(transport, 10, 0);
+	lv_obj_set_style_pad_column(transport, SC(4), 0);
+	lv_obj_set_style_pad_top(transport, SC(10), 0);
 
 	// Repeat/shuffle pinned left, the star pinned right, transport centred
 	// between them: the player's arrangement.
-	lv_obj_t *repeat_btn = make_flat_button(transport, 56, repeat_cb);
+	lv_obj_t *repeat_btn = make_flat_button(transport, SC(56), repeat_cb);
 	np_repeat_btn = repeat_btn;
 	lv_obj_set_ignore_layout(repeat_btn, true);
 	lv_obj_align(repeat_btn, LV_ALIGN_LEFT_MID, 0, 0);
 	np_repeat_icon = lv_image_create(repeat_btn);
 	lv_obj_center(np_repeat_icon);
 
-	lv_obj_t *prev_btn = make_flat_button(transport, 76, prev_cb);
+	lv_obj_t *prev_btn = make_flat_button(transport, SC(76), prev_cb);
 	np_prev_btn = prev_btn;
 	np_star_icon = NULL; // really created further down, once the star button exists
 	lv_obj_t *prev_icon = lv_image_create(prev_btn);
@@ -2224,7 +2226,7 @@ void quickpanel_init(gui_config_t *cfg) {
 
 	// The play disc keeps the neutral circle colour the other round controls use;
 	// the white disc belongs over artwork, not on a card that follows the theme.
-	lv_obj_t *play_btn = make_flat_button(transport, 84, play_cb);
+	lv_obj_t *play_btn = make_flat_button(transport, SC(84), play_cb);
 	lv_obj_set_style_radius(play_btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_add_style(play_btn, &theme_style_switch, 0);
 	lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
@@ -2233,7 +2235,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_add_style(np_play_icon, &theme_style_icon, 0);
 	lv_obj_center(np_play_icon);
 
-	lv_obj_t *next_btn = make_flat_button(transport, 76, next_cb);
+	lv_obj_t *next_btn = make_flat_button(transport, SC(76), next_cb);
 	np_next_btn = next_btn;
 	lv_obj_t *next_icon = lv_image_create(next_btn);
 	// The look of the three while a station connects; see the refresh.
@@ -2246,7 +2248,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_image_recolor_opa(next_icon, LV_OPA_COVER, 0);
 	lv_obj_center(next_icon);
 
-	lv_obj_t *star_btn = make_flat_button(transport, 56, star_cb);
+	lv_obj_t *star_btn = make_flat_button(transport, SC(56), star_cb);
 	np_star_btn = star_btn;
 	lv_obj_set_ignore_layout(star_btn, true);
 	lv_obj_align(star_btn, LV_ALIGN_RIGHT_MID, 0, 0);
@@ -2259,7 +2261,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	// landing on it talks to the surface underneath, where the gesture lives.
 	lv_obj_t *close_btn = lv_obj_create(panel);
 	lv_obj_set_ignore_layout(close_btn, true);
-	lv_obj_set_size(close_btn, 140, HINT_STRIP_H - 8);
+	lv_obj_set_size(close_btn, SC(140), HINT_STRIP_H - SC(8));
 	// Flush with the bottom of the sheet's content box, which centres the line in
 	// the band between the last card and the screen edge: the band is
 	// HINT_STRIP_H below the card plus PANEL_PAD_BOTTOM under the content box,

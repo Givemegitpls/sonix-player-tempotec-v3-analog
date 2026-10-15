@@ -12,7 +12,7 @@
 
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/streaming/qobuzart.h"
@@ -464,7 +464,7 @@ static void row_menu_cb(lv_event_t *e) {
 }
 
 // Side length of a row thumbnail.
-#define ROW_THUMB 60
+#define ROW_THUMB SC(60)
 
 // Row cover art.
 //
@@ -557,7 +557,7 @@ static void art_poll_cb(lv_timer_t *timer) {
 		// must keep its own colours or it becomes a solid square.
 		lv_obj_remove_style(row_thumbs[row], &theme_style_icon, 0);
 		lv_obj_set_style_image_recolor_opa(row_thumbs[row], LV_OPA_TRANSP, 0);
-		lv_obj_set_style_radius(row_thumbs[row], 6, 0);
+		lv_obj_set_style_radius(row_thumbs[row], SC(6), 0);
 		lv_obj_set_style_clip_corner(row_thumbs[row], true, 0);
 		lv_image_set_src(row_thumbs[row], &row_images[row].dsc);
 
@@ -729,15 +729,15 @@ static void list_unloaded_cb(lv_event_t *e) {
 // too long, instead of letting it wrap over the subtitle.
 static lv_obj_t *make_row(const char *name, const char *detail, const char *cover_url, bool dimmed, int index) {
 	lv_obj_t *row = lv_btn_create(list_container);
-	lv_obj_set_size(row, lv_pct(100), 88);
+	lv_obj_set_size(row, lv_pct(100), SC(88));
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, SC(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
+	lv_obj_set_style_pad_hor(row, SC(16), 0);
 	lv_obj_set_style_pad_ver(row, 0, 0);
-	lv_obj_set_style_pad_column(row, 8, 0);
+	lv_obj_set_style_pad_column(row, SC(8), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -768,7 +768,7 @@ static lv_obj_t *make_row(const char *name, const char *detail, const char *cove
 	lv_obj_set_style_bg_opa(texts, 0, 0);
 	lv_obj_set_style_border_width(texts, 0, 0);
 	lv_obj_set_style_pad_all(texts, 0, 0);
-	lv_obj_set_style_pad_row(texts, 6, 0); // breathing room between title and subtitle
+	lv_obj_set_style_pad_row(texts, SC(6), 0); // breathing room between title and subtitle
 	lv_obj_set_scrollable(texts, false);
 	lv_obj_set_event_bubble(texts, true);
 	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
@@ -801,7 +801,7 @@ static lv_obj_t *make_row(const char *name, const char *detail, const char *cove
 	// The three dots, where the list has something to offer on a single entry.
 	if (row_menu_kind(result_kind) != ROW_MENU_NONE) {
 		lv_obj_t *menu_btn = lv_btn_create(row);
-		lv_obj_set_size(menu_btn, 44, 44);
+		lv_obj_set_size(menu_btn, SC(44), SC(44));
 		lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_border_width(menu_btn, 0, 0);
 		lv_obj_set_style_shadow_width(menu_btn, 0, 0);
@@ -2102,14 +2102,14 @@ static void build_search_page(gui_config_t *cfg) {
 	search_field = lv_textarea_create(search_screen);
 	lv_textarea_set_one_line(search_field, true);
 	lv_textarea_set_placeholder_text(search_field, tr("artist_album_or_track"));
-	lv_obj_set_size(search_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(search_field, cfg->screen_width - 2 * cfg->padding, SC(62));
 	lv_obj_set_scrollbar_mode(search_field, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_align(search_field, LV_ALIGN_TOP_LEFT, cfg->padding, top);
 	lv_obj_add_style(search_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(search_field, 12, 0);
+	lv_obj_set_style_radius(search_field, SC(12), 0);
 	lv_obj_set_style_border_width(search_field, 0, 0);
 	lv_obj_set_style_shadow_width(search_field, 0, 0);
-	lv_obj_set_style_pad_all(search_field, 14, 0);
+	lv_obj_set_style_pad_all(search_field, SC(14), 0);
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
 	lv_obj_add_event_cb(search_field, search_field_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
@@ -2117,8 +2117,8 @@ static void build_search_page(gui_config_t *cfg) {
 	// The x on the right edge of the field, as in local search: clears the
 	// query with one tap. Hidden while the field is empty.
 	search_clear_btn = lv_btn_create(search_screen);
-	lv_obj_set_size(search_clear_btn, 56, 56);
-	lv_obj_align(search_clear_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - 4, top + (62 - 56) / 2);
+	lv_obj_set_size(search_clear_btn, SC(56), SC(56));
+	lv_obj_align(search_clear_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - SC(4), top + (SC(62) - SC(56)) / 2);
 	lv_obj_set_style_bg_opa(search_clear_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_shadow_width(search_clear_btn, 0, 0);
 	lv_obj_set_style_border_width(search_clear_btn, 0, 0);
@@ -2133,16 +2133,16 @@ static void build_search_page(gui_config_t *cfg) {
 	lv_obj_center(search_clear_icon);
 
 	// Room for it, so a long query does not run underneath.
-	lv_obj_set_style_pad_right(search_field, 60, 0);
+	lv_obj_set_style_pad_right(search_field, SC(60), 0);
 
 	static const char *const KINDS[] = {"tracks_2", "albums", "artists"};
 	for (int i = 0; i < 3; i++) {
 		lv_obj_t *pill = lv_btn_create(search_screen);
-		lv_obj_set_size(pill, 140, 52);
+		lv_obj_set_size(pill, SC(140), SC(52));
 		lv_obj_set_style_radius(pill, LV_RADIUS_CIRCLE, 0);
 		lv_obj_set_style_shadow_width(pill, 0, 0);
 		lv_obj_set_style_border_width(pill, 0, 0);
-		lv_obj_align(pill, LV_ALIGN_TOP_LEFT, cfg->padding + i * 150, top + 78);
+		lv_obj_align(pill, LV_ALIGN_TOP_LEFT, cfg->padding + i * 150, top + SC(78));
 		lv_obj_add_event_cb(pill, search_pill_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
 		lv_obj_t *label = lv_label_create(pill);
@@ -2153,7 +2153,7 @@ static void build_search_page(gui_config_t *cfg) {
 	}
 	paint_search_pills();
 
-	search_keyboard = keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok",
+	search_keyboard = keyboard_create(search_screen, cfg->screen_width, SC(316), search_field, NULL, "ok",
 									  search_accept_cb, NULL);
 	switcher_attach_back_gesture(search_screen);
 	theme_register_refresh(paint_search_pills);
@@ -2179,10 +2179,10 @@ static void build_search_page(gui_config_t *cfg) {
 static lv_obj_t *login_hint;
 // The login QR. 200 px on a 480 px screen: large enough for a camera to read
 // it from half a metre, small enough to leave room for the written code below.
-#define LOGIN_QR_SIZE 200
+#define LOGIN_QR_SIZE SC(200)
 // The quiet zone, the white border around it. The standard asks for four
 // modules; here it is a fixed border, which works better at this size.
-#define LOGIN_QR_QUIET 10
+#define LOGIN_QR_QUIET SC(10)
 
 static lv_obj_t *login_qr;
 static lv_obj_t *login_url;
@@ -2385,11 +2385,11 @@ static void build_login_page(gui_config_t *cfg) {
 	// phone in hand.
 	lv_obj_t *box = lv_obj_create(login_screen);
 	lv_obj_set_size(box, cfg->screen_width - 2 * cfg->padding, LV_SIZE_CONTENT);
-	lv_obj_align(box, LV_ALIGN_TOP_MID, 0, top + 20);
+	lv_obj_align(box, LV_ALIGN_TOP_MID, 0, top + SC(20));
 	lv_obj_set_style_bg_opa(box, 0, 0);
 	lv_obj_set_style_border_width(box, 0, 0);
 	lv_obj_set_style_pad_all(box, 0, 0);
-	lv_obj_set_style_pad_row(box, 22, 0);
+	lv_obj_set_style_pad_row(box, SC(22), 0);
 	lv_obj_set_scrollable(box, false);
 	lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -2438,7 +2438,7 @@ static void build_login_page(gui_config_t *cfg) {
 	login_code = lv_label_create(box);
 	lv_label_set_long_mode(login_code, LV_LABEL_LONG_CLIP);
 	lv_obj_set_style_text_font(login_code, &font_ui_36_bold, 0);
-	lv_obj_set_style_text_letter_space(login_code, 5, 0);
+	lv_obj_set_style_text_letter_space(login_code, SC(5), 0);
 	lv_label_set_text(login_code, "");
 
 	login_spin = spinner_create(box, &icon_loader_big);
@@ -2452,8 +2452,8 @@ static void build_login_page(gui_config_t *cfg) {
 	lv_label_set_text(login_message, "");
 
 	login_retry = lv_btn_create(box);
-	lv_obj_set_size(login_retry, LV_SIZE_CONTENT, 56);
-	lv_obj_set_style_pad_hor(login_retry, 22, 0);
+	lv_obj_set_size(login_retry, LV_SIZE_CONTENT, SC(56));
+	lv_obj_set_style_pad_hor(login_retry, SC(22), 0);
 	lv_obj_set_style_radius(login_retry, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(login_retry, 0, 0);
 	lv_obj_set_style_border_width(login_retry, 0, 0);
@@ -2473,7 +2473,7 @@ static void build_login_page(gui_config_t *cfg) {
 	lv_obj_t *note = lv_label_create(login_screen);
 	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(note, cfg->screen_width - 2 * cfg->padding);
-	lv_obj_align(note, LV_ALIGN_BOTTOM_MID, 0, -cfg->padding - 10);
+	lv_obj_align(note, LV_ALIGN_BOTTOM_MID, 0, -cfg->padding - SC(10));
 	lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(note, &font_ui_18, 0);
@@ -2544,12 +2544,12 @@ static void update_corner_buttons(void) {
 // right and stepped leftwards one by one.
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(tidal_screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, SC(56), SC(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (SC(56) + SC(6)), cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);
@@ -2634,11 +2634,11 @@ static void build_settings_page(gui_config_t *cfg) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, SC(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 18, 0);
+	lv_obj_set_style_pad_all(card, SC(20), 0);
+	lv_obj_set_style_pad_row(card, SC(18), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
@@ -2654,7 +2654,7 @@ static void build_settings_page(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(pills, 0, 0);
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 12, 0);
+	lv_obj_set_style_pad_gap(pills, SC(12), 0);
 	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_event_bubble(pills, true);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
@@ -2662,8 +2662,8 @@ static void build_settings_page(gui_config_t *cfg) {
 
 	for (int i = 0; i < 4; i++) {
 		lv_obj_t *btn = lv_btn_create(pills);
-		lv_obj_set_size(btn, LV_SIZE_CONTENT, 56);
-		lv_obj_set_style_pad_hor(btn, 22, 0);
+		lv_obj_set_size(btn, LV_SIZE_CONTENT, SC(56));
+		lv_obj_set_style_pad_hor(btn, SC(22), 0);
 		lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
 		lv_obj_set_style_shadow_width(btn, 0, 0);
 		lv_obj_set_style_border_width(btn, 0, 0);
@@ -2775,11 +2775,11 @@ static void rebuild_home(void) {
 		lv_obj_add_style(note, &theme_style_text, 0); // normal colour: it is an instruction
 		lv_obj_set_style_text_font(note, &font_ui_22, 0);
 		lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
-		lv_obj_set_style_pad_hor(note, 4, 0);
-		lv_obj_set_style_pad_top(note, 14, 0);
+		lv_obj_set_style_pad_hor(note, SC(4), 0);
+		lv_obj_set_style_pad_top(note, SC(14), 0);
 		lv_label_set_text(note, tr("enable_wi_fi_first"));
 		lv_obj_t *row = settingsrow_add(home_container, "wi_fi_settings", NULL, open_wifi_settings_cb, NULL);
-		lv_obj_set_style_margin_top(row, 16, 0);
+		lv_obj_set_style_margin_top(row, SC(16), 0);
 		return;
 	}
 
@@ -2850,7 +2850,7 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(list_empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(list_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
-	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 100);
+	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + SC(100));
 	lv_obj_set_hidden(list_empty, true);
 
 	lv_obj_add_event_cb(list_container, list_scrolled_cb, LV_EVENT_SCROLL, NULL);

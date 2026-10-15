@@ -290,7 +290,74 @@ void theme_apply_slider_knob(lv_obj_t *slider) {
 	bool dark = theme()->dark;
 	lv_obj_set_style_border_color(slider, dark ? lv_color_black() : lv_color_make(120, 120, 120), LV_PART_KNOB);
 	lv_obj_set_style_border_opa(slider, dark ? LV_OPA_10 : LV_OPA_COVER, LV_PART_KNOB);
-	lv_obj_set_style_border_width(slider, dark ? 1 : 2, LV_PART_KNOB);
+	lv_obj_set_style_border_width(slider, dark ? SC(1) : SC(2), LV_PART_KNOB);
+}
+
+// Half the knob's drawn width along the track.
+//
+// LVGL centres a slider's knob on the value and sizes it from the slider's
+// thickness -- the object's height for a horizontal slider, its width for a
+// vertical one (lv_slider.c, draw_knob) -- plus the knob part's padding, which
+// grows it on both sides. So the knob is that half wider than the travel is
+// inset, and at either end of the travel it hangs outside the track.
+int32_t theme_slider_knob_half(const lv_obj_t *slider, bool vertical) {
+	if (!slider) {
+		return 0;
+	}
+	// The thickness comes from the style, not from lv_obj_get_height(): the
+	// object has not been laid out when this is called and its coordinates are
+	// still zero, which would have the knob measured as nothing but its own
+	// padding.
+	int32_t body = vertical ? lv_obj_get_style_width(slider, LV_PART_MAIN)
+							: lv_obj_get_style_height(slider, LV_PART_MAIN);
+	// A percentage or LV_SIZE_CONTENT is not a number of pixels. Every site this
+	// is called from sets an explicit thickness; anything else is left alone
+	// rather than guessed at.
+	if (body <= 0 || body > 1024) {
+		return 0;
+	}
+	int32_t pad = vertical ? lv_obj_get_style_pad_left(slider, LV_PART_KNOB)
+						   : lv_obj_get_style_pad_top(slider, LV_PART_KNOB);
+	int32_t half = (body + 2 * pad) / 2;
+	return half > 0 ? half : 0;
+}
+
+// Inset the knob's travel by that half, so the knob comes to rest on the end of
+// the trough instead of hanging off it -- and off the panel, where the slider
+// runs edge to edge, which is how the progress bar and the brightness troughs
+// are built.
+//
+// The trough and the travel are one and the same area in LVGL: the bar's
+// indicator area, which the fill is drawn from and the knob is centred on. So
+// padding the main part is the wrong lever -- it moves the travel in while the
+// trough's background stays where it was, and the fill then starts a half-knob
+// inside the trough, which the eye catches at once. Shrinking the part itself
+// keeps all three together: the trough, the fill and the travel lose the same
+// half-knob at both ends, the fill starts exactly where the trough does, and the
+// knob -- centred on the travel's end -- stops on the trough's end.
+//
+// transform_width is what does it. LVGL draws the main part's background with
+// it applied (lv_obj_draw.c) and computes the bar's indicator area with it too
+// (lv_bar.c), so the two shrink together. The object's own coordinates are left
+// alone, which keeps the touch target the width it was, and nothing has to be
+// laid out again for this to take effect.
+//
+// Call it once, after the knob's padding is set -- the answer depends on it.
+void theme_inset_slider_knob(lv_obj_t *slider) {
+	int32_t half = theme_slider_knob_half(slider, false);
+	if (half > 0) {
+		lv_obj_set_style_transform_width(slider, -half, LV_PART_MAIN);
+	}
+}
+
+// The same for a vertical slider (the equalizer's bands): the trough and the
+// travel lose the half-knob top and bottom, and the knob's own size comes from
+// the object's width.
+void theme_inset_slider_knob_vertical(lv_obj_t *slider) {
+	int32_t half = theme_slider_knob_half(slider, true);
+	if (half > 0) {
+		lv_obj_set_style_transform_height(slider, -half, LV_PART_MAIN);
+	}
 }
 
 void theme_register_refresh(theme_refresh_cb_t cb) {

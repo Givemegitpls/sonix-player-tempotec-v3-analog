@@ -14,7 +14,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/library/music.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/main_menu.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
@@ -116,7 +116,7 @@ void libraryscan_begin(void) {
 // Which folders: the card's top-level folders, ticked, before the scan starts
 // ---------------------------------------------------------------------------
 
-#define PICK_CHROME_H 250 // the card's title, note, buttons and padding
+#define PICK_CHROME_H SC(250) // the card's title, note, buttons and padding
 // Rows are made this many at a time, more as the list nears its end.
 #define PICK_BATCH 30
 
@@ -274,7 +274,7 @@ static void pick_scan_cb(lv_event_t *e) {
 
 static lv_obj_t *pick_button(lv_obj_t *parent, const char *text, bool accent, lv_event_cb_t cb) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_height(btn, 56);
+	lv_obj_set_height(btn, SC(56));
 	lv_obj_set_flex_grow(btn, 1);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
@@ -309,11 +309,11 @@ static void pick_build(void) {
 	lv_obj_set_size(card, cfg->screen_width - 2 * cfg->padding, LV_SIZE_CONTENT);
 	lv_obj_set_style_max_height(card, cfg->screen_height - cfg->top_bar_height - 2 * cfg->padding, 0);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 16, 0);
+	lv_obj_set_style_radius(card, SC(16), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 12, 0);
+	lv_obj_set_style_pad_all(card, SC(20), 0);
+	lv_obj_set_style_pad_row(card, SC(12), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_clickable(card, true);
 	lv_obj_set_event_bubble(card, false);
@@ -342,7 +342,7 @@ static void pick_build(void) {
 	// What the panel leaves once the title, the note and the buttons are in.
 	lv_obj_set_style_max_height(pick_list, cfg->screen_height - cfg->top_bar_height - 2 * cfg->padding - PICK_CHROME_H,
 								0);
-	lv_obj_set_style_pad_row(pick_list, 6, 0);
+	lv_obj_set_style_pad_row(pick_list, SC(6), 0);
 	lv_obj_set_flex_flow(pick_list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_scroll_dir(pick_list, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(pick_list, LV_SCROLLBAR_MODE_AUTO);
@@ -351,7 +351,7 @@ static void pick_build(void) {
 	lv_obj_t *buttons = lv_obj_create(card);
 	lv_obj_remove_style_all(buttons);
 	lv_obj_set_size(buttons, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_column(buttons, 12, 0);
+	lv_obj_set_style_pad_column(buttons, SC(12), 0);
 	lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
 	pick_button(buttons, "cancel", false, pick_cancel_cb);
 	pick_scan_btn = pick_button(buttons, "scan", true, pick_scan_cb);
@@ -362,13 +362,13 @@ static void pick_append(int n) {
 	int last = pick_built + n < pick_count ? pick_built + n : pick_count;
 	for (int i = pick_built; i < last; i++) {
 		lv_obj_t *row = lv_btn_create(pick_list);
-		lv_obj_set_size(row, lv_pct(100), 60);
+		lv_obj_set_size(row, lv_pct(100), SC(60));
 		lv_obj_set_style_bg_color(row, theme()->surface_pressed, 0);
-		lv_obj_set_style_radius(row, 10, 0);
+		lv_obj_set_style_radius(row, SC(10), 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
 		lv_obj_set_style_border_width(row, 0, 0);
-		lv_obj_set_style_pad_hor(row, 16, 0);
-		lv_obj_set_style_pad_column(row, 10, 0);
+		lv_obj_set_style_pad_hor(row, SC(16), 0);
+		lv_obj_set_style_pad_column(row, SC(10), 0);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 		lv_obj_set_scroll_on_focus(row, true);
@@ -428,7 +428,7 @@ void libraryscan_choose_folders(void) {
 static lv_obj_t *make_button(lv_obj_t *parent, const char *text, lv_color_t colour, lv_event_cb_t cb,
 							 gui_config_t *cfg) {
 	lv_obj_t *button = lv_btn_create(parent);
-	lv_obj_set_size(button, 240, 68);
+	lv_obj_set_size(button, SC(240), SC(68));
 	lv_obj_align(button, LV_ALIGN_BOTTOM_MID, 0, -(cfg->padding * 2));
 	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_bg_color(button, colour, 0);
@@ -573,7 +573,7 @@ void libraryscan_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(container, 0, 0);
 	lv_obj_set_style_radius(container, 0, 0);
 	lv_obj_set_style_pad_all(container, cfg->padding, 0);
-	lv_obj_set_style_pad_gap(container, 10, 0);
+	lv_obj_set_style_pad_gap(container, SC(10), 0);
 	lv_obj_set_scrollable(container, false);
 	lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -582,7 +582,7 @@ void libraryscan_init(gui_config_t *cfg) {
 	lv_image_set_src(note, &icon_music_note);
 	lv_obj_add_style(note, &theme_style_icon, 0);
 	lv_obj_set_style_image_recolor_opa(note, LV_OPA_COVER, 0);
-	lv_obj_set_style_pad_bottom(note, 16, 0);
+	lv_obj_set_style_pad_bottom(note, SC(16), 0);
 
 	// The count is the whole point of the page, so it gets the accent colour
 	// and the largest type on it.

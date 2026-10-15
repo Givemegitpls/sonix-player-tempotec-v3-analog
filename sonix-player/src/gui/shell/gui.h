@@ -6,6 +6,8 @@
 
 #include "lvgl/lvgl.h"
 
+#include "src/gui/shell/scale.h"
+
 typedef struct {
 	const uint32_t screen_width;
 	const uint32_t screen_height;

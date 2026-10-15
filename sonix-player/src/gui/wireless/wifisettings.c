@@ -7,7 +7,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
@@ -25,8 +25,8 @@ lv_obj_t *wifisettings_screen;
 // itself happens on the wifi worker; this only redraws.
 #define WIFI_PAGE_POLL_MS 500
 
-#define WIFI_ROW_H 82
-#define CORNER_BTN_SIZE 56
+#define WIFI_ROW_H SC(82)
+#define CORNER_BTN_SIZE SC(56)
 
 static lv_obj_t *wifi_switch;
 static lv_obj_t *status_label;
@@ -363,10 +363,10 @@ static void add_row(lv_obj_t *parent, const wifi_network_t *net, bool with_menu)
 	lv_obj_set_height(row, WIFI_ROW_H);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, SC(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 18, 0);
+	lv_obj_set_style_pad_hor(row, SC(18), 0);
 	// The button default carries vertical padding of its own, which cuts the
 	// second line of text off along the bottom edge of the row.
 	lv_obj_set_style_pad_ver(row, 0, 0);
@@ -374,7 +374,7 @@ static void add_row(lv_obj_t *parent, const wifi_network_t *net, bool with_menu)
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(row, 14, 0);
+	lv_obj_set_style_pad_column(row, SC(14), 0);
 
 	uintptr_t flags = (net->current ? ROW_CURRENT : 0u) | (net->saved ? ROW_SAVED : 0u) |
 					  (net->secured ? ROW_SECURED : 0u);
@@ -436,15 +436,15 @@ static void add_row(lv_obj_t *parent, const wifi_network_t *net, bool with_menu)
 		}
 		// Measured from the middle rather than the top: the pair then sits
 		// centred in the row whatever padding the button style brings along.
-		lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, -15);
-		lv_obj_align(sub, LV_ALIGN_LEFT_MID, 0, 16);
+		lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, SC(-15));
+		lv_obj_align(sub, LV_ALIGN_LEFT_MID, 0, SC(16));
 	} else {
 		lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, 0);
 	}
 
 	if (with_menu) {
 		lv_obj_t *menu_btn = lv_btn_create(row);
-		lv_obj_set_size(menu_btn, 44, 56);
+		lv_obj_set_size(menu_btn, SC(44), SC(56));
 		lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_border_width(menu_btn, 0, 0);
 		lv_obj_set_style_shadow_width(menu_btn, 0, 0);
@@ -505,8 +505,8 @@ static void rebuild_list(void) {
 		lv_obj_remove_style_all(row);
 		lv_obj_set_width(row, lv_pct(100));
 		lv_obj_set_height(row, LV_SIZE_CONTENT);
-		lv_obj_set_style_pad_top(row, 10, 0);
-		lv_obj_set_style_pad_column(row, 10, 0);
+		lv_obj_set_style_pad_top(row, SC(10), 0);
+		lv_obj_set_style_pad_column(row, SC(10), 0);
 		lv_obj_set_scrollable(row, false);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -534,7 +534,7 @@ static void rebuild_list(void) {
 		lv_label_set_text(none, tr("wifi_no_networks_found"));
 		lv_obj_add_style(none, &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(none, &font_ui_22, 0);
-		lv_obj_set_style_pad_top(none, 10, 0);
+		lv_obj_set_style_pad_top(none, SC(10), 0);
 	}
 }
 
@@ -741,14 +741,14 @@ static void build_password_page(gui_config_t *cfg) {
 	password_field = lv_textarea_create(password_screen);
 	lv_textarea_set_one_line(password_field, true);
 	lv_textarea_set_placeholder_text(password_field, tr("password"));
-	lv_obj_set_size(password_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(password_field, cfg->screen_width - 2 * cfg->padding, SC(62));
 	lv_obj_set_scrollbar_mode(password_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(password_field, LV_ALIGN_TOP_LEFT, cfg->padding, top + 36);
+	lv_obj_align(password_field, LV_ALIGN_TOP_LEFT, cfg->padding, top + SC(36));
 	lv_obj_add_style(password_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(password_field, 12, 0);
+	lv_obj_set_style_radius(password_field, SC(12), 0);
 	lv_obj_set_style_border_width(password_field, 0, 0);
 	lv_obj_set_style_shadow_width(password_field, 0, 0);
-	lv_obj_set_style_pad_all(password_field, 14, 0);
+	lv_obj_set_style_pad_all(password_field, SC(14), 0);
 	lv_obj_set_style_text_font(password_field, &font_ui_24, 0);
 	keyboard_style_caret(password_field);
 
@@ -761,13 +761,13 @@ static void build_password_page(gui_config_t *cfg) {
 	keyboard_style_password(password_field, PASSWORD_SHOW_MS);
 
 	// Room for the eye, otherwise a long password runs underneath it.
-	lv_obj_set_style_pad_right(password_field, 60, 0);
+	lv_obj_set_style_pad_right(password_field, SC(60), 0);
 
 	// The eye, over the field's right edge: same geometry and weight as the x
 	// that clears the search box.
 	password_eye_btn = lv_btn_create(password_screen);
-	lv_obj_set_size(password_eye_btn, 56, 56);
-	lv_obj_align(password_eye_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - 4, top + 36 + (62 - 56) / 2);
+	lv_obj_set_size(password_eye_btn, SC(56), SC(56));
+	lv_obj_align(password_eye_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - SC(4), top + SC(36) + (SC(62) - SC(56)) / 2);
 	lv_obj_set_style_bg_opa(password_eye_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_shadow_width(password_eye_btn, 0, 0);
 	lv_obj_set_style_border_width(password_eye_btn, 0, 0);
@@ -813,8 +813,8 @@ static lv_obj_t *make_heading(lv_obj_t *parent, const char *tag) {
 	lv_obj_set_width(heading, lv_pct(100));
 	lv_obj_add_style(heading, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(heading, &font_ui_22, 0);
-	lv_obj_set_style_pad_top(heading, 6, 0);
-	lv_obj_set_style_pad_hor(heading, 4, 0);
+	lv_obj_set_style_pad_top(heading, SC(6), 0);
+	lv_obj_set_style_pad_hor(heading, SC(4), 0);
 	return heading;
 }
 
@@ -825,8 +825,8 @@ static lv_obj_t *make_rows(lv_obj_t *parent) {
 	lv_obj_set_style_bg_opa(box, 0, 0);
 	lv_obj_set_style_border_width(box, 0, 0);
 	lv_obj_set_style_pad_all(box, 0, 0);
-	lv_obj_set_style_pad_bottom(box, 12, 0);
-	lv_obj_set_style_pad_gap(box, 8, 0);
+	lv_obj_set_style_pad_bottom(box, SC(12), 0);
+	lv_obj_set_style_pad_gap(box, SC(8), 0);
 	lv_obj_set_scrollable(box, false);
 	lv_obj_set_event_bubble(box, true);
 	lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
@@ -845,7 +845,7 @@ void wifisettings_init(gui_config_t *cfg) {
 	lv_obj_set_width(status_label, lv_pct(100));
 	lv_obj_add_style(status_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(status_label, &font_ui_20, 0);
-	lv_obj_set_style_pad_hor(status_label, 4, 0);
+	lv_obj_set_style_pad_hor(status_label, SC(4), 0);
 	lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
 
 	// Two sections, each a heading over a box of rows: the network being used,

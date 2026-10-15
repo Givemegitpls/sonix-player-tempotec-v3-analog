@@ -6,7 +6,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/shell/confirm.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/library/libraryscan.h"
 #include "src/gui/nowplaying/player.h"
@@ -844,12 +844,12 @@ static void dsd_gain_pick_cb(lv_event_t *e) {
 static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph,
 							   lv_event_cb_t cb, void *user) {
 	lv_obj_t *button = lv_btn_create(screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, SC(56), SC(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (SC(56) + SC(6)), cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, user);
 
 	lv_obj_t *icon = lv_image_create(button);
@@ -924,13 +924,13 @@ static void build_mseb_page(gui_config_t *cfg) {
 	for (int i = 0; i < MSEB_BANDS; i++) {
 		lv_obj_t *card = lv_obj_create(container);
 		lv_obj_set_width(card, lv_pct(100));
-		lv_obj_set_height(card, 104);
+		lv_obj_set_height(card, SC(104));
 		lv_obj_add_style(card, &theme_style_card, 0);
-		lv_obj_set_style_radius(card, 12, 0);
+		lv_obj_set_style_radius(card, SC(12), 0);
 		lv_obj_set_style_border_width(card, 0, 0);
 		lv_obj_set_style_shadow_width(card, 0, 0);
-		lv_obj_set_style_pad_hor(card, 20, 0);
-		lv_obj_set_style_pad_ver(card, 12, 0);
+		lv_obj_set_style_pad_hor(card, SC(20), 0);
+		lv_obj_set_style_pad_ver(card, SC(12), 0);
 		lv_obj_set_scrollable(card, false);
 		lv_obj_set_event_bubble(card, true);
 
@@ -948,8 +948,8 @@ static void build_mseb_page(gui_config_t *cfg) {
 
 		lv_obj_t *slider = lv_slider_create(card);
 		lv_obj_set_width(slider, lv_pct(100));
-		lv_obj_set_height(slider, 10);
-		lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -10);
+		lv_obj_set_height(slider, SC(10));
+		lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, SC(-10));
 		lv_slider_set_range(slider, -mseb_get_range(), mseb_get_range());
 		// MSEB sliders are bipolar: zero sits in the middle and the coloured
 		// bar grows from there, forwards for positives and backwards for
@@ -966,8 +966,9 @@ static void build_mseb_page(gui_config_t *cfg) {
 		lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 		lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
 		theme_apply_slider_knob(slider);
-		lv_obj_set_style_pad_all(slider, 7, LV_PART_KNOB);
-		lv_obj_set_style_shadow_width(slider, 6, LV_PART_KNOB);
+		lv_obj_set_style_pad_all(slider, SC(7), LV_PART_KNOB);
+		theme_inset_slider_knob(slider); // the knob stops at the trough's end
+		lv_obj_set_style_shadow_width(slider, SC(6), LV_PART_KNOB);
 		lv_obj_set_style_shadow_opa(slider, LV_OPA_30, LV_PART_KNOB);
 		lv_obj_set_style_shadow_color(slider, lv_color_black(), LV_PART_KNOB);
 		// Drag the knob, do not tap the track. A plain LVGL slider jumps its
@@ -978,7 +979,7 @@ static void build_mseb_page(gui_config_t *cfg) {
 		lv_obj_set_adv_hittest(slider, true);
 		// The knob is 24 px across, and with ADV_HITTEST the extended click area
 		// belongs to the knob alone rather than padding the whole track.
-		lv_obj_set_ext_click_area(slider, 18);
+		lv_obj_set_ext_click_area(slider, SC(18));
 		lv_obj_add_event_cb(slider, mseb_slider_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
 		lv_obj_add_event_cb(slider, mseb_released_cb, LV_EVENT_RELEASED, NULL);
 
@@ -1108,12 +1109,12 @@ static void build_eq_page(gui_config_t *cfg) {
 	// The band card: ten vertical sliders side by side, frequency underneath.
 	lv_obj_t *card = lv_obj_create(container);
 	lv_obj_set_width(card, lv_pct(100));
-	lv_obj_set_height(card, 360);
+	lv_obj_set_height(card, SC(360));
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, SC(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 14, 0);
+	lv_obj_set_style_pad_all(card, SC(14), 0);
 	lv_obj_set_style_pad_gap(card, 0, 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
@@ -1121,17 +1122,17 @@ static void build_eq_page(gui_config_t *cfg) {
 
 	for (int i = 0; i < EQ_BANDS; i++) {
 		lv_obj_t *column = lv_obj_create(card);
-		lv_obj_set_size(column, 38, lv_pct(100));
+		lv_obj_set_size(column, SC(38), lv_pct(100));
 		lv_obj_set_style_bg_opa(column, 0, 0);
 		lv_obj_set_style_border_width(column, 0, 0);
 		lv_obj_set_style_pad_all(column, 0, 0);
-		lv_obj_set_style_pad_gap(column, 8, 0);
+		lv_obj_set_style_pad_gap(column, SC(8), 0);
 		lv_obj_set_scrollable(column, false);
 		lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_flex_align(column, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
 		lv_obj_t *slider = lv_slider_create(column);
-		lv_obj_set_size(slider, 6, lv_pct(80));
+		lv_obj_set_size(slider, SC(6), lv_pct(80));
 		lv_slider_set_range(slider, EQ_GAIN_MIN_DB, EQ_GAIN_MAX_DB);
 		lv_slider_set_value(slider, eq_get_band(i), LV_ANIM_OFF);
 
@@ -1143,12 +1144,13 @@ static void build_eq_page(gui_config_t *cfg) {
 		lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 		lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
 		theme_apply_slider_knob(slider);
-		lv_obj_set_style_pad_all(slider, 7, LV_PART_KNOB);
-		lv_obj_set_style_shadow_width(slider, 6, LV_PART_KNOB);
+		lv_obj_set_style_pad_all(slider, SC(7), LV_PART_KNOB);
+		theme_inset_slider_knob_vertical(slider); // the knob stops at the trough's end
+		lv_obj_set_style_shadow_width(slider, SC(6), LV_PART_KNOB);
 		lv_obj_set_style_shadow_opa(slider, LV_OPA_30, LV_PART_KNOB);
 		lv_obj_set_style_shadow_color(slider, lv_color_black(), LV_PART_KNOB);
 		// A 6 px trough is no touch target; each column's full width is.
-		lv_obj_set_ext_click_area(slider, 16);
+		lv_obj_set_ext_click_area(slider, SC(16));
 		lv_obj_add_event_cb(slider, eq_slider_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
 
 		eq_sliders[i] = slider;

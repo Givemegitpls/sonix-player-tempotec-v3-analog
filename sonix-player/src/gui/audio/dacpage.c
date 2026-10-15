@@ -4,7 +4,7 @@
 
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
@@ -203,12 +203,12 @@ bool dacpage_is_holding(void) {
 // Same shape as the corner buttons on the music page.
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_obj_t **glyph_out) {
 	lv_obj_t *button = lv_btn_create(dacpage_screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, SC(56), SC(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (SC(56) + SC(6)), cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);
@@ -243,7 +243,7 @@ void dacpage_init(gui_config_t *cfg) {
 	// taking no space, so it would overlap the row above and steal its presses.
 	big_icon = lv_image_create(container);
 	lv_image_set_src(big_icon, &icon_dac_page);
-	lv_obj_set_style_margin_top(big_icon, 40, 0);
+	lv_obj_set_style_margin_top(big_icon, SC(40), 0);
 
 	format_label = lv_label_create(container);
 	lv_obj_set_width(format_label, lv_pct(100));
@@ -253,7 +253,7 @@ void dacpage_init(gui_config_t *cfg) {
 	lv_obj_add_style(format_label, &theme_style_text, 0);
 	lv_obj_set_style_text_align(format_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_set_style_text_font(format_label, &font_ui_24_bold, 0);
-	lv_obj_set_style_margin_top(format_label, 20, 0);
+	lv_obj_set_style_margin_top(format_label, SC(20), 0);
 	lv_label_set_text(format_label, "");
 
 	status_label = lv_label_create(container);
@@ -262,7 +262,7 @@ void dacpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(status_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(status_label, &font_ui_22, 0);
-	lv_obj_set_style_margin_top(status_label, 10, 0);
+	lv_obj_set_style_margin_top(status_label, SC(10), 0);
 	lv_label_set_text(status_label, "");
 	status_normal_color = lv_obj_get_style_text_color(status_label, LV_PART_MAIN);
 

@@ -3,7 +3,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/shell/gridpage.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/streaming/podcastpage.h"
 #include "src/gui/streaming/qobuzpage.h"
 #include "src/gui/streaming/radiopage.h"

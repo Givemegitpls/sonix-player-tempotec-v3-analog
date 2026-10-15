@@ -3,7 +3,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/quickpanel.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
@@ -28,18 +28,18 @@ lv_obj_t *ccsettings_screen;
 // or bottom edge.
 // ---------------------------------------------------------------------------
 
-#define ROW_HEIGHT 72
-#define ROW_GAP 8
+#define ROW_HEIGHT SC(72)
+#define ROW_GAP SC(8)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
-#define ROW_PAD 20
-#define ICON_BOX 56
-#define HEADING_H 40
+#define ROW_RADIUS SC(12)
+#define ROW_PAD SC(20)
+#define ICON_BOX SC(56)
+#define HEADING_H SC(40)
 
 // The grip is only as large as its glyph and a margin round it; the room kept
 // for it at the end of the row is wider.
-#define GRIP_SIZE 48
-#define GRIP_SPACE 64
+#define GRIP_SIZE SC(48)
+#define GRIP_SPACE SC(64)
 
 // Either list is a drop target even when it is empty, so neither is ever
 // shorter than one row.
@@ -50,7 +50,7 @@ lv_obj_t *ccsettings_screen;
 
 // How close to the top or bottom of the page a held row has to be before the
 // page moves under it, and how far it moves each time the event comes round.
-#define EDGE_PX 70
+#define EDGE_PX SC(70)
 #define EDGE_STEP 18
 
 typedef struct {
@@ -117,10 +117,10 @@ static void refresh(void) {
 	}
 
 	lv_label_set_text_fmt(in_use_count, "%d/%d", in_n, QP_SLOT_COUNT);
-	lv_obj_set_y(others_heading, others_heading_y() + 10);
+	lv_obj_set_y(others_heading, others_heading_y() + SC(10));
 
 	int rows_below = out_n < LIST_MIN_ROWS ? LIST_MIN_ROWS : out_n;
-	lv_obj_set_height(body, others_top() + rows_below * ROW_PITCH + 8);
+	lv_obj_set_height(body, others_top() + rows_below * ROW_PITCH + SC(8));
 }
 
 static void refresh_async(void *unused) {
@@ -162,14 +162,14 @@ static target_t target_at(lv_point_t point) {
 // scrolls with the rows.
 static void drop_line_show(target_t t) {
 	int top = t.in_use ? in_use_top() : others_top();
-	lv_obj_set_pos(drop_line, 0, top + t.at * ROW_PITCH - ROW_GAP / 2 - 2);
+	lv_obj_set_pos(drop_line, 0, top + t.at * ROW_PITCH - ROW_GAP / 2 - SC(2));
 	lv_obj_set_hidden(drop_line, false);
 	lv_obj_move_foreground(drop_line);
 }
 
 static void carried_look(int index, bool on) {
 	lv_obj_t *row = entries[index].row;
-	lv_obj_set_style_border_width(row, on ? 2 : 0, 0);
+	lv_obj_set_style_border_width(row, on ? SC(2) : 0, 0);
 	if (on) {
 		lv_obj_set_style_border_color(row, theme()->accent, 0);
 		lv_obj_set_style_border_opa(row, LV_OPA_COVER, 0);
@@ -288,7 +288,7 @@ static lv_obj_t *make_heading(lv_obj_t *parent, const char *tag, int y) {
 	lv_label_set_text(label, tr(tag));
 	lv_obj_add_style(label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-	lv_obj_set_pos(label, 4, y + 10);
+	lv_obj_set_pos(label, SC(4), y + SC(10));
 	return label;
 }
 
@@ -320,8 +320,8 @@ static void make_row(entry_t *entry, int width) {
 	lv_obj_add_style(entry->name, &theme_style_text, 0);
 	lv_obj_set_style_text_font(entry->name, &font_ui_24, 0);
 	lv_label_set_long_mode(entry->name, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(entry->name, width - ROW_PAD - ICON_BOX - 16 - GRIP_SPACE);
-	lv_obj_align(entry->name, LV_ALIGN_LEFT_MID, ICON_BOX + 16, 0);
+	lv_obj_set_width(entry->name, width - ROW_PAD - ICON_BOX - SC(16) - GRIP_SPACE);
+	lv_obj_align(entry->name, LV_ALIGN_LEFT_MID, ICON_BOX + SC(16), 0);
 
 	// The handle, and the only part of the row that can be taken hold of. Not
 	// a button: a tap on it does nothing. A drag on it must not find the page
@@ -373,21 +373,21 @@ void ccsettings_init(gui_config_t *cfg) {
 	in_use_count = lv_label_create(body);
 	lv_obj_add_style(in_use_count, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(in_use_count, &font_ui_22, 0);
-	lv_obj_align(in_use_count, LV_ALIGN_TOP_RIGHT, -4, 10);
+	lv_obj_align(in_use_count, LV_ALIGN_TOP_RIGHT, SC(-4), SC(10));
 
 	for (int i = 0; i < QP_BTN_COUNT; i++) {
 		make_row(&entries[i], width);
 	}
 
 	drop_line = lv_obj_create(body);
-	lv_obj_set_size(drop_line, width, 4);
+	lv_obj_set_size(drop_line, width, SC(4));
 	lv_obj_set_scrollable(drop_line, false);
 	lv_obj_set_clickable(drop_line, false);
 	lv_obj_set_style_border_width(drop_line, 0, 0);
 	lv_obj_set_style_shadow_width(drop_line, 0, 0);
 	lv_obj_set_style_pad_all(drop_line, 0, 0);
 	lv_obj_add_style(drop_line, &theme_style_accent_bg, 0);
-	lv_obj_set_style_radius(drop_line, 2, 0);
+	lv_obj_set_style_radius(drop_line, SC(2), 0);
 	lv_obj_set_hidden(drop_line, true);
 
 	lv_obj_add_event_cb(ccsettings_screen, loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);

@@ -8,7 +8,7 @@
 #include "src/gui/library/filespage.h"
 #include "src/gui/gearboy/gearboypage.h"
 #include "src/gui/shell/gridpage.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/settingsrow.h"
 
 lv_obj_t *morepage_screen;

@@ -7,7 +7,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/scrolltext.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
@@ -244,8 +244,8 @@ void airplay_page_init(gui_config_t *cfg) {
 	lv_image_set_src(glyph, &icon_airplay_page);
 	lv_obj_add_style(glyph, &theme_style_icon, 0);
 	lv_obj_set_style_image_opa(glyph, LV_OPA_40, 0);
-	lv_obj_set_style_margin_top(glyph, 40, 0);
-	lv_obj_set_style_margin_bottom(glyph, 28, 0);
+	lv_obj_set_style_margin_top(glyph, SC(40), 0);
+	lv_obj_set_style_margin_bottom(glyph, SC(28), 0);
 	lv_obj_set_style_align(glyph, LV_ALIGN_CENTER, 0);
 
 	title_label = lv_label_create(container);
@@ -260,7 +260,7 @@ void airplay_page_init(gui_config_t *cfg) {
 	lv_obj_add_style(artist_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(artist_label, &font_ui_22, 0);
 	lv_obj_set_style_text_align(artist_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_pad_top(artist_label, 6, 0);
+	lv_obj_set_style_pad_top(artist_label, SC(6), 0);
 	scrolltext_apply(artist_label);
 
 	album_label = lv_label_create(container);
@@ -276,13 +276,13 @@ void airplay_page_init(gui_config_t *cfg) {
 	lv_obj_add_style(status_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(status_label, &font_ui_20, 0);
 	lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_pad_hor(status_label, 4, 0);
-	lv_obj_set_style_pad_top(status_label, 14, 0);
+	lv_obj_set_style_pad_hor(status_label, SC(4), 0);
+	lv_obj_set_style_pad_top(status_label, SC(14), 0);
 
 	// The same row as the Wi-Fi transfer page: the notice says what is missing,
 	// the Wi-Fi settings row leads to where it gets fixed.
 	wifi_row = settingsrow_add(container, "wi_fi_settings", NULL, wifi_row_cb, NULL);
-	lv_obj_set_style_margin_top(wifi_row, 16, 0);
+	lv_obj_set_style_margin_top(wifi_row, SC(16), 0);
 	hide(wifi_row);
 
 	poll_timer = lv_timer_create(poll_cb, AP_POLL_MS, NULL);

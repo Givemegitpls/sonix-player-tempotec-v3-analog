@@ -54,6 +54,10 @@ void topbar_set_battery_percent(bool shown);
 
 // Where the clock sits in the bar, or that it is not shown at all (config
 // "screen"/"clock_pos").
+//
+// These are a small enumeration, not distances, and must not go through SC():
+// SC(2) on the native panel is 1, which is TOPBAR_CLOCK_CENTER, and the clock
+// would then be parented to the battery group for a setting that says centred.
 #define TOPBAR_CLOCK_LEFT 0
 #define TOPBAR_CLOCK_CENTER 1
 #define TOPBAR_CLOCK_RIGHT 2

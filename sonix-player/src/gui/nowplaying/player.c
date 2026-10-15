@@ -16,7 +16,7 @@
 #include "src/gui/library/medialist.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/shell/quickpanel.h"
 #include "src/gui/shell/scrolltext.h"
@@ -118,7 +118,7 @@ static void smooth_sync(void);
 // take a tap. Upwards and downwards the 84 px row still clips it; sideways the
 // previous and next buttons start about 50 px further in, so 20 reaches
 // neither.
-#define CORNER_BTN_EXT_CLICK 20
+#define CORNER_BTN_EXT_CLICK SC(20)
 
 // How often the progress display is carried forward between polls.
 //
@@ -143,22 +143,22 @@ static int polls_since_stop = POLLS_FAST_AFTER_STOP;
 // Height the controls block needs for its two lines of text, the bar, the
 // clocks and the buttons. Only used as a floor on screens too short to fit a
 // full-width square cover on top of it.
-#define PLAYER_MENU_MIN_HEIGHT 210
+#define PLAYER_MENU_MIN_HEIGHT SC(210)
 
 // The controls block as the R3 Pro II has it, 720 - 480. A taller panel (the
 // R1's 800) spreads what it has over the rows rather than leaving it empty
 // above and below them: a fifth to each end and a fifth to each of the three
 // gaps between the four rows.
-#define PLAYER_MENU_REF_HEIGHT 240
-#define PLAYER_MENU_PAD_VER 10
-#define PLAYER_MENU_GAP 12
+#define PLAYER_MENU_REF_HEIGHT SC(240)
+#define PLAYER_MENU_PAD_VER SC(10)
+#define PLAYER_MENU_GAP SC(12)
 
 // Studio keeps only the bar, the clocks and the transport in the controls
 // block, pushed to the bottom, with the gaps between them the standard
 // arrangement has; the panel with the sleeve takes the rest of the screen
 // above them. This is their height at PLAYER_MENU_GAP; a taller panel adds
 // what its wider gaps take.
-#define STUDIO_CONTROLS_H 172
+#define STUDIO_CONTROLS_H SC(172)
 
 // Album art: an image on top of a placeholder panel. The panel is always
 // there, so the layout doesn't jump between a track that has a cover and one
@@ -183,7 +183,7 @@ static lv_obj_t *below_slider_obj; // the two clocks under the bar
 // How far the four source marks keep from the corner of the artwork they
 // share. One number, because they replace each other in that corner and a
 // difference between them would read as the mark jumping.
-#define BADGE_INSET 14
+#define BADGE_INSET SC(14)
 
 static lv_obj_t *live_badge;	   // live indicator, top right over the artwork
 static lv_obj_t *qobuz_badge;	   // the Qobuz mark, in the same corner
@@ -235,26 +235,26 @@ static int cover_box_w, cover_box_h;   // the artwork spans the full screen widt
 // smaller circle of the accent colour. The ring is a wide white border over an
 // accent-coloured body rather than a second object, so it costs nothing and
 // follows the knob on its own.
-#define PROGRESS_TRACK_HEIGHT 10 // as thick as every other slider
-#define PROGRESS_KNOB_GROW 9	 // how far the knob grows past the track
-#define PROGRESS_KNOB_RING 5
+#define PROGRESS_TRACK_HEIGHT SC(10) // as thick as every other slider
+#define PROGRESS_KNOB_GROW SC(9)	 // how far the knob grows past the track
+#define PROGRESS_KNOB_RING SC(5)
 
 // How the shape of the track is drawn, and how much room it gets. The bars are
 // wide and well apart with rounded ends rather than a comb of hairlines: at
 // this size a hairline is one pixel of a colour that is half background, and
 // the whole thing reads as noise.
-#define WAVE_HEIGHT 64
-#define WAVE_BAR_GAP 3
-#define WAVE_MIN_BAR 3	  // a silent column is still a mark, not a hole
+#define WAVE_HEIGHT SC(64)
+#define WAVE_BAR_GAP SC(3)
+#define WAVE_MIN_BAR SC(3)	  // a silent column is still a mark, not a hole
 #define WAVE_PAST_OPA 255 // the part already played
 #define WAVE_TODO_OPA 80  // and the part still to come
 
 // How far the pills and the disc sit in from the corner of the sleeve, and how
 // big the disc is.
-#define ALT_PAD 16
-#define ALT_FAV_SIZE 64
-#define ALT_PILL_PAD_H 18 // what a pill keeps to the left and right of its text
-#define ALT_PILL_PAD_V 8
+#define ALT_PAD SC(16)
+#define ALT_FAV_SIZE SC(64)
+#define ALT_PILL_PAD_H SC(18) // what a pill keeps to the left and right of its text
+#define ALT_PILL_PAD_V SC(8)
 
 // What the sleeve's colour becomes once it has to be painted rather than
 // thrown.
@@ -1215,13 +1215,13 @@ static void slider_over_waveform(bool over) {
 // when.
 // ---------------------------------------------------------------------------
 
-#define STUDIO_MARGIN 14	  // what the sleeve keeps to the side edges
-#define STUDIO_HEAD_H 78	  // the title, the artist and the ellipsis
-#define STUDIO_COVER_GAP 24	  // between the head and the top of the sleeve
-#define STUDIO_BADGE_GAP 6	  // between the head and the source mark under the ellipsis
-#define STUDIO_QUALITY_GAP 10 // between the sleeve and the line under it
-#define STUDIO_QUALITY_H 30
-#define STUDIO_BOTTOM 10 // under that line, before the controls begin
+#define STUDIO_MARGIN SC(14)	  // what the sleeve keeps to the side edges
+#define STUDIO_HEAD_H SC(78)	  // the title, the artist and the ellipsis
+#define STUDIO_COVER_GAP SC(24)	  // between the head and the top of the sleeve
+#define STUDIO_BADGE_GAP SC(6)	  // between the head and the source mark under the ellipsis
+#define STUDIO_QUALITY_GAP SC(10) // between the sleeve and the line under it
+#define STUDIO_QUALITY_H SC(30)
+#define STUDIO_BOTTOM SC(10) // under that line, before the controls begin
 #define STUDIO_COVER_MAX_PCT 83
 
 static lv_obj_t *studio_bg;		  // the blurred sleeve, the size of the screen
@@ -1235,8 +1235,8 @@ static lv_obj_t *studio_quality;	  // the icon and the format line under the sle
 static lv_obj_t *studio_quality_icon;
 static bool studio_up;
 static int studio_box_w, studio_box_h; // the panel this arrangement is laid out on
-static int menu_pad_ver = PLAYER_MENU_PAD_VER; // the controls block's spacing, see PLAYER_MENU_REF_HEIGHT
-static int menu_gap = PLAYER_MENU_GAP;
+static int menu_pad_ver; // the controls block's spacing, see PLAYER_MENU_REF_HEIGHT; set in player_init
+static int menu_gap;
 static int studio_cover_size;
 
 // ---------------------------------------------------------------------------
@@ -1259,8 +1259,8 @@ static int studio_cover_size;
 // edges the way a scrolling title does at its ends.
 // ---------------------------------------------------------------------------
 
-#define LYRICS_FADE_PX 56
-#define LYRICS_LINE_GAP 16
+#define LYRICS_FADE_PX SC(56)
+#define LYRICS_LINE_GAP SC(16)
 #define LYRICS_DIM_OPA LV_OPA_40
 #define LYRICS_USER_HOLD_MS 4000
 #define LYRICS_STEP_MS 320 // one line moving up into the middle
@@ -1268,7 +1268,7 @@ static int studio_cover_size;
 // The page comes or goes once the finger has carried it this fraction of the
 // way; short of it, it goes back.
 #define LYRICS_COMMIT_FRACTION 4
-#define LYRICS_DRAG_PX 10 // sideways past this, a swipe and not a tap
+#define LYRICS_DRAG_PX SC(10) // sideways past this, a swipe and not a tap
 // Behind the words on a track with no artwork: dark in either theme, since
 // the words are white.
 #define LYRICS_FULL 1000 // lyrics_progress with the page all the way in
@@ -1858,7 +1858,7 @@ static void lyrics_layout(void) {
 	lyrics_pad();
 	lyrics_mask_build(view_w, h);
 	lv_obj_set_size(lyrics_note, view_w, LV_SIZE_CONTENT);
-	lv_obj_set_pos(lyrics_note, view_x, view_y + h / 2 - 20);
+	lv_obj_set_pos(lyrics_note, view_x, view_y + h / 2 - SC(20));
 
 	if (lyrics_head) {
 		lv_obj_set_pos(lyrics_head, STUDIO_MARGIN, lyrics_head_top());
@@ -2035,7 +2035,7 @@ static void lyrics_build(void) {
 	lv_obj_set_flex_flow(lyrics_view, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(lyrics_view, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_row(lyrics_view, LYRICS_LINE_GAP, 0);
-	lv_obj_set_style_pad_hor(lyrics_view, 8, 0);
+	lv_obj_set_style_pad_hor(lyrics_view, SC(8), 0);
 	lv_obj_set_scroll_dir(lyrics_view, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(lyrics_view, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_add_event_cb(lyrics_view, lyrics_scroll_cb, LV_EVENT_SCROLL_BEGIN, NULL);
@@ -2066,11 +2066,11 @@ static void lyrics_build(void) {
 
 	lv_obj_t *col = lv_obj_create(lyrics_head);
 	lv_obj_remove_style_all(col);
-	lv_obj_set_size(col, cover_box_w - 2 * STUDIO_MARGIN - 2 * 68, LV_SIZE_CONTENT);
+	lv_obj_set_size(col, cover_box_w - 2 * STUDIO_MARGIN - 2 * SC(68), LV_SIZE_CONTENT);
 	lv_obj_align(col, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_row(col, 4, 0);
+	lv_obj_set_style_pad_row(col, SC(4), 0);
 	lv_obj_set_scrollable(col, false);
 	lv_obj_set_clickable(col, false);
 
@@ -4618,7 +4618,7 @@ void player_refresh_now_playing(void) {
 #define SHEET_ANIM_MS 220
 
 // Sideways movement past this is a drag, not a tap.
-#define DRAG_COMMIT_PX 10
+#define DRAG_COMMIT_PX SC(10)
 
 static int sheet_width;
 static lv_obj_t *sheet_under; // the page the sheet first slid over
@@ -4974,12 +4974,21 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(player_menu, 0, 0);
 	lv_obj_set_style_radius(player_menu, 0, 0);
 	lv_obj_set_style_pad_hor(player_menu, cfg->padding, 0);
+	// The defaults, from the defines. Set here rather than at file scope
+	// because those defines go through SC(), which reads the model at run time
+	// and so is not a constant an initializer may use.
+	menu_pad_ver = PLAYER_MENU_PAD_VER;
+	menu_gap = PLAYER_MENU_GAP;
 	int spare = menu_height - PLAYER_MENU_REF_HEIGHT;
 	if (spare > 0) {
 		menu_pad_ver = PLAYER_MENU_PAD_VER + spare / 5;
 		menu_gap = PLAYER_MENU_GAP + spare / 5;
 	}
 	lv_obj_set_style_pad_ver(player_menu, menu_pad_ver, 0);
+	// A little more air under the transport than over the top of the block: the
+	// bottom edge is where the eye reads the screen ending, and the white play
+	// disc sitting on the last row looked cut off rather than placed.
+	lv_obj_set_style_pad_bottom(player_menu, menu_pad_ver + SC(14), 0);
 	lv_obj_set_style_pad_gap(player_menu, menu_gap, 0);
 	lv_obj_set_scrollable(player_menu, false);
 
@@ -4990,7 +4999,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(song_info, 0, 0);
 	lv_obj_set_style_radius(song_info, 0, 0);
 	lv_obj_set_style_pad_all(song_info, 0, 0);
-	lv_obj_set_style_pad_column(song_info, 10, 0);
+	lv_obj_set_style_pad_column(song_info, SC(10), 0);
 	lv_obj_set_flex_flow(song_info, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(song_info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scrollable(song_info, false);
@@ -5034,14 +5043,14 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(song_side, 0, 0);
 	lv_obj_set_style_border_width(song_side, 0, 0);
 	lv_obj_set_style_pad_all(song_side, 0, 0);
-	lv_obj_set_style_pad_gap(song_side, 2, 0);
+	lv_obj_set_style_pad_gap(song_side, SC(2), 0);
 	lv_obj_set_flex_flow(song_side, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(song_side, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scrollable(song_side, false);
 
 	lv_obj_t *fav_btn = lv_btn_create(song_side);
 	fav_btn_obj = fav_btn;
-	lv_obj_set_size(fav_btn, 48, 44);
+	lv_obj_set_size(fav_btn, SC(48), SC(44));
 	lv_obj_set_style_bg_opa(fav_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(fav_btn, 0, 0);
 	lv_obj_set_style_shadow_width(fav_btn, 0, 0);
@@ -5104,10 +5113,14 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_opa(progress_slider, LV_OPA_COVER, LV_PART_KNOB);
 	lv_obj_set_style_border_width(progress_slider, PROGRESS_KNOB_RING, LV_PART_KNOB);
 	lv_obj_set_style_pad_all(progress_slider, PROGRESS_KNOB_GROW, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(progress_slider, 8, LV_PART_KNOB);
+	// And the knob's travel is inset by half the knob, so at 0:00 it sits on the
+	// trough's left end instead of hanging off the panel's edge. The trough
+	// itself does not move (theme.c).
+	theme_inset_slider_knob(progress_slider);
+	lv_obj_set_style_shadow_width(progress_slider, SC(8), LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(progress_slider, LV_OPA_40, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(progress_slider, lv_color_black(), LV_PART_KNOB);
-	lv_obj_set_style_shadow_offset_y(progress_slider, 1, LV_PART_KNOB);
+	lv_obj_set_style_shadow_offset_y(progress_slider, SC(1), LV_PART_KNOB);
 
 	lv_obj_add_event_cb(progress_slider, progress_slider_event_cb, LV_EVENT_ALL, NULL);
 
@@ -5182,14 +5195,14 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(player_controls_buttons, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(player_controls_buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	// Lifted a touch off the screen edge.
-	lv_obj_set_style_translate_y(player_controls_buttons, -8, 0);
+	lv_obj_set_style_translate_y(player_controls_buttons, SC(-8), 0);
 
 	// The repeat/shuffle button, kept out of the flex row so the transport
 	// stays centred on the screen.
 	lv_obj_t *repeat_btn = lv_btn_create(player_controls_buttons);
 	repeat_btn_obj = repeat_btn;
 	lv_obj_set_ignore_layout(repeat_btn, true);
-	lv_obj_set_size(repeat_btn, 56, 56);
+	lv_obj_set_size(repeat_btn, SC(56), SC(56));
 	lv_obj_set_style_bg_opa(repeat_btn, 0, 0);
 	lv_obj_set_style_shadow_width(repeat_btn, 0, 0);
 	lv_obj_add_event_cb(repeat_btn, repeat_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -5208,7 +5221,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_t *speed_btn = lv_btn_create(player_controls_buttons);
 	speed_btn_obj = speed_btn;
 	lv_obj_set_ignore_layout(speed_btn, true);
-	lv_obj_set_size(speed_btn, 56, 56);
+	lv_obj_set_size(speed_btn, SC(56), SC(56));
 	lv_obj_set_style_bg_opa(speed_btn, 0, 0);
 	lv_obj_set_style_shadow_width(speed_btn, 0, 0);
 	lv_obj_add_event_cb(speed_btn, speed_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -5227,7 +5240,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_t *more_btn = lv_btn_create(player_controls_buttons);
 	more_btn_obj = more_btn;
 	lv_obj_set_ignore_layout(more_btn, true);
-	lv_obj_set_size(more_btn, 56, 56);
+	lv_obj_set_size(more_btn, SC(56), SC(56));
 	lv_obj_set_style_bg_opa(more_btn, 0, 0);
 	lv_obj_set_style_shadow_width(more_btn, 0, 0);
 	lv_obj_add_event_cb(more_btn, more_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -5246,7 +5259,7 @@ void player_init(gui_config_t *cfg) {
 	// and plain glyphs read better there than filled boxes.
 	lv_obj_t *prev_btn = lv_btn_create(player_controls_buttons);
 	prev_btn_obj = prev_btn;
-	lv_obj_set_size(prev_btn, 76, 76);
+	lv_obj_set_size(prev_btn, SC(76), SC(76));
 	lv_obj_set_style_bg_opa(prev_btn, 0, 0);
 	lv_obj_set_style_shadow_width(prev_btn, 0, 0);
 	prev_icon = lv_image_create(prev_btn);
@@ -5259,7 +5272,7 @@ void player_init(gui_config_t *cfg) {
 
 	// Play/pause: a white disc, with the glyph carrying the colour.
 	play_btn = lv_btn_create(player_controls_buttons);
-	lv_obj_set_size(play_btn, 84, 84);
+	lv_obj_set_size(play_btn, SC(84), SC(84));
 	lv_obj_set_style_radius(play_btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(play_btn, lv_color_white(), 0); // repainted by set_over_cover
 	lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
@@ -5273,7 +5286,7 @@ void player_init(gui_config_t *cfg) {
 
 	lv_obj_t *next_btn = lv_btn_create(player_controls_buttons);
 	next_btn_obj = next_btn;
-	lv_obj_set_size(next_btn, 76, 76);
+	lv_obj_set_size(next_btn, SC(76), SC(76));
 	lv_obj_set_style_bg_opa(next_btn, 0, 0);
 	lv_obj_set_style_shadow_width(next_btn, 0, 0);
 	next_icon = lv_image_create(next_btn);
@@ -5314,9 +5327,9 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_color(live_badge, lv_color_white(), 0);
 	lv_obj_set_style_bg_color(live_badge, lv_color_make(224, 27, 36), 0); // Adwaita red
 	lv_obj_set_style_bg_opa(live_badge, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(live_badge, 6, 0);
-	lv_obj_set_style_pad_hor(live_badge, 10, 0);
-	lv_obj_set_style_pad_ver(live_badge, 5, 0);
+	lv_obj_set_style_radius(live_badge, SC(6), 0);
+	lv_obj_set_style_pad_hor(live_badge, SC(10), 0);
+	lv_obj_set_style_pad_ver(live_badge, SC(5), 0);
 	lv_obj_align(live_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
 	lv_obj_set_hidden(live_badge, true);
 
@@ -5363,7 +5376,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_align(alt_text_col, LV_ALIGN_BOTTOM_LEFT, ALT_PAD, -ALT_PAD);
 	lv_obj_set_flex_flow(alt_text_col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(alt_text_col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-	lv_obj_set_style_pad_row(alt_text_col, 6, 0);
+	lv_obj_set_style_pad_row(alt_text_col, SC(6), 0);
 	lv_obj_set_scrollable(alt_text_col, false);
 	lv_obj_set_hidden(alt_text_col, true);
 	// None of this takes presses. A plain object is clickable the moment it is
@@ -5459,11 +5472,11 @@ void player_init(gui_config_t *cfg) {
 	// against one of them.
 	studio_text_col = lv_obj_create(studio_head);
 	lv_obj_remove_style_all(studio_text_col);
-	lv_obj_set_size(studio_text_col, cover_size - 2 * STUDIO_MARGIN - 2 * 68, LV_SIZE_CONTENT);
+	lv_obj_set_size(studio_text_col, cover_size - 2 * STUDIO_MARGIN - 2 * SC(68), LV_SIZE_CONTENT);
 	lv_obj_align(studio_text_col, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_flex_flow(studio_text_col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(studio_text_col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_row(studio_text_col, 4, 0);
+	lv_obj_set_style_pad_row(studio_text_col, SC(4), 0);
 	lv_obj_set_style_text_align(studio_text_col, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_set_scrollable(studio_text_col, false);
 	lv_obj_set_clickable(studio_text_col, false);
@@ -5483,7 +5496,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_ignore_layout(studio_empty, true);
 	lv_obj_add_style(studio_empty, &theme_style_panel, 0);
 	lv_obj_set_style_border_width(studio_empty, 0, 0);
-	lv_obj_set_style_radius(studio_empty, 8, 0);
+	lv_obj_set_style_radius(studio_empty, SC(8), 0);
 	lv_obj_set_scrollable(studio_empty, false);
 	lv_obj_set_clickable(studio_empty, false);
 	lv_obj_set_hidden(studio_empty, true);
@@ -5497,7 +5510,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(studio_quality);
 	lv_obj_set_flex_flow(studio_quality, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(studio_quality, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(studio_quality, 8, 0);
+	lv_obj_set_style_pad_column(studio_quality, SC(8), 0);
 	lv_obj_set_scrollable(studio_quality, false);
 	lv_obj_set_clickable(studio_quality, false);
 
