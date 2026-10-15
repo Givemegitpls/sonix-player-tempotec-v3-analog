@@ -105,11 +105,24 @@ static const sysinfo_model_t BOARD_MODEL = {
 	// The port manages the Bluetooth stack here: BlueZ 5 and bluealsa built for
 	// this glibc, started by the player (see NOTES.md).
 	.bluetooth_stack = true,
-	// Two framebuffer pages were the wrong answer on this panel: the frame on
-	// the glass is then the one drawn two frames ago -- the user turns the
-	// volume down, nothing appears, and the pill shows up on the next scroll --
-	// and each page owes the other everything that changed while it was off
-	// screen, which is a full-screen copy per frame. Measured on the device.
+	// One framebuffer page, and the copy waits for the panel to have taken the
+	// frame before it writes (see panel_wait_transfer in main.c).
+	//
+	// Two pages were tried, and the measurement says they are the wrong trade
+	// here. What they buy is real: the copy goes into the page the panel is not
+	// showing, so the wait for the panel's own transfer (7 to 13 ms of every
+	// frame -- the transfer reads the framebuffer page for 12.3 ms of the panel's
+	// 13.3 ms frame) disappears from the frame budget and forty frames a second
+	// fit again. What they cost is the frame on the glass being one frame old,
+	// and that is what the hand notices: the owner drove both builds and said the
+	// two-page one felt less smooth, whatever the counter said. Latency in the
+	// finger's feedback is worth more than frames in the counter.
+	//
+	// So: one page, the wait, and thirty frames a second as the rate that leaves
+	// the frame its slack. The two-page path is still in main.c (rot_page_pending
+	// keeps what each page owes the other) and the image with it is kept on the
+	// card as v3_analog_2page.upt, should a faster glass ever matter more than
+	// the delay.
 	.single_fb_page = true,
 	// The interface is drawn at the panel's own 320x480, in the panel's own
 	// pixel format: LVGL renders RGB565 into a page of its own and one pass per
