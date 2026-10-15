@@ -56,14 +56,6 @@ static void host_pace(snd_pcm_sframes_t frames, int rate) {
 #define host_pace(frames, rate) ((void)0)
 #endif
 
-static bool pcm_is_bluetooth(snd_pcm_t *pcm);
-
-// Whether a pause and an unpause on this stream are softened: on the R1's DAC,
-// whose output clicks when a stream stops or starts on a sample that is not
-// silence. Bluetooth headphones and the R3 Pro II, whose route has mutes of its
-// own, are left as they are.
-static bool pcm_softened(snd_pcm_t *pcm) { return pcm && !pcm_is_bluetooth(pcm) && alsa_board_is_cs43131(); }
-
 // Stops a stream for a pause, and says how many bytes of already-decoded audio
 // were thrown away with it.
 //
@@ -99,23 +91,12 @@ static int64_t pause_stop_stream(snd_pcm_t *pcm, int frame_bytes) {
 		return 0;
 	}
 
-	// On the R1 the DAC is brought down to silence first, while the stream
-	// still plays, and put back once it has stopped: a stream cut off in the
-	// middle of a note is a click in the headphones.
-	bool softened = pcm_softened(pcm) && snd_pcm_state(pcm) == SND_PCM_STATE_RUNNING;
-	if (softened) {
-		alsa_pause_quiet(true);
-	}
-
 	snd_pcm_sframes_t queued = 0;
 	if (snd_pcm_delay(pcm, &queued) < 0 || queued < 0) {
 		queued = 0; // buffered amount unknown: resume a touch late
 	}
 
 	snd_pcm_drop(pcm);
-	if (softened) {
-		alsa_pause_quiet(false);
-	}
 
 	fprintf(stderr, "audio[%ld]: paused (stream dropped, %ld frames unplayed)\n", log_ms(), (long)queued);
 	return (int64_t)queued * frame_bytes;
@@ -949,34 +930,6 @@ static snd_pcm_uframes_t chunk_for(snd_pcm_uframes_t period, int sample_rate) {
 static bool pcm_is_bluetooth(snd_pcm_t *pcm) {
 	const char *name = pcm ? snd_pcm_name(pcm) : NULL;
 	return name && strncmp(name, "bluealsa", 8) == 0;
-}
-
-// The first moments after an unpause, brought up from silence where the stream
-// is softened (pcm_softened): the music comes back at whatever level it has at
-// that point, and a DAC starting on a loud sample starts with a click. Twenty
-// milliseconds of ramp are heard as nothing.
-#define UNPAUSE_RAMP_MS 20
-
-typedef struct {
-	int left;  // frames of the ramp still to go
-	int total; // frames in the whole ramp
-} ramp_in_t;
-
-static void ramp_in_start(ramp_in_t *ramp, snd_pcm_t *pcm, int rate) {
-	ramp->total = pcm_softened(pcm) ? rate * UNPAUSE_RAMP_MS / 1000 : 0;
-	ramp->left = ramp->total;
-}
-
-// Scales the start of `buffer` along the ramp, frame by frame.
-static void ramp_in_apply(ramp_in_t *ramp, void *buffer, int frames, int channels, int bits) {
-	for (int i = 0; i < frames && ramp->left > 0; i++, ramp->left--) {
-		int gain = (int)((int64_t)(ramp->total - ramp->left) * 1024 / ramp->total);
-		if (bits == 32) {
-			fade_apply_s32((int32_t *)buffer + (size_t)i * channels, channels, gain);
-		} else {
-			fade_apply_s16((short *)buffer + (size_t)i * channels, channels, gain);
-		}
-	}
 }
 
 // Plays out what the stream still holds, and comes back whatever happens.
@@ -2719,7 +2672,6 @@ static void play_wav_file(const char *filepath) {
 	int64_t bytes_played = 0;
 	int64_t read_pos = 0; // bytes of the data chunk already read, ahead of bytes_played by what is queued
 	bool is_paused = false;
-	ramp_in_t unpause_ramp = {0, 0};
 	bool played_to_the_end = false;
 	int route_check = 0;
 	int track_route = alsa_output_key(); // the output auto_set_output just applied
@@ -2904,7 +2856,6 @@ static void play_wav_file(const char *filepath) {
 					}
 					period_size = new_period;
 					fprintf(stderr, "audio[%ld]: device taken back for the unpause\n", log_ms());
-					ramp_in_start(&unpause_ramp, pcm_handle, info.sample_rate);
 					// A reopen is a fresh start for the sink as much as a new
 					// track is, and the clock has to start again with it: left
 					// armed from the track, the probe would charge the whole
@@ -3028,9 +2979,6 @@ static void play_wav_file(const char *filepath) {
 			} else {
 				swvolume_apply_s32((int32_t *)buffer, samples);
 			}
-		}
-		if (unpause_ramp.left > 0) {
-			ramp_in_apply(&unpause_ramp, buffer, (int)frames_to_write, info.channels, info.out_bits);
 		}
 
 		health_lap(&health, STAGE_EFFECTS);
@@ -3341,7 +3289,6 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// own mid-book.
 	int64_t bytes_played = 0;
 	bool is_paused = false;
-	ramp_in_t unpause_ramp = {0, 0};
 	bool played_to_the_end = false;
 	int route_check = 0;
 	int track_route = alsa_output_key(); // the output auto_set_output just applied
@@ -3579,7 +3526,6 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 					chunk_frames = new_chunk;
 					period_size = new_period;
 					fprintf(stderr, "audio[%ld]: device taken back for the unpause\n", log_ms());
-					ramp_in_start(&unpause_ramp, pcm_handle, out_rate);
 					// A reopen is a fresh start for the sink as much as a new
 					// track is, and the clock has to start again with it: left
 					// armed from the track, the probe would charge the whole
@@ -3805,10 +3751,6 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			} else {
 				swvolume_apply_s16((short *)buffer, samples);
 			}
-		}
-		// The same rule for the ramp after an unpause.
-		if (unpause_ramp.left > 0 && !passthrough) {
-			ramp_in_apply(&unpause_ramp, buffer, (int)frames_read, channels, out_bits);
 		}
 
 		health_lap(&health, STAGE_EFFECTS);

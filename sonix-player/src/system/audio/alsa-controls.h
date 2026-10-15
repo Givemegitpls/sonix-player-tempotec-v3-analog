@@ -128,12 +128,6 @@ void alsa_controls_reapply(void);
 void alsa_suspend_mute(void);
 void alsa_suspend_restore(void);
 
-// The R1's DAC taken to silent around the stop of a stream for a pause, and
-// back to the level in force afterwards: the music stopping in the middle of a
-// note is a click at the headphones. `true` waits out the codec's ramp. Nothing
-// on the R3 Pro II.
-void alsa_pause_quiet(bool quiet);
-
 
 // The hardware control is an attenuation: 0 is loudest, 255 is silent. Nothing
 // outside this file should have to know that, so the UI and the key handlers
