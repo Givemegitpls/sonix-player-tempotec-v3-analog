@@ -101,6 +101,33 @@ while the interface behind it keeps drawing: a frozen picture, a clock that
 stopped, an indicator still saying what was true minutes ago. The pan is retried
 once after re-reading the mode (`fb_mode_stale`), which is all it takes.
 
+## Power: the backlight goes out, then the SoC sleeps
+
+The screen-off on this device is the **backlight alone**. The stock player never
+blanks the panel -- its binary has no `FBIOBLANK` in it at all, and dims
+`/sys/class/backlight/pwm-backlight.0/brightness` to 0 instead -- and the port
+follows it: `blank_panel = false` in the model, so no blank is ever issued and
+the panel stays armed, scanning the frame it was last given. That is deliberate,
+and it is what the freeze fix rests on: the state a blank leaves behind
+(`LCDC_CTRL.ENA` back on, `SLCDC_CTRL.DMA_EN` still down) is the one this panel
+does not come back from without a reboot.
+
+The price is that the glass keeps showing the last frame. With the backlight off
+an LCD's pixels still hold their state, so in ambient light the picture stays
+readable; that is the panel, not a backlight that failed to go out.
+
+The device does not stay awake for it. **Suspend-to-RAM is on by default**, 60
+seconds after the screen goes dark, with the stock standby's own sequence: a
+real, awaited stop of the audio pipeline, the radios parked, `sync()`, then
+`mem`. `[power] standby_mem = 0` turns it off and the switch on the Power
+settings page writes exactly that key; `[power] standby_mem_seconds` sets the
+wait. On the way in the kernel powers the panel down, on the way out it runs
+`lcd_power_on` and the panel's own table -- which is also the only power cycle
+left that can free a panel that has stopped showing anything.
+
+`[power] screen_off_seconds` is what starts that countdown: 30 seconds by
+default, `0` for never, and the Screen page's slider is the same setting.
+
 ## Sound: card 1, and the analogue output is `plughw:1,0`
 
 Card 0 on this device is `sa_spdif`, a dummy the optical route shares. The
@@ -424,6 +451,9 @@ Verified on the device:
 - sound by ear: wired 3.5 mm and 4.4 mm, Bluetooth out (A2DP), Bluetooth in
   (receiver), and optical;
 - screen-off and wake through the framebuffer blank node, with the pan fix above;
+- **suspend-to-RAM**: a screen-off left alone for a minute writes `mem`, and the
+  wake comes back with the panel armed and scanning (TE 76 Hz), the touch
+  controller alive and no instant wakes in the log;
 - Bluetooth: pairing, AVRCP volume, A2DP out, A2DP in (SBC, AAC, aptX,
   aptX-HD), and **LDAC out** (confirmed by ear on LDAC headphones, not only by
   the player's own codec report);

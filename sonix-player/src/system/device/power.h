@@ -220,11 +220,11 @@ void power_set_screen_off_timeout(uint32_t ms);
 // exist there.
 void power_set_standby_enabled(bool enabled);
 
-// Suspend-to-RAM is OFF unless something turns it on: [power] standby_mem = 1 in
+// Suspend-to-RAM is ON unless it is turned off: [power] standby_mem = 0 in
 // device_config.ini, or the switch on the power settings page. See power.c for
-// why this board's default is off; the three places that read the key share this
-// one answer so the switch and the runtime cannot disagree.
-#define POWER_STANDBY_MEM_DEFAULT false
+// what it waits for; the three places that read the key share this one answer so
+// the switch and the runtime cannot disagree.
+#define POWER_STANDBY_MEM_DEFAULT true
 
 // Powers the Bluetooth radio and its daemons down, in order, through
 // bluetooth_power_down_stack(). The stock init script starts the whole stack at

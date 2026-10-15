@@ -3945,15 +3945,14 @@ int main(int argc, char **argv) {
 		.power_state_path = "/sys/power/state",
 #endif
 		.brightness = -1, // adopt the panel's current level as the on-brightness
-		.screen_off_enabled = false,
-		// Off unless asked for in Settings. Blanking this panel powers the
-		// touch controller down with it, so the screen cannot be woken by
-		// touching it -- only by the power key. A timer that traps the user
-		// like that is not something to have on by default.
-		.screen_off_timeout_ms = 60000,
+		// Overwritten just below from the Screen page's setting; the values
+		// here are that setting's own default (SCREEN_OFF_DEFAULT_S) so this
+		// struct cannot claim a timeout the player is not using.
+		.screen_off_enabled = true,
+		.screen_off_timeout_ms = SCREEN_OFF_DEFAULT_S * 1000,
 	};
 	// Whatever was chosen in Settings last time.
-	power_cfg.screen_off_timeout_ms = (uint32_t)config_get_int("power", "screen_off_seconds", 0) * 1000;
+	power_cfg.screen_off_timeout_ms = (uint32_t)config_get_int("power", "screen_off_seconds", SCREEN_OFF_DEFAULT_S) * 1000;
 	power_cfg.screen_off_enabled = (power_cfg.screen_off_timeout_ms > 0);
 	// The brightness picked in Settings > Screen; -1 (not set yet) keeps
 	// the adopt-the-panel's-level behaviour above.

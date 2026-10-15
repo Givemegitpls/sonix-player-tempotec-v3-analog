@@ -1946,24 +1946,26 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 
 	g_last_active_boot_ms = boottime_ms(); // the wall-clock idle marker starts now
 
-	// Suspend to RAM: OFF by default on this board, 60 seconds after the screen
-	// goes dark when it is turned on.
+	// Suspend to RAM: ON by default, 60 seconds after the screen goes dark,
+	// exactly as the stock standby does it (its own sequence: a real, awaited
+	// stop of the audio pipeline, Wi-Fi parked, sync(), then `mem`).
 	//
 	// The stock player never puts this panel to sleep -- it has no FBIOBLANK, no
 	// FBIOPAN_DISPLAY and no FBIOPUT_VSCREENINFO at all, and dims the backlight
 	// instead -- and the port follows it there (blank_panel in board.h, the
 	// screen-off path). The deep sleep is the other way of sleeping the panel:
 	// the SoC suspends, the panel is powered down, and coming back means a full
-	// re-initialisation. That path was never validated on this board, and the
-	// wake-up troubles this panel had were around exactly it -- the setting was
-	// turned off by hand on 2026-10-13 and then lost when the config file was
-	// rewritten, which is why the default lives here now rather than in a key
-	// nobody re-adds.
+	// re-initialisation. That path used to be where this panel's wake-up
+	// troubles lived, so the default was off while the cause was unknown; it is
+	// now off the critical path -- the port no longer disarms the panel with
+	// FBIOBLANK, so nothing has to be re-armed on wake -- and the cycle was
+	// verified on the device (suspend, resume, panel back armed and scanning,
+	// touch alive).
 	//
-	// Kept reachable rather than deleted: on resume the kernel runs lcd_power_on
+	// Kept switchable rather than fixed: on resume the kernel runs lcd_power_on
 	// and the panel's own table, the only power cycle left that can free a panel
-	// that has stopped showing anything without a reboot. [power] standby_mem = 1
-	// brings it back; standby_mem_seconds sets the wait.
+	// that has stopped showing anything without a reboot. [power] standby_mem = 0
+	// turns the deep sleep off; standby_mem_seconds sets the wait.
 	g_mem_enabled = g_cfg.power_state_path && config_get_bool("power", "standby_mem", POWER_STANDBY_MEM_DEFAULT);
 	long mem_secs = config_get_int("power", "standby_mem_seconds", 60);
 	g_mem_instant_wakes_max = (int)config_get_int("power", "standby_mem_max_instant", 2);
