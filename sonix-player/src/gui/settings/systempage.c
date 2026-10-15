@@ -238,13 +238,13 @@ static void build_sysinfo_page(gui_config_t *cfg) {
 	// --- microSD card: value on the right, bar underneath ---
 	lv_obj_t *sd_card = lv_obj_create(container);
 	lv_obj_set_width(sd_card, lv_pct(100));
-	lv_obj_set_height(sd_card, 116);
+	lv_obj_set_height(sd_card, SC(116));
 	lv_obj_add_style(sd_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(sd_card, 12, 0);
+	lv_obj_set_style_radius(sd_card, SC(12), 0);
 	lv_obj_set_style_border_width(sd_card, 0, 0);
 	lv_obj_set_style_shadow_width(sd_card, 0, 0);
-	lv_obj_set_style_pad_hor(sd_card, 20, 0);
-	lv_obj_set_style_pad_ver(sd_card, 16, 0);
+	lv_obj_set_style_pad_hor(sd_card, SC(20), 0);
+	lv_obj_set_style_pad_ver(sd_card, SC(16), 0);
 	lv_obj_set_scrollable(sd_card, false);
 	lv_obj_set_clickable(sd_card, false);
 
@@ -262,7 +262,7 @@ static void build_sysinfo_page(gui_config_t *cfg) {
 
 	sd_bar = lv_bar_create(sd_card);
 	lv_obj_set_width(sd_bar, lv_pct(100));
-	lv_obj_set_height(sd_bar, 10);
+	lv_obj_set_height(sd_bar, SC(10));
 	lv_obj_align(sd_bar, LV_ALIGN_BOTTOM_MID, 0, 0);
 	lv_bar_set_range(sd_bar, 0, 100);
 	lv_obj_set_style_radius(sd_bar, LV_RADIUS_CIRCLE, LV_PART_MAIN);

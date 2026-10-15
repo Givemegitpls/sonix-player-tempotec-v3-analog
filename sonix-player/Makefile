@@ -57,7 +57,36 @@ endif
 #                               readdir()/stat() fail with EOVERFLOW on an inode
 #                               or offset wider than 32 bits, which an exFAT
 #                               card produces routinely.
-CFLAGS = -O3 -g -Wall -MMD -MP -D_FILE_OFFSET_BITS=64 -I. -I$(LVGL_DIR) -DLV_CONF_INCLUDE_SIMPLE=1 -DGB_CORE=1
+# ---------------------------------------------------------------------------
+# The board this binary is built for
+# ---------------------------------------------------------------------------
+#
+# The firmware is not universal. It is built for one piece of hardware: the
+# panel the interface is laid out for, the icon set that is compiled in, and --
+# through src/system/device/board.h and sysinfo.c -- the values that describe
+# this board's mixer, PCM, backlight, keys, USB gadget and Bluetooth. Other
+# boards' numbers are not in the binary at all, and the branches that would
+# choose between them are constants the compiler folds away.
+#
+#   make target BOARD=tempotec_v3     # the default: 320x480, dual AK4493, /data
+#   make host   BOARD=tempotec_v3
+#
+# Anything else keeps the 480x720 layout the upstream port was written for, and
+# the icon set that goes with it.
+BOARD ?= tempotec_v3
+
+ifeq ($(BOARD),tempotec_v3)
+BOARD_CFLAGS = -DSONIX_BOARD_TEMPOTEC_V3=1 -DSONIX_LAYOUT_SCALE=2 -DSONIX_ICON_SET_SMALL=1
+# Both icon sets are generated and checked in, and both declare the same
+# identifiers (tools/svg_to_lvgl.py); exactly one of them may be compiled, or
+# the link fails on duplicate symbols. This is the one line that decides.
+BOARD_ICON_UNUSED = src/gui/shell/icons.c
+else
+BOARD_CFLAGS = -DSONIX_LAYOUT_SCALE=3
+BOARD_ICON_UNUSED = src/gui/shell/icons_small.c
+endif
+
+CFLAGS = -O3 -g -Wall -MMD -MP -D_FILE_OFFSET_BITS=64 -I. -I$(LVGL_DIR) -DLV_CONF_INCLUDE_SIMPLE=1 -DGB_CORE=1 $(BOARD_CFLAGS)
 # On the host the audio libraries are the system ones (libopusfile-dev,
 # libwavpack-dev); on the target they are the ones this Makefile builds below.
 # opusfile.h includes <opus_multistream.h> unprefixed, so the opus/ directory
@@ -224,7 +253,7 @@ AUDIO_LIBS = $(OPUSFILE_LIB) $(OPUS_LIB) $(OGG_LIB) $(WAVPACK_LIB)
 
 # Source files. src/gb holds a .c as well (the miniz shell) alongside the C++
 # core, so both searches reach into it.
-APP_SRCS := $(shell find src -name '*.c')
+APP_SRCS := $(filter-out $(BOARD_ICON_UNUSED),$(shell find src -name '*.c'))
 LVGL_SRCS = $(shell find $(LVGL_DIR)/src -type f -name '*.c')
 
 # The C++ here is the Game Boy core under src/gb/core plus its facade. Separate

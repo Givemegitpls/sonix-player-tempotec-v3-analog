@@ -3,15 +3,15 @@
 #include <string.h>
 
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
 
 #define POPOVER_MAX_ITEMS 7
-#define POPOVER_WIDTH 284
-#define POPOVER_ROW_HEIGHT 62
-#define POPOVER_RADIUS 16
-#define POPOVER_MARGIN 10 // gap between the anchor and the card, and to screen edges
+#define POPOVER_WIDTH SC(284)
+#define POPOVER_ROW_HEIGHT SC(62)
+#define POPOVER_RADIUS SC(16)
+#define POPOVER_MARGIN SC(10) // gap between the anchor and the card, and to screen edges
 
 static lv_obj_t *veil; // full-screen, catches the tap that dismisses
 static lv_obj_t *card;
@@ -68,7 +68,7 @@ void popover_init(void) {
 	lv_obj_add_style(card, &theme_style_card, 0);
 	lv_obj_set_style_radius(card, POPOVER_RADIUS, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 8, 0);
+	lv_obj_set_style_pad_all(card, SC(8), 0);
 	lv_obj_set_style_pad_gap(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
@@ -97,7 +97,7 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 		// fit on one, and a fixed height would clip it at the card's edge.
 		lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
 		lv_obj_set_style_min_height(row, POPOVER_ROW_HEIGHT, 0);
-		lv_obj_set_style_pad_ver(row, 12, 0);
+		lv_obj_set_style_pad_ver(row, SC(12), 0);
 		// With a check mark the entry lays out as a row: text left, mark right.
 		// Without one it stays a column, which is what the two-line text of long
 		// entries needs.
@@ -106,10 +106,10 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 							  LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
 		lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
 		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, 10, 0);
+		lv_obj_set_style_radius(row, SC(10), 0);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_hor(row, 14, 0);
+		lv_obj_set_style_pad_hor(row, SC(14), 0);
 		lv_obj_add_event_cb(row, item_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
 		lv_obj_t *label = lv_label_create(row);
@@ -134,7 +134,7 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 		// A hairline between rows, not after the last.
 		if (i + 1 < count) {
 			lv_obj_t *sep = lv_obj_create(card);
-			lv_obj_set_size(sep, lv_pct(94), 1);
+			lv_obj_set_size(sep, lv_pct(94), SC(1));
 			lv_obj_set_style_bg_color(sep, theme()->text_secondary, 0);
 			lv_obj_set_style_bg_opa(sep, LV_OPA_20, 0);
 			lv_obj_set_style_border_width(sep, 0, 0);

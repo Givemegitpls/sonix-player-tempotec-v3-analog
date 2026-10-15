@@ -14,7 +14,7 @@
 #include "src/gui/ebook/ebookreader.h"
 #include "src/gui/ebook/ebooksettings.h"
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
@@ -42,7 +42,7 @@ lv_obj_t *ebookpage_screen;
 
 #define SHELF_MAX 300
 #define TILE_COLUMNS 2
-#define TILE_GAP 14
+#define TILE_GAP SC(14)
 #define COVER_RATIO_NUM 3 // covers are drawn 2:3, the shape of a paperback
 #define COVER_RATIO_DEN 2
 
@@ -234,7 +234,7 @@ static void build_tiles(void) {
 
 		lv_obj_t *tile = lv_obj_create(grid);
 		lv_obj_remove_style_all(tile);
-		lv_obj_set_size(tile, cover_w, cover_h + 46);
+		lv_obj_set_size(tile, cover_w, cover_h + SC(46));
 		lv_obj_set_scrollable(tile, false);
 		lv_obj_set_clickable(tile, true);
 		// The press has to reach the page under the tile as well as the tile:
@@ -243,7 +243,7 @@ static void build_tiles(void) {
 		// the end of a drag, so the two do not fight.
 		lv_obj_set_event_bubble(tile, true);
 		lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
-		lv_obj_set_style_pad_row(tile, 6, 0);
+		lv_obj_set_style_pad_row(tile, SC(6), 0);
 		lv_obj_add_event_cb(tile, open_book_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
 		// What is there before the cover arrives, and what stays when the book
@@ -253,7 +253,7 @@ static void build_tiles(void) {
 		lv_obj_remove_style_all(plate);
 		lv_obj_set_size(plate, cover_w, cover_h);
 		lv_obj_add_style(plate, &theme_style_card, 0);
-		lv_obj_set_style_radius(plate, 8, 0);
+		lv_obj_set_style_radius(plate, SC(8), 0);
 		lv_obj_set_style_border_width(plate, 0, 0);
 		lv_obj_set_style_shadow_width(plate, 0, 0);
 		lv_obj_set_scrollable(plate, false);
@@ -292,12 +292,12 @@ static void build_tiles(void) {
 // as the same kind of page.
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph) {
 	lv_obj_t *button = lv_btn_create(ebookpage_screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, SC(56), SC(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (SC(56) + SC(6)), cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);
@@ -370,12 +370,12 @@ void ebookpage_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(settings_btn, settings_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *marks_btn = lv_btn_create(ebookpage_screen);
-	lv_obj_set_size(marks_btn, 56, 56);
+	lv_obj_set_size(marks_btn, SC(56), SC(56));
 	lv_obj_set_style_bg_opa(marks_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(marks_btn, 0, 0);
 	lv_obj_set_style_shadow_width(marks_btn, 0, 0);
 	lv_obj_set_style_pad_all(marks_btn, 0, 0);
-	lv_obj_align(marks_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(marks_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - (SC(56) + SC(6)), cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(marks_btn, bookmarks_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *marks_icon = lv_image_create(marks_btn);

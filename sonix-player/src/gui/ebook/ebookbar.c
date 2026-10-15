@@ -6,20 +6,21 @@
 #include <time.h>
 
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
+#include "src/gui/shell/scale.h"
 #include "src/system/core/config.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/core/lang.h"
 
 // See ebookbar.h for why the preview and the real strip are the same code.
 
-#define BAR_TEXT_HEIGHT 22
-#define BAR_LINE_HEIGHT 3
-#define BAR_GAP 5
+#define BAR_TEXT_HEIGHT SC(22)
+#define BAR_LINE_HEIGHT SC(3)
+#define BAR_GAP SC(5)
 
 // The battery bitmap is rendered from the same 24x24 SVG the status bar uses,
 // at the size that suits 16-point text rather than 24-point.
-#define BATTERY_ICON_SIZE 26
+#define BATTERY_ICON_SIZE SC(26)
 
 // The hole inside the shell, in the icon's own pixels. Read off the rendered
 // bitmap rather than scaled from the SVG's coordinates: at 26 px the SVG
@@ -28,10 +29,10 @@
 //
 // Re-measure these four if BATTERY_ICON_SIZE changes: decode icon_battery_small
 // and find the fully transparent rectangle inside the outline.
-#define BATTERY_CAVITY_X 4
-#define BATTERY_CAVITY_Y 8
-#define BATTERY_CAVITY_W 14
-#define BATTERY_CAVITY_H 10
+#define BATTERY_CAVITY_X SC(4)
+#define BATTERY_CAVITY_Y SC(8)
+#define BATTERY_CAVITY_W SC(14)
+#define BATTERY_CAVITY_H SC(10)
 
 // What goes between two facts on the strip, the same as the player puts
 // between two facts about a track.
@@ -138,7 +139,7 @@ void ebookbar_create(ebookbar_t *bar, lv_obj_t *parent, int32_t width) {
 	// pressed state and a theme of its own, none of which belong on paper.
 	bar->line = lv_obj_create(bar->root);
 	lv_obj_remove_style_all(bar->line);
-	lv_obj_set_size(bar->line, width - 40, BAR_LINE_HEIGHT);
+	lv_obj_set_size(bar->line, width - SC(40), BAR_LINE_HEIGHT);
 	lv_obj_set_style_radius(bar->line, BAR_LINE_HEIGHT / 2, 0);
 	lv_obj_set_scrollable(bar->line, false);
 
@@ -157,7 +158,7 @@ void ebookbar_create(ebookbar_t *bar, lv_obj_t *parent, int32_t width) {
 	lv_obj_set_scrollable(bar->facts, false);
 	lv_obj_set_flex_flow(bar->facts, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(bar->facts, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(bar->facts, 3, 0);
+	lv_obj_set_style_pad_column(bar->facts, SC(3), 0);
 
 	bar->text = lv_label_create(bar->facts);
 	lv_obj_set_style_text_font(bar->text, &font_ui_16, 0);
@@ -172,7 +173,7 @@ void ebookbar_create(ebookbar_t *bar, lv_obj_t *parent, int32_t width) {
 
 	bar->charge = lv_obj_create(bar->battery);
 	lv_obj_remove_style_all(bar->charge);
-	lv_obj_set_style_radius(bar->charge, 1, 0);
+	lv_obj_set_style_radius(bar->charge, SC(1), 0);
 
 	lv_obj_t *shell = lv_image_create(bar->battery);
 	lv_image_set_src(shell, &icon_battery_small);

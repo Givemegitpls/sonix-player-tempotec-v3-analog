@@ -15,6 +15,8 @@
 
 #include "src/system/db/sqlite3.h"
 
+#include "src/gui/shell/scale.h"
+
 #include "src/system/library/albumart.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/image/jpeg_planes.h"
@@ -31,7 +33,7 @@
 
 // Box blur radius, in pixels of the half-size image. Repeated passes of a box
 // blur approximate a gaussian closely enough that nothing looks boxy.
-#define BACKDROP_BLUR_RADIUS 9
+#define BACKDROP_BLUR_RADIUS SC(9)
 #define BACKDROP_BLUR_PASSES 3
 
 // How far the backdrop is pushed towards black (dark theme) or white (light
@@ -302,6 +304,11 @@ static crop_t crop_to_aspect(int src_w, int src_h, int dst_w, int dst_h) {
 // half is below 2^32.
 // ---------------------------------------------------------------------------
 
+// Not a size: it is how many fractional bits the area weights carry, and the
+// accumulator is shifted back by twice it. SC() must never touch it -- at the
+// panel's own resolution SC(12) is 8, AREA_ONE becomes 256, and the 16-bit
+// shift back turns every resampled pixel into zero, which is exactly the black
+// covers and note-glyph placeholders the lists showed.
 #define AREA_SHIFT 12
 #define AREA_ONE (1 << AREA_SHIFT)
 
@@ -1456,7 +1463,12 @@ void cover_free(cover_image_t *img) {
 // hundred albums a card holds, but not for anything larger.
 #define THUMB_DISK_MAX_SIZE 216
 #define THUMB_WAV_EPOCH "|w2"
-
+// The thumbnails were once fitted inside their box -- a square picture in a
+// square row, but with the black bars of a letterbox whenever the cover was
+// not square. They fill the box now (COVER_FIT_COVER), and this goes into the
+// key of every thumbnail so the letterboxed ones already on disk are not handed
+// back.
+#define THUMB_FIT_EPOCH "|f1"
 // A cached "no artwork here" is a row with no width, and its height carries
 // the epoch of the readers that gave that answer. A row from another epoch is
 // a miss: raising the epoch has every file without artwork asked again, while
@@ -1660,10 +1672,10 @@ static uint64_t thumb_hash(const char *path, int box, bool is_dir) {
 
 	char material[700];
 	if (stat(path, &st) == 0) {
-		snprintf(material, sizeof(material), "%s|%d|%c|%lld|%lld%s", path, box, is_dir ? 'd' : 'f',
-				 (long long)st.st_mtime, (long long)st.st_size, epoch);
+		snprintf(material, sizeof(material), "%s|%d|%c|%lld|%lld%s%s", path, box, is_dir ? 'd' : 'f',
+				 (long long)st.st_mtime, (long long)st.st_size, epoch, THUMB_FIT_EPOCH);
 	} else {
-		snprintf(material, sizeof(material), "%s|%d|%c|?%s", path, box, is_dir ? 'd' : 'f', epoch);
+		snprintf(material, sizeof(material), "%s|%d|%c|?%s%s", path, box, is_dir ? 'd' : 'f', epoch, THUMB_FIT_EPOCH);
 	}
 
 	for (const char *p = material; *p; p++) {
@@ -2005,7 +2017,11 @@ static void playerart_store(const char *key, const cover_image_t *cover, const c
 // ---------------------------------------------------------------------------
 
 static cover_build_t thumb_load_uncached(const char *path, bool is_dir, int size, cover_image_t *out) {
-	image_request_t req = {.w = size, .h = size, .fit = COVER_FIT_CONTAIN, .backdrop = false};
+	// Fills its box rather than fitting inside it: a square row around a
+	// rectangular cover used to come out with the black bars of a letterbox
+	// down both sides. The row is a picture of the album, and a picture of an
+	// album is its cover edge to edge.
+	image_request_t req = {.w = size, .h = size, .fit = COVER_FIT_COVER, .backdrop = false};
 	return build_from_sources(path, is_dir, &req, 1, out);
 }
 

@@ -10,6 +10,24 @@ new one is added:
     pip install cairosvg pillow
     python3 tools/svg_to_lvgl.py
 
+Two sets come out of this, and which one is written is chosen on the command
+line:
+
+    python3 tools/svg_to_lvgl.py              # icons.c + icons.h, the 480x720 set
+    python3 tools/svg_to_lvgl.py --small-only # icons_small.c + icons_small.h
+    python3 tools/svg_to_lvgl.py --all        # both
+
+The second set is the same drawings two thirds the size, for the TempoTec V3
+Analog's 320x480 panel (src/gui/shell/scale.h). It lives in files of its own so
+regenerating it cannot disturb the first set: a different cairosvg version
+rasterises every icon a little differently, and rewriting the 480x720 set to get
+the small one would churn twenty-four megabytes of checked-in source and change
+the icons on every other model.
+
+Sizes are `size * 2 // 3`, integer division -- the same arithmetic SC() does, so
+an icon and the box SC() gave it come out the same number of pixels. Rounding
+instead of truncating would leave icons a pixel wider than their frames.
+
 Two kinds of icon come out of this:
 
   * SVGs are emitted as ARGB8888 *white* shapes. The colour comes from LVGL at
@@ -34,6 +52,20 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICON_DIR = os.path.join(REPO_ROOT, "assets", "icons")
 OUT_C = os.path.join(REPO_ROOT, "src", "gui", "shell", "icons.c")
 OUT_H = os.path.join(REPO_ROOT, "src", "gui", "shell", "icons.h")
+
+# The 320x480 set (see the module docstring): two thirds of every size, in files
+# of its own so the 480x720 set is never rewritten to produce it.
+SMALL_OUT_C = os.path.join(REPO_ROOT, "src", "gui", "shell", "icons_small.c")
+SMALL_OUT_H = os.path.join(REPO_ROOT, "src", "gui", "shell", "icons_small.h")
+SELECT_OUT_H = os.path.join(REPO_ROOT, "src", "gui", "shell", "icons_select.h")
+SMALL_NUM, SMALL_DEN = 2, 3
+
+
+def small_size(size):
+    """Two thirds of a size, truncated, as SC() would have it."""
+    if isinstance(size, tuple):
+        return tuple(max(1, s * SMALL_NUM // SMALL_DEN) for s in size)
+    return max(1, size * SMALL_NUM // SMALL_DEN)
 
 # (svg file, C identifier, pixel size).
 #
@@ -474,12 +506,13 @@ def c_array(data, per_line=12):
     return "\n".join(lines)
 
 
-def main():
+def emit(entries, out_c, out_h, stem, note):
+    """Write one set. `stem` names the generated pair of files and `note` says
+    which panel the set is for. The identifiers are the same in every set -- only
+    one of them is ever compiled (BOARD in the Makefile), and icons_select.h
+    picks the header that matches."""
     parts_c = []
     parts_h = []
-
-    entries = [(f, n, s, False) for f, n, s in ICONS]
-    entries += [(f, n, size, True) for f, n, size in COLOR_ICONS]
 
     for filename, name, size, keep_colour in entries:
         path = os.path.join(ICON_DIR, filename)
@@ -511,23 +544,80 @@ def main():
         " * GENERATED FILE -- do not edit by hand.\n"
         " * Produced from the SVGs in assets/icons by tools/svg_to_lvgl.py.\n"
         " *\n"
+        " * %s\n"
+        " *\n"
         " * White ARGB8888 bitmaps: tint them with lv_obj_set_style_image_recolor().\n"
-        " */\n\n"
+        " */\n\n" % note
     )
 
-    with open(OUT_C, "w") as f:
+    with open(out_c, "w") as f:
         f.write(header)
-        f.write('#include "icons.h"\n\n#include <stdint.h>\n\n')
+        f.write('#include "%s.h"\n\n' % stem)
+        f.write("#include <stdint.h>\n\n")
         f.write("\n".join(parts_c))
 
-    with open(OUT_H, "w") as f:
+    with open(out_h, "w") as f:
         f.write(header)
-        f.write("#ifndef ICONS_H\n#define ICONS_H\n\n")
+        guard = "%s_H" % stem.upper()
+        f.write("#ifndef %s\n#define %s\n\n" % (guard, guard))
         f.write('#include "lvgl/lvgl.h"\n\n')
         f.write("\n".join(parts_h))
-        f.write("\n\n#endif // ICONS_H\n")
+        f.write("\n\n#endif // %s\n" % guard)
 
-    print("wrote %s and %s" % (OUT_C, OUT_H))
+    print("wrote %s and %s" % (out_c, out_h))
+
+
+def write_select():
+    """The header every page includes instead of icons.h.
+
+    Both sets carry the same identifiers, so this is the whole of the choice:
+    which set is compiled (BOARD in the Makefile) and which header names it.
+    """
+    with open(SELECT_OUT_H, "w") as f:
+        f.write(
+            "/*\n"
+            " * GENERATED FILE -- do not edit by hand.\n"
+            " * Produced by tools/svg_to_lvgl.py.\n"
+            " *\n"
+            " * Which icon set this build draws with. Both sets are rasterised from the\n"
+            " * same SVGs and declare the same identifiers; exactly one of them is\n"
+            " * compiled -- BOARD in the Makefile picks the source file and the define\n"
+            " * this header switches on. The interface asks for icon_chevron_left and\n"
+            " * gets the drawing its own panel needs, with no mapping and no rescaling.\n"
+            " */\n\n"
+            "#ifndef ICONS_SELECT_H\n"
+            "#define ICONS_SELECT_H\n\n"
+            "#if defined(SONIX_ICON_SET_SMALL)\n"
+            '#include "icons_small.h"\n'
+            "#else\n"
+            '#include "icons.h"\n'
+            "#endif\n\n"
+            "#endif // ICONS_SELECT_H\n"
+        )
+    print("wrote %s" % SELECT_OUT_H)
+
+
+def main():
+    want_all = "--all" in sys.argv
+    small_only = "--small-only" in sys.argv
+
+    big_entries = [(f, n, s, False) for f, n, s in ICONS]
+    big_entries += [(f, n, size, True) for f, n, size in COLOR_ICONS]
+
+    small_entries = [(f, n, small_size(s), keep) for f, n, s, keep in big_entries]
+
+    big_note = "The 480x720 set: the size every page in src/gui was written for."
+    small_note = (
+        "The 320x480 set: two thirds of every size, for the TempoTec V3 Analog's\n"
+        " * panel. Sizes are truncated (size * 2 / 3), the same arithmetic SC() does, so\n"
+        " * an icon and the box SC() gave it come out the same number of pixels."
+    )
+
+    if not small_only:
+        emit(big_entries, OUT_C, OUT_H, "icons", big_note)
+    if small_only or want_all:
+        emit(small_entries, SMALL_OUT_C, SMALL_OUT_H, "icons_small", small_note)
+    write_select()
 
 
 if __name__ == "__main__":

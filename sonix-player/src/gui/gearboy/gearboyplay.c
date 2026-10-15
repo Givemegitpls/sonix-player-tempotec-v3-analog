@@ -12,7 +12,7 @@
 #include "src/gb/gbcore.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/gearboy/gearboysettings.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
@@ -35,9 +35,16 @@ lv_obj_t *gearboyplay_screen;
 // coordinates. The D-pad and A/B sit at the same place on both panels; the rows
 // below them, where there are any, hold Select and Start (see PILL_).
 
-#define SCREEN_TOP 0
+#define SCREEN_TOP SC(0)
 #define GAME_W GEARBOY_SCREEN_W // 480
 #define GAME_H GEARBOY_SCREEN_H // 432
+
+// The picture as it is placed on the panel. The emulator's own frame stays
+// 480x432 -- the descriptor and the buffer are its, and the layout code must
+// not touch them -- but on the native panel that frame is drawn two thirds of
+// the size (scale.h), and everything placed around it is placed against these.
+#define GAME_DW SC(GAME_W)
+#define GAME_DH SC(GAME_H)
 
 // The panel the layout below is drawn for; a taller one has spare rows at the bottom.
 #define PANEL_H_REF 720
@@ -49,9 +56,9 @@ lv_obj_t *gearboyplay_screen;
 //
 // 220 pixels a side, so the left thumb of a hand holding the device can find it
 // without looking.
-#define DPAD_X0 20
-#define DPAD_Y0 466
-#define DPAD_SIZE 220
+#define DPAD_X0 SC(20)
+#define DPAD_Y0 SC(466)
+#define DPAD_SIZE SC(220)
 #define DPAD_CELL (DPAD_SIZE / 3)
 #define DPAD_CX (DPAD_X0 + DPAD_SIZE / 2)
 #define DPAD_CY (DPAD_Y0 + DPAD_SIZE / 2)
@@ -59,25 +66,25 @@ lv_obj_t *gearboyplay_screen;
 // A and B, diagonal as on the real machine. The rectangle is both the drawing
 // and the touch area: 110 pixels, already wider than a fingertip, and growing
 // the area past the drawing would make the two buttons touch.
-#define BTN_SIZE 110
-#define A_X 352
-#define A_Y 450
-#define B_X 300
-#define B_Y 592
+#define BTN_SIZE SC(110)
+#define A_X SC(352)
+#define A_Y SC(450)
+#define B_X SC(300)
+#define B_Y SC(592)
 
 // Select and Start: two drawn pills in a row under the D-pad and A/B when the
 // panel has PILL_ROW_NEEDS rows (the R1), otherwise two invisible rectangles in
 // the bottom corners of the picture (the R3 Pro II).
-#define CORNER_W 110
-#define CORNER_H 60
-#define CORNER_Y (GAME_H - CORNER_H)
+#define CORNER_W SC(110)
+#define CORNER_H SC(60)
+#define CORNER_Y (GAME_DH - CORNER_H)
 
-#define PILL_W 150
-#define PILL_H 52
-#define PILL_GAP 40 // between the two
-#define PILL_TOP_GAP 16 // clear of B, the lowest of the round buttons
-#define PILL_BOTTOM_GAP 24 // clear of the bottom edge
-#define PILL_X0 ((GAME_W - 2 * PILL_W - PILL_GAP) / 2)
+#define PILL_W SC(150)
+#define PILL_H SC(52)
+#define PILL_GAP SC(40)		 // between the two
+#define PILL_TOP_GAP SC(16)	 // clear of B, the lowest of the round buttons
+#define PILL_BOTTOM_GAP SC(24) // clear of the bottom edge
+#define PILL_X0 ((GAME_DW - 2 * PILL_W - PILL_GAP) / 2)
 
 // The lowest pixel the D-pad and A/B reach.
 #define CONTROLS_BOTTOM (B_Y + BTN_SIZE)
@@ -94,10 +101,10 @@ lv_obj_t *gearboyplay_screen;
 //
 // The middle because it is the only part of the picture a playing hand never
 // rests on.
-#define MENU_W 240
-#define MENU_H 200
-#define MENU_X ((GAME_W - MENU_W) / 2)
-#define MENU_Y (SCREEN_TOP + (GAME_H - MENU_H) / 2)
+#define MENU_W SC(240)
+#define MENU_H SC(200)
+#define MENU_X ((GAME_DW - MENU_W) / 2)
+#define MENU_Y (SCREEN_TOP + (GAME_DH - MENU_H) / 2)
 
 // How long the menu stays deaf after opening.
 //
@@ -147,8 +154,10 @@ static void refresh_period_restore(void) {
 	saved_refresh_ms = 0;
 }
 
-// The panel height, from gui_config_t at init.
-static int panel_h = PANEL_H_REF;
+// The panel height, from gui_config_t at init. Zero until then; the only
+// reader runs after gearboyplay_init() has set it (the define it used to hold
+// goes through SC(), which is not a constant an initializer may use).
+static int panel_h;
 
 // Whether Select and Start are the drawn row at the foot of the screen (true)
 // or the invisible corners of the picture (false). Decided once, from panel_h.
@@ -249,7 +258,7 @@ static int build_zones(gbinput_zone_t *out, int max) {
 			out[n++] = (gbinput_zone_t){0, CORNER_Y, CORNER_W, CORNER_H, GB_KEY_SELECT};
 		}
 		if (n < max) {
-			out[n++] = (gbinput_zone_t){GAME_W - CORNER_W, CORNER_Y, CORNER_W, CORNER_H, GB_KEY_START};
+			out[n++] = (gbinput_zone_t){GAME_DW - CORNER_W, CORNER_Y, CORNER_W, CORNER_H, GB_KEY_START};
 		}
 	}
 
@@ -328,7 +337,7 @@ static void build_dpad(lv_obj_t *parent) {
 	lv_obj_set_pos(v, DPAD_CX - DPAD_CELL / 2, DPAD_Y0);
 	lv_obj_set_style_bg_color(v, body, 0);
 	lv_obj_set_style_bg_opa(v, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(v, 16, 0);
+	lv_obj_set_style_radius(v, SC(16), 0);
 
 	lv_obj_t *h = lv_obj_create(parent);
 	lv_obj_remove_style_all(h);
@@ -336,7 +345,7 @@ static void build_dpad(lv_obj_t *parent) {
 	lv_obj_set_pos(h, DPAD_X0, DPAD_CY - DPAD_CELL / 2);
 	lv_obj_set_style_bg_color(h, body, 0);
 	lv_obj_set_style_bg_opa(h, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(h, 16, 0);
+	lv_obj_set_style_radius(h, SC(16), 0);
 
 	// The hub in the middle, as on the real D-pad.
 	const int hub = 38;
@@ -521,13 +530,13 @@ static void menu_settings_cb(lv_event_t *e) {
 
 static lv_obj_t *menu_row(lv_obj_t *parent, const char *text, lv_event_cb_t cb) {
 	lv_obj_t *row = lv_btn_create(parent);
-	lv_obj_set_size(row, lv_pct(100), 76);
+	lv_obj_set_size(row, lv_pct(100), SC(76));
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, SC(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 20, 0);
+	lv_obj_set_style_pad_hor(row, SC(20), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, NULL);
 
@@ -543,7 +552,7 @@ static lv_obj_t *menu_row(lv_obj_t *parent, const char *text, lv_event_cb_t cb) 
 static void build_menu(void) {
 	menu_layer = lv_obj_create(gearboyplay_screen);
 	lv_obj_remove_style_all(menu_layer);
-	lv_obj_set_size(menu_layer, GAME_W, panel_h);
+	lv_obj_set_size(menu_layer, GAME_DW, panel_h);
 	lv_obj_set_pos(menu_layer, 0, 0);
 	lv_obj_set_style_bg_color(menu_layer, lv_color_black(), 0);
 	lv_obj_set_style_bg_opa(menu_layer, LV_OPA_60, 0);
@@ -553,15 +562,15 @@ static void build_menu(void) {
 	lv_obj_add_event_cb(menu_layer, menu_dismiss_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *card = lv_obj_create(menu_layer);
-	lv_obj_set_size(card, 360, LV_SIZE_CONTENT);
+	lv_obj_set_size(card, SC(360), LV_SIZE_CONTENT);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_screen, 0);
 	lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(card, 18, 0);
+	lv_obj_set_style_radius(card, SC(18), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 16, 0);
-	lv_obj_set_style_pad_gap(card, 10, 0);
+	lv_obj_set_style_pad_all(card, SC(16), 0);
+	lv_obj_set_style_pad_gap(card, SC(10), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -574,13 +583,13 @@ static void build_menu(void) {
 
 // The badge: a 56-pixel disc in the corner with the icon inside. It takes no
 // touch -- it is a label, not a control.
-#define BADGE_SIZE 56
+#define BADGE_SIZE SC(56)
 
 static void build_badge(void) {
 	badge = lv_obj_create(gearboyplay_screen);
 	lv_obj_remove_style_all(badge);
 	lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
-	lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, -14, 14);
+	lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, SC(-14), SC(14));
 	lv_obj_set_style_bg_color(badge, theme()->screen_bg, 0);
 	lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
 	lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
@@ -846,8 +855,8 @@ void gearboyplay_init(gui_config_t *cfg) {
 	// background rather than leaving a black band on the light theme.
 	controls_bg = lv_obj_create(gearboyplay_screen);
 	lv_obj_remove_style_all(controls_bg);
-	lv_obj_set_pos(controls_bg, 0, SCREEN_TOP + GAME_H);
-	lv_obj_set_size(controls_bg, GAME_W, panel_h - (SCREEN_TOP + GAME_H));
+	lv_obj_set_pos(controls_bg, 0, SCREEN_TOP + GAME_DH);
+	lv_obj_set_size(controls_bg, GAME_DW, panel_h - (SCREEN_TOP + GAME_DH));
 	lv_obj_set_style_bg_color(controls_bg, theme()->screen_bg, 0);
 	lv_obj_set_style_bg_opa(controls_bg, LV_OPA_COVER, 0);
 
@@ -857,14 +866,14 @@ void gearboyplay_init(gui_config_t *cfg) {
 	pause_veil = lv_obj_create(gearboyplay_screen);
 	lv_obj_remove_style_all(pause_veil);
 	lv_obj_set_pos(pause_veil, 0, SCREEN_TOP);
-	lv_obj_set_size(pause_veil, GAME_W, GAME_H);
+	lv_obj_set_size(pause_veil, GAME_DW, GAME_DH);
 	lv_obj_set_style_bg_color(pause_veil, lv_color_make(24, 24, 26), 0);
 	lv_obj_set_style_bg_opa(pause_veil, LV_OPA_COVER, 0);
 
 	veil_label = lv_label_create(pause_veil);
 	lv_label_set_text(veil_label, tr("gearboy_starting_the_game"));
 	lv_label_set_long_mode(veil_label, LV_LABEL_LONG_WRAP);
-	lv_obj_set_width(veil_label, GAME_W - 64);
+	lv_obj_set_width(veil_label, GAME_DW - SC(64));
 	lv_obj_set_style_text_align(veil_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_set_style_text_font(veil_label, &font_ui_18, 0);
 	lv_obj_set_style_text_color(veil_label, lv_color_make(150, 150, 155), 0);
@@ -872,7 +881,11 @@ void gearboyplay_init(gui_config_t *cfg) {
 
 	game_image = lv_image_create(gearboyplay_screen);
 	lv_obj_set_pos(game_image, 0, SCREEN_TOP);
-	lv_obj_set_size(game_image, GAME_W, GAME_H);
+	lv_obj_set_size(game_image, GAME_DW, GAME_DH);
+	// The frame is the emulator's 480x432; the panel shows it two thirds of the
+	// size. LVGL resamples it at draw time -- one scaled frame per refresh, the
+	// same work the old 2/3 blit did on the way to the glass.
+	lv_image_set_scale(game_image, ui_image_scale());
 	lv_obj_set_hidden(game_image, true);
 
 	// Select and Start in the picture corners, when there is no row for them.
@@ -880,7 +893,7 @@ void gearboyplay_init(gui_config_t *cfg) {
 	// touchscreen reader. The drawn row is built with the controls below.
 	if (!pill_row) {
 		pressable(gearboyplay_screen, 0, SCREEN_TOP + CORNER_Y, CORNER_W, CORNER_H, GB_KEY_SELECT);
-		pressable(gearboyplay_screen, GAME_W - CORNER_W, SCREEN_TOP + CORNER_Y, CORNER_W, CORNER_H, GB_KEY_START);
+		pressable(gearboyplay_screen, GAME_DW - CORNER_W, SCREEN_TOP + CORNER_Y, CORNER_W, CORNER_H, GB_KEY_START);
 	}
 
 	// And the centre of the picture, which opens the menu. Invisible too.

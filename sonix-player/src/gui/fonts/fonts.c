@@ -13,6 +13,8 @@
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 
+#include "src/gui/shell/scale.h"
+
 // All text is drawn through LVGL's FreeType binding, from the faces the
 // firmware ships in FONT_DIR. One FT_Face per file serves however many sizes
 // use it; glyphs are rasterised on demand into a shared LRU cache.
@@ -234,6 +236,14 @@ static void raise_face(lv_font_t *face, int size, int per_mille) {
 // One size as the interface draws it: the main face with the other scripts
 // chained behind. NULL when the main face cannot be opened.
 static lv_font_t *open_chain(const ui_font_t *ui, int size) {
+	// The face is rasterised at the size the panel draws it, and on the native
+	// panel that is two thirds of the size the interface's numbers were written
+	// for (scale.h). It is not a resize of a bigger glyph: FreeType draws the
+	// outline at this size, so a heading that is 26 px on a 480x720 panel is
+	// rendered at 17 px here and comes out crisp, where the old path drew it at
+	// 26 and resampled it down to 17.
+	size = size * ui_layout_scale() / 3;
+
 	// The face this size draws from. The bold heading font uses the bold
 	// file when the firmware has one; the regular stands in otherwise,
 	// which reads fine at heading sizes even if it is not actually heavier.

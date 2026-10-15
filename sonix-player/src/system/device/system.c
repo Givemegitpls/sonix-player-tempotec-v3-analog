@@ -388,6 +388,16 @@ const char *storage_sd_root(void) {
 	return sd_root[0] ? sd_root : NULL;
 }
 
+// The names the card can be reached by, for the library index: it stores paths
+// and has to recognise the same file when the mount point moves to another of
+// these names. See system.h.
+const char *const *storage_sd_root_aliases(size_t *count) {
+	if (count) {
+		*count = sizeof(SD_ROOT_CANDIDATES) / sizeof(SD_ROOT_CANDIDATES[0]);
+	}
+	return SD_ROOT_CANDIDATES;
+}
+
 // True if something is already mounted on `mount_point`.
 //
 // /proc/mounts lists the kernel's canonical path, so a plain string compare

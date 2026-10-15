@@ -5,6 +5,8 @@
 
 #include "lvgl/lvgl.h"
 
+#include "src/gui/shell/scale.h"
+
 // The handful of colours the whole UI is built from. Three presets (dark,
 // light and AMOLED) live in theme.c; everything on screen pulls from the
 // active one.
@@ -56,6 +58,17 @@ void theme_register_refresh(theme_refresh_cb_t cb);
 // them. Call it when the slider is built and from the page's theme-refresh
 // callback -- the colour depends on the theme in force.
 void theme_apply_slider_knob(lv_obj_t *slider);
+
+// Sliders: see theme.c. The knob is centred on the value and grown by the knob
+// part's padding, so at either end of the travel it hangs outside the track;
+// these move the travel (and only the travel) so it stops at the track's end.
+// Call after the knob's padding is set.
+void theme_inset_slider_knob(lv_obj_t *slider);
+void theme_inset_slider_knob_vertical(lv_obj_t *slider);
+
+// Half the knob's width along the track, for anything that has to line up with
+// the travel rather than with the object (the tick marks of a stepped slider).
+int32_t theme_slider_knob_half(const lv_obj_t *slider, bool vertical);
 
 // Builds the shared styles. Call once, before any screen is created.
 void theme_init(void);

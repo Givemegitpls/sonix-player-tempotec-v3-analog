@@ -108,6 +108,19 @@ typedef struct {
 							   // frame the user is looking at is always the one written two frames ago,
 							   // and each page owes the other everything that changed while it was off
 							   // screen, which is a full-screen copy per frame. One page and no debt.
+	bool native_panel;		   // LVGL draws the interface at the panel's own size, in the panel's own
+							   // pixel format, straight into the framebuffer (main.c). False keeps the
+							   // older path: the interface is laid out at panel_width x panel_height
+							   // (which is then larger than the glass) and shrunk onto it on the way
+							   // out, one 2/3 copy of every changed rectangle per frame.
+							   //
+							   // True only where panel_width/panel_height really are the glass, and
+							   // where the glass scans out 32 bits a pixel in BGRA order -- LVGL's
+							   // ARGB8888 in memory on a little-endian machine. On such a panel drawing
+							   // at the panel's size removes the copy altogether: LVGL blends in the
+							   // format the panel scans, and every pixel lands where the panel reads
+							   // it. The layout then has to be authored for that size too, which is
+							   // what SC() in src/gui/shell/scale.h is for.
 	bool blank_panel;		   // screen-off writes the framebuffer blank node (power.h, power.c).
 							   // False where the stock player never writes it: the panel is then
 							   // left powered and scanning its last frame, and the backlight alone

@@ -8,8 +8,10 @@
 #define DB_CACHE_KIB "-2048"
 
 #include "src/system/library/audiobookdb.h"
+#include "src/system/library/cardroot.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/podcastdl.h"
+#include "src/system/device/system.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -136,6 +138,15 @@ static const char *const SCHEMA[] = {
 	// Local: which mount of this card the counts above were checked against.
 	// One row, bumped every time the card is mounted. See next_mount_serial().
 	"CREATE TABLE IF NOT EXISTS MOUNT_SERIAL(id INT PRIMARY KEY, serial INT)",
+
+	// Local: the card root the index was last written under. The card has three
+	// possible names on this firmware (/mnt/sd_0, /data/mnt/sd_0,
+	// /usr/data/mnt/sd_0 -- see storage_sd_root_aliases()) and the player mounts
+	// it under whichever it resolves at startup, which can differ between runs.
+	// Rows carry absolute paths, so a scan running under one name does not
+	// recognise the rows filed under another: it treats every file as new and
+	// inserts a second copy. One row, id 0; see reconcile_card_root().
+	"CREATE TABLE IF NOT EXISTS CARD_ROOT(id INT PRIMARY KEY, root TEXT COLLATE NOCASE)",
 
 	// Local: whether the card's .m3u playlist files have already been taken into
 	// tables of their own. One row, set once per card.
@@ -1392,12 +1403,50 @@ static bool db_open_file(const char *db_path) {
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// The card root the index is filed under
+//
+// The paths in the index are absolute and the card has more than one possible
+// name on this firmware, so a scan running under one name does not recognise
+// the rows filed under another: it reads every file as new and inserts a second
+// copy of it. The move itself, and the cleanup of a library that already has
+// those duplicates, live in cardroot.c -- small enough to test on its own; this
+// is the wrapper that holds the database lock and tells the lists their rows
+// have moved.
+// ---------------------------------------------------------------------------
+static void reconcile_card_root(const char *new_root) {
+	if (!db || !new_root || !new_root[0]) {
+		return;
+	}
+
+	size_t alias_count = 0;
+	const char *const *aliases = storage_sd_root_aliases(&alias_count);
+
+	pthread_mutex_lock(&db_lock);
+	if (db) {
+		int moved = card_root_reconcile(db, new_root, aliases, alias_count);
+		if (moved > 0) {
+			bump_generation(GEN_MEDIA);
+			printf("library: the card root moved to %s; %d older name(s) moved across\n", new_root, moved);
+		}
+	}
+	pthread_mutex_unlock(&db_lock);
+}
+
 bool library_open(const char *db_path) {
 	if (db) {
 		return true;
 	}
 	if (!db_path || !db_path[0] || !db_open_file(db_path)) {
 		return false;
+	}
+
+	// The index is keyed by absolute paths, and the card has more than one
+	// possible name; if it is being reached by a different one than the last
+	// time, move the paths before anything reads them. See reconcile_card_root.
+	char root[PATH_MAX];
+	if (card_root_of_db_path(db_path, root, sizeof(root))) {
+		reconcile_card_root(root);
 	}
 
 	pthread_mutex_lock(&db_lock);
@@ -6188,6 +6237,14 @@ static void *scan_thread_func(void *arg) {
 		thread_be_background("library scan");
 	} else {
 		thread_be_low_priority("library update");
+	}
+
+	// The index is keyed by absolute paths, and this scan may run under another
+	// of the card's names than the last one did. Move the rows across first, or
+	// the walk would read every file as new and insert a second copy of it.
+	// See reconcile_card_root.
+	if (scan_mode != SCAN_REORGANIZE && scan_root[0]) {
+		reconcile_card_root(scan_root);
 	}
 
 	switch (scan_mode) {

@@ -1,6 +1,7 @@
 #include "scrolltext.h"
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/scale.h"
 #include "src/system/core/frameprof.h"
 #include "src/system/device/power.h"
 #include "src/gui/shell/shown.h"
@@ -106,7 +107,7 @@ static int32_t text_width(lv_obj_t *label, const char *text) {
 // stops handing out fades once it is full.
 // ---------------------------------------------------------------------------
 
-#define FADE_EDGE_PX 24
+#define FADE_EDGE_PX SC(24)
 #define FADE_CACHE_MAX 8
 #define FADE_LABELS_MAX 24
 #define FADE_POLL_MS 80

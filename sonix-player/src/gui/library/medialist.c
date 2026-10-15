@@ -13,7 +13,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/fonts/glyphwarm.h"
 #include "src/gui/shell/gui.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/settings/musicsettings.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/library/playlistpage.h"
@@ -35,13 +35,13 @@ lv_obj_t *medialist_tracks_screen;
 lv_obj_t *medialist_albums_screen;
 
 // The exact geometry of the file browser's rows, so the two lists are twins.
-#define ROW_HEIGHT 100
-#define ROW_GAP 8
+#define ROW_HEIGHT SC(100)
+#define ROW_GAP SC(8)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
-#define ROW_PAD 14
-#define THUMB_SIZE 72
-#define QUALITY_GAP 4 // between a title and the badge under it
+#define ROW_RADIUS SC(12)
+#define ROW_PAD SC(14)
+#define THUMB_SIZE SC(72)
+#define QUALITY_GAP SC(4) // between a title and the badge under it
 #define ROW_POOL 12
 
 // How many rows are held in RAM for a query-backed list: the twelve on screen
@@ -53,9 +53,9 @@ lv_obj_t *medialist_albums_screen;
 // It lives INSIDE the row's left padding, so nothing on the row moves to make
 // space for it -- the thumbnail still starts at ROW_PAD whether the mark is
 // there or not.
-#define PLAYMARK_WIDTH 6
-#define PLAYMARK_HEIGHT 52
-#define PLAYMARK_INSET 4 // from the row's left edge
+#define PLAYMARK_WIDTH SC(6)
+#define PLAYMARK_HEIGHT SC(52)
+#define PLAYMARK_INSET SC(4) // from the row's left edge
 
 // Where in the coverloader's slot table each pool lives (the browser owns
 // 0..9; see coverloader.h).
@@ -76,8 +76,8 @@ lv_obj_t *medialist_albums_screen;
 // album grouping beside circle-play on an artist's tracks, shuffle beside the
 // reverse on Favourites. The strip is sized for the most whatever a particular
 // list shows -- see build_panel() for what happens when it is not.
-#define CORNER_BUTTON_SIZE 56
-#define CORNER_GAP 4
+#define CORNER_BUTTON_SIZE SC(56)
+#define CORNER_GAP SC(4)
 #define CORNER_MAX_BUTTONS 4
 
 // How often finished artwork is collected while any is pending.
@@ -104,11 +104,11 @@ lv_obj_t *medialist_albums_screen;
 // buckets, and two spellings of the same number is how they would drift apart.
 #define INDEX_BUCKETS LIBRARY_INDEX_BUCKETS
 #define INDEX_PAST_Z_SLOT LIBRARY_INDEX_PAST_Z_SLOT
-#define INDEX_BAR_WIDTH 28
+#define INDEX_BAR_WIDTH SC(28)
 #define INDEX_HIDE_MS 2500	// no scrolling and no touch for this long: it goes
 #define INDEX_HINT_MS 450	// the big letter outstays the finger by a moment
 #define INDEX_MIN_ROWS 30	// shorter lists are quicker to just scroll
-#define INDEX_ENGAGE_PX 6	// upward or downward movement that claims the press
+#define INDEX_ENGAGE_PX SC(6)	// upward or downward movement that claims the press
 
 typedef struct {
 	char *name;
@@ -2321,8 +2321,8 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 
 	p->index_bar = lv_obj_create(p->screen);
 	lv_obj_remove_style_all(p->index_bar);
-	lv_obj_set_size(p->index_bar, INDEX_BAR_WIDTH, cfg->screen_height - content_top - 8);
-	lv_obj_align(p->index_bar, LV_ALIGN_TOP_RIGHT, -2, content_top + 4);
+	lv_obj_set_size(p->index_bar, INDEX_BAR_WIDTH, cfg->screen_height - content_top - SC(8));
+	lv_obj_align(p->index_bar, LV_ALIGN_TOP_RIGHT, SC(-2), content_top + SC(4));
 	lv_obj_set_style_bg_color(p->index_bar, theme()->surface, 0);
 	lv_obj_set_style_bg_opa(p->index_bar, LV_OPA_60, 0);
 	lv_obj_set_style_radius(p->index_bar, INDEX_BAR_WIDTH / 2, 0);
@@ -2358,11 +2358,11 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 	// a list of cards, and a card on cards is a card nobody sees.
 	p->index_hint = lv_obj_create(p->screen);
 	lv_obj_remove_style_all(p->index_hint);
-	lv_obj_set_size(p->index_hint, 132, 124);
+	lv_obj_set_size(p->index_hint, SC(132), SC(124));
 	lv_obj_align(p->index_hint, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_style_bg_color(p->index_hint, theme()->accent, 0);
 	lv_obj_set_style_bg_opa(p->index_hint, LV_OPA_90, 0);
-	lv_obj_set_style_radius(p->index_hint, 26, 0);
+	lv_obj_set_style_radius(p->index_hint, SC(26), 0);
 	lv_obj_set_scrollable(p->index_hint, false);
 	lv_obj_set_clickable(p->index_hint, false);
 	lv_obj_set_hidden(p->index_hint, true);
@@ -2552,7 +2552,7 @@ static lv_obj_t *corner_button(lv_obj_t *parent, const lv_image_dsc_t *glyph, lv
 
 // How close to the top or bottom edge a finger has to be before the list starts
 // moving under it, and how far it moves each time the event comes round.
-#define REORDER_EDGE_PX 70
+#define REORDER_EDGE_PX SC(70)
 #define REORDER_EDGE_STEP 18
 
 // Only one drag can be in flight, so this is one set of variables rather than a
@@ -2599,12 +2599,12 @@ static void drop_line_show(panel_t *p, int before_index) {
 		lv_obj_set_style_shadow_width(drop_line, 0, 0);
 		lv_obj_set_style_pad_all(drop_line, 0, 0);
 		lv_obj_add_style(drop_line, &theme_style_accent_bg, 0);
-		lv_obj_set_style_radius(drop_line, 2, 0);
+		lv_obj_set_style_radius(drop_line, SC(2), 0);
 	} else if (lv_obj_get_parent(drop_line) != p->body) {
 		lv_obj_set_parent(drop_line, p->body);
 	}
-	lv_obj_set_size(drop_line, lv_obj_get_width(p->body) - 2 * ROW_PAD, 4);
-	lv_obj_set_pos(drop_line, ROW_PAD, before_index * ROW_PITCH - ROW_GAP / 2 - 2);
+	lv_obj_set_size(drop_line, lv_obj_get_width(p->body) - 2 * ROW_PAD, SC(4));
+	lv_obj_set_pos(drop_line, ROW_PAD, before_index * ROW_PITCH - ROW_GAP / 2 - SC(2));
 	lv_obj_set_hidden(drop_line, false);
 	lv_obj_move_foreground(drop_line);
 }
@@ -2635,7 +2635,7 @@ static int index_under(const panel_t *p, lv_coord_t y) {
 static void drag_mark_rows(panel_t *p) {
 	for (int i = 0; i < ROW_POOL; i++) {
 		bool carried = drag_panel == p && p->rows[i].index >= 0 && p->rows[i].index == drag_from;
-		lv_obj_set_style_border_width(p->rows[i].button, carried ? 2 : 0, 0);
+		lv_obj_set_style_border_width(p->rows[i].button, carried ? SC(2) : 0, 0);
 		if (carried) {
 			lv_obj_set_style_border_color(p->rows[i].button, theme()->accent, 0);
 			lv_obj_set_style_border_opa(p->rows[i].button, LV_OPA_COVER, 0);
@@ -3143,13 +3143,13 @@ static void play_menu_dismiss_cb(lv_event_t *e) {
 
 static lv_obj_t *play_menu_row(lv_obj_t *parent, const char *text, lv_event_cb_t cb) {
 	lv_obj_t *row = lv_btn_create(parent);
-	lv_obj_set_size(row, lv_pct(100), 76);
+	lv_obj_set_size(row, lv_pct(100), SC(76));
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, SC(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
+	lv_obj_set_style_pad_hor(row, SC(16), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, NULL);
 
@@ -3178,15 +3178,15 @@ static void play_menu_build(panel_t *p) {
 	lv_obj_add_event_cb(p->play_menu, play_menu_dismiss_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *card = lv_obj_create(p->play_menu);
-	lv_obj_set_size(card, 380, LV_SIZE_CONTENT);
+	lv_obj_set_size(card, SC(380), LV_SIZE_CONTENT);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_screen, 0);
 	lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(card, 18, 0);
+	lv_obj_set_style_radius(card, SC(18), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 16, 0);
-	lv_obj_set_style_pad_gap(card, 10, 0);
+	lv_obj_set_style_pad_all(card, SC(16), 0);
+	lv_obj_set_style_pad_gap(card, SC(10), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -3467,7 +3467,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	// is one button wide and the second button of a pair lands outside its own
 	// parent, at x = -60, and is never drawn. Sizing for the most buttons that
 	// can coexist costs a strip of empty space on the pages that show fewer.
-	lv_obj_set_size(p->corner, CORNER_MAX_BUTTONS * CORNER_BUTTON_SIZE + (CORNER_MAX_BUTTONS - 1) * CORNER_GAP, 56);
+	lv_obj_set_size(p->corner, CORNER_MAX_BUTTONS * CORNER_BUTTON_SIZE + (CORNER_MAX_BUTTONS - SC(1)) * CORNER_GAP, SC(56));
 	lv_obj_set_clickable(p->corner, false); // it is a shelf, not a control
 	lv_obj_align(p->corner, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_scrollable(p->corner, false);
@@ -3525,7 +3525,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	lv_obj_set_style_text_align(p->empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(p->empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(p->empty, &font_ui_24, 0);
-	lv_obj_align(p->empty, LV_ALIGN_TOP_MID, 0, 120);
+	lv_obj_align(p->empty, LV_ALIGN_TOP_MID, 0, SC(120));
 	lv_obj_set_hidden(p->empty, true);
 
 	for (int i = 0; i < ROW_POOL; i++) {
@@ -3565,7 +3565,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 
 		row->label = lv_label_create(row->text);
 		lv_label_set_long_mode(row->label, LV_LABEL_LONG_DOT);
-		lv_obj_set_width(row->label, LV_PCT(100));
+		lv_obj_set_width(row->label, LV_PCT(SC(100)));
 		// One line, always. LV_LABEL_LONG_DOT wraps before it truncates, and a
 		// title on two lines pushes the badge under it out of the row.
 		lv_obj_set_height(row->label, lv_font_get_line_height(&font_ui_24));
@@ -3574,10 +3574,10 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 
 		row->detail = lv_obj_create(row->text);
 		lv_obj_remove_style_all(row->detail);
-		lv_obj_set_size(row->detail, LV_PCT(100), LV_SIZE_CONTENT);
+		lv_obj_set_size(row->detail, LV_PCT(SC(100)), LV_SIZE_CONTENT);
 		lv_obj_set_flex_flow(row->detail, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->detail, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-		lv_obj_set_style_pad_column(row->detail, 8, 0);
+		lv_obj_set_style_pad_column(row->detail, SC(8), 0);
 		lv_obj_set_scrollable(row->detail, false);
 		lv_obj_set_clickable(row->detail, false);
 		lv_obj_set_event_bubble(row->detail, true);
@@ -3631,7 +3631,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		if (is_tracks) {
 			// The per-track menu, riding the right edge of the row.
 			row->menu_btn = lv_btn_create(row->button);
-			lv_obj_set_size(row->menu_btn, 44, 44);
+			lv_obj_set_size(row->menu_btn, SC(44), SC(44));
 			lv_obj_set_style_bg_opa(row->menu_btn, LV_OPA_TRANSP, 0);
 			lv_obj_set_style_border_width(row->menu_btn, 0, 0);
 			lv_obj_set_style_shadow_width(row->menu_btn, 0, 0);

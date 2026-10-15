@@ -6,7 +6,7 @@
 
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
+#include "src/gui/shell/icons_select.h"
 #include "src/gui/audio/peqsettings.h"
 #include "src/gui/audio/peqautoeq.h"
 #include "src/gui/shell/settingsrow.h"
@@ -179,30 +179,30 @@ static void graph_paint_theme(void) {
 static void build_graph(lv_obj_t *parent) {
 	lv_obj_t *card = lv_obj_create(parent);
 	lv_obj_set_width(card, lv_pct(100));
-	lv_obj_set_height(card, 236);
+	lv_obj_set_height(card, SC(236));
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, SC(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 14, 0);
+	lv_obj_set_style_pad_all(card, SC(14), 0);
 	lv_obj_set_scrollable(card, false);
 	// Not clickable, so the back gesture can start on top of the graph.
 	lv_obj_set_clickable(card, false);
 
 	graph = lv_chart_create(card);
-	lv_obj_set_size(graph, lv_pct(100), 168);
+	lv_obj_set_size(graph, lv_pct(100), SC(168));
 	lv_obj_align(graph, LV_ALIGN_TOP_MID, 0, 0);
 	lv_obj_set_clickable(graph, false);
 	lv_obj_set_style_border_width(graph, 0, 0);
-	lv_obj_set_style_radius(graph, 8, 0);
-	lv_obj_set_style_pad_all(graph, 6, 0);
+	lv_obj_set_style_radius(graph, SC(8), 0);
+	lv_obj_set_style_pad_all(graph, SC(6), 0);
 	lv_chart_set_type(graph, LV_CHART_TYPE_LINE);
 	lv_chart_set_point_count(graph, GRAPH_POINTS);
 	lv_chart_set_range(graph, LV_CHART_AXIS_PRIMARY_Y, -GRAPH_RANGE_TENTHS, GRAPH_RANGE_TENTHS);
 	lv_chart_set_div_line_count(graph, 5, 4);
 	// No point markers: with sixty-one points the bare line reads better.
 	lv_obj_set_style_size(graph, 0, 0, LV_PART_INDICATOR);
-	lv_obj_set_style_line_width(graph, 3, LV_PART_ITEMS);
+	lv_obj_set_style_line_width(graph, SC(3), LV_PART_ITEMS);
 
 	graph_series = lv_chart_add_series(graph, theme()->accent, LV_CHART_AXIS_PRIMARY_Y);
 	lv_chart_set_ext_y_array(graph, graph_series, graph_values);
@@ -586,7 +586,7 @@ static lv_obj_t *entry_key(lv_obj_t *parent, const char *text, const lv_image_ds
 	lv_obj_set_size(btn, lv_pct(width_pct), lv_pct(18));
 	lv_obj_add_style(btn, &theme_style_card, 0);
 	lv_obj_add_style(btn, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(btn, 14, 0);
+	lv_obj_set_style_radius(btn, SC(14), 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, (void *)user);
@@ -625,10 +625,10 @@ static void build_entry_layer(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(entry_heading, &font_ui_24, 0);
 	// Clear of the back arrow, which stays on top of every layer: the same
 	// place the preset naming dialogs put their heading.
-	lv_obj_align(entry_heading, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, top + 10);
+	lv_obj_align(entry_heading, LV_ALIGN_TOP_LEFT, cfg->padding + SC(56) + SC(14), top + SC(10));
 
 	lv_obj_t *cancel = lv_btn_create(entry_layer);
-	lv_obj_set_size(cancel, 56, 56);
+	lv_obj_set_size(cancel, SC(56), SC(56));
 	lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, top);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(cancel, 0, 0);
@@ -641,16 +641,16 @@ static void build_entry_layer(gui_config_t *cfg) {
 	lv_obj_center(cancel_icon);
 
 	lv_obj_t *field = lv_obj_create(entry_layer);
-	lv_obj_set_size(field, cfg->screen_width - 2 * cfg->padding, 84);
-	lv_obj_align(field, LV_ALIGN_TOP_LEFT, cfg->padding, top + 66);
+	lv_obj_set_size(field, cfg->screen_width - 2 * cfg->padding, SC(84));
+	lv_obj_align(field, LV_ALIGN_TOP_LEFT, cfg->padding, top + SC(66));
 	lv_obj_add_style(field, &theme_style_card, 0);
-	lv_obj_set_style_radius(field, 12, 0);
+	lv_obj_set_style_radius(field, SC(12), 0);
 	lv_obj_set_style_border_width(field, 0, 0);
 	lv_obj_set_style_shadow_width(field, 0, 0);
 	lv_obj_set_scrollable(field, false);
 	entry_display = lv_label_create(field);
 	lv_obj_set_style_text_font(entry_display, &font_ui_36_bold, 0);
-	lv_obj_align(entry_display, LV_ALIGN_RIGHT_MID, -10, 0);
+	lv_obj_align(entry_display, LV_ALIGN_RIGHT_MID, SC(-10), 0);
 
 	int pad_top = top + 66 + 84 + 16;
 	lv_obj_t *pad = lv_obj_create(entry_layer);
@@ -659,8 +659,8 @@ static void build_entry_layer(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(pad, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(pad, 0, 0);
 	lv_obj_set_style_pad_all(pad, 0, 0);
-	lv_obj_set_style_pad_row(pad, 10, 0);
-	lv_obj_set_style_pad_column(pad, 10, 0);
+	lv_obj_set_style_pad_row(pad, SC(10), 0);
+	lv_obj_set_style_pad_column(pad, SC(10), 0);
 	lv_obj_set_scrollable(pad, false);
 	lv_obj_set_flex_flow(pad, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_flex_align(pad, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -684,15 +684,15 @@ static void build_entry_layer(gui_config_t *cfg) {
 // round it a finger can find.
 static void entry_attach(lv_obj_t *value_label, entry_kind_t kind) {
 	lv_obj_set_clickable(value_label, true);
-	lv_obj_set_ext_click_area(value_label, 24);
+	lv_obj_set_ext_click_area(value_label, SC(24));
 	lv_obj_set_style_text_decor(value_label, LV_TEXT_DECOR_UNDERLINE, 0);
 	lv_obj_add_event_cb(value_label, entry_open_cb, LV_EVENT_CLICKED, (void *)(intptr_t)kind);
 }
 
 static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, int value) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 52);
-	lv_obj_set_style_pad_hor(btn, 20, 0);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, SC(52));
+	lv_obj_set_style_pad_hor(btn, SC(20), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -710,12 +710,12 @@ static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, int value) {
 static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph,
 							   lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, SC(56), SC(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (SC(56) + SC(6)), cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *icon = lv_image_create(button);
@@ -766,11 +766,11 @@ static void build_band_page(gui_config_t *cfg) {
 	lv_obj_set_width(shape_card, lv_pct(100));
 	lv_obj_set_height(shape_card, LV_SIZE_CONTENT);
 	lv_obj_add_style(shape_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(shape_card, 12, 0);
+	lv_obj_set_style_radius(shape_card, SC(12), 0);
 	lv_obj_set_style_border_width(shape_card, 0, 0);
 	lv_obj_set_style_shadow_width(shape_card, 0, 0);
-	lv_obj_set_style_pad_all(shape_card, 18, 0);
-	lv_obj_set_style_pad_row(shape_card, 14, 0);
+	lv_obj_set_style_pad_all(shape_card, SC(18), 0);
+	lv_obj_set_style_pad_row(shape_card, SC(14), 0);
 	lv_obj_set_scrollable(shape_card, false);
 	lv_obj_set_flex_flow(shape_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(shape_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -785,7 +785,7 @@ static void build_band_page(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(pills, 0, 0);
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 10, 0);
+	lv_obj_set_style_pad_gap(pills, SC(10), 0);
 	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);

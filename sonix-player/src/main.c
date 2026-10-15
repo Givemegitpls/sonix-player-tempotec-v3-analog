@@ -77,6 +77,17 @@
 static volatile sig_atomic_t running = 1;
 
 #ifdef HOST_BUILD
+// Where the simulator keeps what the device keeps on its writable partition.
+//
+// The host has no /data and no card of its own, so without a file of its own the
+// simulator starts every run as a first boot: the language, the time zone, the
+// clock's own "configured" flag and the reader's bookmarks are all settings, and
+// settings that cannot be written are settings that get asked for again. Under
+// /tmp they survive the process, so a walk through the interface starts where the
+// last one left off. SONIX_CONFIG and SONIX_EBOOK_CONFIG still override the
+// paths, and nothing here is used on the device.
+#define SONIX_HOST_STATE_DIR "/tmp/sonix/data"
+
 // Screenshot trigger on the simulator. The device uses volume-up plus power,
 // physical keys that do not exist here, so creating /tmp/sonix/shot takes their
 // place and runs the same screenshot path (copy, flash, PNG writer).
@@ -1115,7 +1126,7 @@ static void install_signal_guards(void) {
 //
 // The distance is from the press point to the release point; the indev
 // callback is not offered PRESSING, so the path in between is not seen.
-#define TAP_SLOP_PX 12
+#define TAP_SLOP_PX SC(12)
 
 static void tap_guard_cb(lv_event_t *e) {
 	lv_indev_t *indev = lv_indev_active();
@@ -1303,6 +1314,11 @@ static lv_display_t *init_host_display(void) {
 // No panel to re-arm on the host: the SDL window never blanks.
 void display_wake_begin(lv_display_t *disp) { (void)disp; }
 void display_wake_end(lv_display_t *disp) { (void)disp; }
+
+// Nothing to disarm either: power.c calls this after a blank it does not
+// perform here. It has no host counterpart otherwise, which is what the link
+// error without this line was.
+void display_panel_disarmed(void) {}
 
 // The folder that stands in for the memory card: SONIX_SD_ROOT, else the
 // documents folder named by XDG, else ~/Documents or ~/Documenti.
@@ -1761,16 +1777,24 @@ static inline __attribute__((always_inline)) uint16_t pack16(uint32_t s) {
 // reads that alpha -- so the three fields are taken apart and widened, the low
 // bits repeated into the high ones so full scale stays full scale, and the
 // alpha byte is opaque: this interface has no translucency of its own to keep.
+// One RGB565 pixel as the four bytes the 32-bit panel scans, in the order it
+// scans them: blue, green, red, opaque. The 5- and 6-bit fields are widened by
+// repeating their low bits into the high ones, so full scale stays full scale.
+// The masks the widening used to carry are dead -- neither (v << 3) | (v >> 2)
+// nor (v << 2) | (v >> 4) can leave a byte -- and the alpha is opaque because
+// this interface has no translucency of its own to keep.
+static inline __attribute__((always_inline)) uint32_t rgb565_to_bgra(uint16_t pixel) {
+	uint32_t b = pixel & 0x1Fu, g = (pixel >> 5) & 0x3Fu, r = (pixel >> 11) & 0x1Fu;
+	return ((b << 3) | (b >> 2)) | (((g << 2) | (g >> 4)) << 8) | (((r << 3) | (r >> 2)) << 16) | 0xFF000000u;
+}
+
 static inline __attribute__((always_inline)) void fb_store_pixel(uint8_t *at, uint16_t pixel) {
 	// One store per pixel, in the width the page wants. The addresses handed in
 	// are always a whole number of pixels into the page, and the page is page
 	// aligned, so a 4-byte page pixel is 4-byte aligned and a 2-byte one is
 	// 2-byte aligned: the two cases are one unaligned-looking store that is not.
 	if (fb_bytespp == 4) {
-		uint32_t b = pixel & 0x1Fu, g = (pixel >> 5) & 0x3Fu, r = (pixel >> 11) & 0x1Fu;
-		uint32_t word = ((b << 3) | (b >> 2)) | ((((g << 2) | (g >> 4)) & 0xFFu) << 8) |
-						((((r << 3) | (r >> 2)) & 0xFFu) << 16) | 0xFF000000u;
-		*(uint32_t *)at = word;
+		*(uint32_t *)at = rgb565_to_bgra(pixel);
 	} else {
 		*(uint16_t *)at = pixel;
 	}
@@ -1869,22 +1893,62 @@ static void blit_scaled_2_3(uint8_t *dst, const uint16_t *src, const lv_area_t *
 
 // Copies one dirty rectangle of `src` into `dst` (a whole framebuffer page),
 // turned through 180 degrees when `rotated`: the pixel at (x, y) lands at
-// (W-1-x, H-1-y). The pixel itself goes through fb_store_pixel(), so a 16-bit
-// page and a 32-bit one both come out right.
+// (W-1-x, H-1-y). This is the copy the native panel makes every frame, so it is
+// the one place on the interface thread worth shaping by hand.
+//
+// The framebuffer's width is decided once, before the loops, and the turn has a
+// loop of its own. It used to be fb_store_pixel(), which read the global
+// fb_bytespp on every pixel -- and because the loop writes through a pointer
+// the compiler must assume can alias that global, the test could not be hoisted
+// and every pixel paid for it. Measured on the host, that change alone is a
+// third off a full-screen copy; the two-pixel stores and the 5->8 / 6->8
+// lookup tables the same measurement tried were both slower, so they are not
+// here.
 static void blit_rotated_180(uint8_t *dst, const uint16_t *src, const lv_area_t *area, int32_t width,
 							 int32_t height, bool rotated) {
-	int bpp = fb_bytespp;
 	int32_t x1 = area->x1 < 0 ? 0 : area->x1;
 	int32_t y1 = area->y1 < 0 ? 0 : area->y1;
 	int32_t x2 = area->x2 >= width ? width - 1 : area->x2;
 	int32_t y2 = area->y2 >= height ? height - 1 : area->y2;
 
-	for (int32_t y = y1; y <= y2; y++) {
-		const uint16_t *src_row = src + (size_t)y * width;
-		uint8_t *dst_row = dst + (size_t)(rotated ? height - 1 - y : y) * width * bpp;
-		for (int32_t x = x1; x <= x2; x++) {
-			int32_t dx = rotated ? width - 1 - x : x;
-			fb_store_pixel(dst_row + (size_t)dx * bpp, src_row[x]);
+	if (fb_bytespp == 4) {
+		// The V3 Analog's page: RGB565 in, BGRA out, one pixel for one.
+		if (rotated) {
+			for (int32_t y = y1; y <= y2; y++) {
+				const uint16_t *s = src + (size_t)y * width;
+				uint32_t *d = (uint32_t *)(dst + (size_t)(height - 1 - y) * width * 4);
+				for (int32_t x = x1; x <= x2; x++) {
+					d[width - 1 - x] = rgb565_to_bgra(s[x]);
+				}
+			}
+		} else {
+			for (int32_t y = y1; y <= y2; y++) {
+				const uint16_t *s = src + (size_t)y * width;
+				uint32_t *d = (uint32_t *)(dst + (size_t)y * width * 4);
+				for (int32_t x = x1; x <= x2; x++) {
+					d[x] = rgb565_to_bgra(s[x]);
+				}
+			}
+		}
+		return;
+	}
+
+	// A 16-bit page (the Blaze and the R3 Pro II): the two bytes as they sit.
+	if (rotated) {
+		for (int32_t y = y1; y <= y2; y++) {
+			const uint16_t *s = src + (size_t)y * width;
+			uint16_t *d = (uint16_t *)(dst + (size_t)(height - 1 - y) * width * 2);
+			for (int32_t x = x1; x <= x2; x++) {
+				d[width - 1 - x] = s[x];
+			}
+		}
+	} else {
+		for (int32_t y = y1; y <= y2; y++) {
+			const uint16_t *s = src + (size_t)y * width;
+			uint16_t *d = (uint16_t *)(dst + (size_t)y * width * 2);
+			for (int32_t x = x1; x <= x2; x++) {
+				d[x] = s[x];
+			}
 		}
 	}
 }
@@ -2130,15 +2194,27 @@ static lv_display_t *try_panned_display(void) {
 		return NULL;
 	}
 
-	// A panel two thirds the size of the model's layout is drawn at the
-	// layout's size and shrunk on the way out (see blit_scaled_2_3). At 32 bpp
-	// there is no other way either: LVGL draws RGB565, and RGB565 cannot be
-	// memcpy()d into a BGRA page, so a 32-bit panel is always drawn into this
-	// RAM page and rewritten by the copy.
+	// The layout page. LVGL always draws the interface into a RAM page in
+	// RGB565, and the flush copies what changed onto the panel in one pass. It
+	// is never drawn straight into the page the panel is scanning: a tile
+	// written there is on the glass the instant it is written, so the panel
+	// shows the frame half old and half new until the whole thing is drawn --
+	// the torn picture, a horizontal seam through the cover on the player and a
+	// list body that is a flat fill for several frames while its rows are still
+	// being built. One pass onto the page, after the frame is complete, is what
+	// keeps the glass whole.
+	//
+	// Two cases want the page. A 32-bit panel, because LVGL's RGB565 cannot be
+	// memcpy()d into a BGRA page and has to be widened by the copy. And the
+	// shrunk layout, where the page is also larger than the panel. On the
+	// native panel (sysinfo.h, native_panel) the page is the panel's own size
+	// and the copy is one pixel in, one pixel out -- no filter and no resample,
+	// the interface simply laid out at 320x480.
 	log_w = (int32_t)fb_var.xres;
 	log_h = (int32_t)fb_var.yres;
 	const sysinfo_model_t *model = sysinfo_model();
-	if (model && model->panel_width * 2 == log_w * 3 && model->panel_height * 2 == log_h * 3) {
+	bool shrunk = model && model->panel_width * 2 == log_w * 3 && model->panel_height * 2 == log_h * 3;
+	if (shrunk) {
 		size_t size = (size_t)model->panel_width * (size_t)model->panel_height * 2;
 		scale_page = malloc(size);
 		if (scale_page) {
@@ -2150,9 +2226,9 @@ static lv_display_t *try_panned_display(void) {
 			fprintf(stderr, "fb: no memory for the %zu-byte layout page, drawing at the panel's size\n", size);
 		}
 	} else if (fb_bytespp == 4) {
-		// A 32-bit panel that is not the shrunk layout: the same RAM page, one
-		// pixel in for one out, so that LVGL's RGB565 can be rewritten into the
-		// BGRA the panel scans.
+		// A 32-bit panel at the layout's own size -- the V3 Analog. The same
+		// RAM page, one pixel in for one out, so that LVGL's RGB565 can be
+		// widened into the BGRA the panel scans.
 		size_t size = (size_t)log_w * (size_t)log_h * 2;
 		scale_page = malloc(size);
 		if (scale_page) {
@@ -2163,7 +2239,7 @@ static lv_display_t *try_panned_display(void) {
 	}
 	fb_ram_page = scale_page != NULL;
 
-	// At 32 bpp there is no direct path: without the RAM page there is nothing
+	// At 32 bpp there is no direct form: without the RAM page there is nothing
 	// to convert through, and letting LVGL draw RGB565 straight into the
 	// panel's BGRA would put two pixels where one belongs.
 	if (fb_bytespp == 4 && !fb_ram_page) {
@@ -2182,6 +2258,8 @@ static lv_display_t *try_panned_display(void) {
 		return NULL;
 	}
 
+	// RGB565 always, whatever the panel scans: the RAM page is the format LVGL
+	// blends fastest in, and the copy is what turns it into the panel's own.
 	lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
 	if (fb_ram_page) {
 		// Both framebuffer pages owe a full frame.
@@ -2192,13 +2270,20 @@ static lv_display_t *try_panned_display(void) {
 		}
 		lv_display_set_buffers(disp, scale_page, NULL, (uint32_t)(log_w * log_h * 2), LV_DISPLAY_RENDER_MODE_DIRECT);
 		if (fb_scaled && fb_single_page) {
-			// The V3 Analog's path, said in one line so the log on the device
+			// The shrunk layout, said in one line so the log on the device
 			// shows which of the two display paths the panel took.
 			printf("fb: %u bpp, one page: the interface at %dx%d is shrunk 2/3 onto the %ux%u panel\n",
 				   (unsigned)(fb_bytespp * 8), (int)log_w, (int)log_h, fb_var.xres, fb_var.yres);
 		} else if (fb_scaled) {
 			printf("fb: interface at %dx%d, shrunk 2/3 onto the %ux%u panel\n", (int)log_w, (int)log_h, fb_var.xres,
 				   fb_var.yres);
+		} else if (model && model->native_panel) {
+			// The V3 Analog's path: the interface is laid out at the panel's
+			// own size, in RGB565, and copied onto the BGRA page one pixel in,
+			// one pixel out, in one pass per frame.
+			printf("fb: %u bpp, one page: the interface is drawn at the panel's own %dx%d (RGB565, copied one to "
+				   "one onto %ux%u)\n",
+				   (unsigned)(fb_bytespp * 8), (int)log_w, (int)log_h, fb_var.xres, fb_var.yres);
 		} else {
 			printf("fb: %u bpp, %s, copied one to one onto the %ux%u panel\n", (unsigned)(fb_bytespp * 8),
 				   fb_single_page ? "one page" : "two pages", fb_var.xres, fb_var.yres);
@@ -2668,6 +2753,17 @@ int main(int argc, char **argv) {
 	}
 	struct stat config_st;
 	bool first_start = stat(config_file, &config_st) != 0;
+#else
+	// The simulator's own settings file, made once and then reused (see
+	// SONIX_HOST_STATE_DIR): the first run asks for the language and the time,
+	// and every run after it starts on the menu.
+	mkdir("/tmp/sonix", 0755);
+	mkdir(SONIX_HOST_STATE_DIR, 0755);
+	static char host_config_path[128];
+	if (!config_file) {
+		snprintf(host_config_path, sizeof(host_config_path), "%s/device_config.ini", SONIX_HOST_STATE_DIR);
+		config_file = host_config_path;
+	}
 #endif
 	config_init(config_file);
 #ifndef HOST_BUILD
@@ -2685,6 +2781,14 @@ int main(int argc, char **argv) {
 		static char ebook_path[96];
 		snprintf(ebook_path, sizeof(ebook_path), "%s/ebook_config.ini", sysinfo_user_data_dir());
 		ebook_file = ebook_path;
+	}
+#else
+	// Beside the simulator's own settings, so reading positions survive a
+	// restart too (SONIX_HOST_STATE_DIR above).
+	static char host_ebook_path[128];
+	if (!ebook_file) {
+		snprintf(host_ebook_path, sizeof(host_ebook_path), "%s/ebook_config.ini", SONIX_HOST_STATE_DIR);
+		ebook_file = host_ebook_path;
 	}
 #endif
 	config_store_init(config_ebook_store(), ebook_file);
@@ -2860,8 +2964,13 @@ int main(int argc, char **argv) {
 	gui_config_t gui_cfg = {
 		.screen_width = (uint32_t)panel_w,
 		.screen_height = (uint32_t)panel_h,
-		.top_bar_height = 44,
-		.padding = 15,
+		// Both are panel pixels, so both go through SC(): 44 and 15 on the
+		// 480x720 panels, 29 and 10 on the V3 Analog's 320x480. The pages read
+		// them straight -- cfg->screen_width - 2 * SC(15) mixes the two
+		// correctly, the config already in panel pixels and the literal turned
+		// into them.
+		.top_bar_height = (int8_t)SC(44),
+		.padding = (int8_t)SC(15),
 #ifdef HOST_BUILD
 		.sd_root_path = music_path,
 #else

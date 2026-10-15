@@ -1,5 +1,7 @@
 #include "sysinfo.h"
 
+#include "board.h"
+
 #include "src/system/core/respath.h"
 
 #include "src/system/device/system.h"
@@ -18,211 +20,6 @@ static char device_name[64];
 static char dac_info[96];
 static char ota_repo[128];
 
-// Every player this binary knows how to be. Both serial prefixes are the ones
-// printed on the box.
-static const sysinfo_model_t MODELS[] = {
-	{
-		.name = "HiBy R3 Pro II",
-		.panel_width = 480,
-		.panel_height = 720,
-		.update_stem = "r3proii",
-		.serial_prefix = "R3PII",
-		.pmic_charger = false,
-		.cs43131 = false,
-		.ak4493 = false,
-		.remap_list = false,
-		.tap_wake = true,
-		.one_flank = false,
-		.media_keys_swapped = true,
-		.one_boot_logo = false,
-		.boot_logo_flash = true,
-		.backlight_dir = NULL,
-		.mixer_card = 0,
-		.user_data_dir = NULL,
-		.buttons_device_name = NULL,
-		.bluetoothd_path = NULL,
-		.bt_firmware_dir = NULL,
-		.bt_chip_by_firmware = false,
-		.usb_gadget_legacy = false,
-		.usb_audio_vendor = NULL,
-		.usb_audio_product = NULL,
-		.usb_audio_functions = NULL,
-		.bluetooth_stack = true,
-		.single_fb_page = false,
-		.blank_panel = true,
-		.pcm_device = NULL,
-	},
-	{
-		.name = "HiBy R1",
-		.panel_width = 480,
-		.panel_height = 800,
-		.update_stem = "r1",
-		.serial_prefix = "R1",
-		.pmic_charger = true,
-		.cs43131 = true,
-		.ak4493 = false,
-		.remap_list = false,
-		.tap_wake = false,
-		.one_flank = true,
-		.media_keys_swapped = false,
-		.one_boot_logo = false,
-		.boot_logo_flash = true,
-		.backlight_dir = NULL,
-		.mixer_card = 0,
-		.user_data_dir = NULL,
-		.buttons_device_name = NULL,
-		.bluetoothd_path = NULL,
-		.bt_firmware_dir = NULL,
-		.bt_chip_by_firmware = false,
-		.usb_gadget_legacy = false,
-		.usb_audio_vendor = NULL,
-		.usb_audio_product = NULL,
-		.usb_audio_functions = NULL,
-		.bluetooth_stack = true,
-		.single_fb_page = false,
-		.blank_panel = true,
-		.pcm_device = NULL,
-	},
-	{
-		// Charger in the AXP2101 PMIC; AK4493SEQ DAC with 3.5 mm and 4.4 mm.
-		// Laid out at 480x720 and shrunk 2/3 onto the 320x480 glass (main.c).
-		.name = "TempoTec V3 Blaze",
-		.panel_width = 480,
-		.panel_height = 720,
-		.update_stem = "v3_analog_2025",
-		.serial_prefix = "",
-		.pmic_charger = true,
-		.cs43131 = false,
-		.ak4493 = true,
-		.remap_list = true,
-		.tap_wake = false,
-		.one_flank = false,
-		// Like the R3 Pro II's: KEY_NEXTSONG is the key that goes back,
-		// confirmed on the device.
-		.media_keys_swapped = true,
-		// TempoTec's own logo is /etc/logo.jpeg. logo1 and logo2 are HiBy's,
-		// left over from the base firmware and sized for other panels.
-		.one_boot_logo = true,
-		.boot_logo_flash = true,
-		.backlight_dir = NULL,
-		.mixer_card = 0,
-		.user_data_dir = NULL,
-		.buttons_device_name = NULL,
-		.bluetoothd_path = NULL,
-		.bt_firmware_dir = NULL,
-		.bt_chip_by_firmware = false,
-		.usb_gadget_legacy = false,
-		.usb_audio_vendor = NULL,
-		.usb_audio_product = NULL,
-		.usb_audio_functions = NULL,
-		.bluetooth_stack = true,
-		.single_fb_page = false,
-		.blank_panel = true,
-		.pcm_device = NULL,
-	},
-	{
-		// TempoTec Variations V3 Analog (V3-A) -- the 2024 firmware
-		// generation: glibc 2.16, Ingenic X1000E, the same 320x480 glass as the
-		// Blaze and the same dual AK4493SEQ behind it, but a different machine
-		// underneath.
-		//
-		// What is its own here, all of it measured on the device rather than
-		// guessed:
-		//   * the codec's controls and the analogue output are on card 1 -- card
-		//     0 is "sa_spdif", a dummy the optical route shares (hw:1);
-		//   * /dev/i2c-0 does not exist, so the AXP2101 charge limit cannot be
-		//     written the way axpcharge.c does it; the stock player goes through
-		//     /sys/class/axppower and /sys/class/power_supply/usb instead. Until
-		//     that is written, the switch is off rather than writing nothing and
-		//     saying it did;
-		//   * /dev/mtd5 is the /data UBI volume, not a scratch partition, so the
-		//     boot logo marker must never be written there (boot_logo_flash);
-		//   * no /etc/logo.jpeg (TempoTec's own logo is on the Blaze only), so
-		//     the logo selector keeps its default;
-		//   * the three skip/volume keys are one arrangement with KEY_NEXTSONG
-		//     going forward -- not yet confirmed against the case, so this is the
-		//     stock ordering and a device test is owed.
-		.name = "TempoTec V3 Analog",
-		.panel_width = 480,
-		.panel_height = 720,
-		.update_stem = "v3_analog",
-		.serial_prefix = "V3",
-		// The stock player's own node for the number printed on the box (its
-		// About page reads the same file), and the box's number starts with the
-		// model's own "V3". The HiBy boards' efuse_chip_id holds a different
-		// number, which is why the prefix and the node travel together here.
-		.serial_node = "/proc/jz/efuse/efuse_serial_nb",
-		// The node holds the number itself, with no chip-id line around it, so
-		// the whole line is the serial's own part (the box adds "V3" in front).
-		.serial_digits = 0,
-		// The box's number carries the check digit the stock player computes,
-		// and on this unit the computed digit matches the box exactly.
-		.serial_check_digit = true,
-		.pmic_charger = false,
-		.cs43131 = false,
-		.ak4493 = true,
-		.remap_list = true,
-		.tap_wake = false,
-		.one_flank = false,
-		// The key the kernel calls NEXTSONG is the one the case prints as back,
-		// as on the R3 Pro II. Said by the user watching the list move the wrong
-		// way when the forward button was pressed.
-		.media_keys_swapped = true,
-		.one_boot_logo = false,
-		.boot_logo_flash = false,
-		// The kernel driver registers "pwm-backlight.0" here; the stock firmware
-		// writes the same node. The HiBy boards' "backlight_pwm0" does not exist
-		// on this one, which is why the model carries the name at all.
-		.backlight_dir = "/sys/class/backlight/pwm-backlight.0",
-		.mixer_card = 1,
-		// The writable volume, mounted at /data (ubi1_0). The Blaze's /usr/data
-		// does not exist here, and a settings file that cannot be written is a
-		// player that forgets the language, the time zone and the volume on
-		// every boot -- which is what the log said before this line existed.
-		.user_data_dir = "/data",
-		// The kernel registers the case keys as "gpio-keys"; the family names
-		// have never matched it, so this board watched no key device at all.
-		.buttons_device_name = "gpio-keys",
-		// The stock firmware's own bluetoothd path (its init starts that one) and
-		// its own firmware directory: the .hcd sits in /lib/firmware, not in a
-		// bt_bcm subdirectory.
-		.bluetoothd_path = "/usr/sbin/bluetoothd",
-		.bt_firmware_dir = "/lib/firmware",
-		// DAC mode goes through the firmware's legacy android_usb gadget: its
-		// uac_sa function is one of the modes there, with these ids and this
-		// function list (the stock player's own values).
-		.bt_chip_by_firmware = true,
-		.usb_gadget_legacy = true,
-		.usb_audio_vendor = "22E1",
-		.usb_audio_product = "F008",
-		.usb_audio_functions = "uac_sa,hid",
-		// The firmware's own Bluetooth stack runs here, not this port's: its
-		// modules, its scripts, its firmware files. Talking to it from the port
-		// gets a failed registration every three seconds and nothing else, so the
-		// port keeps its hands off until that is really ported.
-		.bluetooth_stack = true,
-		// Two pages, and the frame on the glass is the one drawn two frames ago:
-		// the user turns the volume down, nothing appears, and the pill shows up
-		// on the next scroll -- measured on the device, 2026-10-13. One page and
-		// no debt between the two.
-		.single_fb_page = true,
-		// And the panel is never blanked through the framebuffer node -- the
-		// stock player on this device does not write one at all (its binary has
-		// no FBIOBLANK, no FBIOPAN_DISPLAY and no FBIOPUT_VSCREENINFO in it:
-		// it dims the backlight and leaves the panel scanning its last frame).
-		// The driver's blank drops LCDC_CTRL.ENA and SLCDC_CTRL.DMA_EN, and the
-		// unblank brings back only the first, so a blanked-then-unblanked panel
-		// can sit armed with DMA_EN=1 and show nothing at all -- the frozen
-		// picture this flag exists to keep out. Measured on the device: the
-		// freeze always followed a blank, and only a panel power/reset cycle
-		// (a reboot, or the kernel's own resume path) cleared it.
-		.blank_panel = false,
-		// plughw and not hw: the codec's PCM accepts a narrow set of formats and
-		// rates, and what it takes exactly has not been measured yet, so the
-		// plug is what keeps a 24/96 track from being refused outright.
-		.pcm_device = "plughw:1,0",
-	},
-};
 
 // ---------------------------------------------------------------------------
 // the version file
@@ -327,9 +124,17 @@ void sysinfo_load(void) {
 	json_string_field(buf, "dac-info", dac_info, sizeof(dac_info));
 	json_string_field(buf, "ota-repo", ota_repo, sizeof(ota_repo));
 
-	const sysinfo_model_t *model = sysinfo_model();
-	printf("sysinfo: device '%s' (%s), system '%s', build '%s'\n", device_name,
-		   model ? "known" : "NOT a model this build knows", os_version, build_version);
+	// The board is what this binary was built for; the file is the label the
+	// packer wrote. The two are compared, not chosen between: a binary built for
+	// another board lays the interface out for the wrong glass and reaches for
+	// hardware that is not there, so a mismatch is worth saying out loud.
+	if (device_name[0] && strcasecmp(device_name, SONIX_BOARD_NAME) != 0) {
+		printf("sysinfo: WARNING: this build is for '%s' but the device says '%s'; "
+			   "the layout and the hardware settings are this build's own\n",
+			   SONIX_BOARD_NAME, device_name);
+	}
+	printf("sysinfo: device '%s' (this build is for '%s'), system '%s', build '%s'\n", device_name,
+		   SONIX_BOARD_NAME, os_version, build_version);
 }
 
 const char *sysinfo_os_version(void) { return os_version; }
@@ -346,23 +151,19 @@ const char *sysinfo_user_data_dir(void) {
 	return (model && model->user_data_dir) ? model->user_data_dir : "/usr/data";
 }
 
+// The board this binary was built for (board.h). Not looked up, not read from
+// the device: the same answer every time it is asked, and a constant the
+// compiler can see through.
 const sysinfo_model_t *sysinfo_model(void) {
-	if (!device_name[0]) {
-		return NULL;
-	}
-	for (size_t i = 0; i < sizeof(MODELS) / sizeof(MODELS[0]); i++) {
-		if (strcasecmp(device_name, MODELS[i].name) == 0) {
-			return &MODELS[i];
-		}
-	}
-	return NULL;
+	return &BOARD_MODEL;
 }
 
+// The board, when the size asked about is its own panel, and NULL otherwise.
+// For sizing the interface from the framebuffer's report; there is only ever
+// one answer, because there is only one board in this binary.
 const sysinfo_model_t *sysinfo_model_by_panel(int width, int height) {
-	for (size_t i = 0; i < sizeof(MODELS) / sizeof(MODELS[0]); i++) {
-		if (MODELS[i].panel_width == width && MODELS[i].panel_height == height) {
-			return &MODELS[i];
-		}
+	if (BOARD_MODEL.panel_width == width && BOARD_MODEL.panel_height == height) {
+		return &BOARD_MODEL;
 	}
 	return NULL;
 }

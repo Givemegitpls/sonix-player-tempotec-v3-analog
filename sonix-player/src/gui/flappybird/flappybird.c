@@ -12,6 +12,7 @@
 #include "lvgl/src/misc/cache/instance/lv_image_cache.h"
 
 #include "src/gui/flappybird/flappysound.h"
+#include "src/gui/shell/scale.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/topbar.h"
 #include "src/gui/shell/volume_overlay.h"
@@ -132,16 +133,20 @@ lv_obj_t *flappybird_screen;
 
 // Screen positions, in panel pixels, for the 720-row panel. On a taller one
 // the menus and the labels move down by half the extra rows (layout_shift).
-#define TITLE_LOGO_Y 96
-#define TITLE_PLAY_ABOVE_GROUND 20
-#define CORNER_MARGIN 24
-#define SCORE_Y 40
-#define READY_LABEL_Y 100
-#define HOW_TO_ABOVE_GROUND 16
-#define READY_BIRD_ABOVE_HOW_TO 34
-#define OVER_LABEL_Y 60
-#define OVER_BOARD_Y 170
-#define OVER_BUTTONS_GAP 24
+// Written for the 480x720 layout like the rest of the interface, so they go
+// through SC(): on the native panel the panel is 480 rows, layout_shift is 0
+// (SC(720) is 480), and the positions come out two thirds of what they say --
+// which is where the old 2/3 blit put them.
+#define TITLE_LOGO_Y SC(96)
+#define TITLE_PLAY_ABOVE_GROUND SC(20)
+#define CORNER_MARGIN SC(24)
+#define SCORE_Y SC(40)
+#define READY_LABEL_Y SC(100)
+#define HOW_TO_ABOVE_GROUND SC(16)
+#define READY_BIRD_ABOVE_HOW_TO SC(34)
+#define OVER_LABEL_Y SC(60)
+#define OVER_BOARD_Y SC(170)
+#define OVER_BUTTONS_GAP SC(24)
 #define BUTTON_PRESS_SHIFT SCALE
 
 // Artwork pixels between two digits: the running score's overlap by one, the
@@ -1541,7 +1546,7 @@ void flappybird_init(gui_config_t *cfg) {
 	panel_h = (int)cfg->screen_height;
 	view_h = panel_h / SCALE;
 	ground_top = view_h - GROUND_H;
-	layout_shift = (panel_h - 720) / 2;
+	layout_shift = (panel_h - SC(720)) / 2;
 	// The background stands on the bottom of the panel.
 	bg_row0 = BG_H - view_h;
 

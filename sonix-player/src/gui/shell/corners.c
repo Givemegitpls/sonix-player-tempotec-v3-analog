@@ -4,9 +4,14 @@
 
 #include "lvgl/lvgl.h"
 
+#include "src/gui/shell/scale.h"
 #include "src/system/core/config.h"
 
-#define CORNER_RADIUS 28
+#define CORNER_RADIUS SC(28)
+// The largest it can be, for the mask table below: SC() is read at run time and
+// an array's size has to be a constant, so the table is sized for the 480x720
+// case (the number as written above) and filled to the real one.
+#define CORNER_RADIUS_MAX 28
 // Samples per pixel along each axis, for the antialiased edge of the arc.
 #define CORNER_SAMPLES 4
 
@@ -17,7 +22,7 @@ enum { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT };
 // fill rather than an image blend. Built, and the objects created, only once
 // the option is on: with it off, which is the default, none of this is touched.
 static lv_obj_t *corner[4];
-static uint8_t pixels[4][CORNER_RADIUS * CORNER_RADIUS];
+static uint8_t pixels[4][CORNER_RADIUS_MAX * CORNER_RADIUS_MAX];
 static lv_image_dsc_t image[4];
 static bool enabled;
 
