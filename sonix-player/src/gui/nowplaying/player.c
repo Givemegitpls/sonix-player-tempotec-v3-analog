@@ -4615,7 +4615,7 @@ void player_refresh_now_playing(void) {
 // without demanding the whole width.
 #define SHEET_COMMIT_FRACTION 3
 
-#define SHEET_ANIM_MS 220
+#define SHEET_ANIM_MS 1 // no animation: see the note at PANEL_ANIM_MS
 
 // Sideways movement past this is a drag, not a tap.
 #define DRAG_COMMIT_PX SC(10)
@@ -4667,7 +4667,7 @@ static void sheet_move_to(int x, bool animate) {
 	lv_anim_set_exec_cb(&a, sheet_anim_x_cb);
 	lv_anim_set_values(&a, lv_obj_get_x(player_screen), x);
 	lv_anim_set_duration(&a, SHEET_ANIM_MS);
-	lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+	lv_anim_set_path_cb(&a, lv_anim_path_linear);
 	lv_anim_start(&a);
 }
 
@@ -4753,7 +4753,7 @@ void player_sheet_close(bool animate) {
 	lv_anim_set_exec_cb(&a, sheet_anim_x_cb);
 	lv_anim_set_values(&a, lv_obj_get_x(player_screen), sheet_width);
 	lv_anim_set_duration(&a, SHEET_ANIM_MS);
-	lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+	lv_anim_set_path_cb(&a, lv_anim_path_linear);
 	lv_anim_set_completed_cb(&a, sheet_hidden_anim_ready_cb);
 	lv_anim_start(&a);
 }

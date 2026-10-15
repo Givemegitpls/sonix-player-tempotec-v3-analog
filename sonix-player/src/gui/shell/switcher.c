@@ -384,7 +384,7 @@ static void back_drag_cb(lv_event_t *e) {
 		lv_anim_set_exec_cb(&a, back_anim_exec_cb);
 		lv_anim_set_values(&a, from, go ? width : 0);
 		lv_anim_set_duration(&a, BACK_ANIM_MS);
-		lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+		lv_anim_set_path_cb(&a, lv_anim_path_linear);
 		lv_anim_set_completed_cb(&a, go ? back_anim_commit_done_cb : back_anim_cancel_done_cb);
 		lv_anim_start(&a);
 

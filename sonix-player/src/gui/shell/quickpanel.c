@@ -50,7 +50,20 @@
 #include "src/system/remote/sonixlink.h"
 #include "src/system/net/wifi.h"
 
-#define PANEL_ANIM_MS 180
+// No animation, and that is the decision rather than an omission.
+//
+// The glass can only be handed a frame on the panel's own 13.232 ms grid, so the
+// interface runs at 37.8 frames a second at best, and a 480 px slide in 180 ms
+// was seven frames of 70 px (the first one 120 px, with ease-out). That reads as
+// a jerk, not as movement, and it does not get better by making it faster: 50 ms
+// is one step, which is the same as no animation. The owner drove 180, 240, 150,
+// 100, 70, 50 and 1 ms with a linear path and chose this one -- the slide simply
+// not being an animation at all is what felt responsive.
+//
+// 1 ms rather than 0: LVGL runs it to completion on its next tick, the
+// completed callback still fires, and the panel's hide-when-parked bookkeeping
+// stays on one path.
+#define PANEL_ANIM_MS 1
 #define PANEL_POLL_MS 700
 
 // Four round quick controls to a line. Four at 88 px plus their gaps is 394,
@@ -506,7 +519,7 @@ static void panel_slide_to(int y, bool animate) {
 	lv_anim_set_exec_cb(&a, anim_y_cb);
 	lv_anim_set_values(&a, lv_obj_get_y(panel), y);
 	lv_anim_set_duration(&a, PANEL_ANIM_MS);
-	lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+	lv_anim_set_path_cb(&a, lv_anim_path_linear);
 	lv_anim_set_completed_cb(&a, hide_when_parked_cb);
 	lv_anim_start(&a);
 }
@@ -559,7 +572,7 @@ static void expand_to(int h, bool animate) {
 	lv_anim_set_exec_cb(&a, expand_anim_cb);
 	lv_anim_set_values(&a, expand_h, h);
 	lv_anim_set_duration(&a, PANEL_ANIM_MS);
-	lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+	lv_anim_set_path_cb(&a, lv_anim_path_linear);
 	lv_anim_start(&a);
 }
 

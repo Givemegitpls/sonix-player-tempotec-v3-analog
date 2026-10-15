@@ -3197,7 +3197,13 @@ static bool find_touch_node(char *out, size_t out_size) {
 // touch said last, so a sample that is 16 ms old is 16 ms of the content
 // trailing the finger. Measured on the device, the interface thread has room
 // for it (one read per sample, and the panel reports at about 100 Hz).
-#define FRAME_PERIOD_MS 20
+//
+// 26 ms rather than 20: the glass is handed a frame every 26.464 ms (two panel
+// frames, see pan_cadence_frames), and a thread that starts drawing sooner than
+// the glass can take the frames is drawing ones that will be dropped -- measured
+// 0 to 9 a second that way. The draw and the copy phase together are 22 to 26 ms
+// anyway, so this is about the period being honest rather than early.
+#define FRAME_PERIOD_MS 26
 #define TOUCH_PERIOD_MS 8
 
 static lv_display_t *init_target_display(void) {
