@@ -1558,6 +1558,164 @@ static uint32_t pan_cadence_frames = 2;
 // instead of the next one, which is what leaves the copy the rest of the slot.
 #define PAN_GUARD_US 2000u
 
+// Frame timing, for the log: how long LVGL took to draw a frame, the copy onto
+// the panel page and the page flip. Summed over a second and printed for every
+// second that had frames in it, so an idle player says nothing and an animation
+// says where the time went.
+//
+// The waits are counted apart, because they are different things (see
+// panel_wait_transfer): waiting for the flip thread to have panned, waiting for
+// the panel's transfer to begin (the interface's phase against the glass), and
+// waiting for that transfer to end before the copy may write the page it reads.
+// `over` counts the frames where the transfer was already finished when the
+// wait looked -- the wait then costs nothing, and it is the number to watch: a
+// wait that misses this case burns its deadline on a frame that is long on the
+// glass.
+//
+// `glass` is the one line that is about the picture rather than about our own
+// work: the instants the panel began reading a frame, and the gaps between
+// them. Frames in a counter say nothing about judder; the spread of those gaps
+// is what a hand sees. It is fed from the flip thread (pace_note).
+// The work a frame costs the interface thread: drawing it, waiting for the
+// panel's transfer to begin, and the copy phase (the copy and the waits for the
+// panel to have read the rows it writes). The wait for the flip thread to have
+// panned is *not* part of it -- that is the slot's own slack, the thread sitting
+// still until the panel's grid comes round, and counting it as work would call
+// every frame slow.
+static uint32_t frame_slow_us(void) {
+	return pan_cadence_frames * PANEL_FRAME_US;
+}
+
+// A gap longer than this is the interface sitting idle (nothing on the screen
+// changed), not the picture's cadence, and is left out of the statistics.
+#define PACE_IDLE_US 200000
+
+static struct {
+	uint64_t refr_start_us, second_start_us;
+	int frames, slow;
+	uint64_t copied_px;              // layout pixels shrunk onto the panel, summed
+	uint32_t render_max, render_sum; // the drawing
+	uint32_t snap_max, snap_sum;     // copying the damage into the snapshot page
+	uint32_t hold_max, hold_sum;     // waiting for the flip thread to be done with it
+	uint32_t rise_max, rise_sum;     // waiting for the panel's transfer to begin
+	uint32_t blit_max, blit_sum;     // the copy phase (the copy and its row waits)
+	uint32_t pace_max, pace_sum;     // the flip thread waiting for the panel's grid
+	uint32_t work_max, work_sum;     // what the slot has to hold (see ft_frame_done)
+	int rise_over;                   // frames whose transfer was already finished
+	int dropped;                     // frames the flip thread had no slot left for
+	uint64_t glass_prev_us;          // the last instant the glass was handed a frame
+	uint64_t pace_gap_sum, pace_gap_sq, pace_gap_min, pace_gap_max;
+	int pace_gap_n;
+	// The frame being reported, as the snapshot measured it.
+	uint32_t snap_last_us, hold_last_us;
+} ft;
+
+static uint64_t ft_now_us(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+// One more gap between the instants the panel began reading a frame. Called
+// from the flip thread; the statistics are read (and cleared) from the
+// interface thread's log line, so a number can be a frame stale. That is fine
+// for a log, and the alternative -- a lock around a printf's worth of counters
+// -- would put the flip thread behind the interface thread.
+static void pace_note(uint64_t glass_us) {
+	if (ft.glass_prev_us && glass_us > ft.glass_prev_us) {
+		uint64_t gap = glass_us - ft.glass_prev_us;
+		if (gap < PACE_IDLE_US) {
+			ft.pace_gap_n++;
+			ft.pace_gap_sum += gap;
+			ft.pace_gap_sq += gap * gap;
+			if (!ft.pace_gap_min || gap < ft.pace_gap_min) {
+				ft.pace_gap_min = gap;
+			}
+			if (gap > ft.pace_gap_max) {
+				ft.pace_gap_max = gap;
+			}
+		}
+	}
+	ft.glass_prev_us = glass_us;
+}
+
+
+// What this frame touched, and what each framebuffer page has not been given
+// yet. Empty is x1 > x2.
+//
+// A short list of rectangles, not one bounding box. A frame's damage is often
+// two small places far apart -- the title scrolling at the top of the player,
+// the progress bar at the bottom -- and the box around both is nearly the
+// whole screen, shrunk again every frame for a few dozen changed rows. In a
+// profile on the device that copy was the biggest single cost of the
+// interface thread.
+#define DIRTY_MAX 8
+
+typedef struct {
+	int n;
+	lv_area_t r[DIRTY_MAX];
+} dirty_t;
+
+// The waits of one frame, in the order they happen. Times are microseconds, the
+// unit they are taken in; the log line turns them into milliseconds.
+typedef struct {
+	uint32_t flip_us; // waiting for the flip thread to have panned (the slot's slack)
+	uint32_t rise_us; // waiting for the panel's transfer of the previous frame to begin
+	uint32_t xfer_us; // waiting for the panel to have read the rows the copy writes
+	uint32_t copy_us; // the copy phase as a whole: the copy plus those waits
+	bool rise_over;   // the transfer was already finished when the wait looked
+} frame_waits_t;
+
+// ---------------------------------------------------------------------------
+// the snapshot: the drawn frame, handed to the flip thread
+// ---------------------------------------------------------------------------
+//
+// The copy onto the panel has to wait for the panel's own read of the page it
+// writes (see panel_wait_row), which is 12 ms of the 26 ms slot -- and while it
+// waits, the interface thread has nothing to do: the page the panel reads is the
+// framebuffer, not the page LVGL draws into. So the frame is handed over
+// instead. The interface thread copies what changed into a page of its own (the
+// snapshot) and goes straight back to drawing the next frame, and the flip
+// thread rides the panel's read with the snapshot and then hands the panel the
+// frame.
+//
+// Measured on the device, that is the difference between the interface thread
+// spending 22-23 ms of every slot (draw 10 + the copy phase 12) and spending 13
+// (draw 10 + the snapshot 3): the copy phase moves off the critical path, and
+// the slot has the slack it needs when a frame's drawing happens to be
+// expensive.
+//
+// The snapshots: one page is being copied onto the panel by the flip thread
+// while the interface thread fills the other. Two of them, because one is a
+// serialization: the interface thread would have to wait for the copy of the
+// previous frame before it could put the next one anywhere, and that wait is on
+// the same thread as the animation timers -- measured, a panel sliding open
+// updates its position 5 to 23 ms late and irregularly, which reads as a slide
+// that jerks.
+//
+// The freshest frame wins: if the interface thread has filled a second page by
+// the time the flip thread comes round, the older one is dropped rather than
+// copied late.
+static uint8_t *snap_pages[2];  // RGB565, log_w x log_h; NULL: no pipeline
+static bool snap_filled[2];    // a frame is in it, waiting for the flip thread
+static bool snap_reading[2];   // the flip thread is copying out of it
+static int snap_next;          // the page the interface thread fills next
+static int snap_job = -1;      // the page the flip thread should copy
+// What has to be copied out of each page. Per page, not one for the job: the
+// interface thread fills the other page while the flip thread copies this one,
+// and a shared list would be rewritten under the copy -- which shows up as the
+// frame read from beyond the snapshot, tiled into vertical strips (measured).
+static dirty_t snap_jobs[2];
+static bool fb_pipelined;      // the above are in use (see try_panned_display)
+
+// Filled by fb_copy_frame for the pan that follows it.
+static bool fb_copy_second_page;
+
+// Defined with the framebuffer code, below: the snapshot needs the dirty
+// rectangle list and the copy needs the panel's registers.
+static void snap_hand_over(const uint8_t *page, const dirty_t *dirty);
+static void fb_copy_frame(uint8_t *page, const uint8_t *src, const dirty_t *dirty);
+
 static void lcdc_map(void) {
 	if (lcdc_regs) {
 		return;
@@ -1678,12 +1836,15 @@ static void panel_wait_row(uint32_t y2, uint32_t height, uint32_t *out_wait_us) 
 // Where the panel's own frame grid is: waits for the transfer this pan started
 // to begin and notes the instant, which is what the next pan is measured from
 // (see the flip thread). Runs in the flip thread, after the interface thread
-// has been let go, and stops the moment another pan is asked for, so it holds
-// nothing up -- the same register is polled by the wait above, and whoever sees
-// the transfer first is right.
+// has been let go, so it holds nothing up -- the same register is polled by the
+// copy, and whoever sees the transfer first is right.
 //
-// A transfer that does not come is simply not noted: the cadence then falls
-// back to counting from the pan itself.
+// It does not give up when the next frame is already waiting: the instant is the
+// grid the pan has to be measured from, and without it the pan drifts off the
+// panel's boundaries (measured: copy phases of 24 ms instead of 14, and a glass
+// cadence of 50 to 130 ms). The wait is short -- the transfer begins about
+// PAN_GUARD_US after the pan -- and a transfer that does not come is bounded by
+// the deadline.
 static void panel_watch_rise(void) {
 	if (!lcdc_regs) {
 		return;
@@ -1697,10 +1858,7 @@ static void panel_watch_rise(void) {
 			pace_note(panel_rise_us);
 			return;
 		}
-		pthread_mutex_lock(&flip_lock);
-		bool wanted = flip_pending;
-		pthread_mutex_unlock(&flip_lock);
-		if (wanted || ft_now_us() >= deadline) {
+		if (ft_now_us() >= deadline) {
 			return;
 		}
 		nanosleep(&step, NULL);
@@ -1836,8 +1994,42 @@ static void *flip_thread(void *arg) {
 			pthread_cond_wait(&flip_cond, &flip_lock);
 		}
 		struct fb_var_screeninfo var = flip_var;
+		flip_pending = false;
+		// A frame to put on the panel: the interface thread left it in one of
+		// the snapshots and went back to drawing (see the snapshot note).
+		int idx = snap_job;
+		bool copy_here = fb_pipelined && idx >= 0 && snap_filled[idx];
+		if (copy_here) {
+			snap_filled[idx] = false;
+			snap_reading[idx] = true;
+			snap_job = -1;
+			// Anything filled that is not this one is older: the glass gets the
+			// freshest frame, so it is dropped rather than copied late.
+			for (int i = 0; i < 2; i++) {
+				if (i != idx && snap_filled[i]) {
+					snap_filled[i] = false;
+					ft.dropped++;
+				}
+			}
+		}
+		pthread_cond_broadcast(&flip_cond);
 		pthread_mutex_unlock(&flip_lock);
 
+		if (copy_here) {
+			// The copy rides the panel's read of the page (see fb_copy_frame),
+			// and the pan below does not touch the snapshot, so the interface
+			// thread has it back as soon as the copy is in.
+			fb_copy_frame(fb_mem, snap_pages[idx], &snap_jobs[idx]);
+			pthread_mutex_lock(&flip_lock);
+			snap_reading[idx] = false;
+			pthread_cond_broadcast(&flip_cond);
+			pthread_mutex_unlock(&flip_lock);
+		}
+
+		// When the next pan is wanted, on the panel's own frame grid: the pan is
+		// issued PAN_GUARD_US before a boundary, so the glass is handed a frame
+		// every pan_cadence_frames of them whatever the interface thread's own
+		// timing does in between.
 		uint64_t now = ft_now_us();
 		if (!pan_target_us) {
 			pan_target_us = now;
@@ -1854,26 +2046,26 @@ static void *flip_thread(void *arg) {
 				pan_late_max = (uint32_t)late;
 			}
 		}
+		uint64_t pace0 = ft_now_us();
 		pan_pace_wait();
+		uint32_t pace_ms = (uint32_t)((ft_now_us() - pace0) / 1000u);
+		ft.pace_sum += pace_ms;
+		ft.pace_max = pace_ms > ft.pace_max ? pace_ms : ft.pace_max;
 
 		fb_pan_us = ft_now_us();
 		fb_pan_show(var.yoffset);
+		pan_outstanding = true; // the panel is about to read the page the copy writes
 
-		pthread_mutex_lock(&flip_lock);
-		flip_pending = false;
-		pthread_cond_broadcast(&flip_cond);
-		pthread_mutex_unlock(&flip_lock);
-
-		// The interface thread is on its way again; where the panel's grid is
-		// is watched from here (see panel_watch_rise), because that instant is
-		// what the next pan has to be measured from.
+		// Where the panel's grid is, and the next slot on it: the rise this pan
+		// leads to is the boundary to measure the next one from, so the phase is
+		// re-taken every frame and cannot drift away.
 		panel_watch_rise();
 
-		// The next pan goes on that grid: two panel frames after the boundary
-		// just used, which is the cadence the picture is meant to have. A slot
-		// the interface thread was too late for is *dropped*, not carried: the
-		// next boundary is taken instead of the next-but-one, so a hitch costs
-		// three panel frames (39.7 ms) rather than four or five (52.9, 66.1).
+		// The next pan goes on that grid: pan_cadence_frames panel frames after
+		// the boundary just used, which is the cadence the picture is meant to
+		// have. A slot the interface thread was too late for is *dropped*, not
+		// carried: the next boundary is taken instead of the next-but-one, so a
+		// hitch costs one panel frame rather than two.
 		uint64_t base = panel_rise_us >= fb_pan_us ? panel_rise_us : fb_pan_us;
 		now = ft_now_us();
 		uint64_t steps = pan_cadence_frames ? pan_cadence_frames : 2;
@@ -1943,21 +2135,6 @@ static int32_t log_w, log_h; // the resolution LVGL renders at; the panel's unle
 // be handed to the BGRA page as it sits and has to be rewritten by the copy.
 static bool fb_ram_page;
 
-// What this frame touched, and what each framebuffer page has not been given
-// yet. Empty is x1 > x2.
-//
-// A short list of rectangles, not one bounding box. A frame's damage is often
-// two small places far apart -- the title scrolling at the top of the player,
-// the progress bar at the bottom -- and the box around both is nearly the
-// whole screen, shrunk again every frame for a few dozen changed rows. In a
-// profile on the device that copy was the biggest single cost of the
-// interface thread.
-#define DIRTY_MAX 8
-
-typedef struct {
-	int n;
-	lv_area_t r[DIRTY_MAX];
-} dirty_t;
 
 static dirty_t rot_frame_dirty;
 static dirty_t rot_page_pending[2];
@@ -2240,140 +2417,58 @@ static void blit_rotated_180(uint8_t *dst, const uint16_t *src, const lv_area_t 
 	}
 }
 
-// Frame timing, for the log: how long LVGL took to draw a frame, the copy onto
-// the panel page and the page flip. Summed over a second and printed for every
-// second that had frames in it, so an idle player says nothing and an animation
-// says where the time went.
-//
-// The waits are counted apart, because they are different things (see
-// panel_wait_transfer): waiting for the flip thread to have panned, waiting for
-// the panel's transfer to begin (the interface's phase against the glass), and
-// waiting for that transfer to end before the copy may write the page it reads.
-// `over` counts the frames where the transfer was already finished when the
-// wait looked -- the wait then costs nothing, and it is the number to watch: a
-// wait that misses this case burns its deadline on a frame that is long on the
-// glass.
-//
-// `glass` is the one line that is about the picture rather than about our own
-// work: the instants the panel began reading a frame, and the gaps between
-// them. Frames in a counter say nothing about judder; the spread of those gaps
-// is what a hand sees. It is fed from the flip thread (pace_note).
-// The work a frame costs the interface thread: drawing it, waiting for the
-// panel's transfer to begin, and the copy phase (the copy and the waits for the
-// panel to have read the rows it writes). The wait for the flip thread to have
-// panned is *not* part of it -- that is the slot's own slack, the thread sitting
-// still until the panel's grid comes round, and counting it as work would call
-// every frame slow.
-static uint32_t frame_slow_us(void) {
-	return pan_cadence_frames * PANEL_FRAME_US;
-}
-
-// A gap longer than this is the interface sitting idle (nothing on the screen
-// changed), not the picture's cadence, and is left out of the statistics.
-#define PACE_IDLE_US 200000
-
-static struct {
-	uint64_t refr_start_us, second_start_us;
-	int frames, slow;
-	uint64_t copied_px; // layout pixels shrunk onto the panel, summed
-	uint32_t render_max, render_sum; // the drawing
-	uint32_t rise_max, rise_sum;     // waiting for the panel's transfer to begin
-	uint32_t blit_max, blit_sum;     // the copy phase (the copy and its waits)
-	uint32_t flip_max, flip_sum;     // waiting for the flip thread to have panned
-	uint32_t work_max, work_sum;     // draw + rise + copy: what the slot has to hold
-	int rise_over;                   // frames whose transfer was already finished
-	uint64_t glass_prev_us;          // the last instant the glass was handed a frame
-	uint64_t pace_sum, pace_sq, pace_min, pace_max;
-	int pace_n;
-} ft;
-
-static uint64_t ft_now_us(void) {
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
-}
-
-// One more gap between the instants the panel began reading a frame. Called
-// from the flip thread; the statistics are read (and cleared) from the
-// interface thread's log line, so a number can be a frame stale. That is fine
-// for a log, and the alternative -- a lock around a printf's worth of counters
-// -- would put the flip thread behind the interface thread.
-static void pace_note(uint64_t glass_us) {
-	if (ft.glass_prev_us && glass_us > ft.glass_prev_us) {
-		uint64_t gap = glass_us - ft.glass_prev_us;
-		if (gap < PACE_IDLE_US) {
-			ft.pace_n++;
-			ft.pace_sum += gap;
-			ft.pace_sq += gap * gap;
-			if (!ft.pace_min || gap < ft.pace_min) {
-				ft.pace_min = gap;
-			}
-			if (gap > ft.pace_max) {
-				ft.pace_max = gap;
-			}
-		}
-	}
-	ft.glass_prev_us = glass_us;
-}
-
 static void ft_refr_start_cb(lv_event_t *e) {
 	(void)e;
 	ft.refr_start_us = ft_now_us();
 }
 
-// The waits of one frame, in the order they happen. Times are microseconds, the
-// unit they are taken in; the log line turns them into milliseconds.
-typedef struct {
-	uint32_t flip_us; // waiting for the flip thread to have panned (the slot's slack)
-	uint32_t rise_us; // waiting for the panel's transfer of the previous frame to begin
-	uint32_t xfer_us; // waiting for the panel to have read the rows the copy writes
-	bool rise_over;   // the transfer was already finished when the wait looked
-} frame_waits_t;
-
-// `flush_us` when the flush began, `wait_us` once the previous flip let it go
-// on, `blit_done_us` after the copy phase, `pan_done_us` after an inline flip
-// (the same as blit_done_us when the flip is on its own thread).
-static void ft_frame_done(uint64_t flush_us, uint64_t wait_us, uint64_t blit_done_us, uint64_t pan_done_us,
-						  const frame_waits_t *w) {
+// Called once per frame by the interface thread, when the frame is on its way
+// (handed to the flip thread, or copied and panned here when there is no flip
+// thread). What the columns mean:
+//
+//   draw   the interface thread drawing the frame (LVGL)
+//   snap   copying its damage into the snapshot page (nothing when the copy is
+//          done here instead, see fb_copy_frame)
+//   hold   waiting for the flip thread to be through with the snapshot
+//   copy   the copy phase, by whichever thread did it: the copy itself plus the
+//          waits for the panel to have read the rows it writes
+//   pace   the flip thread waiting for the panel's grid -- the slot's slack
+//   work   what the slot has to hold: draw + snap when the copy has been handed
+//          over, and draw + rise + copy when it has not
+static void ft_frame_done(uint64_t flush_us, uint64_t hand_us, uint64_t pan_done_us) {
 	uint32_t draw = ft.refr_start_us ? (uint32_t)(flush_us - ft.refr_start_us) / 1000u : 0;
-	uint32_t rise = w->rise_us / 1000u;
-	// The copy phase: the copy itself plus the waits for the panel to have read
-	// the rows it writes (see panel_wait_row). It is the frame's critical path
-	// after the drawing, so it is what the slot has to hold.
-	uint32_t copy = (uint32_t)(blit_done_us - wait_us) / 1000u;
-	uint32_t flip = w->flip_us / 1000u + (uint32_t)(pan_done_us - blit_done_us) / 1000u;
-	uint32_t work = draw + rise + copy;
+	uint32_t snap = ft.snap_last_us / 1000u;
+	uint32_t hold = ft.hold_last_us / 1000u;
+	uint32_t work = fb_pipelined ? draw + snap + hold : draw;
 	if (!ft.second_start_us) {
 		ft.second_start_us = pan_done_us;
 	}
 	ft.frames++;
 	ft.slow += work * 1000u > frame_slow_us();
 	ft.render_sum += draw;
-	ft.blit_sum += copy;
-	ft.flip_sum += flip;
-	ft.rise_sum += rise;
+	ft.snap_sum += snap;
+	ft.hold_sum += hold;
 	ft.work_sum += work;
-	ft.rise_over += w->rise_over;
 	ft.render_max = draw > ft.render_max ? draw : ft.render_max;
-	ft.blit_max = copy > ft.blit_max ? copy : ft.blit_max;
-	ft.flip_max = flip > ft.flip_max ? flip : ft.flip_max;
-	ft.rise_max = rise > ft.rise_max ? rise : ft.rise_max;
+	ft.snap_max = snap > ft.snap_max ? snap : ft.snap_max;
+	ft.hold_max = hold > ft.hold_max ? hold : ft.hold_max;
 	ft.work_max = work > ft.work_max ? work : ft.work_max;
 	if (pan_done_us - ft.second_start_us >= 1000000u) {
 		if (ft.frames) {
-			printf("frames: %d in %u ms, %d slow; draw avg %u max %u, rise avg %u max %u, copy avg %u max %u (%u%% "
-				   "of a screen), flip avg %u max %u, work avg %u max %u (%d over)\n",
+			printf("frames: %d in %u ms, %d slow; draw avg %u max %u, snap avg %u max %u, hold avg %u max %u, copy "
+				   "avg %u max %u (%u%% of a screen), pace avg %u max %u, work avg %u max %u (%d over, %d dropped)\n",
 				   ft.frames, (unsigned)((pan_done_us - ft.second_start_us) / 1000u), ft.slow, ft.render_sum / ft.frames,
-				   ft.render_max, ft.rise_sum / ft.frames, ft.rise_max, ft.blit_sum / ft.frames, ft.blit_max,
+				   ft.render_max, ft.snap_sum / ft.frames, ft.snap_max, ft.hold_sum / ft.frames, ft.hold_max,
+				   ft.blit_sum / ft.frames, ft.blit_max,
 				   (unsigned)(ft.copied_px * 100u / ((uint64_t)ft.frames * (uint64_t)(log_w * log_h))),
-				   ft.flip_sum / ft.frames, ft.flip_max, ft.work_sum / ft.frames, ft.work_max, ft.rise_over);
+				   ft.pace_sum / ft.frames, ft.pace_max, ft.work_sum / ft.frames, ft.work_max, ft.rise_over, ft.dropped);
 		}
-		if (ft.pace_n >= 8) {
-			double avg = (double)ft.pace_sum / (double)ft.pace_n;
-			double var = (double)ft.pace_sq / (double)ft.pace_n - avg * avg;
-			printf("glass: %d gaps, avg %.1f ms sd %.1f, min %.1f max %.1f ms; %d late (max %u us)\n", ft.pace_n,
-				   avg / 1000.0, var > 0 ? sqrt(var) / 1000.0 : 0.0, (double)ft.pace_min / 1000.0,
-				   (double)ft.pace_max / 1000.0, pan_late_n, pan_late_max);
+		if (ft.pace_gap_n >= 8) {
+			double avg = (double)ft.pace_gap_sum / (double)ft.pace_gap_n;
+			double var = (double)ft.pace_gap_sq / (double)ft.pace_gap_n - avg * avg;
+			printf("glass: %d gaps, avg %.1f ms sd %.1f, min %.1f max %.1f ms; %d late (max %u us)\n", ft.pace_gap_n,
+				   avg / 1000.0, var > 0 ? sqrt(var) / 1000.0 : 0.0, (double)ft.pace_gap_min / 1000.0,
+				   (double)ft.pace_gap_max / 1000.0, pan_late_n, pan_late_max);
 		}
 		uint64_t keep_glass = ft.glass_prev_us;
 		memset(&ft, 0, sizeof(ft));
@@ -2383,127 +2478,199 @@ static void ft_frame_done(uint64_t flush_us, uint64_t wait_us, uint64_t blit_don
 	}
 }
 
-static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
-	bool second_page = false;
-	uint64_t flush_us = ft_now_us(), wait_us = flush_us, blit_done_us = flush_us;
-	bool copied = fb_rotated || fb_ram_page;
+// What has to go onto the panel this frame: the damage just drawn plus whatever
+// the page it goes to still owes (the full redraw a rotation or a scaling change
+// asks for). Returns that page and sets fb_copy_second_page for the pan.
+static uint8_t *fb_frame_page(dirty_t *out) {
+	if (fb_single_page) {
+		// One page keeps what was written to it, so this frame's own damage is
+		// all that has to go in; pending[0] exists only for the full redraws.
+		*out = rot_page_pending[0];
+		dirty_add_all(out, &rot_frame_dirty);
+		dirty_clear(&rot_page_pending[0]);
+		dirty_clear(&rot_frame_dirty);
+		fb_copy_second_page = false;
+		return fb_mem;
+	}
+
+	fb_copy_second_page = (fb_var.yoffset == 0); // flip to the other page
+	int target = fb_copy_second_page ? 1 : 0;
+	*out = rot_page_pending[target];
+	dirty_add_all(out, &rot_frame_dirty);
+	dirty_clear(&rot_page_pending[target]);
+	dirty_add_all(&rot_page_pending[target ? 0 : 1], &rot_frame_dirty); // the other page still owes it
+	dirty_clear(&rot_frame_dirty);
+	return fb_mem + (fb_copy_second_page ? fb_page_size : 0);
+}
+
+// Copies `dirty` out of `src` (RGB565, the layout's own size) onto `page`, riding
+// the panel's read of that page where that is possible (see panel_wait_row), and
+// records what the copy phase cost.
+//
+// This is the interface thread's old copy phase, and it runs on whichever thread
+// does the copying: the flip thread when the frame was handed over (see the
+// snapshot note), the interface thread itself when there is no flip thread to
+// hand it to.
+static void fb_copy_frame(uint8_t *page, const uint8_t *src, const dirty_t *dirty) {
+	uint64_t t0 = ft_now_us();
 	frame_waits_t waits = {0};
 
+	// With one page the pan is a promise that the panel will come and read this
+	// very memory, so the copy goes in behind the panel's own read of it. With
+	// two pages it goes into the page the panel is not showing, and there is
+	// nothing to wait for.
+	bool banded = false;
+	if (fb_single_page && pan_outstanding) {
+		banded = panel_transfer_start(fb_pan_us, &waits.rise_us, &waits.rise_over);
+		pan_outstanding = false;
+	}
+
+	// A pan that was refused because the mode changed (see fb_pan_show) leaves
+	// the copy working from a screen info the driver no longer holds: read it
+	// again before the frame is laid out.
+	if (fb_mode_stale) {
+		fb_mode_stale = false;
+		ioctl(fb_fd, FBIOGET_VSCREENINFO, &fb_var);
+	}
+
+	uint32_t band_wait_us = 0;
+	// A scaled layout or a rotated screen maps layout rows to panel rows in a
+	// way the band's safe time would have to be turned inside out for, so those
+	// paths wait the whole transfer out before the first rect.
+	if (banded && (fb_scaled || fb_rotated)) {
+		panel_wait_row((uint32_t)fb_var.yres - 1, (uint32_t)fb_var.yres, &band_wait_us);
+	}
+	for (int i = 0; i < dirty->n; i++) {
+		ft.copied_px += (uint32_t)area_size(&dirty->r[i]);
+		if (fb_scaled) {
+			blit_scaled_2_3(page, (const uint16_t *)src, &dirty->r[i], fb_rotated);
+		} else if (!banded || fb_rotated) {
+			blit_rotated_180(page, (const uint16_t *)src, &dirty->r[i], (int32_t)fb_var.xres, (int32_t)fb_var.yres,
+							 fb_rotated);
+		} else {
+			// One band at a time, each as soon as the panel has read past it.
+			const lv_area_t *r = &dirty->r[i];
+			for (int32_t y = r->y1; y <= r->y2; y += PAN_BAND_ROWS) {
+				lv_area_t band = *r;
+				band.y1 = y;
+				band.y2 = y + PAN_BAND_ROWS - 1 < r->y2 ? y + PAN_BAND_ROWS - 1 : r->y2;
+				panel_wait_row((uint32_t)band.y2, (uint32_t)log_h, &band_wait_us);
+				blit_rotated_180(page, (const uint16_t *)src, &band, (int32_t)fb_var.xres, (int32_t)fb_var.yres,
+								 fb_rotated);
+			}
+		}
+	}
+
+	waits.xfer_us = band_wait_us;
+	waits.copy_us = (uint32_t)(ft_now_us() - t0);
+	uint32_t rise_ms = waits.rise_us / 1000u, copy_ms = waits.copy_us / 1000u;
+	ft.rise_sum += rise_ms;
+	ft.blit_sum += copy_ms;
+	ft.rise_over += waits.rise_over;
+	ft.rise_max = rise_ms > ft.rise_max ? rise_ms : ft.rise_max;
+	ft.blit_max = copy_ms > ft.blit_max ? copy_ms : ft.blit_max;
+}
+
+// Waits until the page it is about to fill is free, fills it with this frame's
+// damage and hands it over. The wait is for the *other* page in the steady
+// state, which the flip thread let go of a whole frame ago, so there is nothing
+// to wait for -- and if there is, it is counted in the log's hold column.
+static void snap_hand_over(const uint8_t *page, const dirty_t *dirty) {
+	int idx = snap_next;
+	uint64_t t0 = ft_now_us();
+	pthread_mutex_lock(&flip_lock);
+	while (snap_filled[idx] || snap_reading[idx]) {
+		pthread_cond_wait(&flip_cond, &flip_lock);
+	}
+	pthread_mutex_unlock(&flip_lock);
+	ft.hold_last_us = (uint32_t)(ft_now_us() - t0);
+
+	// A plain rectangle copy, in the layout's own coordinates: the turn and the
+	// shrink are the copy's business when the panel is written.
+	t0 = ft_now_us();
+	for (int i = 0; i < dirty->n; i++) {
+		const lv_area_t *r = &dirty->r[i];
+		int32_t x1 = r->x1 < 0 ? 0 : r->x1;
+		int32_t y1 = r->y1 < 0 ? 0 : r->y1;
+		int32_t x2 = r->x2 >= log_w ? log_w - 1 : r->x2;
+		int32_t y2 = r->y2 >= log_h ? log_h - 1 : r->y2;
+		if (x1 > x2 || y1 > y2) {
+			continue;
+		}
+		size_t row = (size_t)(x2 - x1 + 1) * 2u;
+		for (int32_t y = y1; y <= y2; y++) {
+			size_t off = ((size_t)y * (size_t)log_w + (size_t)x1) * 2u;
+			memcpy(snap_pages[idx] + off, page + off, row);
+		}
+	}
+	ft.snap_last_us = (uint32_t)(ft_now_us() - t0);
+
+	pthread_mutex_lock(&flip_lock);
+	snap_jobs[idx] = *dirty;
+	snap_filled[idx] = true;
+	snap_job = idx;
+	snap_next = idx ^ 1;
+	pthread_cond_broadcast(&flip_cond);
+	pthread_mutex_unlock(&flip_lock);
+}
+
+static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
+	uint64_t flush_us = ft_now_us(), hand_us = flush_us;
+	bool copied = fb_rotated || fb_ram_page;
+
 	if (copied) {
-		// Collect this frame's damage; the copy happens once, on the last
-		// area, into the framebuffer page it goes to.
+		// Collect this frame's damage; the frame goes on its way once, on the
+		// last area -- handed to the flip thread when there is one to hand it
+		// to, and copied and panned here when there is not.
 		dirty_add(&rot_frame_dirty, area);
 		if (!lv_display_flush_is_last(disp)) {
 			lv_display_flush_ready(disp);
 			return;
 		}
 
-		// Nothing may be written while the panel's DMA still reads the page:
-		// with two pages this waits for the flip thread to finish putting the
-		// other one on screen, and with one page there is no other page to put
-		// up, so the same call waits for the previous pan of this very page.
-		// Both are the same guarantee, that the memory below is off the panel.
-		fb_flip_wait();
-		wait_us = ft_now_us();
-		waits.flip_us = (uint32_t)(wait_us - flush_us);
-
-		// With one page, the pan above is a promise that the panel will come and
-		// read this very memory, so the copy goes in behind the panel's own read
-		// of it (see panel_transfer_start and panel_wait_row). The two-page path
-		// copies into the page the panel is not showing and needs none of this.
-		bool banded = false;
-		if (fb_single_page && pan_outstanding) {
-			banded = panel_transfer_start(fb_pan_us, &waits.rise_us, &waits.rise_over);
-			pan_outstanding = false;
-			wait_us = ft_now_us();
-		}
-
-		// A pan that was refused because the mode changed (see the flip thread)
-		// leaves the copy and the pan working from a screen info the driver no
-		// longer holds: read it again before this frame is laid out.
-		if (fb_mode_stale) {
-			fb_mode_stale = false;
-			ioctl(fb_fd, FBIOGET_VSCREENINFO, &fb_var);
-		}
-
-		uint8_t *page;
 		dirty_t redraw;
-		int target = 0;
-		if (fb_single_page) {
-			// One page, and it keeps what was written to it, so this frame's
-			// own damage is all that has to go in and there is no second page
-			// to owe anything to. pending[0] exists only for the full redraws
-			// a rotation or scaling change asks for.
-			page = fb_mem;
-			redraw = rot_page_pending[0];
-			dirty_add_all(&redraw, &rot_frame_dirty);
+		uint8_t *page = fb_frame_page(&redraw);
+
+		if (fb_pipelined) {
+			// The copy rides the panel's read of the page and takes 12 of the
+			// 26 ms slot; the flip thread does it, with the snapshot this hands
+			// it, and this thread goes straight back to drawing (see the
+			// snapshot note). Nothing here waits for the panel.
+			snap_hand_over(px, &redraw);
 		} else {
-			second_page = (fb_var.yoffset == 0); // flip to the other page
-			target = second_page ? 1 : 0;
-			page = fb_mem + (second_page ? fb_page_size : 0);
-
-			// Everything this page still owes, plus what just changed.
-			redraw = rot_page_pending[target];
-			dirty_add_all(&redraw, &rot_frame_dirty);
+			// Nothing may be written while the panel's DMA still reads the page:
+			// with two pages this waits for the flip thread to finish putting
+			// the other one on screen, and with one page there is no other page
+			// to put up, so the same call waits for the previous pan of this
+			// very page. Both are the same guarantee, that the memory below is
+			// off the panel.
+			uint64_t wait0 = ft_now_us();
+			fb_flip_wait();
+			ft.hold_last_us = (uint32_t)(ft_now_us() - wait0);
+			ft.snap_last_us = 0;
+			fb_copy_frame(page, px, &redraw);
 		}
-
-		uint32_t band_wait_us = 0;
-		// A scaled layout or a rotated screen maps layout rows to panel rows in
-		// a way the band's safe time would have to be turned inside out for, so
-		// those paths wait the whole transfer out before the first rect.
-		if (banded && (fb_scaled || fb_rotated)) {
-			panel_wait_row((uint32_t)fb_var.yres - 1, (uint32_t)fb_var.yres, &band_wait_us);
-		}
-		for (int i = 0; i < redraw.n; i++) {
-			ft.copied_px += (uint32_t)area_size(&redraw.r[i]);
-			if (fb_scaled) {
-				blit_scaled_2_3(page, (const uint16_t *)px, &redraw.r[i], fb_rotated);
-			} else if (!banded || fb_rotated) {
-				blit_rotated_180(page, (const uint16_t *)px, &redraw.r[i], (int32_t)fb_var.xres,
-								 (int32_t)fb_var.yres, fb_rotated);
-			} else {
-				// One band at a time, each as soon as the panel has read past it.
-				const lv_area_t *r = &redraw.r[i];
-				for (int32_t y = r->y1; y <= r->y2; y += PAN_BAND_ROWS) {
-					lv_area_t band = *r;
-					band.y1 = y;
-					band.y2 = y + PAN_BAND_ROWS - 1 < r->y2 ? y + PAN_BAND_ROWS - 1 : r->y2;
-					panel_wait_row((uint32_t)band.y2, (uint32_t)log_h, &band_wait_us);
-					blit_rotated_180(page, (const uint16_t *)px, &band, (int32_t)fb_var.xres,
-									 (int32_t)fb_var.yres, fb_rotated);
-				}
-			}
-		}
-		waits.xfer_us = band_wait_us;
-
-		if (fb_single_page) {
-			dirty_clear(&rot_page_pending[0]);
-		} else {
-			dirty_clear(&rot_page_pending[target]);
-			dirty_add_all(&rot_page_pending[target ? 0 : 1], &rot_frame_dirty); // the other page still owes it
-		}
-		dirty_clear(&rot_frame_dirty);
-		blit_done_us = ft_now_us();
+		hand_us = ft_now_us();
 	} else {
 		fb_flip_wait(); // one left by a copied frame, before the rotation was turned off
-		wait_us = blit_done_us = ft_now_us();
-		second_page = (px >= fb_mem + fb_page_size);
+		hand_us = ft_now_us();
+		fb_copy_second_page = (px >= fb_mem + fb_page_size);
 	}
 
 	if (lv_display_flush_is_last(disp) && copied && flip_thread_on) {
-		fb_var.yoffset = second_page ? fb_var.yres : 0;
+		fb_var.yoffset = fb_copy_second_page ? fb_var.yres : 0;
 		pthread_mutex_lock(&flip_lock);
 		flip_var = fb_var;
 		flip_pending = true;
-		pan_outstanding = true; // the panel is about to read the page being written
 		pthread_cond_signal(&flip_cond);
 		pthread_mutex_unlock(&flip_lock);
-		ft_frame_done(flush_us, wait_us, blit_done_us, blit_done_us, &waits);
+		ft_frame_done(flush_us, hand_us, hand_us);
 	} else if (lv_display_flush_is_last(disp)) {
 		// The pan path itself arms a disarmed panel and asks again (see
 		// fb_pan_show): a refused pan is never a reason to stop asking.
-		fb_pan_show(second_page ? fb_var.yres : 0);
-		ft_frame_done(flush_us, wait_us, blit_done_us, ft_now_us(), &waits);
+		fb_pan_show(fb_copy_second_page ? fb_var.yres : 0);
+		pan_outstanding = true; // the panel is about to read the page being written
+		ft_frame_done(flush_us, hand_us, ft_now_us());
 	}
 	lv_display_flush_ready(disp);
 }
@@ -2646,6 +2813,39 @@ static lv_display_t *try_panned_display(void) {
 	}
 	fb_ram_page = scale_page != NULL;
 
+	// The snapshots the flip thread copies from: the drawn frame is handed over
+	// in one of them, so the interface thread can draw the next one while the
+	// panel is being written (see the snapshot note). Two pages, and only when
+	// the pipeline is actually wanted: they are 300 KB each, this device has
+	// about five megabytes to spare at startup, and a frame that is never handed
+	// over has no use for them. Measured: the pair does not always fit, which is
+	// why the answer is read before the memory is asked for.
+	//
+	// OFF by default ([screen] pipeline = 1 turns it on): on this unit the
+	// hand-over writes garbage into the panel's page in the contexts that
+	// animate (the player page opening, the control centre sliding), and the
+	// garbage stays there until something redraws it -- measured, and not yet
+	// understood. The smoothness it buys on a scrolling list is real (the copy
+	// phase leaves the interface thread), so the code stays.
+	bool want_pipeline = fb_ram_page && config_get_bool("screen", "pipeline", false);
+	if (want_pipeline) {
+		size_t size = (size_t)log_w * (size_t)log_h * 2;
+		for (int i = 0; i < 2; i++) {
+			snap_pages[i] = malloc(size);
+			if (!snap_pages[i]) {
+				fprintf(stderr, "fb: no memory for the %zu-byte snapshot page; the copy stays on the interface "
+								"thread\n",
+						size);
+				for (int j = 0; j < 2; j++) {
+					free(snap_pages[j]);
+					snap_pages[j] = NULL;
+				}
+				break;
+			}
+			memset(snap_pages[i], 0, size);
+		}
+	}
+
 	// At 32 bpp there is no direct form: without the RAM page there is nothing
 	// to convert through, and letting LVGL draw RGB565 straight into the
 	// panel's BGRA would put two pixels where one belongs.
@@ -2701,11 +2901,27 @@ static lv_display_t *try_panned_display(void) {
 	}
 	lv_display_set_flush_cb(disp, fb_pan_flush_cb);
 	lv_display_add_event_cb(disp, ft_refr_start_cb, LV_EVENT_REFR_START, NULL);
+	// The pipeline needs both a snapshot page and the flip thread to hand it to,
+	// and it only makes sense on one page: with two, the copy goes into the page
+	// the panel is not showing and there is nothing to ride. Decided before the
+	// thread starts, so it never sees the question half answered.
+	fb_pipelined = snap_pages[0] != NULL && snap_pages[1] != NULL && fb_single_page;
 	fb_flip_start();
 	// The panel's own transfer, read from the LCDC: the copy waits for it on the
-	// single-page path (see panel_wait_transfer).
+	// single-page path (see panel_transfer_start and panel_wait_row).
 	lcdc_map();
 	fb_display = disp;
+
+	// The pipeline needs a flip thread to hand frames to, and the switch above
+	// (read before the snapshots were asked for) has to have wanted it.
+	fb_pipelined = fb_pipelined && flip_thread_on && want_pipeline;
+	if (fb_pipelined) {
+		printf("fb: the frame is handed to the flip thread through one of two %u KB snapshots, the copy rides the "
+			   "panel's read\n",
+			   (unsigned)((size_t)log_w * (size_t)log_h * 2 / 1024u));
+	} else if (snap_pages[0]) {
+		printf("fb: the frame is copied by the interface thread ([screen] pipeline = 1 hands it to the flip thread)\n");
+	}
 
 	if (fb_single_page) {
 		printf("fb: single page, pan on FBIOPAN_DISPLAY (%ux%u)\n", fb_var.xres, fb_var.yres);
