@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <malloc.h>
+#include <math.h>
 #include <poll.h>
 #include <sys/mman.h>
 #include <pthread.h>
@@ -1482,6 +1483,231 @@ static pthread_cond_t flip_cond = PTHREAD_COND_INITIALIZER;
 static bool flip_pending, flip_thread_on;
 static struct fb_var_screeninfo flip_var;
 
+// The frame log (see the ft block further down, with the framebuffer code) is
+// fed from here as well: the flip thread is the one that pans, so it is the one
+// that can say where the panel's own frame grid is.
+static uint64_t ft_now_us(void);
+static void pace_note(uint64_t glass_us);
+
+// A pan has been asked for since the last copy: the panel is about to take the
+// frame, and the page it is taking it from is the one the next copy wants.
+static bool pan_outstanding;
+
+// ---------------------------------------------------------------------------
+// the panel's own transfer, read from the LCDC's registers
+// ---------------------------------------------------------------------------
+//
+// A frame reaches this panel by DMA: FBIOPAN_DISPLAY starts it, and the panel
+// then reads the whole framebuffer page. Measured on the device (tools/panwatch.c),
+// the transfer begins at the panel's next frame boundary -- 1.7 to 10 ms after
+// the ioctl -- and BUSY in SLCDC_STATE is set for 12.3 ms of the panel's 13.2 ms
+// frame. With one page that read and this copy are the same memory, so the copy
+// has to wait for it: without the wait the panel takes the old picture for the
+// first part of the frame and the new one for the rest, which is the tearing
+// seen on every scroll and every quick-panel slide.
+//
+// The registers are mapped the way tools/fbtool.c maps them for diagnosis, and
+// the bits are the ones read out of the vendor driver (NOTES.md): SLCDC_CTRL
+// (+0xa4) bit0 is DMA_EN, SLCDC_STATE (+0xa8) bit0 is BUSY. A board without
+// /dev/mem, or a panel that never reports anything, simply gets no wait -- the
+// copy is then what it was before, which is the behaviour this replaces.
+#define LCDC_BASE 0x13050000u
+#define SLCDC_STATE_OFF 0xa8u
+
+static volatile uint32_t *lcdc_regs;
+
+// Where the panel's own frame grid was, as of the last transfer it was given,
+// and when that pan was issued. Written by the flip thread (the one that pans),
+// read by the interface thread for the log and for the wait; both are only ever
+// compared with each other, so a torn read would be a wrong deadline and
+// nothing else.
+static uint64_t panel_rise_us;
+static uint64_t fb_pan_us;
+
+// The panel's own frame, measured on this unit from its TE line (gpio-51, the
+// slcd_vsync interrupt): 758 ticks in 10.03 s -- 75.57 Hz, 13232 us. It is not
+// the 75.0 Hz the pixel clock suggests, and it is the grid the panel starts a
+// transfer on: a frame handed to it is read on the next boundary of that grid,
+// never in between (tools/panwatch.c shows the transfer beginning 1.7 to 13 ms
+// after the pan, never at the pan itself).
+#define PANEL_FRAME_US 13232u
+
+// How long the panel reads the page for once it has begun: measured 12.29 ms
+// (tools/panwatch.c). The margin is for a frame that runs slower than this
+// unit's.
+#define PAN_TRANSFER_US 12290u
+#define PAN_TRANSFER_MARGIN_US 1500u
+
+// The pan's cadence, in panel frames. Two of them (26.46 ms, 37.8 frames a
+// second) is the fastest the panel can be handed frames -- its transfer takes
+// 12.29 ms of its 13.23 ms frame, so a frame every panel frame leaves the copy
+// nothing. Three (39.7 ms, 25.2 a second) leaves the frame a lot of slack, and
+// with the work measured at 21-23 ms either way, a spike in the drawing has
+// nowhere to show. Which picture is the better one is a matter of taste:
+// [screen] cadence_frames in device_config.ini, read at startup.
+//
+// What is *not* on offer is anything in between: the glass can only be handed a
+// frame on the panel's own grid, so a cadence that is not a whole number of
+// panel frames (30 frames a second is 2.52 of them) makes the glass take 26.4
+// and 39.7 ms alternately -- the judder this whole path exists to remove.
+static uint32_t pan_cadence_frames = 2;
+
+// How long before the panel's own boundary the pan is issued. The ioctl itself
+// is 20 us (tools/panwatch.c), so most of this is the flip thread's own
+// wake-up. Its point is that the transfer then begins at *that* boundary
+// instead of the next one, which is what leaves the copy the rest of the slot.
+#define PAN_GUARD_US 2000u
+
+static void lcdc_map(void) {
+	if (lcdc_regs) {
+		return;
+	}
+	int fd = open("/dev/mem", O_RDWR | O_SYNC);
+	if (fd < 0) {
+		printf("fb: /dev/mem is not there; the copy will not wait for the panel's transfer\n");
+		return;
+	}
+	void *m = mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, LCDC_BASE);
+	close(fd);
+	if (m == MAP_FAILED) {
+		printf("fb: /dev/mem cannot be mapped; the copy will not wait for the panel's transfer\n");
+		return;
+	}
+	lcdc_regs = m;
+}
+
+// The copy trails the panel's own read of the page.
+//
+// The transfer reads the framebuffer from the top down, so a row is free the
+// moment the panel has passed it -- which means the copy does not have to wait
+// for the whole transfer, only for the rows it is about to write. The dirty
+// rectangles are therefore copied in horizontal bands, each band after the panel
+// has read it, which rides the copy along with the transfer instead of waiting
+// it out.
+//
+// What that buys, measured: the transfer is 12.29 ms of the 26.46 ms slot and
+// the copy another 5, so waiting the transfer out before starting left the
+// interface thread 11.5 ms of every slot idle and only ~2 ms of slack in the
+// slot -- and a frame that cost a little more than usual dropped it (the hitch).
+// Banded, the copy finishes ~13.1 ms into the slot instead of 19.3, and the
+// slack is back.
+//
+// The bands are only cut where the mapping is one row to one row: a scaled
+// layout or a rotated screen maps layout rows to panel rows in a way the safe
+// time would have to be turned inside out for, and those paths wait the
+// transfer out as before.
+#define PAN_BAND_ROWS 60
+#define PAN_ROW_MARGIN_US 300u
+
+// When the panel began reading the page this frame is going into, and whether it
+// is reading it at all. Set by panel_transfer_start, used by panel_wait_row; a
+// zero start means there is nothing to wait for and the copy goes in at once.
+static uint64_t panel_xfer_start_us;
+
+// Asks the panel what it is doing with the page. Returns true when it is (or is
+// about to be) reading it -- the copy then waits per band, see panel_wait_row --
+// and false when there is nothing to wait for: the transfer is over, or the
+// panel never began one.
+//
+// The one fact that makes the short answer possible: a transfer begins within
+// one panel frame of the pan (its grid) and then reads for 12.3 ms. So one panel
+// frame after the pan the transfer must have begun -- if BUSY is low then, it
+// has also finished, and the page is ours.
+static bool panel_transfer_start(uint64_t pan_us, uint32_t *out_rise_us, bool *out_over) {
+	*out_rise_us = 0;
+	*out_over = false;
+	panel_xfer_start_us = 0;
+	if (!lcdc_regs || !pan_us) {
+		return false;
+	}
+	volatile uint32_t *state = &lcdc_regs[SLCDC_STATE_OFF / 4];
+	struct timespec step = {0, 200000}; // 200 us
+
+	// The flip thread watches the same register right after the pan, so its
+	// answer is usually already here and exact.
+	uint64_t start = panel_rise_us >= pan_us ? panel_rise_us : 0;
+
+	uint64_t t0 = ft_now_us();
+	uint64_t deadline = pan_us + PANEL_FRAME_US + PAN_TRANSFER_MARGIN_US;
+	if (!start && t0 >= deadline) {
+		if (!(*state & 1u)) {
+			*out_over = true; // it must have begun, and it is not running: it is done
+			return false;
+		}
+	}
+	for (;;) {
+		if (*state & 1u) {
+			if (!start) {
+				start = ft_now_us(); // seen mid-transfer: read as if it began now
+			}
+			break;
+		}
+		if (ft_now_us() >= deadline) {
+			*out_over = true; // nothing came: a panel that is not running, or a refused pan
+			return false;
+		}
+		nanosleep(&step, NULL);
+	}
+	*out_rise_us = (uint32_t)(ft_now_us() - t0);
+	panel_xfer_start_us = start;
+	return true;
+}
+
+// Waits until the panel has read the rows up to `y2` of the page being copied.
+// The transfer goes top to bottom, so this is where the copy may write: it is
+// the panel's own progress rather than a guess about the whole transfer, and it
+// is the reason a band near the top of the screen can go in almost at once.
+static void panel_wait_row(uint32_t y2, uint32_t height, uint32_t *out_wait_us) {
+	if (!panel_xfer_start_us || !height) {
+		return;
+	}
+	uint64_t t0 = ft_now_us();
+	uint64_t safe = panel_xfer_start_us + (uint64_t)(y2 + 1) * PAN_TRANSFER_US / height + PAN_ROW_MARGIN_US;
+	for (;;) {
+		uint64_t now = ft_now_us();
+		if (now >= safe) {
+			break;
+		}
+		uint64_t left = safe - now;
+		struct timespec ts = {0, (long)(left < 200 ? left : 200) * 1000};
+		nanosleep(&ts, NULL);
+	}
+	*out_wait_us += (uint32_t)(ft_now_us() - t0);
+}
+
+// Where the panel's own frame grid is: waits for the transfer this pan started
+// to begin and notes the instant, which is what the next pan is measured from
+// (see the flip thread). Runs in the flip thread, after the interface thread
+// has been let go, and stops the moment another pan is asked for, so it holds
+// nothing up -- the same register is polled by the wait above, and whoever sees
+// the transfer first is right.
+//
+// A transfer that does not come is simply not noted: the cadence then falls
+// back to counting from the pan itself.
+static void panel_watch_rise(void) {
+	if (!lcdc_regs) {
+		return;
+	}
+	volatile uint32_t *state = &lcdc_regs[SLCDC_STATE_OFF / 4];
+	struct timespec step = {0, 200000};
+	uint64_t deadline = ft_now_us() + PANEL_FRAME_US + PAN_TRANSFER_MARGIN_US;
+	for (;;) {
+		if (*state & 1u) {
+			panel_rise_us = ft_now_us();
+			pace_note(panel_rise_us);
+			return;
+		}
+		pthread_mutex_lock(&flip_lock);
+		bool wanted = flip_pending;
+		pthread_mutex_unlock(&flip_lock);
+		if (wanted || ft_now_us() >= deadline) {
+			return;
+		}
+		nanosleep(&step, NULL);
+	}
+}
+
+
 // Whether the last pan was refused (only for saying so once, not for deciding
 // whether to keep asking).
 static bool fb_pan_refused;
@@ -1577,6 +1803,30 @@ static void fb_pan_show(unsigned yoffset) {
 	}
 }
 
+// When the next pan is wanted, on the panel's own frame grid. The pan is issued
+// PAN_GUARD_US before a boundary and the next one two panel frames later, so
+// the glass is handed a frame exactly every PAN_CADENCE_US whatever the
+// interface thread's own timing does in between -- and the phase is taken from
+// the boundary the last pan landed on, so it cannot drift away from the panel's.
+static uint64_t pan_target_us;
+
+// How often the interface thread was late for its slot, and by how much. Written
+// by the flip thread, printed (and cleared) by the interface thread's log line.
+static int pan_late_n;
+static uint32_t pan_late_max;
+
+static void pan_pace_wait(void) {
+	for (;;) {
+		uint64_t now = ft_now_us();
+		if (now >= pan_target_us) {
+			return;
+		}
+		uint64_t left = pan_target_us - now;
+		struct timespec ts = {0, (long)(left < 2000 ? left : 2000) * 1000};
+		nanosleep(&ts, NULL);
+	}
+}
+
 static void *flip_thread(void *arg) {
 	(void)arg;
 	thread_be_realtime("fb flip", 5);
@@ -1588,12 +1838,49 @@ static void *flip_thread(void *arg) {
 		struct fb_var_screeninfo var = flip_var;
 		pthread_mutex_unlock(&flip_lock);
 
+		uint64_t now = ft_now_us();
+		if (!pan_target_us) {
+			pan_target_us = now;
+		}
+		// How late the interface thread was for the slot it asked for: the pan
+		// then lands on the next boundary instead of the one wanted, and that
+		// lateness is the hitch a hand feels. Counted here, printed with the
+		// glass cadence.
+		uint64_t asked_us = now;
+		if (asked_us > pan_target_us) {
+			uint64_t late = asked_us - pan_target_us;
+			pan_late_n++;
+			if (late > pan_late_max) {
+				pan_late_max = (uint32_t)late;
+			}
+		}
+		pan_pace_wait();
+
+		fb_pan_us = ft_now_us();
 		fb_pan_show(var.yoffset);
 
 		pthread_mutex_lock(&flip_lock);
 		flip_pending = false;
 		pthread_cond_broadcast(&flip_cond);
 		pthread_mutex_unlock(&flip_lock);
+
+		// The interface thread is on its way again; where the panel's grid is
+		// is watched from here (see panel_watch_rise), because that instant is
+		// what the next pan has to be measured from.
+		panel_watch_rise();
+
+		// The next pan goes on that grid: two panel frames after the boundary
+		// just used, which is the cadence the picture is meant to have. A slot
+		// the interface thread was too late for is *dropped*, not carried: the
+		// next boundary is taken instead of the next-but-one, so a hitch costs
+		// three panel frames (39.7 ms) rather than four or five (52.9, 66.1).
+		uint64_t base = panel_rise_us >= fb_pan_us ? panel_rise_us : fb_pan_us;
+		now = ft_now_us();
+		uint64_t steps = pan_cadence_frames ? pan_cadence_frames : 2;
+		while (base + steps * PANEL_FRAME_US - PAN_GUARD_US <= now) {
+			steps++;
+		}
+		pan_target_us = base + steps * PANEL_FRAME_US - PAN_GUARD_US;
 	}
 	return NULL;
 }
@@ -1954,16 +2241,50 @@ static void blit_rotated_180(uint8_t *dst, const uint16_t *src, const lv_area_t 
 }
 
 // Frame timing, for the log: how long LVGL took to draw a frame, the copy onto
-// the panel page and the page flip. Summed over a second and printed only for
-// seconds with a frame over FRAME_SLOW_MS in them, so an idle player says
-// nothing and an animation that stutters says where the time went.
-#define FRAME_SLOW_MS 34
+// the panel page and the page flip. Summed over a second and printed for every
+// second that had frames in it, so an idle player says nothing and an animation
+// says where the time went.
+//
+// The waits are counted apart, because they are different things (see
+// panel_wait_transfer): waiting for the flip thread to have panned, waiting for
+// the panel's transfer to begin (the interface's phase against the glass), and
+// waiting for that transfer to end before the copy may write the page it reads.
+// `over` counts the frames where the transfer was already finished when the
+// wait looked -- the wait then costs nothing, and it is the number to watch: a
+// wait that misses this case burns its deadline on a frame that is long on the
+// glass.
+//
+// `glass` is the one line that is about the picture rather than about our own
+// work: the instants the panel began reading a frame, and the gaps between
+// them. Frames in a counter say nothing about judder; the spread of those gaps
+// is what a hand sees. It is fed from the flip thread (pace_note).
+// The work a frame costs the interface thread: drawing it, waiting for the
+// panel's transfer to begin, and the copy phase (the copy and the waits for the
+// panel to have read the rows it writes). The wait for the flip thread to have
+// panned is *not* part of it -- that is the slot's own slack, the thread sitting
+// still until the panel's grid comes round, and counting it as work would call
+// every frame slow.
+static uint32_t frame_slow_us(void) {
+	return pan_cadence_frames * PANEL_FRAME_US;
+}
+
+// A gap longer than this is the interface sitting idle (nothing on the screen
+// changed), not the picture's cadence, and is left out of the statistics.
+#define PACE_IDLE_US 200000
 
 static struct {
 	uint64_t refr_start_us, second_start_us;
 	int frames, slow;
 	uint64_t copied_px; // layout pixels shrunk onto the panel, summed
-	uint32_t render_max, render_sum, blit_max, blit_sum, pan_max, pan_sum;
+	uint32_t render_max, render_sum; // the drawing
+	uint32_t rise_max, rise_sum;     // waiting for the panel's transfer to begin
+	uint32_t blit_max, blit_sum;     // the copy phase (the copy and its waits)
+	uint32_t flip_max, flip_sum;     // waiting for the flip thread to have panned
+	uint32_t work_max, work_sum;     // draw + rise + copy: what the slot has to hold
+	int rise_over;                   // frames whose transfer was already finished
+	uint64_t glass_prev_us;          // the last instant the glass was handed a frame
+	uint64_t pace_sum, pace_sq, pace_min, pace_max;
+	int pace_n;
 } ft;
 
 static uint64_t ft_now_us(void) {
@@ -1972,40 +2293,93 @@ static uint64_t ft_now_us(void) {
 	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
 }
 
+// One more gap between the instants the panel began reading a frame. Called
+// from the flip thread; the statistics are read (and cleared) from the
+// interface thread's log line, so a number can be a frame stale. That is fine
+// for a log, and the alternative -- a lock around a printf's worth of counters
+// -- would put the flip thread behind the interface thread.
+static void pace_note(uint64_t glass_us) {
+	if (ft.glass_prev_us && glass_us > ft.glass_prev_us) {
+		uint64_t gap = glass_us - ft.glass_prev_us;
+		if (gap < PACE_IDLE_US) {
+			ft.pace_n++;
+			ft.pace_sum += gap;
+			ft.pace_sq += gap * gap;
+			if (!ft.pace_min || gap < ft.pace_min) {
+				ft.pace_min = gap;
+			}
+			if (gap > ft.pace_max) {
+				ft.pace_max = gap;
+			}
+		}
+	}
+	ft.glass_prev_us = glass_us;
+}
+
 static void ft_refr_start_cb(lv_event_t *e) {
 	(void)e;
 	ft.refr_start_us = ft_now_us();
 }
 
+// The waits of one frame, in the order they happen. Times are microseconds, the
+// unit they are taken in; the log line turns them into milliseconds.
+typedef struct {
+	uint32_t flip_us; // waiting for the flip thread to have panned (the slot's slack)
+	uint32_t rise_us; // waiting for the panel's transfer of the previous frame to begin
+	uint32_t xfer_us; // waiting for the panel to have read the rows the copy writes
+	bool rise_over;   // the transfer was already finished when the wait looked
+} frame_waits_t;
+
 // `flush_us` when the flush began, `wait_us` once the previous flip let it go
-// on, `blit_done_us` after the copy, `pan_done_us` after an inline flip (the
-// same as blit_done_us when the flip is on its own thread). The flip column
-// is the time the interface thread spent on flips, either way.
-static void ft_frame_done(uint64_t flush_us, uint64_t wait_us, uint64_t blit_done_us, uint64_t pan_done_us) {
-	uint32_t render = ft.refr_start_us ? (uint32_t)(flush_us - ft.refr_start_us) / 1000u : 0;
-	uint32_t blit = (uint32_t)(blit_done_us - wait_us) / 1000u;
-	uint32_t pan = (uint32_t)((wait_us - flush_us) + (pan_done_us - blit_done_us)) / 1000u;
+// on, `blit_done_us` after the copy phase, `pan_done_us` after an inline flip
+// (the same as blit_done_us when the flip is on its own thread).
+static void ft_frame_done(uint64_t flush_us, uint64_t wait_us, uint64_t blit_done_us, uint64_t pan_done_us,
+						  const frame_waits_t *w) {
+	uint32_t draw = ft.refr_start_us ? (uint32_t)(flush_us - ft.refr_start_us) / 1000u : 0;
+	uint32_t rise = w->rise_us / 1000u;
+	// The copy phase: the copy itself plus the waits for the panel to have read
+	// the rows it writes (see panel_wait_row). It is the frame's critical path
+	// after the drawing, so it is what the slot has to hold.
+	uint32_t copy = (uint32_t)(blit_done_us - wait_us) / 1000u;
+	uint32_t flip = w->flip_us / 1000u + (uint32_t)(pan_done_us - blit_done_us) / 1000u;
+	uint32_t work = draw + rise + copy;
 	if (!ft.second_start_us) {
 		ft.second_start_us = pan_done_us;
 	}
 	ft.frames++;
-	ft.slow += (render + blit + pan) > FRAME_SLOW_MS;
-	ft.render_sum += render;
-	ft.blit_sum += blit;
-	ft.pan_sum += pan;
-	ft.render_max = render > ft.render_max ? render : ft.render_max;
-	ft.blit_max = blit > ft.blit_max ? blit : ft.blit_max;
-	ft.pan_max = pan > ft.pan_max ? pan : ft.pan_max;
+	ft.slow += work * 1000u > frame_slow_us();
+	ft.render_sum += draw;
+	ft.blit_sum += copy;
+	ft.flip_sum += flip;
+	ft.rise_sum += rise;
+	ft.work_sum += work;
+	ft.rise_over += w->rise_over;
+	ft.render_max = draw > ft.render_max ? draw : ft.render_max;
+	ft.blit_max = copy > ft.blit_max ? copy : ft.blit_max;
+	ft.flip_max = flip > ft.flip_max ? flip : ft.flip_max;
+	ft.rise_max = rise > ft.rise_max ? rise : ft.rise_max;
+	ft.work_max = work > ft.work_max ? work : ft.work_max;
 	if (pan_done_us - ft.second_start_us >= 1000000u) {
-		if (ft.slow) {
-			printf("frames: %d in %u ms, %d slow; draw avg %u max %u, copy avg %u max %u (%u%% of a screen), flip avg "
-				   "%u max %u ms\n",
-				   ft.frames, (unsigned)((pan_done_us - ft.second_start_us) / 1000u), ft.slow,
-				   ft.render_sum / ft.frames, ft.render_max, ft.blit_sum / ft.frames, ft.blit_max,
+		if (ft.frames) {
+			printf("frames: %d in %u ms, %d slow; draw avg %u max %u, rise avg %u max %u, copy avg %u max %u (%u%% "
+				   "of a screen), flip avg %u max %u, work avg %u max %u (%d over)\n",
+				   ft.frames, (unsigned)((pan_done_us - ft.second_start_us) / 1000u), ft.slow, ft.render_sum / ft.frames,
+				   ft.render_max, ft.rise_sum / ft.frames, ft.rise_max, ft.blit_sum / ft.frames, ft.blit_max,
 				   (unsigned)(ft.copied_px * 100u / ((uint64_t)ft.frames * (uint64_t)(log_w * log_h))),
-				   ft.pan_sum / ft.frames, ft.pan_max);
+				   ft.flip_sum / ft.frames, ft.flip_max, ft.work_sum / ft.frames, ft.work_max, ft.rise_over);
 		}
+		if (ft.pace_n >= 8) {
+			double avg = (double)ft.pace_sum / (double)ft.pace_n;
+			double var = (double)ft.pace_sq / (double)ft.pace_n - avg * avg;
+			printf("glass: %d gaps, avg %.1f ms sd %.1f, min %.1f max %.1f ms; %d late (max %u us)\n", ft.pace_n,
+				   avg / 1000.0, var > 0 ? sqrt(var) / 1000.0 : 0.0, (double)ft.pace_min / 1000.0,
+				   (double)ft.pace_max / 1000.0, pan_late_n, pan_late_max);
+		}
+		uint64_t keep_glass = ft.glass_prev_us;
 		memset(&ft, 0, sizeof(ft));
+		ft.glass_prev_us = keep_glass;
+		pan_late_n = 0;
+		pan_late_max = 0;
 	}
 }
 
@@ -2013,6 +2387,7 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 	bool second_page = false;
 	uint64_t flush_us = ft_now_us(), wait_us = flush_us, blit_done_us = flush_us;
 	bool copied = fb_rotated || fb_ram_page;
+	frame_waits_t waits = {0};
 
 	if (copied) {
 		// Collect this frame's damage; the copy happens once, on the last
@@ -2030,6 +2405,18 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 		// Both are the same guarantee, that the memory below is off the panel.
 		fb_flip_wait();
 		wait_us = ft_now_us();
+		waits.flip_us = (uint32_t)(wait_us - flush_us);
+
+		// With one page, the pan above is a promise that the panel will come and
+		// read this very memory, so the copy goes in behind the panel's own read
+		// of it (see panel_transfer_start and panel_wait_row). The two-page path
+		// copies into the page the panel is not showing and needs none of this.
+		bool banded = false;
+		if (fb_single_page && pan_outstanding) {
+			banded = panel_transfer_start(fb_pan_us, &waits.rise_us, &waits.rise_over);
+			pan_outstanding = false;
+			wait_us = ft_now_us();
+		}
 
 		// A pan that was refused because the mode changed (see the flip thread)
 		// leaves the copy and the pan working from a screen info the driver no
@@ -2060,15 +2447,34 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 			dirty_add_all(&redraw, &rot_frame_dirty);
 		}
 
+		uint32_t band_wait_us = 0;
+		// A scaled layout or a rotated screen maps layout rows to panel rows in
+		// a way the band's safe time would have to be turned inside out for, so
+		// those paths wait the whole transfer out before the first rect.
+		if (banded && (fb_scaled || fb_rotated)) {
+			panel_wait_row((uint32_t)fb_var.yres - 1, (uint32_t)fb_var.yres, &band_wait_us);
+		}
 		for (int i = 0; i < redraw.n; i++) {
 			ft.copied_px += (uint32_t)area_size(&redraw.r[i]);
 			if (fb_scaled) {
 				blit_scaled_2_3(page, (const uint16_t *)px, &redraw.r[i], fb_rotated);
-			} else {
+			} else if (!banded || fb_rotated) {
 				blit_rotated_180(page, (const uint16_t *)px, &redraw.r[i], (int32_t)fb_var.xres,
 								 (int32_t)fb_var.yres, fb_rotated);
+			} else {
+				// One band at a time, each as soon as the panel has read past it.
+				const lv_area_t *r = &redraw.r[i];
+				for (int32_t y = r->y1; y <= r->y2; y += PAN_BAND_ROWS) {
+					lv_area_t band = *r;
+					band.y1 = y;
+					band.y2 = y + PAN_BAND_ROWS - 1 < r->y2 ? y + PAN_BAND_ROWS - 1 : r->y2;
+					panel_wait_row((uint32_t)band.y2, (uint32_t)log_h, &band_wait_us);
+					blit_rotated_180(page, (const uint16_t *)px, &band, (int32_t)fb_var.xres,
+									 (int32_t)fb_var.yres, fb_rotated);
+				}
 			}
 		}
+		waits.xfer_us = band_wait_us;
 
 		if (fb_single_page) {
 			dirty_clear(&rot_page_pending[0]);
@@ -2089,14 +2495,15 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 		pthread_mutex_lock(&flip_lock);
 		flip_var = fb_var;
 		flip_pending = true;
+		pan_outstanding = true; // the panel is about to read the page being written
 		pthread_cond_signal(&flip_cond);
 		pthread_mutex_unlock(&flip_lock);
-		ft_frame_done(flush_us, wait_us, blit_done_us, blit_done_us);
+		ft_frame_done(flush_us, wait_us, blit_done_us, blit_done_us, &waits);
 	} else if (lv_display_flush_is_last(disp)) {
 		// The pan path itself arms a disarmed panel and asks again (see
 		// fb_pan_show): a refused pan is never a reason to stop asking.
 		fb_pan_show(second_page ? fb_var.yres : 0);
-		ft_frame_done(flush_us, wait_us, blit_done_us, ft_now_us());
+		ft_frame_done(flush_us, wait_us, blit_done_us, ft_now_us(), &waits);
 	}
 	lv_display_flush_ready(disp);
 }
@@ -2295,6 +2702,9 @@ static lv_display_t *try_panned_display(void) {
 	lv_display_set_flush_cb(disp, fb_pan_flush_cb);
 	lv_display_add_event_cb(disp, ft_refr_start_cb, LV_EVENT_REFR_START, NULL);
 	fb_flip_start();
+	// The panel's own transfer, read from the LCDC: the copy waits for it on the
+	// single-page path (see panel_wait_transfer).
+	lcdc_map();
 	fb_display = disp;
 
 	if (fb_single_page) {
@@ -2560,6 +2970,20 @@ static bool find_touch_node(char *out, size_t out_size) {
 	return false;
 }
 
+// How often the interface is redrawn, and how often the touch panel is read.
+// LVGL would use LV_DEF_REFR_PERIOD for both (16 ms in lv_conf.h); the two are
+// set apart here, and why is written where they are used, in
+// init_target_display(). The frame period is a default only: [screen]
+// frame_period_ms in device_config.ini overrides it.
+//
+// The touch is read more often than the interface is redrawn, and that is about
+// the finger rather than the glass: a drag moves the content by whatever the
+// touch said last, so a sample that is 16 ms old is 16 ms of the content
+// trailing the finger. Measured on the device, the interface thread has room
+// for it (one read per sample, and the panel reports at about 100 Hz).
+#define FRAME_PERIOD_MS 20
+#define TOUCH_PERIOD_MS 8
+
 static lv_display_t *init_target_display(void) {
 	// Tear-free page flipping when the framebuffer supports it...
 	lv_display_t *disp = try_panned_display();
@@ -2615,6 +3039,51 @@ static lv_display_t *init_target_display(void) {
 	} else {
 		fprintf(stderr, "Warning: No touch input device found.\n");
 	}
+
+	// The cadence the glass is handed frames at, in panel frames (see
+	// pan_cadence_frames): two of them is the fastest this panel can take, three
+	// is the same picture with room to spare.
+	int cadence = (int)config_get_int("screen", "cadence_frames", 2);
+	if (cadence < 2) {
+		cadence = 2;
+	} else if (cadence > 4) {
+		cadence = 4;
+	}
+	pan_cadence_frames = (uint32_t)cadence;
+
+	// The interface thread's own pace. The glass is no longer set by this
+	// number: the pan is what hands it a frame, and the flip thread paces that
+	// on the panel's own frame grid (see pan_cadence_frames and the flip
+	// thread). What this decides is how much earlier than the pan the interface
+	// thread starts drawing -- and it has to be *earlier* than the pan, or the
+	// pan misses its slot and the picture drops a frame. The copy phase and the
+	// draw together cost 20 to 25 ms, so twenty leaves the cadence its room; the
+	// thirty-three this used to be is more than the cadence itself and would
+	// make every pan late.
+	//
+	// Configurable, because it is a matter of taste and of what the interface
+	// costs on screen: [screen] frame_period_ms in device_config.ini.
+	int period = (int)config_get_int("screen", "frame_period_ms", FRAME_PERIOD_MS);
+	if (period < 16) {
+		period = 16;
+	} else if (period > (int)(pan_cadence_frames * PANEL_FRAME_US / 1000u)) {
+		period = (int)(pan_cadence_frames * PANEL_FRAME_US / 1000u);
+	}
+	lv_timer_set_period(lv_display_get_refr_timer(disp), (uint32_t)period);
+
+	// The touch keeps its 16 ms, so a tap is still read twice per frame and not
+	// answered a frame late. LV_DEF_REFR_PERIOD in lv_conf.h stays at 16 as
+	// well: it is the default for every display and every input device LVGL
+	// creates, and this is the one place that knows what this board's panel
+	// costs. The simulator is left at 60 -- its frames cost a PC's time, not
+	// this panel's, and there the smoother picture is the honest one.
+	if (touch) {
+		lv_timer_set_period(lv_indev_get_read_timer(touch), TOUCH_PERIOD_MS);
+	}
+	printf("fb: the interface refreshes every %d ms (%d frames a second), the touch is read every %d ms, the glass "
+		   "every %u panel frames (%u ms, %u frames a second)\n",
+		   period, 1000 / (period > 0 ? period : 1), TOUCH_PERIOD_MS, pan_cadence_frames,
+		   pan_cadence_frames * PANEL_FRAME_US / 1000u, 1000000u / (pan_cadence_frames * PANEL_FRAME_US));
 
 	return disp;
 }

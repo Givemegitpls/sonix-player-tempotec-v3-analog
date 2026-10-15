@@ -81,9 +81,9 @@ void powersettings_apply(void) {
 
 	power_set_auto_off(config_get_bool("power", "auto_off", false), (uint32_t)AUTO_OFF[auto_off_index()].minutes);
 
-	// Suspend-to-RAM standby, on by default: saves battery by suspending the
-	// player shortly after the screen goes off.
-	power_set_standby_enabled(config_get_bool("power", "standby_mem", true));
+	// Suspend-to-RAM standby, off unless it has been asked for: this board's
+	// panel is not put to sleep by default (see POWER_STANDBY_MEM_DEFAULT).
+	power_set_standby_enabled(config_get_bool("power", "standby_mem", POWER_STANDBY_MEM_DEFAULT));
 
 	// The LED master switch comes first: with it off there is nothing for the
 	// standby option to turn off, and led.c keeps the charge indicator alive
@@ -130,7 +130,7 @@ static void refresh_labels(void) {
 
 	set_checked(key_lock_switch, config_get_bool("power", "lock_keys_screen_off", false));
 
-	if (config_get_bool("power", "standby_mem", true)) {
+	if (config_get_bool("power", "standby_mem", POWER_STANDBY_MEM_DEFAULT)) {
 		lv_obj_add_state(standby_switch, LV_STATE_CHECKED);
 	} else {
 		lv_obj_remove_state(standby_switch, LV_STATE_CHECKED);
