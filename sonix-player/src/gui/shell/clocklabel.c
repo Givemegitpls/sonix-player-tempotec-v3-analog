@@ -24,6 +24,10 @@ lv_obj_t *clocklabel_create(lv_obj_t *parent, const lv_font_t *font, int font_px
 	// Its colour is the label's, inherited, so a style that tints the label
 	// tints both.
 	lv_obj_t *suffix = lv_label_create(label);
+	// Floating: left out of the label's content size, which the right padding
+	// already makes room for. Counted, it would widen the label by its own
+	// width a second time and push the centred time off to the left.
+	lv_obj_set_floating(suffix, true);
 	lv_obj_set_style_text_font(suffix, suffix_font, 0);
 	lv_obj_set_y(suffix, figure_top(font, font_px) - figure_top(suffix_font, suffix_px));
 	lv_obj_set_hidden(suffix, true);
