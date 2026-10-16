@@ -115,6 +115,12 @@ const char *clock_zone_name(void);
 // on a timer. True when the local time may have moved.
 bool clock_poll(void);
 
+// Called from the thread of an attempt each time it learns something -- the
+// time, the zone, the end of the attempt -- so the interface can bring
+// clock_poll() and the status bar forward instead of waiting for its timers.
+// The hook runs on that thread, not the interface's.
+void clock_set_change_hook(void (*hook)(void));
+
 // Puts the system clock back where it belongs; returns true if it had to move
 // it.
 //

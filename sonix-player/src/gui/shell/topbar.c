@@ -239,6 +239,15 @@ static void clock_timer_cb(lv_timer_t *timer) {
 	topbar_refresh_clock();
 }
 
+static void clock_changed_cb(void *unused) {
+	(void)unused;
+	clock_poll();
+	topbar_refresh_clock();
+}
+
+// From the network attempt's thread: onto this one.
+static void clock_changed(void) { gui_post(clock_changed_cb, NULL); }
+
 static void remember_timer_cb(lv_timer_t *timer) {
 	(void)timer;
 	// Correct the wall clock against the RTC, or the boot clock, before writing
@@ -1037,6 +1046,7 @@ void topbar_init(gui_config_t *cfg) {
 
 	// Ten seconds keeps the minute from ever looking stale and costs nothing.
 	clock_timer = lv_timer_create(clock_timer_cb, 10000, NULL);
+	clock_set_change_hook(clock_changed);
 	power_pause_in_standby(clock_timer); // a clock nobody can see is pure drain
 
 	// The current time is written to the config, and checked against the RTC, so
