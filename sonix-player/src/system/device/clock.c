@@ -795,24 +795,38 @@ void clock_set_use_24h(bool on) {
 	config_save();
 }
 
-void clock_format_hm(char *out, size_t out_size, int hour, int minute) {
-	if (!out || out_size == 0) {
+void clock_format_hm_parts(char *time_out, size_t time_size, char *suffix_out, size_t suffix_size, int hour, int minute) {
+	if (suffix_out && suffix_size > 0) {
+		suffix_out[0] = '\0';
+	}
+	if (!time_out || time_size == 0) {
 		return;
 	}
 
 	if (clock_use_24h()) {
-		snprintf(out, out_size, "%02d:%02d", hour, minute);
+		snprintf(time_out, time_size, "%02d:%02d", hour, minute);
 		return;
 	}
 
 	// Midnight and noon are the two that are always got wrong: 0 and 12 both
 	// display as "12", one AM and one PM.
-	const char *suffix = hour < 12 ? "AM" : "PM";
 	int shown = hour % 12;
 	if (shown == 0) {
 		shown = 12;
 	}
 	// No leading zero: "2:05 PM", not "02:05 PM", as no 12-hour clock pads the
 	// hour.
-	snprintf(out, out_size, "%d:%02d %s", shown, minute, suffix);
+	snprintf(time_out, time_size, "%d:%02d", shown, minute);
+	if (suffix_out && suffix_size > 0) {
+		snprintf(suffix_out, suffix_size, "%s", hour < 12 ? "AM" : "PM");
+	}
+}
+
+void clock_format_hm(char *out, size_t out_size, int hour, int minute) {
+	if (!out || out_size == 0) {
+		return;
+	}
+	char time_text[16], suffix[8];
+	clock_format_hm_parts(time_text, sizeof(time_text), suffix, sizeof(suffix), hour, minute);
+	snprintf(out, out_size, suffix[0] ? "%s %s" : "%s", time_text, suffix);
 }

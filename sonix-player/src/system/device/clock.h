@@ -160,4 +160,8 @@ void clock_set_use_24h(bool on); // stored in the configuration
 // 23; the conversion happens here.
 void clock_format_hm(char *out, size_t out_size, int hour, int minute);
 
+// The same in two parts, for a clock that draws AM and PM apart from the
+// figures: "2:05" and "PM", or "14:05" and "".
+void clock_format_hm_parts(char *time_out, size_t time_size, char *suffix_out, size_t suffix_size, int hour, int minute);
+
 #endif /* CLOCK_H */

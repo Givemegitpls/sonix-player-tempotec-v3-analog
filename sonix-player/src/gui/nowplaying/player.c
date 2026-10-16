@@ -3800,15 +3800,15 @@ static void update_format_label(const device_state_t *state) {
 	}
 
 	if (state->live) {
-		// No bit depth to quote on a stream: what a station is, is its
-		// bitrate. Nothing at all until the first frame has been decoded.
+		// A lossy station is quoted by its bitrate, a lossless one by depth and
+		// rate like a track from the card ("16/44.1 FLAC"). The codec is the
+		// decoder's, not the directory's claim. Nothing at all until the first
+		// frame has been decoded.
 		radio_now_t now;
 		radio_get_now(&now);
-		// The format was written "MP3" because that was the only thing the
-		// stream path could decode. It reads AAC too now, and a station that
-		// says MP3 while an AAC decoder is running on it is a lie the log
-		// cannot correct.
-		if (now.bitrate > 0) {
+		if (now.bits > 0 && now.sample_rate > 0 && now.codec[0]) {
+			lv_label_set_text_fmt(format_label, "%d/%g %s", now.bits, now.sample_rate / 1000.0, now.codec);
+		} else if (now.bitrate > 0) {
 			lv_label_set_text_fmt(format_label, "%d kbps %s", now.bitrate, now.codec[0] ? now.codec : "MP3");
 		} else if (now.codec[0]) {
 			lv_label_set_text(format_label, now.codec);
