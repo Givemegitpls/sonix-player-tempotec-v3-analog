@@ -19,7 +19,7 @@ body:
         > Everything Sonix Player can do is in the **[feature list](https://github.com/Jepl4r/sonix-player/blob/main/FEATURES.md)**.
         > If what you expected is not in that list, **do not open a bug report**.
         >
-        > Bug reports about missing features, and bug reports without a log, will be closed.
+        > Bug reports about missing features will be closed. Without the log, a problem cannot be looked into.
 
   - type: markdown
     attributes:
@@ -46,7 +46,7 @@ body:
           required: true
         - label: I searched the [open and closed issues](https://github.com/Jepl4r/sonix-player/issues?q=is%3Aissue), and this problem has not been reported yet.
           required: true
-        - label: I will attach the log below. I understand that a report without a log will be closed.
+        - label: I will attach the log file below. I understand that without it the problem cannot be looked into.
           required: true
 
   - type: dropdown

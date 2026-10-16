@@ -68,9 +68,10 @@ body:
     attributes:
       label: Does the stock HiBy firmware have it?
       options:
-        - "Yes"
         - "No"
+        - "Yes"
         - "I don't know"
+      default: 0
     validations:
       required: true
 
