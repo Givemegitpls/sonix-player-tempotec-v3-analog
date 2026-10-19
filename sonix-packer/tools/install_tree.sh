@@ -89,6 +89,18 @@ grep -q "\"$BUILD_STAMP\"" "$SYSTEM_INFO_JSON" ||
 	{ echo "install_tree: build_version was not rewritten" >&2; exit 1; }
 echo "    build_version = $BUILD_STAMP"
 
+# And the version string: this build's identity, computed by the packer out of
+# src/sonix-blaze -- a tag, a commit's short hash, or an md5 of the uncommitted
+# changes (see os_version() in v3_analog_packer.sh). It is the row the player
+# shows in About as "Operating system version". The substitution is written with
+# | rather than /, since the value itself carries a slash.
+OS_VERSION="${OS_VERSION:-}"
+[ -n "$OS_VERSION" ] || { echo "install_tree: OS_VERSION is empty" >&2; exit 1; }
+rewrite "s|(\"OS_version\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")|\\1$OS_VERSION\\2|" "$SYSTEM_INFO_JSON"
+grep -q "\"$OS_VERSION\"" "$SYSTEM_INFO_JSON" ||
+	{ echo "install_tree: OS_version was not rewritten" >&2; exit 1; }
+echo "    OS_version = $OS_VERSION"
+
 # ---------------------------------------------------------------------------
 # 4. The stock interface's resources go
 # ---------------------------------------------------------------------------

@@ -16,8 +16,9 @@
 #
 #   v3_analog_packer.sh        this script
 #   v3_analog_original.upt     the stock firmware to start from ($STOCK to point
-#                              somewhere else; the sibling project keeps one at
-#                              ../tempotec v3/v3_analog.upt)
+#                              somewhere else): the vendor's 1.3 build for this
+#                              model, which this repository does not carry --
+#                              docs/V3-ANALOG.md, "What a fresh clone needs"
 #   sonix_player               the binary to install (make target in sonix-player/)
 #   assets/BLAZE/              the player's own interface assets: fonts,
 #                              languages, images, and the Bluetooth userland
@@ -29,15 +30,17 @@
 #   tools/fix_update_md5.py    the digest the updater checks
 #
 # and, for the tools themselves (7z, ubireader, mkfs.ubifs, genisoimage), the
-# docker image the sibling project builds:
+# docker image this repository carries the recipe for:
 #
-#   docker build -t tempotec-fw-tools "../tempotec v3/docker"
+#   docker build -t tempotec-fw-tools sonix-packer/docker
 #
 # Run it and it does the lot:
 #
 #   ./v3_analog_packer.sh            # build, then verify the result
 #   ./v3_analog_packer.sh verify     # only re-check out/v3_analog.upt
 #   STOCK=... ./v3_analog_packer.sh  # from another stock image
+#   VERSION_OVERRIDE=<base>/<tag> ./v3_analog_packer.sh   # name the build by
+#                                    hand, for a release git cannot name here
 #
 set -euo pipefail
 
@@ -48,6 +51,13 @@ STOCK="${STOCK:-$SCRIPT_DIR/v3_analog_original.upt}"
 PLAYER_BIN="$SCRIPT_DIR/sonix_player"
 LAUNCH_BIN="$SCRIPT_DIR/sonix_launch"
 DOCKER_IMAGE="${DOCKER_IMAGE:-tempotec-fw-tools}"
+
+# The stock image's bootloader, which is carried through into ours untouched.
+# It is the one file whose contents matter more than anything else here: a wrong
+# stock image is a wrong UBOOT.BIN, and writing a wrong bootloader is the one
+# way to brick this device. A newer vendor firmware would bring its own digest,
+# which is why this is a variable rather than a constant in the check below.
+STOCK_UBOOT_MD5="${STOCK_UBOOT_MD5:-1f54858d6b4e6f482a81a3378c0e5bf8}"
 
 # A kernel to install instead of the stock one. Optional: without it the stock
 # UIMAGE.BIN is carried through untouched. When it is there its size must not
@@ -82,28 +92,80 @@ die() {
 # because it is the host that knows when the binary was built.
 fw() {
 	docker run --rm -i -v "$SCRIPT_DIR:/packer" -w /packer \
-		-e BUILD_STAMP="${BUILD_STAMP:-}" "$DOCKER_IMAGE" "$@"
+		-e BUILD_STAMP="${BUILD_STAMP:-}" -e OS_VERSION="${OS_VERSION:-}" \
+		"$DOCKER_IMAGE" "$@"
 }
 
 # When the binary was built, as the stamp the player shows in About. GNU date on
 # the host, so the seconds of the file's own mtime are the source.
 stamp_of() { date -r "$1" +%d%m%Y%H%M; }
 
+# The version the player shows in About ("Operating system version"). The base is
+# the port's own, taken from the asset's system-info.json up to the first '-' or
+# '/'; what follows the slash names the build, out of src/sonix-blaze:
+#
+#   HEAD carries a tag      -> <base>/<tag>          a release
+#   a commit without a tag  -> <base>/#<short hash>  that commit, built
+#   changes not committed   -> <base>/<8 hex>        a test build; the eight hex
+#                              are an md5 of those changes, since the image's own
+#                              md5 cannot be written inside the image. The
+#                              artefact's name still carries it, as before.
+#
+# A release whose commit carries no tag -- because the tag lives on another
+# branch, or the tree has moved on since -- is built with
+# VERSION_OVERRIDE=<base>/<tag> on the command line, which names it by hand
+# instead of by git.
+os_version() {
+	if [ -n "${VERSION_OVERRIDE:-}" ]; then
+		printf '%s' "$VERSION_OVERRIDE"
+		return 0
+	fi
+
+	local repo="$SCRIPT_DIR/.." json base tag
+	json="$SCRIPT_DIR/assets/V3ANALOG/usr/resource/sonix/components/system-info.json"
+	base="$(sed -nE 's/.*"OS_version"[[:space:]]*:[[:space:]]*"([^"/-]*).*/\1/p' "$json")"
+	[ -n "$base" ] || die "no OS_version in $json to take a base from."
+
+	if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+		warn "$repo is not a git repository; the version will name no build."
+		printf '%s/unknown' "$base"
+		return 0
+	fi
+
+	if [ -n "$(git -C "$repo" status --porcelain --untracked-files=no)" ]; then
+		printf '%s/%s' "$base" \
+			"$(git -C "$repo" diff HEAD --binary | md5sum | cut -c1-8)"
+		return 0
+	fi
+
+	tag="$(git -C "$repo" describe --tags --exact-match HEAD 2>/dev/null || true)"
+	if [ -n "$tag" ]; then
+		printf '%s/%s' "$base" "$tag"
+	else
+		printf '%s/#%s' "$base" "$(git -C "$repo" rev-parse --short=7 HEAD)"
+	fi
+}
+
 check_inputs() {
 	step "Checking what is needed"
 
 	command -v docker >/dev/null 2>&1 || die "docker is not installed."
 	docker image inspect "$DOCKER_IMAGE" >/dev/null 2>&1 ||
-		die "the docker image $DOCKER_IMAGE is not built. See the header of this script."
+		die "the docker image $DOCKER_IMAGE is not built. Build it with:
+     docker build -t $DOCKER_IMAGE sonix-packer/docker"
 
-	[ -f "$STOCK" ] || die "no stock image at $STOCK (set STOCK=...)."
+	[ -f "$STOCK" ] || die "no stock image at $STOCK (set STOCK=...): the vendor's 1.3
+     firmware for the V3 Analog, which this repository does not carry. See
+     docs/V3-ANALOG.md, 'What a fresh clone needs', for what it has to be."
 	[ -f "$PLAYER_BIN" ] || die "no sonix_player next to this script: build it with 'make target' in sonix-player/."
 	[ -d assets/BLAZE ] || die "assets/BLAZE is missing."
 	[ -d assets/V3ANALOG ] || die "assets/V3ANALOG is missing."
 
 	BUILD_STAMP="$(stamp_of "$PLAYER_BIN")"
+	OS_VERSION="$(os_version)"
 	say "    stock:  $STOCK ($(stat -c%s "$STOCK") bytes)"
 	say "    player: $(stat -c%s "$PLAYER_BIN") bytes, built $BUILD_STAMP"
+	say "    version: OS_version $OS_VERSION"
 	[ -f "$LAUNCH_BIN" ] || die "no sonix_launch next to this script: build it with 'make target' in sonix-player/."
 	say "    launch: $(stat -c%s "$LAUNCH_BIN") bytes"
 	if [ -f "$KERNEL_IMAGE" ]; then
@@ -130,6 +192,18 @@ unpack_stock() {
 		[ -f "$ISO_DIR/$f" ] || die "the stock image has no $f: not a firmware of this kind."
 	done
 	say "    ISO: SYSTEM.UBI, UIMAGE.BIN, UBOOT.BIN, UPDATE.TXT, VERSION.TXT, _GITIGNO"
+
+	# The bootloader is carried through, so the stock image had better be the
+	# stock image: this is the one file that bricks the device when it is wrong,
+	# and it is not the file the rest of the build would notice.
+	stock_uboot_md5="$(md5sum "$ISO_DIR/UBOOT.BIN" | cut -d' ' -f1)"
+	if [ "$stock_uboot_md5" != "$STOCK_UBOOT_MD5" ]; then
+		die "this stock image's UBOOT.BIN is $stock_uboot_md5, not the V3 Analog stock
+     bootloader $STOCK_UBOOT_MD5. Either it is the wrong model's firmware, or a
+     vendor version newer than the one this port was built on -- in which case
+     read what changed, then set STOCK_UBOOT_MD5=$stock_uboot_md5 to say so."
+	fi
+	say "    UBOOT.BIN: $stock_uboot_md5, the stock bootloader (carried through)"
 
 	fw ubireader_extract_files -k -o "build/SYSTEM" "build/iso/SYSTEM.UBI"
 	[ -d "$TREE/usr/bin" ] || die "the rootfs did not extract."
@@ -214,6 +288,10 @@ PY
 	# Relative: inside the container this directory is /packer, so an absolute
 	# host path names nothing there.
 	VT="build/verify/SYSTEM"
+
+	# What the player will report in About, read back out of the image.
+	say "    OS_version: $(sed -nE 's/.*"OS_version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' \
+		"$VT/usr/resource/sonix/components/system-info.json")"
 
 	# Back to the host before anything can fail: a tree left owned by root is a
 	# tree the next run cannot clean up.
