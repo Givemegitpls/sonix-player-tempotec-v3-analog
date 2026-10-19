@@ -413,14 +413,17 @@ Two things the verify step exists for, both learned the hard way:
   rewrite preserves the mode and the check refuses an image where any of
   `S92_03_start_music_player`, `S98adb_debug`, `sonix_player`,
   `sonix_player.sh` or `sonix_launch` is not executable.
-- **Adb when the player is not there.** On this firmware adb is a USB mode that
-  only the player selects (the stock has no script that starts it at boot), so a
-  player that does not come up leaves no adb either, and nothing to look at. The
-  image carries `etc/init.d/S98adb_debug`, which puts the gadget into adb mode
-  and starts `adbd` whenever neither `sonix_player` nor `sonix_launch` is
-  running, and stays out of the way while the player runs -- the player owns the
-  gadget's mode otherwise (DAC mode, storage mode). `/mnt/sd_0/disable_adb`
-  pauses it.
+- **Adb when it was asked for.** On this firmware adb is a USB mode that
+  normally only the player selects (the stock has no script that starts it at
+  boot), so a player that does not come up leaves no adb either, and nothing to
+  look at. The image carries `etc/init.d/S98adb_debug`, but it does not turn adb
+  on by itself: it asks first, and two things count as asking -- `adb = 1` in
+  the `[system]` section of `/data/device_config.ini` (the Developer options
+  switch) or `/mnt/sd_0/enable_adb` on the card. With neither, the gadget is
+  left alone, for the player to build and own. With either, and while neither
+  `sonix_player` nor `sonix_launch` is running, the gadget is set to adb and
+  `adbd` started; while the player runs it owns the port and the script keeps
+  out of its way. `/mnt/sd_0/disable_adb` overrides both for one session.
 
 The tools the packer runs live in a docker image this repository carries the
 recipe for: `sonix-packer/docker` holds 7z, ubi_reader, mkfs.ubifs and
