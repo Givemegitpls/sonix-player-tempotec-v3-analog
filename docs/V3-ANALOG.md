@@ -58,6 +58,35 @@ the device boot-loops.
 newer than the device's glibc. For this port it reports no symbol beyond
 glibc 2.16; the highest actually present is **`GLIBC_2.9`**.
 
+The toolchain is not in the repository (`.gitignore` keeps `rockbox-toolchain`
+out: it is hundreds of megabytes), but the script that builds it is, and so are
+the patches it applies:
+
+```sh
+cd sonix-player/rockboxdev
+RBDEV_HOST_PREFIX="$PWD/../rockbox-toolchain" ./rockboxdev.sh   # binutils 2.38, gcc 9.5.0, headers, glibc 2.27
+cd ..
+make target
+```
+
+`RBDEV_HOST_PREFIX` is where the build of the toolchain lands, and
+`sonix-player/rockbox-toolchain` is where the Makefile looks for it; with the
+variable left alone the script installs next to itself instead, and the tree
+then has to be moved or linked. `RBDEV_DOWNLOAD=<dir>` keeps the downloaded
+tarballs for the next run.
+
+Two fetches in that build are known to be fragile on some networks, and both
+can be satisfied by hand:
+
+- **freetype** comes from `savannah.gnu.org`, which stalls on the network this
+  port was built on. The Makefile skips the download when
+  `sonix-player/freetype-2.13.3.tar.xz` is already there, and a sourceforge
+  mirror serves the same file
+  (`.../project/freetype/freetype2/2.13.3/freetype-2.13.3.tar.xz`).
+- **LVGL** is cloned from github by the same Makefile; a clone that fails
+  half-way leaves `sonix-player/lvgl/` behind and is best removed before
+  retrying.
+
 ## Display: 32 bits, one page, a 2/3 blit
 
 The panel is an SLCD, and a frame reaches the glass only through
@@ -305,8 +334,25 @@ builds an image that boots it, taking the stock firmware as the starting point.
 
 ```
 cd sonix-packer
-STOCK="../tempotec v3/v3_analog.upt" ./v3_analog_packer.sh
+STOCK="<the stock v3_analog.upt>" ./v3_analog_packer.sh
 ```
+
+The stock image itself is not in the repository. It is the vendor's own
+firmware for this model -- **1.3**, the build the port is developed against;
+copies circulate on the 4pda.to forum -- and it is the one input a clone has to
+bring from outside. Before starting, check it is the right one:
+
+| in the stock `.upt` | expected |
+|---|---|
+| `UIMAGE.BIN` | md5 `35889275f8bed2f967a18f6a8b66495c` |
+| `UBOOT.BIN` | md5 `1f54858d6b4e6f482a81a3378c0e5bf8` |
+| `VERSION.TXT` | `name=v3_analog`, `ver=2024-12-24T11:00:26+08:00` |
+
+The packer reads the bootloader out of it and carries it into our image
+untouched, so it refuses a stock image whose `UBOOT.BIN` is not the one above:
+a different bootloader is the one mistake on this device that cannot be undone
+from a card. A vendor version newer than 1.3 has its own digest, and the check
+takes it on the command line then (`STOCK_UBOOT_MD5=<md5>`).
 
 What it does, in order: unpacks the stock `.upt` (an ISO) and extracts
 `SYSTEM.UBI` (the UBIFS rootfs) from it; deletes `usr/bin/hiby_player` and
@@ -321,6 +367,38 @@ recomputes the rootfs digest in `UPDATE.TXT`, and rebuilds the ISO with
 `genisoimage`. Then it unpacks its own result and checks it: the digest, the
 files, their modes, and that the Bluetooth userland in the image is the one the
 assets carry and not the stock's.
+
+### The version the player reports
+
+`OS_version` in `usr/resource/sonix/components/system-info.json` is the row the
+interface shows as **Operating system version**, and the packer writes it per
+build instead of leaving it to whoever edited the asset last. The base is the
+port's own -- everything in the asset's value up to the first `-` or `/`, today
+`1.2.0.1` -- and what follows the slash names the build, out of this repository:
+
+| the tree in `src/sonix-blaze` | the string |
+|---|---|
+| HEAD carries a tag | `1.2.0.1/0.1.0` |
+| a commit, no tag | `1.2.0.1/#5436fdd` |
+| changes not committed yet | `1.2.0.1/f2e2493d` |
+
+The third row is a test build, and its eight hex are an md5 of the changes git
+has not committed: the image's own md5 cannot be written inside the image, since
+it is computed *from* the image. The artefact carries it in its name instead,
+which is what the older images did by hand -- `out/v3_analog-ea3aded4.upt`.
+
+A release whose commit carries no tag -- the tag lives on another branch, or the
+tree has moved on since -- is named by hand, which sidesteps git rather than
+moving tags around:
+
+```
+VERSION_OVERRIDE=1.2.0.1/0.1.0 ./v3_analog_packer.sh
+```
+
+`build_version` is a row of its own: the mtime of the player binary, the stamp
+the interface shows as the build number (`151020262247`). The update check
+compares release tags against `OS_version` and ignores anything after the
+numbers, so a `/` there costs nothing.
 
 `UBOOT.BIN` is carried across untouched, deliberately: writing the bootloader is
 the one way to brick this device, and the update route does not need it.
@@ -344,9 +422,32 @@ Two things the verify step exists for, both learned the hard way:
   gadget's mode otherwise (DAC mode, storage mode). `/mnt/sd_0/disable_adb`
   pauses it.
 
-The tools live in the docker image the sibling project builds
-(`docker build -t tempotec-fw-tools "../tempotec v3/docker"`): 7z, ubi_reader,
-mkfs.ubifs and genisoimage, none of which this host has.
+The tools the packer runs live in a docker image this repository carries the
+recipe for: `sonix-packer/docker` holds 7z, ubi_reader, mkfs.ubifs and
+genisoimage, none of which a normal host has, and the base is pinned by digest
+so a clone builds the same image later.
+
+```sh
+docker build -t tempotec-fw-tools sonix-packer/docker
+```
+
+### What a fresh clone needs
+
+A clone of this branch has the packer, its assets (the player's interface, its
+fonts, the Bluetooth userland), the player's sources and this document. What it
+does not have, and what the build therefore asks for by name:
+
+| input | how to get it |
+|---|---|
+| docker | the host's own; the script refuses to start without it |
+| the tools image | `docker build -t tempotec-fw-tools sonix-packer/docker` |
+| the stock `.upt` | the vendor's 1.3 firmware for the V3 Analog, above; not in the repository |
+| `sonix-packer/sonix_player`, `sonix_launch` | `make target` in `sonix-player/` (see "Building for the target") |
+| `sonix-packer/kernel/UIMAGE.BIN` | nothing: it must **not** be there. The packer installs a kernel from that slot when one is present, and only kernel work deliberately puts one there (`patch/v3-kernel/FLASHING.md`) |
+
+The packer checks each of these before it starts and says which one is missing,
+so a first run on a fresh clone is a list of what to fetch, not a stack of
+errors from `mkfs.ubifs`.
 
 The result is `out/v3_analog.upt`. To flash it: copy it to the card **as
 `v3_analog.upt`** -- the name is what the recovery looks for -- and enter

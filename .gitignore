@@ -76,3 +76,9 @@ kernel-src/
 
 # Python caches from the tools in patch/ and tools/.
 __pycache__/
+
+# The packer's kernel slot: the kernel to install instead of the stock one, put
+# there by hand for a kernel-only image (patch/v3-kernel/FLASHING.md). A build
+# output, empty in a fresh clone -- and it must stay empty unless a kernel is
+# being tested, since the packer installs whatever it finds here.
+sonix-packer/kernel/UIMAGE.BIN

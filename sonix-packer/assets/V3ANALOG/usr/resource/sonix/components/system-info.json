@@ -1,7 +1,7 @@
 {
     "device-name": "TempoTec V3 Analog",
     "dac-info": "AKM AK4493SEQ",
-    "OS_version": "1.2.0.1-analog",
+    "OS_version": "1.2.0.1",
     "build_version": "000000000000",
     "ota-repo": "Givemegitpls/sonix-player-tempotec-v3-analog"
 }
