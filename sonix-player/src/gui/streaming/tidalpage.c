@@ -36,6 +36,8 @@
 #include "src/system/net/wifi.h"
 #include "src/system/net/wifitransfer.h"
 
+#include "lvgl/src/libs/qrcode/qrcodegen.h"
+
 // ---------------------------------------------------------------------------
 // Tidal, front end.
 //
@@ -2180,9 +2182,31 @@ static lv_obj_t *login_hint;
 // The login QR. 200 px on a 480 px screen: large enough for a camera to read
 // it from half a metre, small enough to leave room for the written code below.
 #define LOGIN_QR_SIZE SC(200)
-// The quiet zone, the white border around it. The standard asks for four
-// modules; here it is a fixed border, which works better at this size.
-#define LOGIN_QR_QUIET SC(10)
+
+// The quiet zone is four modules by the standard, so it cannot be a fixed
+// number of pixels: the module is however many pixels the code's grid divides
+// the canvas into. The canvas is sized to the code plus four modules a side and
+// the code is drawn centred in it -- the white of the canvas is the quiet zone.
+// A fixed border was nearly a whole module on one panel and half of one on the
+// other, and it was drawn inside the canvas, over the edge of the code.
+static int login_qr_canvas(int data_len) {
+	int version = qrcodegen_getMinFitVersion(qrcodegen_Ecc_MEDIUM, (size_t)data_len);
+	if (version <= 0) {
+		return LOGIN_QR_SIZE;
+	}
+	int modules = qrcodegen_version2size(version);
+	int module_px = LOGIN_QR_SIZE / (modules + 8);
+	// The canvas is (modules + 8) module_px wide, but LVGL still divides it by
+	// the modules alone; keep that answer at module_px so the code cannot grow
+	// into the margin.
+	if (module_px > (modules - 1) / 8) {
+		module_px = (modules - 1) / 8;
+	}
+	if (module_px < 1) {
+		module_px = 1;
+	}
+	return (modules + 8) * module_px;
+}
 
 static lv_obj_t *login_qr;
 static lv_obj_t *login_url;
@@ -2307,9 +2331,12 @@ static void login_code_arrived(void) {
 
 	// The QR first: if it generates, the written URL is unnecessary and the
 	// wording changes accordingly -- scan, not type.
-	bool qr_ok = login_qr && login.verification_url[0] &&
-				 lv_qrcode_update(login_qr, login.verification_url, (uint32_t)strlen(login.verification_url)) ==
-					 LV_RESULT_OK;
+	bool qr_ok = false;
+	if (login_qr && login.verification_url[0]) {
+		uint32_t url_len = (uint32_t)strlen(login.verification_url);
+		lv_qrcode_set_size(login_qr, login_qr_canvas((int)url_len));
+		qr_ok = lv_qrcode_update(login_qr, login.verification_url, url_len) == LV_RESULT_OK;
+	}
 
 	login_set_visible(login_qr, qr_ok);
 	login_set_visible(login_url, !qr_ok);
@@ -2415,8 +2442,6 @@ static void build_login_page(gui_config_t *cfg) {
 	lv_qrcode_set_size(login_qr, LOGIN_QR_SIZE);
 	lv_qrcode_set_dark_color(login_qr, lv_color_black());
 	lv_qrcode_set_light_color(login_qr, lv_color_white());
-	lv_obj_set_style_border_color(login_qr, lv_color_white(), 0);
-	lv_obj_set_style_border_width(login_qr, LOGIN_QR_QUIET, 0);
 	lv_obj_set_style_bg_color(login_qr, lv_color_white(), 0);
 	lv_obj_set_style_bg_opa(login_qr, LV_OPA_COVER, 0);
 

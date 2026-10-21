@@ -400,7 +400,7 @@ static void make_ticks(lv_obj_t *parent, lv_obj_t *slider, int steps, int y) {
 	for (int i = 1; i < steps - 1; i++) {
 		lv_obj_t *tick = lv_obj_create(parent);
 		lv_obj_set_size(tick, SLIDER_TICK_WIDTH, SLIDER_TICK_HEIGHT);
-		lv_obj_set_pos(tick, track_x + ((track_w - SLIDER_TICK_WIDTH) * i) / (steps - SC(1)), y);
+		lv_obj_set_pos(tick, track_x + ((track_w - SLIDER_TICK_WIDTH) * i) / (steps - 1), y);
 		lv_obj_set_style_radius(tick, LV_RADIUS_CIRCLE, 0);
 		// Inside the track, so they read as notches on the scale rather than a
 		// second row of dots below it: a light mark visible on the accent fill
@@ -553,7 +553,7 @@ lv_obj_t *settingsrow_toggle_slider(lv_obj_t *parent, const char *name, int step
 	for (int i = 1; i < steps - 1 && steps <= SLIDER_TICK_MAX_STEPS; i++) {
 		lv_obj_t *tick = lv_obj_create(ticks);
 		lv_obj_set_size(tick, SLIDER_TICK_WIDTH, SLIDER_TICK_HEIGHT);
-		lv_obj_set_pos(tick, ((lv_obj_get_width(slider) - SLIDER_TICK_WIDTH) * i) / (steps - SC(1)), 0);
+		lv_obj_set_pos(tick, ((lv_obj_get_width(slider) - SLIDER_TICK_WIDTH) * i) / (steps - 1), 0);
 		lv_obj_set_style_radius(tick, LV_RADIUS_CIRCLE, 0);
 		// Same light mark as the plain slider card: it must show on the accent
 		// fill and on the grey trough alike.
@@ -741,7 +741,7 @@ void settingsrow_name_lines(lv_obj_t *row, int lines) {
 	lv_obj_set_height(label, LV_SIZE_CONTENT);
 	lv_obj_set_style_max_height(label,
 								lines * lv_font_get_line_height(&font_ui_24) +
-									(lines - SC(1)) * lv_obj_get_style_text_line_space(label, LV_PART_MAIN),
+									(lines - 1) * lv_obj_get_style_text_line_space(label, LV_PART_MAIN),
 								0);
 	lv_obj_add_event_cb(row, row_lines_resized_cb, LV_EVENT_SIZE_CHANGED, NULL);
 	fit_row_lines(row);

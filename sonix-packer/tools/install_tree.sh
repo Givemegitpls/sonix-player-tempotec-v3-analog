@@ -150,7 +150,7 @@ grep -q '"TempoTec V3 Analog"' "$TREE/usr/resource/sonix/components/system-info.
 chown -R 1004:1004 "$TREE"
 chmod 775 "$TREE/usr/bin/sonix_player" "$TREE/usr/bin/sonix_player.sh" \
 	"$TREE/usr/bin/bluealsa" "$TREE/usr/sbin/bluetoothd" "$TREE/usr/bin/bt_init" \
-	"$TREE/etc/init.d/S92_03_start_music_player" "$TREE/etc/init.d/S98adb_debug"
+	"$TREE/etc/init.d/S92_03_start_music_player"
 chmod 755 "$TREE/usr/lib/libbluetooth.so.3"
 chmod 644 "$TREE/usr/lib/libfdk-aac.so.2" "$TREE/usr/lib/libopenaptx.so.0" \
 	"$TREE/usr/lib/libldacBT_enc.so.2" "$TREE/usr/lib/libldacBT_abr.so.2" \

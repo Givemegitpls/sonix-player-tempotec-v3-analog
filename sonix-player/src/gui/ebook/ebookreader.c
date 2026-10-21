@@ -2089,8 +2089,8 @@ static void chapter_entry(const char *title, uint32_t spine, uint8_t depth) {
 	lv_obj_set_style_text_font(name, &font_ui_22, 0);
 	// A sub-entry is indented rather than given a smaller font: at this size a
 	// smaller font is a font nobody can read.
-	lv_obj_set_width(name, lv_pct(100) - depth * 18);
-	lv_obj_align(name, LV_ALIGN_LEFT_MID, depth * 18, 0);
+	lv_obj_set_width(name, lv_pct(100) - depth * SC(18));
+	lv_obj_align(name, LV_ALIGN_LEFT_MID, depth * SC(18), 0);
 }
 
 // ---------------------------------------------------------------------------

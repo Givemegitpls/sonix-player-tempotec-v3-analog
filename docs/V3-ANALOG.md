@@ -141,6 +141,11 @@ and it is what the freeze fix rests on: the state a blank leaves behind
 (`LCDC_CTRL.ENA` back on, `SLCDC_CTRL.DMA_EN` still down) is the one this panel
 does not come back from without a reboot.
 
+> **Corrected 2026-10-20:** the premise of the paragraph above is wrong. The stock player
+> *does* power the panel down on every screen-off, with the vendor `SET_SLEEP` ioctl, not
+> with `FBIOBLANK`; the backlight is only the first half. The port now does the same
+> (`panel_sleep_ioctl` in the board profile, `power.c`). See [PANEL-POWER.md](PANEL-POWER.md).
+
 The price is that the glass keeps showing the last frame. With the backlight off
 an LCD's pixels still hold their state, so in ambient light the picture stays
 readable; that is the panel, not a backlight that failed to go out.
@@ -403,7 +408,7 @@ numbers, so a `/` there costs nothing.
 `UBOOT.BIN` is carried across untouched, deliberately: writing the bootloader is
 the one way to brick this device, and the update route does not need it.
 
-Two things the verify step exists for, both learned the hard way:
+One thing the verify step exists for, learned the hard way:
 - **The executable bit on the init script.** The packer rewrites
   `etc/init.d/S92_03_start_music_player` in place, and a rewrite that drops its
   mode leaves a firmware whose init skips it -- busybox init does not run a
@@ -411,19 +416,30 @@ Two things the verify step exists for, both learned the hard way:
   screen is the boot logo, which the bootloader draws from the `logo`
   partition, not the player. It looks exactly like a player that hangs. The
   rewrite preserves the mode and the check refuses an image where any of
-  `S92_03_start_music_player`, `S98adb_debug`, `sonix_player`,
-  `sonix_player.sh` or `sonix_launch` is not executable.
-- **Adb when it was asked for.** On this firmware adb is a USB mode that
-  normally only the player selects (the stock has no script that starts it at
-  boot), so a player that does not come up leaves no adb either, and nothing to
-  look at. The image carries `etc/init.d/S98adb_debug`, but it does not turn adb
-  on by itself: it asks first, and two things count as asking -- `adb = 1` in
-  the `[system]` section of `/data/device_config.ini` (the Developer options
-  switch) or `/mnt/sd_0/enable_adb` on the card. With neither, the gadget is
-  left alone, for the player to build and own. With either, and while neither
-  `sonix_player` nor `sonix_launch` is running, the gadget is set to adb and
-  `adbd` started; while the player runs it owns the port and the script keeps
-  out of its way. `/mnt/sd_0/disable_adb` overrides both for one session.
+  `S92_03_start_music_player`, `sonix_player`, `sonix_player.sh` or
+  `sonix_launch` is not executable.
+
+### ADB belongs to the interface
+
+On this firmware adb is a USB mode of the legacy gadget, and the **Developer
+options → ADB** switch is the only thing that sets it: `adb_set_enabled()` in
+`sonix-player/src/system/device/adb.c` remembers the choice in the settings and
+applies it through the firmware's `etc/init.d/adb/S310adb`; at boot,
+`adb_apply_saved_state()` reapplies whatever was saved (off by default) and does
+nothing when it is off. Nothing starts adb on its own.
+
+The image deliberately carries no boot-time adb script. An earlier build had
+`etc/init.d/S98adb_debug`, a watchdog that put the gadget into adb mode and
+started `adbd` whenever neither `sonix_player` nor `sonix_launch` was running --
+that is, at every boot and whenever the player was restarting -- so adb came up
+despite the switch being off, and each re-arm rebuilt the USB gadget under the
+running system (the card's mount point moving with it; see the duplicate-tracks
+item in `TODO.md`). It is removed, and the packer no longer expects it.
+
+What that costs: if the player cannot start at all, adb does not come up either,
+so there is nothing to look at over USB and a device stuck on the boot logo is
+diagnosed with the recovery combo (Power + Prev) and the card, not with `adb
+devices`. Recovery, and flashing from it, do not depend on adb.
 
 The tools the packer runs live in a docker image this repository carries the
 recipe for: `sonix-packer/docker` holds 7z, ubi_reader, mkfs.ubifs and

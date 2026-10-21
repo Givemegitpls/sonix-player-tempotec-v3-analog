@@ -652,7 +652,7 @@ static void build_entry_layer(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(entry_display, &font_ui_36_bold, 0);
 	lv_obj_align(entry_display, LV_ALIGN_RIGHT_MID, SC(-10), 0);
 
-	int pad_top = top + 66 + 84 + 16;
+	int pad_top = top + SC(66) + SC(84) + SC(16);
 	lv_obj_t *pad = lv_obj_create(entry_layer);
 	lv_obj_set_size(pad, cfg->screen_width - 2 * cfg->padding, cfg->screen_height - pad_top - cfg->padding);
 	lv_obj_align(pad, LV_ALIGN_TOP_LEFT, cfg->padding, pad_top);

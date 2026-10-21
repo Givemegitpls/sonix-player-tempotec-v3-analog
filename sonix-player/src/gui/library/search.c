@@ -764,8 +764,8 @@ static void layout_results(void) {
 	bool kb_visible = keyboard_is_visible(keyboard);
 	int top = results_top + SEARCH_PILLS_H + SEARCH_PILLS_GAP;
 	int height = screen_h - top - (kb_visible ? keyboard_height : 0);
-	if (height < 60) {
-		height = 60;
+	if (height < SC(60)) {
+		height = SC(60);
 	}
 	lv_obj_set_height(results, height);
 	window_update();
@@ -831,7 +831,7 @@ void search_init(gui_config_t *cfg) {
 	int keyboard_h = SC(316); // tall enough for honest fingertip-sized keys
 	screen_h = cfg->screen_height;
 	keyboard_height = keyboard_h;
-	results_top = top + 62 + 10;
+	results_top = top + SC(62) + SC(10);
 
 	field = lv_textarea_create(search_screen);
 	lv_textarea_set_one_line(field, true);

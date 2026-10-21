@@ -24,6 +24,9 @@ killall -9 batd    &>/dev/null
 # where it wrote every five seconds. Nothing reads that log here.
 fi
 
-# SONIX_LOG is where the player writes its own log: the stock launcher let the
-# player's output fall on the console, which nothing on this device reads back.
-SONIX_LOG=/mnt/sd_0/sonix.log exec /usr/bin/sonix_launch /usr/bin/sonix_player
+# The log is the player's own business: it writes `.local/sonix_player.log` on
+# the card when "Log to microSD" is on (system/log_to_sd, off by default) and
+# sends it to /dev/null when it is off. Nothing is set here on purpose -- the
+# SONIX_LOG the player still honours would override that switch and put the log
+# on the card whatever the interface says.
+exec /usr/bin/sonix_launch /usr/bin/sonix_player

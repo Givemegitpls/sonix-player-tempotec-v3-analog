@@ -81,8 +81,8 @@
 // How far apart the places are, centre to centre. Less than the middle record
 // is tall on purpose: the record beside it tucks behind it, which is what gives
 // the column a front and a back instead of a stack of tiles.
-#define CF_PITCH_NEAR 118 // between the middle and the place next to it
-#define CF_PITCH_FAR 86   // between two turned places further out
+#define CF_PITCH_NEAR SC(118) // between the middle and the place next to it
+#define CF_PITCH_FAR SC(86)   // between two turned places further out
 
 // How far the finger travels to move the column by one record.
 #define CF_STEP_PX SC(96)

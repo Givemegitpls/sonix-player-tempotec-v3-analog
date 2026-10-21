@@ -130,6 +130,15 @@ typedef struct {
 							   // what wedges the glass (LCDC_CTRL.ENA comes back on unblank, but
 							   // SLCDC_CTRL.DMA_EN does not, and a panel in that state shows nothing
 							   // until something power-cycles it).
+	// The vendor ioctl that powers this panel down (jzfb SET_SLEEP), 0 where
+	// there is none. The stock player on the V3 Analog uses it on every
+	// screen-off: the kernel's jzfb_suspend waits for the SLCDC transfer,
+	// clears LCDC_CTRL.ENA, gates the clocks, drops the AXP2101 rails
+	// (LDO7/LDO8) and the reset GPIO, then the same ioctl with 0 puts it all
+	// back (see docs/PANEL-POWER.md). Distinct from blank_panel: FBIOBLANK is
+	// the path that wedges this glass, this one is the path the stock
+	// firmware itself takes.
+	uint32_t panel_sleep_ioctl; // 0 = the panel is never powered down on screen-off
 	int mixer_card;			   // the ALSA card whose mixer controls this board's codec (alsa-controls.c):
 							   // 0 on the HiBy boards and the Blaze, 1 on the V3 Analog
 	const char *user_data_dir; // where the settings and the reader's file are written; NULL is

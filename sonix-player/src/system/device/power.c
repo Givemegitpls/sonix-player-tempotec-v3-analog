@@ -54,6 +54,7 @@
 #include <time.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -222,7 +223,32 @@ static void fade_to(long target) {
 // flag set just before the blank: doze when double-tap wake is on, a full
 // power-off when it is not. The backlight follows either way -- its driver
 // takes the blank as a reason to put the PWM at zero.
+// True while the model powers the panel down on screen-off, whichever way it
+// does it: the framebuffer blank node (blank_path) or the vendor SET_SLEEP
+// ioctl. The two paths share everything around the call -- the repaint and pan
+// on the way back, the touch controller, the standby countdown.
+static bool panel_blanking(void) { return g_cfg.blank_path != NULL || g_cfg.panel_sleep_ioctl != 0; }
+
 static void screen_power(bool on) {
+	// The vendor path first: a board whose stock firmware powers the panel down
+	// with the SET_SLEEP ioctl. The kernel does the whole power cycle there
+	// (jzfb_suspend/jzfb_resume: the DMA wait, LCDC_CTRL.ENA, the LCD clocks,
+	// the AXP2101 rails, the reset line, the touch controller), so this is one
+	// call and none of it is FBIOBLANK -- see docs/PANEL-POWER.md.
+	if (g_cfg.panel_sleep_ioctl) {
+		// The framebuffer main.c already holds: opening it again would re-run
+		// the driver's panel init, which is not something to do around a
+		// sleep/unblank pair.
+		if (g_cfg.fb_fd < 0) {
+			return;
+		}
+		int value = on ? 0 : 1;
+		if (ioctl(g_cfg.fb_fd, (unsigned long)g_cfg.panel_sleep_ioctl, &value) != 0) {
+			fprintf(stderr, "power: SET_SLEEP(%d): %s\n", value, strerror(errno));
+		}
+		return;
+	}
+
 	if (!g_cfg.blank_path) {
 		return;
 	}
@@ -1393,7 +1419,7 @@ static void panel_blank_now(void) {
 		return;
 	}
 	g_panel_lit_dark = false;
-	if (!g_cfg.blank_path) {
+	if (!panel_blanking()) {
 		return; // a model that never blanks has no panel to take down
 	}
 	screen_power(false);
@@ -1436,13 +1462,16 @@ void power_screen_off(void) {
 		write_long_to_file(g_cfg.brightness_path, 0); // below BRIGHTNESS_MIN: the backlight off
 	}
 	g_hw_brightness = 0;
-	long fast_s = (!g_cfg.blank_path || g_double_tap_wake)
+	// The vendor sleep path has no fast window: the stock firmware takes the
+	// panel down at once, and holding the rails up to save a wake would be a
+	// different behaviour from the one measured on the device.
+	long fast_s = (!panel_blanking() || g_double_tap_wake || g_cfg.panel_sleep_ioctl)
 					  ? 0
 					  : config_get_int("power", "wake_fast_seconds", WAKE_FAST_DEFAULT_S);
 	if (fast_s > 0) {
 		g_panel_lit_dark = true;
 		g_panel_lit_until = lv_tick_get() + (uint32_t)fast_s * 1000u;
-	} else if (g_cfg.blank_path) {
+	} else if (panel_blanking()) {
 		screen_power(false);
 		display_panel_disarmed(); // the blank took the panel's DMA down with it
 	}
@@ -1580,7 +1609,7 @@ void power_screen_on(void) {
 	g_panel_lit_dark = false;
 
 	frameprof_begin(PROF_WAKE_UNBLANK);
-	if (!lit && g_cfg.blank_path) {
+	if (!lit && panel_blanking()) {
 		screen_power(true); // panel, backlight and touch controller back up
 		// The unblank lights the backlight before there is a picture: dark
 		// until the repaint below is up, or the panel shows black first.
@@ -1594,8 +1623,14 @@ void power_screen_on(void) {
 	// The write returns when the panel's power-on and the backlight class's
 	// restore are done, so no wait is needed by default. [power]
 	// wake_settle_ms puts one back, should a panel ever show it was wanted.
-	long settle_us = config_get_int("power", "wake_settle_ms", 0) * 1000;
-	if (!lit && g_cfg.blank_path && settle_us > 0) {
+	//
+	// The vendor sleep path is the exception: the stock player waits 100 ms
+	// after SET_SLEEP(0) before the backlight, the rails and the panel's own
+	// reset having just come up (docs/PANEL-POWER.md). Same here unless the
+	// config says otherwise.
+	long settle_ms = config_get_int("power", "wake_settle_ms", g_cfg.panel_sleep_ioctl ? 100 : 0);
+	long settle_us = settle_ms > 0 ? settle_ms * 1000 : 0;
+	if (!lit && panel_blanking() && settle_us > 0) {
 		frameprof_begin(PROF_WAKE_SETTLE);
 		usleep((useconds_t)settle_us);
 		frameprof_end(PROF_WAKE_SETTLE);
@@ -1630,7 +1665,7 @@ void power_screen_on(void) {
 	// depends on which display path is active, so main.c owns the rest: it
 	// checks that the blank left the video mode (the page-flipping display's
 	// double-height virtual resolution) alone, and puts it back if not.
-	if (!lit && g_cfg.blank_path) {
+	if (!lit && panel_blanking()) {
 		display_wake_begin(g_disp);
 	}
 	WAKE_STEP("fb_begin");
@@ -1642,7 +1677,7 @@ void power_screen_on(void) {
 	lv_obj_invalidate(lv_layer_top());
 	lv_refr_now(g_disp);
 	frameprof_end(PROF_WAKE_DRAW);
-	if (!lit && g_cfg.blank_path) {
+	if (!lit && panel_blanking()) {
 		display_wake_end(g_disp);
 	}
 	WAKE_STEP("draw");
@@ -1924,7 +1959,7 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 		long cur = g_cfg.brightness_path ? read_long_from_file(g_cfg.brightness_path) : -1;
 		g_cfg.brightness = cur >= BRIGHTNESS_ON_FLOOR ? cur : brightness_max();
 	}
-	if (g_cfg.blank_path) {
+	if (panel_blanking()) {
 		screen_power(true); // make sure the panel is unblanked (in case a prior run left it off)
 		// An unblank does not arm the panel's DMA (only a fresh
 		// FBIOPUT_VSCREENINFO does), so a run that starts on a panel a previous

@@ -66,10 +66,17 @@ restores `DMA_EN`).
   (including a 598 s sleep, `suspend_stats success:3 fail:0`): the panel comes back armed and
   scanning, the touch controller alive. Standby is on by default, 60 s after the screen goes dark
   (`[power] standby_mem = 0` turns it off).
+  **Corrected 2026-10-20 — this bullet and the one above are wrong.** There is a userspace path:
+  the stock player powers the panel down on every screen-off with `ioctl(fb0, 0x80044620, &1)`
+  (`SET_SLEEP`), which runs `jzfb_suspend` → `lcd_power_off` while the SoC stays awake;
+  suspend-to-RAM is a second, later event. Evidence and the corrected sequence:
+  [PANEL-POWER.md](PANEL-POWER.md).
 - **Open item**: powering the panel off *while the SoC stays awake* (music playing, or the first
   60 s) needs a driver change — make `jzfb_blank` call `lcd_power_off` on POWERDOWN and
   `lcd_power_on` + `set_par` + `enable` on UNBLANK, i.e. reuse the resume sequence that is known
   to work. The port already has the arm path for boards that blank; the model flag would flip.
+  **Superseded 2026-10-20:** no driver change is needed — the stock kernel's `SET_SLEEP` ioctl
+  (`0x80044620`) already runs that sequence (see [PANEL-POWER.md](PANEL-POWER.md)).
 
 ## Instruments and what to read
 
