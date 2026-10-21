@@ -50,6 +50,10 @@ Nothing here was flashed: the device was only read over adb.
 
 ## Provenance
 
+All of the stock files below come from the vendor's `v3_analog` firmware, unpacked
+in the older working copy (`firmware/tt/...` there); they are not part of this
+repository.
+
 * Stock kernel: `firmware/tt/kernel.bin` (the raw image, base virtual address
   `0x80010000`, so `file offset = virt - 0x80010000`), md5
   `aaa60f4fc2b4d592f92bc5a405e10695`.  It is byte-for-byte the gzip payload of
@@ -58,10 +62,10 @@ Nothing here was flashed: the device was only read over adb.
   `comp gzip`, name `Linux-3.10.14`).
 * Stock firmware: `firmware/tt/fw.upt`, md5 `24bb64717ec6359bf779c57ae7c149d8`.
 * Disassembler used for every address below:
-  `toolchain/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-objdump -D -b binary
+  `sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-objdump -D -b binary
   -m mips:isa32 -EL --start-address=<off> --stop-address=<off>`.
-* Kernel source reference: `https://github.com/XBurst/Linux-X1000` (cloned to
-  `../../kernel-src/Linux-X1000`; assessed above, not used).
+* Kernel source reference: `https://github.com/XBurst/Linux-X1000` (cloned in the
+  older working copy's `kernel-src/`; assessed above, not used).
 
 ## What the stock code does (all offsets are file offsets in `kernel.bin`)
 
@@ -144,18 +148,19 @@ The V3 Analog packer had no kernel-replacement mechanism (it carried the stock
 
 Reproduce end to end:
 ```
-cd src/sonix-blaze/patch/v3-panel-blank
+cd patch/v3-panel-blank
 python3 patch_kernel.py            # writes ./UIMAGE.BIN
 cp UIMAGE.BIN ../../sonix-packer/kernel/UIMAGE.BIN
 cd ../../sonix-packer
-STOCK=/home/alex/Projects/own/tempotec-v3/firmware/tt/fw.upt ./v3_analog_packer.sh
+STOCK=<the vendor's 1.3 .upt> ./v3_analog_packer.sh
 ```
-(The default `STOCK` path `v3_analog_original.upt` does not exist here; the stock
-image is `firmware/tt/fw.upt`.)
+(The default `STOCK` path `v3_analog_original.upt` is not in the repository; the stock
+image is the vendor's 1.3 `.upt`, which has to be put there or named with `STOCK=` --
+see `docs/V3-ANALOG.md`, "What a fresh clone needs".)
 
 ## Artifact
 
-* `src/sonix-blaze/sonix-packer/out/v3_analog.upt` -- **58175488 bytes**, md5
+* `sonix-packer/out/v3_analog.upt` -- **58175488 bytes**, md5
   **`721a279c2031c432c2117fb4647a2120`**.
   * `UIMAGE.BIN` inside = md5 `3c0e15c26fb32636ef92ebac6a0a2ceb` (the patched
     kernel); `UPDATE.TXT` kernel md5 = the same.
@@ -169,8 +174,8 @@ image is `firmware/tt/fw.upt`.)
 
 ## Verification after flashing (read-only)
 
-Flash with the card named `update.upt` via recovery (Power + Prev); do not write
-the bootloader.  After the update, with the panel on:
+Flash with the image in the card root named `v3_analog.upt` via recovery (Power + Prev);
+do not write the bootloader.  After the update, with the panel on:
 
 ```
 # rails: LDO7 (lcd_3v3) and LDO8 (lcd_1v8)
@@ -239,8 +244,8 @@ The port already has the machinery; it is switched off for this board:
   `35889275f8bed2f967a18f6a8b66495c`.
 * Or restore `sonix-packer/out/v3_analog-rc1-151020262247.upt`.
 * The kernel patch itself is `patch_kernel.py`; reverting it is simply not
-  running it.  `firmware/tt/kernel.bin` and `firmware/tt/iso/UIMAGE.BIN` are
-  never modified in place.
+  running it.  The stock `firmware/tt/kernel.bin` and `firmware/tt/iso/UIMAGE.BIN`
+  (in the older working copy) are never modified in place.
 
 ---
 

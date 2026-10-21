@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Symbolize a sonix_player profile.out (src/system/core/profiler.c).
+"""Symbolize a sonix_player profile.out (sonix-player/src/system/core/profiler.c).
 
     profreport.py <profile.out> <sonix_player_debug> [top]
 

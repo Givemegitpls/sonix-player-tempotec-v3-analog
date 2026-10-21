@@ -14,9 +14,11 @@ They used to live only in a scratch directory and were nearly lost; they live he
 - `ldacBT-dec.pc` — written by hand for this project. The **decoder** does not come
   from AOSP (upstream master keeps only the encoder and ABR): it is the stock
   combined `libldacBT.so` that HiBy ships and drives in both directions. That file
-  is already inside this project at `firmware/tt/SYSTEM/usr/lib/libldacBT.so`
-  (ABI: MIPS32 rel2, `NEEDED` only `libc.so.6`, max `@GLIBC_2.2`, so it runs on the
-  device's glibc 2.16 unchanged).
+  is inside the stock firmware's rootfs (`SYSTEM/usr/lib/libldacBT.so` when the
+  vendor's `.upt` is unpacked — not part of this repository; see
+  `docs/V3-ANALOG.md`, "LDAC receive, from the firmware's own library"). ABI:
+  MIPS32 rel2, `NEEDED` only `libc.so.6`, max `@GLIBC_2.2`, so it runs on the
+  device's glibc 2.16 unchanged.
 
 ## Two prototypes that have to be added by hand
 
@@ -29,7 +31,7 @@ int  ldacBT_decode(...);
 ```
 
 (Exact signatures: take them from the stock library's exported symbols —
-`readelf --dyn-syms firmware/tt/SYSTEM/usr/lib/libldacBT.so` — and match the
+`readelf --dyn-syms <stock rootfs>/usr/lib/libldacBT.so` — and match the
 argument shapes the bluealsa decoder path calls.)
 
 Link the decoder with `-Wl,--allow-shlib-undefined`: the stock library has
@@ -45,19 +47,21 @@ stock firmware they are never called (lazy binding).
   the **static** `libldacBT_enc.a` (as Android.bp's `static_libs` does).
 
 The runtime also needs `libfdk-aac.so.2` (AAC) and `libopenaptx.so.0`
-(aptX/aptX-HD) — see `sonix-packer/assets/` and `.opencode/NOTES.md`.
+(aptX/aptX-HD) — see `sonix-packer/assets/` and the chronological log
+(`NOTES.md` in the original working copy, outside this repository).
 
 ## Rebuilding the encoder from AOSP (only if ever needed)
 
 `https://android.googlesource.com/platform/external/libldac` (a GitHub mirror
 works too). Sources: `src/ldaclib.c`, `src/ldacBT.c`; the remaining sources are
 included by `ldaclib.c`. Then build with the target toolchain
-(`toolchain/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc`, `-O2 -march=mips32r2`)
-and install into `assets/V3ANALOG/usr/lib/`.
+(`sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc`, `-O2 -march=mips32r2`)
+and install into `sonix-packer/assets/V3ANALOG/usr/lib/`.
 
 The full recipe, including how bluealsa was configured, is in
-`.opencode/NOTES.md` ("Кодеки: LDAC/AAC/aptX собраны и работают" and
-"LDAC-приём и «транспорт за прошивкой»").
+`docs/V3-ANALOG.md` ("The build recipe") and in the chronological log
+(`NOTES.md` in the original working copy; sections "Кодеки: LDAC/AAC/aptX
+собраны и работают" and "LDAC-приём и «транспорт за прошивкой»").
 
 ## One LDAC arm, three .pc files
 

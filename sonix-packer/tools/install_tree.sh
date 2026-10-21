@@ -90,7 +90,7 @@ grep -q "\"$BUILD_STAMP\"" "$SYSTEM_INFO_JSON" ||
 echo "    build_version = $BUILD_STAMP"
 
 # And the version string: this build's identity, computed by the packer out of
-# src/sonix-blaze -- a tag, a commit's short hash, or an md5 of the uncommitted
+# this repository -- a tag, a commit's short hash, or an md5 of the uncommitted
 # changes (see os_version() in v3_analog_packer.sh). It is the row the player
 # shows in About as "Operating system version". The substitution is written with
 # | rather than /, since the value itself carries a slash.

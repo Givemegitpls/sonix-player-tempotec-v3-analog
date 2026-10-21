@@ -1,15 +1,18 @@
 # The kernel: what it is, what is known about it, how a replacement would reach the image
 
-Consolidated from `.opencode/NOTES.md` and the session archive (`tools/history.sh`; session ids at
-the end). The kernel is HiBy's; the port does not ship one.
+Consolidated from the chronological log (`.opencode/NOTES.md` in the original working copy,
+outside this repository) and the session archive (`tools/history.sh`; session ids at the end).
+The kernel is HiBy's; the port does not ship one.
 
 ## The image and the addresses
 
-- Stock kernel: `firmware/tt/kernel.bin` (the `UIMAGE.BIN` inside `firmware/tt/fw.upt`), md5
+- Stock kernel: the `UIMAGE.BIN` inside the vendor's `v3_analog.upt`, md5
   `35889275f8bed2f967a18f6a8b66495c`, 3.10-era, carried into every image **untouched**.
+  The unpacked copies (`kernel.bin`, the `.upt`) are in the older working copy, not in
+  this repository.
 - Base: virt `0x80010000`, and **file offset = virt − 0x80010000**. Everything below is quoted
   that way; disassemble with
-  `toolchain/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-objdump -D -b binary -m mips:isa32 -EL --start-address=<off> --stop-address=<off>`.
+  `sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-objdump -D -b binary -m mips:isa32 -EL --start-address=<off> --stop-address=<off>`.
 
 ## The board's platform data (the map that matters)
 
@@ -28,8 +31,8 @@ The panel's init table is **343 entries of `{type, value}`** (type 0 = command, 
 2 = `udelay`) at file `0x642924`, and it is a real sequence (`B9 00 00 / BA 21 01 / B9 01 00 /
 BB 90 00 / D6 05 01 / B7 50 02 / B8 00 00 / BE 40 01 / BC 03 00 / BD 00 00`, then `F0 AA 55 52 00`,
 `11`, `FD 05`, paged writes `BF <addr> …`, gammas `E0`-`E5`, `2A 00 00 01 3F` / `2B 00 00 01 DF` /
-`2C`). U-Boot carries the same table (`backup-mtd/mtd0_uboot.bin`, file `0x53718`) with different
-`udelay` values.
+`2C`). U-Boot carries the same table (`mtd0_uboot.bin`, file `0x53718` in the dump kept in
+the older working copy) with different `udelay` values.
 
 ## The functions, by address
 
@@ -56,10 +59,12 @@ are `addrs[k] ↔ names[k+4]`.
 
 - **The freeze class lives in `jzfb_blank`.** It clears `DMA_EN` and never restores it; `unblank`
   brings back only `ENA`, after which a pan reports success without a transfer. The port's fix is
-  to never blank this panel (see `docs/DISPLAY.md`).
-- **The panel's only power cycle is the PM path** (`jzfb_suspend`/`jzfb_resume`). From userspace
-  the reachable routes are: `echo mem > /sys/power/state` (the player's standby), closing and
-  reopening `/dev/fb0` (which runs `jzfb_resume`), and the physical recovery combo (Power + Prev).
+  never to use that path on this panel (see `docs/DISPLAY.md` and `docs/PANEL-POWER.md`).
+- **The stock panel power cycle is `SET_SLEEP`** (`jzfb_suspend`/`jzfb_resume`, the vendor ioctl
+  `0x80044620`) on every screen-off, with suspend-to-RAM as a second, later event. From userspace
+  the reachable routes are: that ioctl on `/dev/fb0`, `echo mem > /sys/power/state` (the player's
+  standby), closing and reopening `/dev/fb0` (which runs `jzfb_resume`), and the physical recovery
+  combo (Power + Prev). `docs/PANEL-POWER.md` has the evidence.
 
 ## How a kernel would reach the image
 

@@ -3,6 +3,12 @@
 # Builds HiByOS firmware images that boot Sonix Player instead of the stock
 # music player -- one per model, from one binary and one set of assets.
 #
+# This is the base port's packer, kept as the ancestor's tool: its models are the
+# R3 Pro II, the R1 and the TempoTec V3 Blaze, all squashfs-rootfs firmwares.
+# The TempoTec V3 Analog is NOT one of them -- it has a UBIFS rootfs, its own
+# assets/V3ANALOG overlay and its own script, v3_analog_packer.sh next to this
+# one (docs/V3-ANALOG.md, "The image: v3_analog.upt").
+#
 # Everything it needs sits next to it:
 #
 #   sonix_firmware_packer.sh   this script
@@ -598,7 +604,7 @@ build_one() {
 	say "    device-name = $FOUND_NAME"
 
 	# Whatever case the key was written in. The player reads it case-insensitively
-	# (find_nocase in src/system/device/sysinfo.c), so "Build_version" and
+	# (find_nocase in sonix-player/src/system/device/sysinfo.c), so "Build_version" and
 	# "build_version" are equally correct in the file and this has to accept the
 	# same. The spelling is read out first and then used literally in the
 	# substitution, because sed's case-insensitive flag is a GNU extension and this

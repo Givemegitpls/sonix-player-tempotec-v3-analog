@@ -30,8 +30,8 @@ If the issue happens during a library scan, also enable "Database log" before re
 If applicable, add screenshots to help explain your problem.
 
 **Sonix Player info**
- - Operating system version: [e.g. 1.1.0]
- - Device: [R1 / R3 Pro II]
+ - Operating system version: [e.g. 1.2.0.1/0.1.0]
+ - Device: [TempoTec V3 Analog]
 
 **Additional context**
 Add any other context about the problem here.

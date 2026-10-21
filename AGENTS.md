@@ -6,16 +6,21 @@ target-side tools `tools/`.
 
 ## Read the knowledge base before touching anything
 
-The chronological log is `../.opencode/NOTES.md` (long, and the place where every measurement
-ends up). Three consolidated documents sit next to this file:
+The chronological log lives outside this repository, in the older working copy's
+`.opencode/NOTES.md` (long, and the place where every measurement ends up). The
+consolidated documents sit next to this file:
 
-- `docs/V3-ANALOG.md` — what this port is, what differs from the Blaze port, what does not work.
+- `docs/V3-ANALOG.md` — what this port is, what differs from the Blaze port it came
+  from, what does not work.
 - `docs/BLUETOOTH.md` — the BlueZ 5 stack, the codecs, the LDAC/MTU defects and their patches,
   the A2DP encoder priority story, the tools and the verification recipes.
 - `docs/DISPLAY.md` — the SLCD panel: the pan model, the panel's own 13.232 ms frame, the pacing
   design, the freeze bug, and what "display off" can and cannot mean on this board.
+- `docs/PANEL-POWER.md` — the stock `SET_SLEEP` panel power path, the evidence for it, and what
+  the port now does; it corrects the power sections of `DISPLAY.md` and `V3-ANALOG.md`.
 - `docs/KERNEL.md` — the stock kernel's addresses and functions, the board platform data, and how
   a replacement kernel would (and would not) reach the image.
+- `docs/BUILD.md` — the end-to-end build, from a fresh clone to `sonix-packer/out/v3_analog.upt`.
 
 ## The session archive is part of the record
 
@@ -42,6 +47,8 @@ tools/history.sh snaps                  # file-state snapshots (unreferenced git
   A replacement kernel may not be larger than the stock one, and `UPDATE.TXT` carries digests for
   both the rootfs and the kernel.
 - The panel's frame rate is the panel's own (75.57 Hz). Nothing on the SoC side changes it.
-- Never blank this panel: `blank_panel = false` is deliberate (see `docs/DISPLAY.md`).
+- Never use `FBIOBLANK` on this panel: `blank_panel = false` is deliberate, and the stock
+  screen-off is the vendor `SET_SLEEP` ioctl instead (`panel_sleep_ioctl`, `power.c`). See
+  `docs/DISPLAY.md` and `docs/PANEL-POWER.md`.
 - Keep the big build inputs out of git: `bt-src/sysroot/`, `bt-src/debs/`, `kernel-src/` clones.
   Their patches, pc files and READMEs belong in the repo; the tarballs and sysroots do not.

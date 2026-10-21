@@ -112,7 +112,8 @@ nonsense (a working decoder answers with an error code) or a file, which is how
 the two LDAC problems were told apart: linked against the combined library only,
 a captured frame decodes (`used 220, decoded 1024`); linked against AOSP's
 `libldacBT_enc`/`libldacBT_abr` as well, the same frame segfaults. The payloads
-come from a capture with `analysis/v3-bt-scripts/btsnoop-payloads.py`.
+come from a capture with `btsnoop-payloads.py` (in `analysis/v3-bt-scripts/` of the
+older working copy; not part of this repository).
 
 ```
 mipsel-rockbox-linux-gnu-gcc -O2 -o ldacdec-test ldacdec-test.c \
