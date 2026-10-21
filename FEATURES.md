@@ -137,13 +137,14 @@ certificate checking, and HLS.
 ## Settings
 
 - **Appearance** - dark and light, six accent colors, clock position, a dynamic tint that borrows the accent's hue for backgrounds and cards, and a toggle to show/hide the battery percentage.
-- **Screen** - brightness, screen-off timeout, double-tap to wake, screensaver,
-  and 180° rotation with the touch rotated with it.
+- **Screen** - brightness, screen-off timeout, double-tap to wake (off by
+  default), screensaver, and 180° rotation with the touch rotated with it.
 - **Screensaver** - choose to show the cover of the current playing track or pictures from the `Screensaver` folder.
   > Pictures need to be exactly 480x720 jpegs non progressive.
 
-- **Power** - standby, LED behaviour, automatic power-off from thirty seconds to
-  six hours, and a charge limit from 80 to 100 %.
+- **Power** - standby, LED behaviour,
+  automatic power-off from thirty seconds to six hours, and a charge limit from
+  80 to 100 %.
 - **Date and time** - set by hand and written to the RTC, 24-hour clock, and a
   time zone with its own standard and daylight choice.
 - **Language** - English, Italiano, Deutsch, Español, Français, Russian, Chinese,

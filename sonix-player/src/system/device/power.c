@@ -1912,7 +1912,11 @@ bool power_double_tap_wake_supported(void) {
 	static int answer = -1;
 	if (answer < 0) {
 		const sysinfo_model_t *model = sysinfo_model();
-		answer = model ? model->tap_wake : access(GESTURE_WAKE_NODE, F_OK) == 0;
+		// The model says whether the controller can wake the screen at all; the
+		// node says whether it takes an order. Both answers are needed: the V3
+		// Analog's GT9xx wakes on the gesture from inside its driver and reports
+		// it as a power key, with nothing here to write.
+		answer = (model && model->tap_wake) || access(GESTURE_WAKE_NODE, F_OK) == 0;
 	}
 	return answer != 0;
 }
@@ -1923,6 +1927,13 @@ void power_set_double_tap_wake(bool enabled) {
 		return;
 	}
 	g_double_tap_wake = enabled;
+	// A board whose switch this is not (the V3 Analog: no gesture node, the
+	// driver reports the gesture itself) has nothing to write here. The flag
+	// above is the whole of the option there: system.c asks it before letting
+	// that key wake a dark screen.
+	if (access(GESTURE_WAKE_NODE, F_OK) != 0) {
+		return;
+	}
 	FILE *f = fopen(GESTURE_WAKE_NODE, "w");
 	if (!f) {
 		printf("power: gesture node %s not writable\n", GESTURE_WAKE_NODE);

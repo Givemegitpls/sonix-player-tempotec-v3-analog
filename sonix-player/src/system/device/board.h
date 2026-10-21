@@ -58,7 +58,13 @@ static const sysinfo_model_t BOARD_MODEL = {
 	.cs43131 = false,
 	.ak4493 = true,
 	.remap_list = true,
-	.tap_wake = false,
+	// The screen does come back from a double tap here, but not through a
+	// switch of ours: the GT9xx driver is built with GTP_GESTURE_WAKEUP, puts
+	// the controller into gesture (doze) mode on every panel sleep, and reports
+	// the double tap as KEY_POWER on the touch node. There is no gesture_sw
+	// node on this board, so power.c has nothing to write -- the option only
+	// decides whether system.c lets that key wake the screen.
+	.tap_wake = true,
 	.one_flank = false,
 	// The key the kernel calls NEXTSONG is the one the case prints as back, as
 	// on the R3 Pro II. Said by the user watching the list move the wrong way

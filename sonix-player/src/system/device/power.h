@@ -111,9 +111,12 @@ bool power_screen_is_on(void);
 // button press). Touch input is already accounted for automatically.
 void power_notify_activity(void);
 
-// Double-tap-to-wake via the touch controller's gesture mode (gesture_sw).
-// Where power_double_tap_wake_supported() is false it stays off whatever is
-// asked.
+// Double-tap-to-wake. On a board with the touch controller's own switch (the
+// gesture node the Blaze writes) this drives that switch; where the controller
+// raises the gesture from inside its driver (the V3 Analog's GT9xx) there is
+// nothing to write and the flag alone decides whether system.c lets the key it
+// reports wake a dark screen. Where power_double_tap_wake_supported() is false
+// it stays off whatever is asked.
 void power_set_double_tap_wake(bool enabled);
 
 // False on the R1: cst8xx_touch.ko puts the controller in deep sleep with its

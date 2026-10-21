@@ -481,3 +481,23 @@ glass). A track playing through the cycle kept playing.
 Strings: `/sys/class/backlight/pwm-backlight.0/brightness` `0x946878`; `echo mem >
 /sys/power/state` `0x946e7c`; `(hgl_fb: W) failed to access ioctl SET_SLEEP` `0x949514`;
 `... FBIOPAN_DISPLAY` `0x949544`; `/dev/sa_hgl_dma` `0x94943c`.
+
+## Double tap to wake
+
+The wake gesture on this board is the GT9xx controller's, made by the kernel
+driver and not by the player: `gt9xx_ts.c` is built with `GTP_GESTURE_WAKEUP`,
+`goodix_ts_suspend()` calls `gtp_enter_doze()` on every panel sleep (this is the
+"touch controller's doze" in `jzfb_suspend`), and the work function turns the
+gesture -- a double tap reads back as `0xCC` at `0x814B` -- into a
+`KEY_POWER` press on the panel's input node (`gt9xx_ts.c`, "Double click to
+light up the screen!"). There is no `gesture_sw` node here, so the switch the
+Blaze port writes does not exist and the gesture cannot be turned off in the
+controller from userspace.
+
+What the player can do, and does, is decide whether that key counts: with the
+screen dark, a `KEY_POWER` from the touch node wakes it only when
+**Settings → Screen → Double tap to wake** is on (`system.c`, the release of
+`KEY_POWER`). Off is the default, and the case's own power key arrives on
+`gpio-keys`, a different node, so it always wakes. The gesture itself keeps
+running in the controller's doze mode either way -- turning that off would be a
+kernel change.

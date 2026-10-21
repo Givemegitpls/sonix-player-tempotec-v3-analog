@@ -3976,15 +3976,20 @@ int main(int argc, char **argv) {
 #endif
 	// The brightness picked in Settings > Screen; -1 (not set yet) keeps
 	// the adopt-the-panel's-level behaviour above.
+	// Brightness picked in Settings > Screen; -1 (not set yet) keeps
+	// the adopt-the-panel's-level behaviour above.
 	power_cfg.brightness = config_get_int("screen", "brightness", -1);
 	// Double-tap wake as it was left: the touch controller's gesture switch
-	// must be told again on every boot.
+	// must be told again on every boot. Off unless the Screen page's option is
+	// on; the flag is what system.c asks before letting the controller's own
+	// gesture wake a dark screen.
 	power_set_double_tap_wake(config_get_int("screen", "double_tap_wake", 0) != 0);
 
 	power_init(&power_cfg, disp);
 
 	// Charge limit, automatic shutdown and standby, as they were left. The
-	// screen timeout is the Screen page's setting and comes from there.
+	// screen timeout and the double-tap option are the Screen page's settings
+	// and come from there.
 	powersettings_apply();
 	settings_apply_screen_off();
 
