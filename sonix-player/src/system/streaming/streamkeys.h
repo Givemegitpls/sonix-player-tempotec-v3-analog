@@ -77,4 +77,52 @@ const char *streamkeys_lastfm_secret(void);
 // none were found.
 const char *streamkeys_source(void);
 
+// ---------------------------------------------------------------------------
+// The card's streaming.json
+//
+// The services' own sign-ins live on the card, not in the player's storage: the
+// card is what carries an account from one player to the next, and a device
+// handed on keeps nothing about anybody's account. Two files, under
+// <card>/sonix/:
+//
+//   streaming.json           the user's. The player reads it and never writes it.
+//   streaming-session.json   the player's. Written when a sign-in completes or a
+//                            Tidal token is renewed; newer than the user's file
+//                            and wins over it.
+//
+// streaming.json, every field optional, unknown keys ignored:
+//
+//   {
+//     "qobuz": {"app_id": "...", "app_secret": "...", "token": "...", "user": "..."},
+//     "tidal": {"access_token": "...", "refresh_token": "...", "expires_at": 0}
+//   }
+//
+// The token is what a service actually needs; app_id is Qobuz's public
+// application number and has a built-in default, and Tidal's client pair is
+// built in the same way (see tidal.c).
+void streamkeys_attach_card(const char *sd_root);
+
+const char *streamkeys_card_json_path(void); // <card>/sonix/streaming.json, NULL without a card
+const char *streamkeys_session_json_path(void);
+
+const char *streamkeys_qobuz_token(void);
+const char *streamkeys_qobuz_token_user(void);
+const char *streamkeys_tidal_access_token(void);
+const char *streamkeys_tidal_refresh_token(void);
+long streamkeys_tidal_expires_at(void);
+
+// What the player derived from Qobuz's web player the last time (see
+// qobuzkey.h): the application id and the secret that its signed calls take,
+// with when that happened. Kept in the session file, on the card -- nothing of
+// this is in the image.
+const char *streamkeys_qobuz_cached_app_id(void);
+const char *streamkeys_qobuz_cached_app_secret(void);
+long streamkeys_qobuz_creds_at(void);
+void streamkeys_save_qobuz_creds(const char *app_id, const char *app_secret, long at);
+
+// The player's own file: written atomically. An empty token is how a service is
+// signed out -- the file keeps the other service's session.
+void streamkeys_save_qobuz_session(const char *token, const char *user);
+void streamkeys_save_tidal_session(const char *access_token, const char *refresh_token, long expires_at);
+
 #endif /* STREAMKEYS_H */

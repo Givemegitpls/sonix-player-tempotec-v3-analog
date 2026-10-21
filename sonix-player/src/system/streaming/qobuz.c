@@ -10,6 +10,7 @@
 #include "src/system/net/http.h"
 #include "src/system/core/json.h"
 #include "src/system/core/md5.h"
+#include "src/system/streaming/qobuzkey.h"
 #include "src/system/streaming/streamkeys.h"
 #include "src/system/core/lang.h"
 
@@ -23,11 +24,31 @@
 #define QOBUZ_TIMEOUT_SECS 15
 #define QOBUZ_BODY_LIMIT (2 * 1024 * 1024)
 
+// The application credentials are Qobuz's, not this project's, so none of them
+// is compiled in: they are taken from the web player at run time and kept on
+// the card (see qobuzkey.h and streamkeys.h). A card may also name its own pair
+// in sonix/streaming.json, which is what a local configuration uses.
+//
+// How long a derived pair is trusted before it is taken again. The secret does
+// not change often -- twice a year at most -- and a rotation is caught anyway:
+// a refused signature refetches it (qobuz_track_url). A month means the nine
+// megabytes of the web player's bundle are fetched once a month at the outside,
+// not once a day.
+#define QOBUZ_CREDS_TTL_SECS (30L * 24 * 60 * 60)
+
 static char base_url[256];
 static char app_id[64];
 static char app_secret[128];
 static char auth_token[256];
 static char display_name[QOBUZ_NAME_MAX];
+static long creds_at;        // when the derived pair was taken, 0 = never
+static bool creds_by_user;   // named in sonix/streaming.json: never refreshed
+static bool creds_fetching;  // a derivation is running: see qobuz_ensure_keys()
+
+static void qobuz_load_keys(void);
+static bool qobuz_ensure_keys(bool force);
+static bool request_file_url(long track_id, int want_format, char *url_out, size_t url_size, char *mime,
+							 size_t mime_size, int *format_out, bool *signature_refused);
 static int format_id = QOBUZ_FORMAT_HIRES192;
 
 // Per-thread like http_last_error(), and for the same reason: more than one
@@ -57,15 +78,19 @@ static void clear_error(void) { last_error[0] = '\0'; }
 void qobuz_init(void) {
 	snprintf(base_url, sizeof(base_url), "%s", config_get("qobuz", "base_url", QOBUZ_BASE_DEFAULT));
 
-	const char *id = streamkeys_qobuz_app_id();
-	const char *secret = streamkeys_qobuz_app_secret();
-	snprintf(app_id, sizeof(app_id), "%s", id ? id : "");
-	snprintf(app_secret, sizeof(app_secret), "%s", secret ? secret : "");
+	qobuz_load_keys();
 
-	// The token only, never the password: when it expires it is asked for once,
-	// and meanwhile nothing on disk is worth an account login.
-	snprintf(auth_token, sizeof(auth_token), "%s", config_get("qobuz", "token", ""));
-	snprintf(display_name, sizeof(display_name), "%s", config_get("qobuz", "user", ""));
+	// The account comes from the card, not from the player's own storage: see
+	// streamkeys.h. qobuz_reload_session() runs again once the card is mounted.
+	qobuz_reload_session();
+	// A session this player saved in its own storage before the card carried
+	// them is dropped rather than left to linger; the account is signed out
+	// everywhere else, and the card's file is the one that counts.
+	if (config_get("qobuz", "token", NULL) || config_get("qobuz", "user", NULL)) {
+		config_set("qobuz", "token", "");
+		config_set("qobuz", "user", "");
+		config_save();
+	}
 
 	format_id = (int)config_get_int("qobuz", "format", QOBUZ_FORMAT_HIRES192);
 	if (format_id != QOBUZ_FORMAT_MP3 && format_id != QOBUZ_FORMAT_CD && format_id != QOBUZ_FORMAT_HIRES96 &&
@@ -74,10 +99,133 @@ void qobuz_init(void) {
 	}
 
 	printf("qobuz: %s, %s\n", qobuz_configured() ? "configured" : "no application keys",
-		   auth_token[0] ? "saved session" : "no session");
+		   auth_token[0] ? "session on the card" : "no session");
 }
 
-bool qobuz_configured(void) { return app_id[0] && app_secret[0]; }
+void qobuz_reload_session(void) {
+	qobuz_load_keys();
+	const char *token = streamkeys_qobuz_token();
+	const char *user = streamkeys_qobuz_token_user();
+	snprintf(auth_token, sizeof(auth_token), "%s", token ? token : "");
+	snprintf(display_name, sizeof(display_name), "%s", user ? user : "");
+	printf("qobuz: %s\n", auth_token[0] ? "token found on the card" : "no token on the card");
+}
+
+// The credentials the card offers: the user's own pair when the file names one,
+// otherwise the pair derived the last time. Called again once the card is
+// mounted, since at startup there is no card to read.
+static void qobuz_load_keys(void) {
+	const char *id = streamkeys_qobuz_app_id();
+	const char *secret = streamkeys_qobuz_app_secret();
+	if (id && secret) {
+		snprintf(app_id, sizeof(app_id), "%s", id);
+		snprintf(app_secret, sizeof(app_secret), "%s", secret);
+		creds_by_user = true;
+		creds_at = 0;
+		return;
+	}
+
+	const char *cached_id = streamkeys_qobuz_cached_app_id();
+	const char *cached_secret = streamkeys_qobuz_cached_app_secret();
+	if (cached_id && cached_secret) {
+		snprintf(app_id, sizeof(app_id), "%s", cached_id);
+		snprintf(app_secret, sizeof(app_secret), "%s", cached_secret);
+		creds_at = streamkeys_qobuz_creds_at();
+	}
+	creds_by_user = false;
+}
+
+// True while the pair can be used without asking Qobuz again.
+static bool keys_fresh(void) {
+	if (!app_id[0] || !app_secret[0]) {
+		return false;
+	}
+	if (creds_by_user) {
+		return true;
+	}
+	if (creds_at <= 0) {
+		return false;
+	}
+	long age = (long)time(NULL) - creds_at;
+	return age >= 0 && age < QOBUZ_CREDS_TTL_SECS;
+}
+
+// One signed request with `secret`, to find out whether Qobuz accepts it. The
+// track is a fixed one every account may ask about, and the answer is not
+// played: this only answers "does the signature pass".
+static bool secret_works(const char *secret) {
+	char saved[sizeof(app_secret)];
+	snprintf(saved, sizeof(saved), "%s", app_secret);
+	snprintf(app_secret, sizeof(app_secret), "%s", secret);
+
+	char url[1024];
+	char mime[64];
+	bool refused = false;
+	bool ok = request_file_url(5966783, QOBUZ_FORMAT_MP3, url, sizeof(url), mime, sizeof(mime), NULL, &refused);
+	bool accepted = ok || !refused;
+
+	snprintf(app_secret, sizeof(app_secret), "%s", saved);
+	return accepted;
+}
+
+// Takes the credentials from the web player when there are none, when the
+// cached ones are stale, or when `force` -- the last is a refused signature.
+// False only when the player could not be reached and there is nothing cached
+// to fall back on.
+static bool qobuz_ensure_keys(bool force) {
+	// api_call() asks for the keys on every request, and the check below asks
+	// Qobuz itself with a request of its own -- which would ask for the keys
+	// again, for ever, one bundle download per turn. The flag breaks that
+	// circle: a request made while the pair is being chosen uses the candidate
+	// it was given.
+	if (creds_fetching) {
+		return app_id[0] && app_secret[0];
+	}
+	if (!force && keys_fresh()) {
+		return true;
+	}
+
+	creds_fetching = true;
+
+	qobuzkey_t keys;
+	if (!qobuzkey_fetch(&keys)) {
+		// Nothing derived and nothing cached to fall back on: say what is
+		// missing rather than let a request fail with a signature error the
+		// user cannot act on.
+		if (!app_id[0] || !app_secret[0]) {
+			set_error("%s", tr("api_keys_unavailable"));
+		}
+		creds_fetching = false;
+		return app_id[0] && app_secret[0];
+	}
+
+	snprintf(app_id, sizeof(app_id), "%s", keys.app_id);
+	app_secret[0] = '\0';
+	for (int i = 0; i < keys.count; i++) {
+		if (!auth_token[0] || secret_works(keys.secrets[i])) {
+			snprintf(app_secret, sizeof(app_secret), "%s", keys.secrets[i]);
+			break;
+		}
+	}
+	if (!app_secret[0] && keys.count > 0) {
+		// No token to check with: the first is used and a refusal is caught by
+		// qobuz_track_url, which asks again when it happens.
+		snprintf(app_secret, sizeof(app_secret), "%s", keys.secrets[0]);
+	}
+
+	creds_by_user = false;
+	creds_at = (long)time(NULL);
+	streamkeys_save_qobuz_creds(app_id, app_secret, creds_at);
+	printf("qobuz: %d candidate secret(s), using the %s one\n", keys.count,
+		   app_secret[0] ? "first accepted" : "none");
+	creds_fetching = false;
+	return app_secret[0] != '\0';
+}
+
+// Whether the service can be started: the credentials may still be missing,
+// because they are fetched on the first call that needs them. Having a token is
+// enough to offer the page; a card with neither says so.
+bool qobuz_configured(void) { return (app_id[0] && app_secret[0]) || auth_token[0]; }
 bool qobuz_logged_in(void) { return qobuz_configured() && auth_token[0]; }
 const char *qobuz_display_name(void) { return display_name; }
 
@@ -96,9 +244,7 @@ void qobuz_set_format(int wanted) {
 void qobuz_logout(void) {
 	auth_token[0] = '\0';
 	display_name[0] = '\0';
-	config_set("qobuz", "token", "");
-	config_set("qobuz", "user", "");
-	config_save();
+	streamkeys_save_qobuz_session("", "");
 	printf("qobuz: session closed\n");
 }
 
@@ -138,7 +284,8 @@ static bool note_api_error(const json_doc_t *doc, int status) {
 static bool api_call(const char *url, const char *extra_headers, char **body, json_doc_t *doc) {
 	clear_error();
 
-	if (!qobuz_configured()) {
+	qobuz_ensure_keys(false);
+	if (!app_id[0] || !app_secret[0]) {
 		set_error("%s", tr("api_keys_unavailable"));
 		return false;
 	}
@@ -195,7 +342,8 @@ static void api_done(char *body, json_doc_t *doc) {
 bool qobuz_login(const char *username, const char *password) {
 	clear_error();
 
-	if (!qobuz_configured()) {
+	qobuz_ensure_keys(false);
+	if (!app_id[0] || !app_secret[0]) {
 		set_error("%s", tr("api_keys_unavailable"));
 		return false;
 	}
@@ -259,9 +407,7 @@ bool qobuz_login(const char *username, const char *password) {
 
 	snprintf(auth_token, sizeof(auth_token), "%s", token);
 	snprintf(display_name, sizeof(display_name), "%s", name);
-	config_set("qobuz", "token", auth_token);
-	config_set("qobuz", "user", display_name);
-	config_save();
+	streamkeys_save_qobuz_session(auth_token, display_name);
 
 	printf("qobuz: logged in as %s\n", display_name);
 	return true;
@@ -715,7 +861,8 @@ static void sign_request(const char *object, const char *method, qobuz_param_t *
 // cannot redo the sum.
 // ---------------------------------------------------------------------------
 
-bool qobuz_track_url(long track_id, char *url_out, size_t url_size, char *mime, size_t mime_size, int *format_out) {
+static bool request_file_url(long track_id, int want_format, char *url_out, size_t url_size, char *mime,
+							 size_t mime_size, int *format_out, bool *signature_refused) {
 	clear_error();
 
 	if (!url_out || url_size == 0) {
@@ -741,7 +888,7 @@ bool qobuz_track_url(long track_id, char *url_out, size_t url_size, char *mime, 
 	qobuz_param_t params[3];
 	int count = 0;
 	snprintf(params[count].key, sizeof(params[0].key), "%s", "format_id");
-	snprintf(params[count].value, sizeof(params[0].value), "%d", format_id);
+	snprintf(params[count].value, sizeof(params[0].value), "%d", want_format);
 	count++;
 	snprintf(params[count].key, sizeof(params[0].key), "%s", "intent");
 	snprintf(params[count].value, sizeof(params[0].value), "%s", "stream");
@@ -763,6 +910,13 @@ bool qobuz_track_url(long track_id, char *url_out, size_t url_size, char *mime, 
 	char *body = NULL;
 	json_doc_t doc;
 	if (!api_call(url, NULL, &body, &doc)) {
+		// The refusal has to be read here, on the failure path: this is the
+		// only place it happens, and the caller retries with fresh credentials
+		// when it does (qobuz_track_url).
+		if (signature_refused) {
+			*signature_refused = strstr(last_error, "Request Signature") != NULL ||
+								 strstr(last_error, "request_sig") != NULL;
+		}
 		return false;
 	}
 
@@ -772,7 +926,7 @@ bool qobuz_track_url(long track_id, char *url_out, size_t url_size, char *mime, 
 		json_obj_str(&doc, root, "mime_type", mime, mime_size);
 	}
 	if (format_out) {
-		*format_out = (int)json_obj_long(&doc, root, "format_id", format_id);
+		*format_out = (int)json_obj_long(&doc, root, "format_id", want_format);
 	}
 
 	// A track that exists but is not covered by this subscription comes back as
@@ -786,6 +940,31 @@ bool qobuz_track_url(long track_id, char *url_out, size_t url_size, char *mime, 
 
 	api_done(body, &doc);
 	return ok;
+}
+
+
+// The track's stream URL. The credentials it is signed with are derived from
+// Qobuz's web player (see qobuzkey.h) and cached on the card; when Qobuz
+// refuses the signature -- the secret rotated, or the cache went stale -- they
+// are taken again and the request repeated once. That is the whole point of not
+// baking them into the image: a rotation costs a fetch, not a firmware update.
+bool qobuz_track_url(long track_id, char *url_out, size_t url_size, char *mime, size_t mime_size, int *format_out) {
+	clear_error();
+	qobuz_ensure_keys(false);
+
+	bool refused = false;
+	if (request_file_url(track_id, format_id, url_out, url_size, mime, mime_size, format_out, &refused)) {
+		return true;
+	}
+	if (!refused) {
+		return false;
+	}
+
+	printf("qobuz: the signature was refused, fetching the credentials again\n");
+	if (!qobuz_ensure_keys(true)) {
+		return false;
+	}
+	return request_file_url(track_id, format_id, url_out, url_size, mime, mime_size, format_out, NULL);
 }
 
 // ---------------------------------------------------------------------------
