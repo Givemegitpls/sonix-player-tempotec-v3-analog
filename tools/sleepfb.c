@@ -9,10 +9,10 @@
 // runs the reverse and ends with a pan, so the glass comes back with a frame.
 //
 // This tool is the measurement, not the fix: it calls that ioctl and prints
-// what changed around it, so the port can be wired to the path the stock
-// firmware actually uses (src/system/device/power.c currently only writes the
-// backlight). Run it from the card; it does not touch the player's files and
-// needs nothing flashed.
+// what changed around it. The port issues the same ioctl from power.c now
+// (screen_power()); the tool is still the way to look at the rails and the
+// registers by hand. Run it from the card; it does not touch the player's
+// files and needs nothing flashed.
 //
 // Build (static, for the device):
 //

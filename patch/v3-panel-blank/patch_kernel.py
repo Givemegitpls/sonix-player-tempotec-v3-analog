@@ -23,8 +23,10 @@ stock uImage and wrapped in a rebuilt uImage header.
 Usage:
     patch_kernel.py [STOCK_KERNEL_BIN] [STOCK_UIMAGE] [OUT_UIMAGE]
 
-Defaults read ../../../../firmware/tt/kernel.bin and .../iso/UIMAGE.BIN and
-write ./UIMAGE.BIN next to this script.
+Defaults are the old working layout -- two directories above the tree that held the
+sources, `firmware/tt/kernel.bin` and `firmware/tt/iso/UIMAGE.BIN` -- and do not
+resolve in this repository. Pass the two stock files (and the output, if wanted)
+explicitly; see README.md here.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ from pathlib import Path
 KERNEL_VADDR = 0x80010000
 UIMAGE_HDR = 64
 
-# md5 of firmware/tt/kernel.bin, the stock image this patch is written against.
+# md5 of the stock kernel.bin this patch is written against.
 STOCK_KERNEL_MD5 = "aaa60f4fc2b4d592f92bc5a405e10695"
 
 # --- symbolic encoders -------------------------------------------------------
@@ -196,7 +198,7 @@ def build_uimage(stock_uimage: bytes, payload: bytes) -> bytes:
 
 def main() -> int:
     here = Path(__file__).resolve().parent
-    root = here.parents[1]  # src/sonix-blaze
+    root = here.parents[1]  # the repository root
     stock_kernel = Path(sys.argv[1]) if len(sys.argv) > 1 else root / ".." / ".." / "firmware/tt/kernel.bin"
     stock_uimage = Path(sys.argv[2]) if len(sys.argv) > 2 else root / ".." / ".." / "firmware/tt/iso/UIMAGE.BIN"
     out = Path(sys.argv[3]) if len(sys.argv) > 3 else here / "UIMAGE.BIN"

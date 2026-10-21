@@ -9,10 +9,12 @@ generation, not the `V3_ANALOG_2025` Blaze). Upstream Sonix Player is
 documentation and the source tree are in
 [UPSTREAM-README.md](../UPSTREAM-README.md).
 
-The Blaze and the V3 Analog share the glass and the DAC, so the Blaze port is
-the base. What follows is what had to change underneath: a different SoC
-revision's glibc, a panel that wants 32 bits a pixel and one page, a codec on
-another ALSA card, and a Bluetooth stack that is not the port's.
+The Blaze and the V3 Analog share the panel size (320x480) and the AK4493SEQ
+DAC, so the Blaze port is the base. The panel itself is not the same part: the
+Blaze's is an RGB565 ST77903, this board's an SLCD scanned as 32 bpp BGRA. What
+follows is what had to change underneath: a different SoC revision's glibc, a
+panel that wants 32 bits a pixel and one page, a codec on another ALSA card, and
+a Bluetooth stack that is not the port's.
 
 ## The device
 
@@ -87,7 +89,7 @@ can be satisfied by hand:
   half-way leaves `sonix-player/lvgl/` behind and is best removed before
   retrying.
 
-## Display: 32 bits, one page, a 2/3 blit
+## Display: 32 bits, one page, a layout at two thirds
 
 The panel is an SLCD, and a frame reaches the glass only through
 **`FBIOPAN_DISPLAY`**: the vendor driver swaps the descriptor and restarts the
@@ -101,13 +103,19 @@ grew a second path:
 - `try_panned_display()` accepts 2 and 4 bytes a pixel (still tight-stride
   only) and counts the pages the driver already has
   (`smem_len / (line_length * yres)`).
-- LVGL draws RGB565. At 32 bpp it always draws the **480x720 layout into a RAM
-  page**, and the copy rewrites it into the panel's BGRA: `fb_store_pixel()`
-  widens the fields (5->8, 6->8, full scale kept full scale) and writes one
-  32-bit word per pixel, opaque.
-- The interface is laid out at **480x720 and shrunk 2/3** onto the 320x480
-  glass (the same 9/3/3/1 filter the Blaze port uses), because the panel is two
-  thirds the size of the layout.
+- LVGL draws RGB565. At 32 bpp it always draws into a **RAM page the size of
+  the panel (320x480)**, and the copy rewrites it into the panel's BGRA:
+  `fb_store_pixel()` widens the fields (5->8, 6->8, full scale kept full scale)
+  and writes one 32-bit word per pixel, opaque. One pixel in, one out: no
+  filter, no resample.
+- The pages themselves are still authored at **480x720**, the R3 Pro II's and
+  the Blaze's numbers, but `SC()` (`sonix-player/src/gui/shell/scale.h`) is `2` for this
+  build (`SONIX_LAYOUT_SCALE`, from `BOARD` in the Makefile), so every absolute
+  size and position is two thirds of what the source says and the compiler
+  folds it away. The interface is laid out at 320x480; it is not laid out large
+  and shrunk at run time. The older 9/3/3/1 software downscale is still in
+  `main.c` (`fb_scaled`) for the boards that draw at 480x720; this board does
+  not take that path (`native_panel = true` in the model).
 
 **One framebuffer page** (`single_fb_page` in the model, `true` here). The
 driver does offer two pages, but on this panel:
@@ -119,8 +127,9 @@ driver does offer two pages, but on this panel:
   screen, so every frame pays a **full-screen copy (about 26 ms)**.
 
 With one page and a pan, only the frame's own damage is copied: **about 2 ms**
-for the same frame. `single_fb_page` keeps the Blaze/R3 Pro II path
-byte-for-byte.
+for the same frame. The two-page path stays in `main.c` for the boards that use
+it (`rot_page_pending`); this board's model takes the single page because of the
+measurement above.
 
 A blank or unblank rewrites the mode underneath the player: the driver resets the
 virtual size and the descriptor when the panel powers down, and from then on the
@@ -327,9 +336,10 @@ rxprobe: at 10 s: 346185 frames, 7.85 s of audio
 rxprobe: at 15 s: 567126 frames, 12.86 s of audio
 ```
 
-`analysis/v3-bt-scripts/` holds the stand the runs were made with (headless
-receiver, HCI capture, phone driven over adb) and `tools/btadm.c` is the D-Bus
-tool it needs: adapters, discovery, pairing agent, connect, and a dump of
+The headless stand the runs were made with (headless receiver, HCI capture,
+phone driven over adb) lived in `analysis/v3-bt-scripts/` in the older working
+copy and is not part of this repository. `tools/btadm.c`, the D-Bus tool it
+needs, is: adapters, discovery, pairing agent, connect, and a dump of
 bluealsa's transports.
 
 ## The image: `v3_analog.upt`
@@ -381,7 +391,7 @@ build instead of leaving it to whoever edited the asset last. The base is the
 port's own -- everything in the asset's value up to the first `-` or `/`, today
 `1.2.0.1` -- and what follows the slash names the build, out of this repository:
 
-| the tree in `src/sonix-blaze` | the string |
+| the tree in this repository | the string |
 |---|---|
 | HEAD carries a tag | `1.2.0.1/0.1.0` |
 | a commit, no tag | `1.2.0.1/#5436fdd` |
@@ -434,7 +444,8 @@ started `adbd` whenever neither `sonix_player` nor `sonix_launch` was running --
 that is, at every boot and whenever the player was restarting -- so adb came up
 despite the switch being off, and each re-arm rebuilt the USB gadget under the
 running system (the card's mount point moving with it; see the duplicate-tracks
-item in `TODO.md`). It is removed, and the packer no longer expects it.
+item in `TODO.md` of the original working copy, outside this repository). It is
+removed, and the packer no longer expects it.
 
 What that costs: if the player cannot start at all, adb does not come up either,
 so there is nothing to look at over USB and a device stuck on the boot logo is
@@ -462,7 +473,7 @@ does not have, and what the build therefore asks for by name:
 | the tools image | `docker build -t tempotec-fw-tools sonix-packer/docker` |
 | the stock `.upt` | the vendor's 1.3 firmware for the V3 Analog, above; not in the repository |
 | `sonix-packer/sonix_player`, `sonix_launch` | `make target` in `sonix-player/` (see "Building for the target") |
-| `sonix-packer/kernel/UIMAGE.BIN` | nothing: it must **not** be there. The packer installs a kernel from that slot when one is present, and only kernel work deliberately puts one there (`patch/v3-kernel/FLASHING.md`) |
+| `sonix-packer/kernel/UIMAGE.BIN` | nothing: it must **not** be there. The packer installs a kernel from that slot when one is present, and only kernel work deliberately puts one there (`patch/v3-kernel/FLASHING.md` in the kernel working copy next to this repository; the mechanism is in `docs/KERNEL.md`) |
 
 The packer checks each of these before it starts and says which one is missing,
 so a first run on a fresh clone is a list of what to fetch, not a stack of
@@ -570,7 +581,9 @@ Verified on the device:
   R3 Pro II);
 - sound by ear: wired 3.5 mm and 4.4 mm, Bluetooth out (A2DP), Bluetooth in
   (receiver), and optical;
-- screen-off and wake through the framebuffer blank node, with the pan fix above;
+- screen-off and wake through the panel's own `SET_SLEEP` ioctl, with the pan fix
+  above (the rails go down and come back; see
+  [PANEL-POWER.md](PANEL-POWER.md#9-on-the-device-what-was-measured-and-what-the-port-now-does));
 - **suspend-to-RAM**: a screen-off left alone for a minute writes `mem`, and the
   wake comes back with the panel armed and scanning (TE 76 Hz), the touch
   controller alive and no instant wakes in the log;

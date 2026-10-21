@@ -1,7 +1,8 @@
 # The panel and the display path (V3 Analog)
 
-Consolidated from `.opencode/NOTES.md` (the chronological log, which has the raw measurements)
-and the session archive (`tools/history.sh`; session ids at the end).
+Consolidated from the chronological log (`.opencode/NOTES.md` in the original working copy,
+outside this repository, which has the raw measurements) and the session archive
+(`tools/history.sh`; session ids at the end).
 
 ## The panel
 
@@ -44,10 +45,11 @@ panel's grid rather than on a timer.
 `FBIOBLANK(POWERDOWN)` clears `LCDC_CTRL.ENA` **and** `SLCDC_CTRL.DMA_EN`; `UNBLANK` restores only
 `ENA`. After that a pan returns success without transferring anything (`SLCDC_STATE.BUSY` never
 ticks), and in the worst case the registers read identical to a healthy boot while the glass is
-frozen — only a cold panel init clears it. The port therefore **never blanks this panel**
-(`blank_panel = false` in the model): screen-off is the backlight alone, and where arming is
-needed it is `UNBLANK` → `FBIOPUT_VSCREENINFO(FB_ACTIVATE_NOW|FORCE)` → pan (`set_par` is what
-restores `DMA_EN`).
+frozen — only a cold panel init clears it. The port therefore **never uses `FBIOBLANK` on this
+panel** (`blank_panel = false` in the model); where arming is needed it is `UNBLANK` →
+`FBIOPUT_VSCREENINFO(FB_ACTIVATE_NOW|FORCE)` → pan (`set_par` is what restores `DMA_EN`).
+Screen-off does not go through this path at all: the panel is powered down with the vendor
+`SET_SLEEP` ioctl — corrected 2026-10-20 in [PANEL-POWER.md](PANEL-POWER.md).
 
 ## Power: what "off" can and cannot mean
 

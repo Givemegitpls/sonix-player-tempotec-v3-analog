@@ -1,7 +1,8 @@
 # Bluetooth on the V3 Analog
 
-Consolidated from `.opencode/NOTES.md` (the chronological log) and the session archive
-(`tools/history.sh`; session ids at the end). Read this before touching anything BT.
+Consolidated from the chronological log (`.opencode/NOTES.md` in the original working copy,
+outside this repository) and the session archive (`tools/history.sh`; session ids at the end).
+Read this before touching anything BT.
 
 ## What runs
 
@@ -24,8 +25,9 @@ Consolidated from `.opencode/NOTES.md` (the chronological log) and the session a
 
 - **LDAC (encoder)**: AOSP `libldac` — built into
   `assets/V3ANALOG/usr/lib/libldacBT_enc.so.2` and `libldacBT_abr.so.2`.
-- **LDAC (decoder)**: the **stock combined `libldacBT.so`** (in
-  `firmware/tt/SYSTEM/usr/lib/`), ABI `GLIBC_2.2`, runs on the device's glibc 2.16 as it is.
+- **LDAC (decoder)**: the **stock combined `libldacBT.so`** (in the vendor rootfs,
+  `SYSTEM/usr/lib/` of the stock `.upt`; not in this repository), ABI `GLIBC_2.2`, runs on the
+  device's glibc 2.16 as it is.
 - **AAC**: `libfdk-aac.so.2` (Debian non-free `libfdk-aac-dev` 2.0.2, mipsel).
 - **aptX / aptX-HD**: `libopenaptx.so.0` (`libopenaptx-dev` 0.2.0 — bluez-alsa 4.0.0 knows only
   `libopenaptx`, hence `--with-libopenaptx`; `libfreeaptx` is not accepted).

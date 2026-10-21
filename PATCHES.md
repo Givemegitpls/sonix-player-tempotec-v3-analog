@@ -1,16 +1,25 @@
 ﻿# Firmware patches
 
+The patches below are the base port's: they were written against HiBy's own kernel
+modules on the R3 Pro II and the R1, whose module trees sit in the shared assets
+(`sonix-packer/assets/R3PII/module_driver/`, `sonix-packer/assets/R1/module_driver/`).
+The TempoTec V3 Analog's image does not use them: it keeps the vendor's own 3.10
+kernel and its `gt9xx` touch driver, the V3 packer installs no `module_driver/`, and
+`sonix-packer/tools/install_tree.sh` runs neither script — so on this device the
+sections below are a record of how the family's touch panels were dealt with, not a
+step of this build.
+
 | patch | script | what it fixes |
 |---|---|---|
-| Touchscreen multitouch | `tools/gt9xx_multitouch_patch.py` | the panel reports five fingers, the stock driver lets one out. **Not needed** with the open-source `gt9xx_touch.ko` the packer ships |
-| Touchscreen multitouch, R1 | `tools/cst8xx_multitouch_patch.py` | the panel reports two fingers, the stock driver lets one out. **Not needed** with the open-source `cst8xx_touch.ko` the packer ships |
+| Touchscreen multitouch | `sonix-player/tools/gt9xx_multitouch_patch.py` | the panel reports five fingers, the stock driver lets one out. **Not needed** with the open-source `gt9xx_touch.ko` the packer ships |
+| Touchscreen multitouch, R1 | `sonix-player/tools/cst8xx_multitouch_patch.py` | the panel reports two fingers, the stock driver lets one out. **Not needed** with the open-source `cst8xx_touch.ko` the packer ships |
 
 
 ## Touchscreen multitouch
 
 ### Not needed with the open-source driver
 
-The packer's `assets/R3PII/module_driver/` now holds the open-source
+The packer's `sonix-packer/assets/R3PII/module_driver/` now holds the open-source
 `gt9xx_touch.ko` from
 [hiby-custom-kernel](https://github.com/Jepl4r/hiby-custom-kernel), not
 HiBy's module, and that one has neither of the two problems below:
@@ -95,7 +104,7 @@ Copy the two files `gt9xx_touch.ko` and `gt9xx_touch.sh` out of the firmware, pu
 beside the script, and run the python script:
 
 ```bash
-python3 tools/gt9xx_multitouch_patch.py
+python3 sonix-player/tools/gt9xx_multitouch_patch.py
 ```
 
 **`gt9xx_touch.sh`** - `gtp_max_touch_number` goes from 1 to 5, so the frame
@@ -130,20 +139,20 @@ With no argument the script works on whatever sits in its own directory:
 
 ```bash
 # report the state, change nothing
-python3 tools/gt9xx_multitouch_patch.py --check
+python3 sonix-player/tools/gt9xx_multitouch_patch.py --check
 
 # apply
-python3 tools/gt9xx_multitouch_patch.py
+python3 sonix-player/tools/gt9xx_multitouch_patch.py
 
 # put the stock behaviour back
-python3 tools/gt9xx_multitouch_patch.py --revert
+python3 sonix-player/tools/gt9xx_multitouch_patch.py --revert
 ```
 
 A directory can be named instead, to work straight on an unpacked rootfs
 without copying anything:
 
 ```bash
-python3 tools/gt9xx_multitouch_patch.py rootfs/module_driver
+python3 sonix-player/tools/gt9xx_multitouch_patch.py rootfs/module_driver
 ```
 
 Either file on its own is enough to do that half of the job, and the script
@@ -157,7 +166,7 @@ Then put the files back in the rootfs, repack and flash.
 
 ### What the player does with it
 
-`src/system/gearboy/gbinput.c` is the only consumer. LVGL's evdev driver is a
+`sonix-player/src/system/gearboy/gbinput.c` is the only consumer. LVGL's evdev driver is a
 pointer device - one contact, one position - so while a game runs the panel
 changes owner: `panel_touch_enable(false)` parks LVGL's indev, the emulator
 opens the same node itself and reads the multitouch protocol, tracking up to
@@ -177,7 +186,7 @@ either way.
 
 ### Not needed with the open-source driver
 
-The packer's `assets/R1/module_driver/` now holds the open-source
+The packer's `sonix-packer/assets/R1/module_driver/` now holds the open-source
 `cst8xx_touch.ko` from
 [hiby-custom-kernel](https://github.com/Jepl4r/hiby-custom-kernel), not
 HiBy's module, and that one has neither of the two problems below:
@@ -287,16 +296,16 @@ The same shape as the other one. With no argument it works on whatever sits in
 its own directory:
 
 ```bash
-python3 tools/cst8xx_multitouch_patch.py --check
-python3 tools/cst8xx_multitouch_patch.py
-python3 tools/cst8xx_multitouch_patch.py --revert
+python3 sonix-player/tools/cst8xx_multitouch_patch.py --check
+python3 sonix-player/tools/cst8xx_multitouch_patch.py
+python3 sonix-player/tools/cst8xx_multitouch_patch.py --revert
 ```
 
 and a directory can be named instead, to work straight on an unpacked rootfs or
 on the packer's assets:
 
 ```bash
-python3 tools/cst8xx_multitouch_patch.py assets/R1/module_driver
+python3 sonix-player/tools/cst8xx_multitouch_patch.py sonix-packer/assets/R1/module_driver
 ```
 
 Both files are copied to `*.orig` beside themselves before the first write, and

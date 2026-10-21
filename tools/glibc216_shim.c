@@ -20,7 +20,7 @@
 // anything newer than 2.16 -- checked with readelf on both.
 //
 // Build: the same cross compiler, -O2 -march=mips32r2, and link the object into
-// each target (see the build recipe in the project's .opencode/NOTES.md).
+// each target (docs/V3-ANALOG.md, "The build recipe").
 
 #define _GNU_SOURCE
 #include <errno.h>

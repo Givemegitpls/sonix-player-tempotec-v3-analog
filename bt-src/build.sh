@@ -21,14 +21,14 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 BT=$here
-PROJ=$(cd "$BT/../../.." && pwd)              # .../tempotec-v3
-TC=$PROJ/toolchain/rockbox-toolchain
+PROJ=$(cd "$BT/.." && pwd)                    # this repository
+TC=${TC:-$PROJ/sonix-player/rockbox-toolchain}   # make target puts it here; override with TC=...
 CROSS=$TC/bin/mipsel-rockbox-linux-gnu
 
 SYS=$BT/sysroot
 BUILD=$BT/build
 OUT=$BT/out
-SHIM_SRC=$PROJ/src/sonix-blaze/tools/glibc216_shim.c
+SHIM_SRC=$PROJ/tools/glibc216_shim.c
 
 LIBS="-lrt -lz -lffi -lm -lgmodule-2.0"
 

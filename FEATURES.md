@@ -140,7 +140,8 @@ certificate checking, and HLS.
 - **Screen** - brightness, screen-off timeout, double-tap to wake (off by
   default), screensaver, and 180° rotation with the touch rotated with it.
 - **Screensaver** - choose to show the cover of the current playing track or pictures from the `Screensaver` folder.
-  > Pictures need to be exactly 480x720 jpegs non progressive.
+  > Pictures need to be baseline JPEGs, portrait, and no larger than the panel
+  > (320x480 on the V3 Analog).
 
 - **Power** - standby, LED behaviour,
   automatic power-off from thirty seconds to six hours, and a charge limit from

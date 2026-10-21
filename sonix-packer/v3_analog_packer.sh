@@ -102,7 +102,7 @@ stamp_of() { date -r "$1" +%d%m%Y%H%M; }
 
 # The version the player shows in About ("Operating system version"). The base is
 # the port's own, taken from the asset's system-info.json up to the first '-' or
-# '/'; what follows the slash names the build, out of src/sonix-blaze:
+# '/'; what follows the slash names the build, out of this repository:
 #
 #   HEAD carries a tag      -> <base>/<tag>          a release
 #   a commit without a tag  -> <base>/#<short hash>  that commit, built

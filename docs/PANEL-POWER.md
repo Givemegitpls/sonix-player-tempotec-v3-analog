@@ -8,11 +8,13 @@ That is not what the stock firmware does. The stock player powers the panel down
 reset, pinmux, touch — **on every screen-off, while the SoC stays awake**, through a
 proprietary ioctl on `/dev/fb0` that the port has never issued.
 
-All evidence below is static: the stock player `firmware/tt/SYSTEM/usr/bin/hiby_player`
-(md5 `3a5db0fa7d2536ae564841f24b5f8b54`, ELF vaddr, `file offset = vaddr - 0x400000`) and
-the stock kernel `firmware/tt/kernel.bin` (md5 `aaa60f4fc2b4d592f92bc5a405e10695`,
-base `0x80010000`, `file offset = virt - 0x80010000`). Disassembly:
-`toolchain/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-objdump -D -b binary -m
+All evidence below is static: the stock player from the vendor's `v3_analog` rootfs
+(`SYSTEM/usr/bin/hiby_player`; md5 `3a5db0fa7d2536ae564841f24b5f8b54`, ELF vaddr,
+`file offset = vaddr - 0x400000`) and the stock kernel out of the same `.upt`
+(`UIMAGE.BIN`; md5 `aaa60f4fc2b4d592f92bc5a405e10695`, base `0x80010000`,
+`file offset = virt - 0x80010000`). Both were unpacked in the older working copy,
+not in this repository. Disassembly:
+`sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-objdump -D -b binary -m
 mips:isa32 -EL`, or `-D` on the ELF. No device was touched.
 
 ## Verdict
@@ -212,7 +214,8 @@ The panel rails are the AXP2101's vendor-named `LDO7` (ALDO4, enable bit `0x90` 
 voltage `0x95`) and `LDO8` (BLDO1, `0x90` bit4, `0x96`), 3.0 V and 1.8 V; `gpio16` is
 `GPIO_PA(16)` `lcd rst`, `gpio48` is `GPIO_PB(16)` `lcd rd`; `gpio89` (`GPIO_PC(25)`) is
 `BL PWR` and belongs to the backlight, not to the panel (`backlight_init`, `0x80019dc8`).
-The register map and pin names are in `patch/v3-kernel/V3-BOARD.md`.
+The register map and pin names are in `patch/v3-kernel/V3-BOARD.md`, in the
+kernel working copy next to this repository (that tree is not part of this one).
 
 ## 3. Does the stock stop refreshing while awake?
 
@@ -280,9 +283,12 @@ Note the ordering that makes this safe: the power-down always goes through
 `lcd_power_on` + `set_par` + `enable`. `set_par` re-arms `DMA_EN`, so the
 "unblank restored only ENA" state never occurs on this path.
 
-## 5. Stock vs the port
+## 5. Stock vs the port, before the `SET_SLEEP` implementation
 
-| step | stock | port (`src/sonix-blaze/sonix-player`) |
+This table is the state the port was in when the stock path was worked out; §9
+is what it does now.
+
+| step | stock | port (`sonix-player`) |
 |---|---|---|
 | screen-off trigger | power key / UI handler → `0x473320` | `power_screen_off()` (`power.c:1408`) |
 | backlight | write 0 to `pwm-backlight.0/brightness` (`0x473354`) | same (`power.c:1436`, `write_long_to_file(...,0)`) |
@@ -403,7 +409,7 @@ power is what is off). The same three on the port should show the rails still en
 ## 8. First step on hardware: `tools/sleepfb`
 
 The cheapest way to confirm the path on this firmware before any player change is
-`tools/sleepfb` (`src/sonix-blaze/tools/sleepfb.c`). It calls exactly the stock ioctl on
+`tools/sleepfb` (`tools/sleepfb.c`). It calls exactly the stock ioctl on
 `/dev/fb0`, prints `LCDC_CTRL.ENA`, `SLCDC_CTRL.DMA_EN/DMA_START`, `SLCDC_STATE.BUSY`, the
 `lcd_3v3`/`lcd_1v8` rails and the backlight level around the call, and leaves the backlight
 alone.

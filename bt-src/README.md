@@ -141,7 +141,7 @@ AOSP `libldacBT_enc` with the stock decoder puts two different LDAC handle
 layouts in one process and segfaults (documented in the project's NOTES).
 
 The project already keeps the AOSP-derived LDAC inputs under
-`sonix-blaze/tools/ldac/`; those `.pc` files point at `-lldacBT_enc` /
+`tools/ldac/`; those `.pc` files point at `-lldacBT_enc` /
 `-lldacBT_abr`. The ones here differ on purpose: the shipped device binary's
 `NEEDED` list contains **only `libldacBT.so`**, so this build links all three
 against the combined library and reproduces that exactly (verified below).
@@ -199,12 +199,13 @@ versioned `GLIBC_2.17` reference leaves the binary:
 ## Rebuild from scratch
 
 ```
-cd src/sonix-blaze/bt-src
+cd bt-src
 ./build.sh          # sysroot -> sbc -> bluealsa -> ./out
 ```
 
 `build.sh` needs `debs/`, `third-party/` and `libs/` (all committed here), the
-rockbox toolchain at `../../toolchain/rockbox-toolchain`, and the project's
+rockbox toolchain at `sonix-player/rockbox-toolchain` (where `make target`
+puts it; `TC=/path/to/toolchain ./build.sh` overrides), and the project's
 `tools/glibc216_shim.c`. It does **not** need the device or the network.
 
 To regenerate the patch: `diff -ruN src/bluez-alsa-4.0.0 src/bluez-alsa-4.0.0.patched > patch/0001-io-rt-priority.patch`.
@@ -212,17 +213,17 @@ To regenerate the patch: `diff -ruN src/bluez-alsa-4.0.0 src/bluez-alsa-4.0.0.pa
 To install into the assets:
 
 ```
-cp out/bluealsa                     ../sonix-packer/assets/V3ANALOG/usr/bin/bluealsa
+cp out/bluealsa                     sonix-packer/assets/V3ANALOG/usr/bin/bluealsa
 cp out/libasound_module_pcm_bluealsa.so \
-   ../sonix-packer/assets/V3ANALOG/usr/lib/alsa-lib/libasound_module_pcm_bluealsa.so
+   sonix-packer/assets/V3ANALOG/usr/lib/alsa-lib/libasound_module_pcm_bluealsa.so
 # (and the same under assets/BLAZE/)
 ```
 
 To rebuild the firmware image:
 
 ```
-cd ../sonix-packer
-STOCK=/home/alex/Projects/own/tempotec-v3/firmware/tt/fw.upt ./v3_analog_packer.sh
+cd sonix-packer
+STOCK=/path/to/v3_analog.upt ./v3_analog_packer.sh
 ```
 
 ## Verification

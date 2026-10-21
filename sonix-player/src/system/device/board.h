@@ -138,12 +138,13 @@ static const sysinfo_model_t BOARD_MODEL = {
 	// they are written -- see main.c and NOTES.md).
 	.native_panel = true,
 	// The panel is never blanked through the framebuffer node. The stock player
-	// on this device does not write one at all -- its binary has no FBIOBLANK,
-	// no FBIOPAN_DISPLAY and no FBIOPUT_VSCREENINFO in it: it dims the backlight
-	// and leaves the panel scanning its last frame. The driver's blank drops
+	// on this device does not use FBIOBLANK -- its binary has no 0x4611 in it --
+	// and the driver's blank is the path that wedges this glass: it drops
 	// LCDC_CTRL.ENA and SLCDC_CTRL.DMA_EN, and the unblank brings back only the
-	// first, so a blanked-then-unblanked panel can sit armed with DMA_EN=1 and
+	// first, so a blanked-then-unblanked panel can sit armed with DMA_EN=0 and
 	// show nothing at all -- the frozen picture this flag exists to keep out.
+	// (The stock player does pan: FBIOPAN_DISPLAY, 0x4606, once in fb_resume.
+	// See docs/PANEL-POWER.md.)
 	.blank_panel = false,
 	// ...but the panel is not left powered either. The stock player powers it
 	// down on every screen-off through the vendor ioctl SET_SLEEP (0x80044620,
