@@ -34,9 +34,11 @@ lv_obj_t *flappybird_screen;
 //
 // The world is the 480x720 panel the interface was authored for, whatever the
 // glass is. `frame` is 480x720 and every coordinate below is in that space;
-// the picture is handed to LVGL as one image and shown at ui_image_scale() --
-// two thirds on the V3 Analog's 320x480, untouched on the panels it was
-// written for. Nothing here reads the panel's size except the touch mapping.
+// the picture is handed to LVGL as one image and shown at two thirds of it on
+// the V3 Analog's 320x480, untouched on the panels it was written for (see
+// cover_scale). The panel's size reaches this file in two places only: SC() at
+// init, which sizes the picture, and the touch panel's own pixels, which
+// game_point turns back into these.
 
 #define ART_DIR SONIX_RESOURCE_DIR "/gui/flappybird"
 #define ART_MAX_BYTES (256 * 1024)
@@ -408,6 +410,10 @@ static lv_image_dsc_t frame_dsc;
 static int view_h;		  // the game's height in artwork pixels
 static int ground_top;	  // artwork pixels
 static int bg_row0;		  // the background's row at the top of the game
+// The picture's own size, in the object's pixels: SC(GAME_W) x SC(GAME_H), the
+// glass on this board. The two spaces meet only in game_point and
+// invalidate_game_area.
+static int glass_w = GAME_W, glass_h = GAME_H;
 static uint16_t *frame;	  // GAME_W x GAME_H
 static uint16_t *bg_wide; // ground_top rows of BG_W * SCALE, from bg_row0
 static uint16_t *ground_wide; // GROUND_H rows of GROUND_W * SCALE
@@ -1299,6 +1305,54 @@ static void render(bool whole) {
 // the page
 // ---------------------------------------------------------------------------
 
+// The two coordinate spaces, joined. The frame is the game's 480x720; the
+// object that shows it is SC() of that, the glass's own pixels, and LVGL
+// resamples the picture into it (see flappybird_init). The touch panel reads in
+// the glass's pixels and the frame is invalidated in the game's, so both
+// crossings happen here.
+
+// `p`, on the glass, as the game's own pixels.
+static void game_point(lv_point_t *p) {
+	p->x = (lv_coord_t)((int32_t)p->x * GAME_W / glass_w);
+	p->y = (lv_coord_t)((int32_t)p->y * GAME_H / glass_h);
+}
+
+// A changed area of the frame, invalidated in the picture's own pixels.
+// Rounded outwards, so the resampling at the edges has the neighbours it
+// samples from.
+static void invalidate_game_area(const lv_area_t *a) {
+	lv_area_t o;
+	o.x1 = (lv_coord_t)((int32_t)a->x1 * glass_w / GAME_W);
+	o.y1 = (lv_coord_t)((int32_t)a->y1 * glass_h / GAME_H);
+	o.x2 = (lv_coord_t)(((int32_t)a->x2 * glass_w + GAME_W - 1) / GAME_W);
+	o.y2 = (lv_coord_t)(((int32_t)a->y2 * glass_h + GAME_H - 1) / GAME_H);
+	if (o.x2 > glass_w - 1) {
+		o.x2 = glass_w - 1;
+	}
+	if (o.y2 > glass_h - 1) {
+		o.y2 = glass_h - 1;
+	}
+	if (o.x1 < 0) {
+		o.x1 = 0;
+	}
+	if (o.y1 < 0) {
+		o.y1 = 0;
+	}
+	lv_obj_invalidate_area(frame_image, &o);
+}
+
+// `g` game pixels, covering `s` of the glass: the scale LVGL should draw them
+// at, in its own 1/256 steps (LV_SCALE_NONE = 1). ui_image_scale() is 2/3 as
+// exactly as an integer can hold it -- 170/256, which is 0.664 -- so the frame
+// would come out 319x478 in a 320x480 object and leave a black hairline along
+// the right edge and the bottom. Rounded the other way instead: the picture
+// covers the object and the last column and row are drawn rather than left
+// empty. The overscan is under half a game pixel, and the resampler reads the
+// frame's own edge for it.
+static uint32_t cover_scale(int g, int s) {
+	return (uint32_t)(((int32_t)s * LV_SCALE_NONE + g - 1) / g);
+}
+
 static void tick_cb(lv_timer_t *timer) {
 	if (!active) {
 		lv_timer_pause(timer); // woken by power.c at the end of a standby
@@ -1352,7 +1406,7 @@ static void tick_cb(lv_timer_t *timer) {
 		render(!(in_air && frame_whole));
 		frame_whole = in_air;
 		for (int i = 0; i < changed_n; i++) {
-			lv_obj_invalidate_area(frame_image, &changed[i]);
+			invalidate_game_area(&changed[i]);
 		}
 		// On the panel now, in step with the frame just drawn, rather than at
 		// the display timer's own phase.
@@ -1376,6 +1430,7 @@ static void press_cb(lv_event_t *e) {
 	}
 	lv_point_t p;
 	lv_indev_get_point(lv_indev_active(), &p);
+	game_point(&p);
 
 	switch (state) {
 	case ST_TITLE:
@@ -1411,6 +1466,7 @@ static void release_cb(lv_event_t *e) {
 	}
 	lv_point_t p;
 	lv_indev_get_point(lv_indev_active(), &p);
+	game_point(&p);
 	if (button_at(&p) != pressed) {
 		return;
 	}
@@ -1559,7 +1615,23 @@ void flappybird_init(gui_config_t *cfg) {
 
 	frame_image = lv_image_create(flappybird_screen);
 	lv_obj_set_pos(frame_image, 0, 0);
-	lv_obj_set_size(frame_image, GAME_W, GAME_H);
+	// The game's 480x720 picture, on the glass at SC() of that size: 320x480
+	// here, the authored size itself on the panels the interface was drawn for.
+	// LVGL resamples the frame into it at draw time, one scaled frame per
+	// refresh -- the same pattern gearboy's picture uses.
+	lv_obj_set_size(frame_image, SC(GAME_W), SC(GAME_H));
+	glass_w = lv_obj_get_width(frame_image);
+	glass_h = lv_obj_get_height(frame_image);
+	if (glass_w <= 0 || glass_h <= 0) {
+		glass_w = SC(GAME_W);
+		glass_h = SC(GAME_H);
+	}
+	// Covering the object rather than sitting two thirds of the way short of
+	// its edges (see cover_scale). LVGL centres the picture on the object,
+	// which is the object's own centre, and the touch mapping below assumes
+	// only that the two cover each other.
+	lv_image_set_scale_x(frame_image, cover_scale(GAME_W, glass_w));
+	lv_image_set_scale_y(frame_image, cover_scale(GAME_H, glass_h));
 	lv_obj_set_clickable(frame_image, false);
 
 	lv_obj_add_event_cb(flappybird_screen, press_cb, LV_EVENT_PRESSED, NULL);
