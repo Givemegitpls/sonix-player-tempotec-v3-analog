@@ -139,6 +139,15 @@ static const sysinfo_model_t BOARD_MODEL = {
 	// first, so a blanked-then-unblanked panel can sit armed with DMA_EN=1 and
 	// show nothing at all -- the frozen picture this flag exists to keep out.
 	.blank_panel = false,
+	// ...but the panel is not left powered either. The stock player powers it
+	// down on every screen-off through the vendor ioctl SET_SLEEP (0x80044620,
+	// _IOW('F', 0x20, int)): jzfb_suspend waits for the transfer, clears
+	// LCDC_CTRL.ENA, gates the clocks and drops the panel's own supplies
+	// (AXP2101 LDO7/LDO8, the reset line, the touch controller's doze); the
+	// same ioctl with 0 runs lcd_power_on and re-arms the panel with a pan.
+	// The SoC stays awake -- the music keeps playing -- and FBIOBLANK, the
+	// path that wedges this glass, is never used. See docs/PANEL-POWER.md.
+	.panel_sleep_ioctl = 0x80044620u,
 	// plughw and not hw: the codec's PCM accepts a narrow set of formats and
 	// rates, and what it takes exactly has not been measured yet, so the plug is
 	// what keeps a 24/96 track from being refused outright. The name "default"

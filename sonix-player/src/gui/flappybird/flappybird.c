@@ -31,9 +31,19 @@ lv_obj_t *flappybird_screen;
 // drawing is shown at four times its size, drawn straight into `frame`. The
 // background and the ground are kept already widened four times
 // (`bg_wide`, `ground_wide`), so a row of either is one or two memcpy.
+//
+// The world is the 480x720 panel the interface was authored for, whatever the
+// glass is. `frame` is 480x720 and every coordinate below is in that space;
+// the picture is handed to LVGL as one image and shown at ui_image_scale() --
+// two thirds on the V3 Analog's 320x480, untouched on the panels it was
+// written for. Nothing here reads the panel's size except the touch mapping.
 
 #define ART_DIR SONIX_RESOURCE_DIR "/gui/flappybird"
 #define ART_MAX_BYTES (256 * 1024)
+
+// The authored panel: the game's own coordinate space, never the glass.
+#define GAME_W 480
+#define GAME_H 720
 
 #define SCALE 4
 
@@ -55,10 +65,10 @@ lv_obj_t *flappybird_screen;
 
 // The game itself runs in units of half an artwork pixel -- the 288x512
 // coordinates of the original, whose physics this reproduces -- and a unit is
-// UNIT_PX panel pixels.
+// UNIT_PX game pixels.
 #define UNIT_PX (SCALE / 2)
 
-// Units a step for the ground and the pipes; panel pixels a step for the
+// Units a step for the ground and the pipes; game pixels a step for the
 // background, a quarter of the ground's speed.
 #define WORLD_SPEED 2
 #define BG_PX_PER_STEP 1
@@ -131,22 +141,19 @@ lv_obj_t *flappybird_screen;
 // Half of a fade through black between two screens of the game.
 #define FADE_STEPS 10
 
-// Screen positions, in panel pixels, for the 720-row panel. On a taller one
-// the menus and the labels move down by half the extra rows (layout_shift).
-// Written for the 480x720 layout like the rest of the interface, so they go
-// through SC(): on the native panel the panel is 480 rows, layout_shift is 0
-// (SC(720) is 480), and the positions come out two thirds of what they say --
-// which is where the old 2/3 blit put them.
-#define TITLE_LOGO_Y SC(96)
-#define TITLE_PLAY_ABOVE_GROUND SC(20)
-#define CORNER_MARGIN SC(24)
-#define SCORE_Y SC(40)
-#define READY_LABEL_Y SC(100)
-#define HOW_TO_ABOVE_GROUND SC(16)
-#define READY_BIRD_ABOVE_HOW_TO SC(34)
-#define OVER_LABEL_Y SC(60)
-#define OVER_BOARD_Y SC(170)
-#define OVER_BUTTONS_GAP SC(24)
+// Screen positions, in game pixels: the 480x720 layout the game was drawn
+// for, so the authored numbers themselves, not SC() of them. The glass only
+// ever sees the finished frame, scaled as one picture.
+#define TITLE_LOGO_Y 96
+#define TITLE_PLAY_ABOVE_GROUND 20
+#define CORNER_MARGIN 24
+#define SCORE_Y 40
+#define READY_LABEL_Y 100
+#define HOW_TO_ABOVE_GROUND 16
+#define READY_BIRD_ABOVE_HOW_TO 34
+#define OVER_LABEL_Y 60
+#define OVER_BOARD_Y 170
+#define OVER_BUTTONS_GAP 24
 #define BUTTON_PRESS_SHIFT SCALE
 
 // Artwork pixels between two digits: the running score's overlap by one, the
@@ -398,12 +405,10 @@ static lv_obj_t *frame_image;
 static lv_timer_t *tick_timer;
 static lv_image_dsc_t frame_dsc;
 
-static int panel_w, panel_h;
-static int view_h;		  // the panel's height in artwork pixels
+static int view_h;		  // the game's height in artwork pixels
 static int ground_top;	  // artwork pixels
-static int bg_row0;		  // the background's row at the top of the panel
-static int layout_shift;  // panel pixels
-static uint16_t *frame;	  // panel_w x panel_h
+static int bg_row0;		  // the background's row at the top of the game
+static uint16_t *frame;	  // GAME_W x GAME_H
 static uint16_t *bg_wide; // ground_top rows of BG_W * SCALE, from bg_row0
 static uint16_t *ground_wide; // GROUND_H rows of GROUND_W * SCALE
 // Per row of bg_wide and ground_wide: its colour when the row is one colour,
@@ -478,10 +483,10 @@ static int64_t now_us(void) {
 // pixels scrolled.
 static void wrap_row(uint16_t *dst, const uint16_t *src, int src_w, int offset) {
 	int x = 0;
-	while (x < panel_w) {
+	while (x < GAME_W) {
 		int n = src_w - offset;
-		if (n > panel_w - x) {
-			n = panel_w - x;
+		if (n > GAME_W - x) {
+			n = GAME_W - x;
 		}
 		memcpy(dst + x, src + offset, (size_t)n * sizeof(uint16_t));
 		x += n;
@@ -527,13 +532,13 @@ static void fill_span(uint16_t *row, int x1, int x2, uint16_t colour) {
 	}
 }
 
-static void fill_row(uint16_t *dst, uint16_t colour) { fill_span(dst, 0, panel_w - 1, colour); }
+static void fill_row(uint16_t *dst, uint16_t colour) { fill_span(dst, 0, GAME_W - 1, colour); }
 
 // The background from panel row `from` down to the ground.
 static void draw_background(int from) {
 	int w = BG_W * SCALE;
 	for (int y = from; y < ground_top * SCALE; y++) {
-		uint16_t *row = frame + (size_t)y * panel_w;
+		uint16_t *row = frame + (size_t)y * GAME_W;
 		int32_t flat = bg_flat[y / SCALE];
 		if (flat >= 0) {
 			fill_row(row, (uint16_t)flat);
@@ -547,13 +552,13 @@ static void draw_background(int from) {
 static void draw_ground(bool whole) {
 	int w = GROUND_W * SCALE;
 	int top = ground_top * SCALE;
-	int end = whole ? panel_h : top + ground_varied_rows * SCALE;
+	int end = whole ? GAME_H : top + ground_varied_rows * SCALE;
 	for (int y = top; y < end; y++) {
 		int sy = (y - top) / SCALE;
 		if (sy >= GROUND_H) {
 			sy = GROUND_H - 1;
 		}
-		uint16_t *row = frame + (size_t)y * panel_w;
+		uint16_t *row = frame + (size_t)y * GAME_W;
 		if (ground_flat[sy] >= 0) {
 			fill_row(row, (uint16_t)ground_flat[sy]);
 		} else {
@@ -582,8 +587,8 @@ static void blit4_clipped(const sprite_t *s, int x, int y, int y_end, unsigned o
 	if (opa == 0) {
 		return;
 	}
-	if (y_end > panel_h) {
-		y_end = panel_h;
+	if (y_end > GAME_H) {
+		y_end = GAME_H;
 	}
 	uint32_t pairs[BG_W * SCALE / 2];
 	for (int j = 0; j < s->h; j++) {
@@ -610,8 +615,8 @@ static void blit4_clipped(const sprite_t *s, int x, int y, int y_end, unsigned o
 			// written into each of the SCALE rows, clipped left and right.
 			int x0 = x + i * SCALE, x1 = x + run * SCALE;
 			int cut = x0 < 0 ? -x0 : 0;
-			if (x1 > panel_w) {
-				x1 = panel_w;
+			if (x1 > GAME_W) {
+				x1 = GAME_W;
 			}
 			if (x0 + cut < x1) {
 				const uint16_t *wide;
@@ -626,7 +631,7 @@ static void blit4_clipped(const sprite_t *s, int x, int y, int y_end, unsigned o
 					if (py < 0 || py >= y_end) {
 						continue;
 					}
-					uint16_t *row = frame + (size_t)py * panel_w;
+					uint16_t *row = frame + (size_t)py * GAME_W;
 					if (opa >= 255) {
 						memcpy(row + x0 + cut, wide + cut, (size_t)(x1 - x0 - cut) * sizeof(uint16_t));
 					} else {
@@ -641,7 +646,7 @@ static void blit4_clipped(const sprite_t *s, int x, int y, int y_end, unsigned o
 	}
 }
 
-static void blit4(const sprite_t *s, int x, int y, unsigned opa) { blit4_clipped(s, x, y, panel_h, opa); }
+static void blit4(const sprite_t *s, int x, int y, unsigned opa) { blit4_clipped(s, x, y, GAME_H, opa); }
 
 // `s` at four times its size, centred on (cx, cy) and turned by `deg`,
 // positive anticlockwise. Nearest neighbour, so the pixels stay square.
@@ -655,10 +660,10 @@ static void blit4_turned(const sprite_t *s, float cx, float cy, float deg) {
 	int reach = (int)ceilf(sqrtf((float)(s->w * s->w + s->h * s->h)) * SCALE / 2.0f) + 1;
 	int x0 = (int)floorf(cx) - reach, y0 = (int)floorf(cy) - reach;
 	for (int py = y0; py <= y0 + 2 * reach; py++) {
-		if (py < 0 || py >= panel_h) {
+		if (py < 0 || py >= GAME_H) {
 			continue;
 		}
-		uint16_t *row = frame + (size_t)py * panel_w;
+		uint16_t *row = frame + (size_t)py * GAME_W;
 		// The source position of the first pixel of the row, then one step
 		// along the turned x axis per pixel.
 		float dx = (float)x0 + 0.5f - cx;
@@ -666,7 +671,7 @@ static void blit4_turned(const sprite_t *s, float cx, float cy, float deg) {
 		float u = cs * dx - sn * dy + s->w / 2.0f;
 		float v = sn * dx + cs * dy + s->h / 2.0f;
 		for (int px = x0; px <= x0 + 2 * reach; px++, u += cs, v += sn) {
-			if (px < 0 || px >= panel_w || u < 0 || v < 0) {
+			if (px < 0 || px >= GAME_W || u < 0 || v < 0) {
 				continue;
 			}
 			int iu = (int)u, iv = (int)v;
@@ -686,7 +691,7 @@ static void wash(uint16_t colour, unsigned opa) {
 	if (opa == 0) {
 		return;
 	}
-	size_t n = (size_t)panel_w * panel_h;
+	size_t n = (size_t)GAME_W * GAME_H;
 	if (opa >= 255) {
 		for (size_t i = 0; i < n; i++) {
 			frame[i] = colour;
@@ -750,21 +755,21 @@ static bool button_rect(button_t b, lv_area_t *a) {
 	if (b == BTN_SOUND) {
 		// Bottom right, on the title screen and after a game.
 		s = &art_sound_on;
-		x = panel_w - s->w * SCALE - CORNER_MARGIN;
-		y = panel_h - s->h * SCALE - CORNER_MARGIN;
+		x = GAME_W - s->w * SCALE - CORNER_MARGIN;
+		y = GAME_H - s->h * SCALE - CORNER_MARGIN;
 	} else if (state == ST_TITLE) {
 		if (b == BTN_PLAY) {
 			s = &art_play;
-			x = (panel_w - s->w * SCALE) / 2;
+			x = (GAME_W - s->w * SCALE) / 2;
 			y = ground_top_px() - s->h * SCALE - TITLE_PLAY_ABOVE_GROUND;
 		} else if (b == BTN_EXIT) {
 			s = &art_exit;
-			x = panel_w - s->w * SCALE - CORNER_MARGIN;
+			x = GAME_W - s->w * SCALE - CORNER_MARGIN;
 			y = CORNER_MARGIN;
 		}
 	} else {
 		// Play under the board, Menu under Play.
-		int play_y = OVER_BOARD_Y + layout_shift + art_board.h * SCALE + OVER_BUTTONS_GAP;
+		int play_y = OVER_BOARD_Y + art_board.h * SCALE + OVER_BUTTONS_GAP;
 		if (b == BTN_PLAY) {
 			s = &art_play;
 			y = play_y;
@@ -773,7 +778,7 @@ static bool button_rect(button_t b, lv_area_t *a) {
 			y = play_y + art_play.h * SCALE + OVER_BUTTONS_GAP;
 		}
 		if (s) {
-			x = (panel_w - s->w * SCALE) / 2;
+			x = (GAME_W - s->w * SCALE) / 2;
 		}
 	}
 	if (!s) {
@@ -857,7 +862,7 @@ static int random_gap_top(int previous) {
 
 static void pipes_reset(void) {
 	for (int i = 0; i < PIPE_COUNT; i++) {
-		pipes[i].x = panel_w / UNIT_PX + FIRST_PIPE_AHEAD_U + i * PIPE_SPACING_U;
+		pipes[i].x = GAME_W / UNIT_PX + FIRST_PIPE_AHEAD_U + i * PIPE_SPACING_U;
 		pipes[i].gap_top = random_gap_top(i > 0 ? pipes[i - 1].gap_top : -1);
 		pipes[i].scored = false;
 	}
@@ -1107,9 +1112,9 @@ static void draw_board(void) {
 	if (p <= 0) {
 		return;
 	}
-	int target = OVER_BOARD_Y + layout_shift;
-	int bx = (panel_w - art_board.w * SCALE) / 2;
-	int by = panel_h + (int)lroundf((target - panel_h) * ease_out(p));
+	int target = OVER_BOARD_Y;
+	int bx = (GAME_W - art_board.w * SCALE) / 2;
+	int by = GAME_H + (int)lroundf((target - GAME_H) * ease_out(p));
 	blit4(&art_board, bx, by, 255);
 
 	int shown = score;
@@ -1143,7 +1148,7 @@ static void draw_board(void) {
 
 static void draw_score(void) {
 	int w = number_width(art_digit_big, DIGIT_GAP_BIG, score);
-	draw_number(art_digit_big, DIGIT_GAP_BIG, score, (panel_w - w) / 2, SCORE_Y);
+	draw_number(art_digit_big, DIGIT_GAP_BIG, score, (GAME_W - w) / 2, SCORE_Y);
 }
 
 static float bird_cx(void) { return (BIRD_LEFT_U + BIRD_BOX_U / 2) * UNIT_PX; }
@@ -1167,8 +1172,8 @@ static void add_area(lv_area_t *list, int *n, int x1, int y1, int x2, int y2) {
 	if (y1 < 0) {
 		y1 = 0;
 	}
-	if (x2 > panel_w - 1) {
-		x2 = panel_w - 1;
+	if (x2 > GAME_W - 1) {
+		x2 = GAME_W - 1;
 	}
 	if (y2 > band_top - 1) {
 		y2 = band_top - 1;
@@ -1188,7 +1193,7 @@ static int moving_areas(lv_area_t *out) {
 	add_area(out, &n, cx - reach, cy - reach, cx + reach, cy + reach);
 	if (score_shown()) {
 		int w = number_width(art_digit_big, DIGIT_GAP_BIG, score);
-		int x = (panel_w - w) / 2;
+		int x = (GAME_W - w) / 2;
 		add_area(out, &n, x, SCORE_Y, x + w - 1, SCORE_Y + art_digit_big[0].h * SCALE - 1);
 	}
 	if (pipes_shown()) {
@@ -1210,18 +1215,18 @@ static void render(bool whole) {
 
 	changed_n = 0;
 	if (whole) {
-		changed[changed_n++] = (lv_area_t){0, 0, panel_w - 1, panel_h - 1};
+		changed[changed_n++] = (lv_area_t){0, 0, GAME_W - 1, GAME_H - 1};
 		draw_background(0);
 	} else {
 		for (int i = 0; i < moved_n + now_n; i++) {
 			const lv_area_t *a = i < moved_n ? &moved[i] : &now[i - moved_n];
 			for (int y = a->y1; y <= a->y2; y++) {
-				fill_span(frame + (size_t)y * panel_w, a->x1, a->x2, (uint16_t)bg_flat[y / SCALE]);
+				fill_span(frame + (size_t)y * GAME_W, a->x1, a->x2, (uint16_t)bg_flat[y / SCALE]);
 			}
 			changed[changed_n++] = *a;
 		}
 		changed[changed_n++] =
-			(lv_area_t){0, band_top, panel_w - 1, (ground_top + ground_varied_rows) * SCALE - 1};
+			(lv_area_t){0, band_top, GAME_W - 1, (ground_top + ground_varied_rows) * SCALE - 1};
 		draw_background(band_top);
 	}
 	memcpy(moved, now, sizeof(now));
@@ -1243,15 +1248,15 @@ static void render(bool whole) {
 
 	switch (state) {
 	case ST_TITLE:
-		blit4(&art_logo, (panel_w - art_logo.w * SCALE) / 2, TITLE_LOGO_Y + layout_shift, 255);
-		blit4_turned(bird, panel_w / 2.0f, ground_top_px() / 2.0f + bob() * UNIT_PX, 0);
+		blit4(&art_logo, (GAME_W - art_logo.w * SCALE) / 2, TITLE_LOGO_Y, 255);
+		blit4_turned(bird, GAME_W / 2.0f, ground_top_px() / 2.0f + bob() * UNIT_PX, 0);
 		draw_button(BTN_PLAY, &art_play);
 		draw_button(BTN_EXIT, &art_exit);
 		draw_button(BTN_SOUND, sound_on ? &art_sound_on : &art_sound_off);
 		break;
 	case ST_READY:
-		blit4(&art_get_ready, (panel_w - art_get_ready.w * SCALE) / 2, READY_LABEL_Y + layout_shift, 255);
-		blit4(&art_how_to, (panel_w - art_how_to.w * SCALE) / 2, how_to_y(), 255);
+		blit4(&art_get_ready, (GAME_W - art_get_ready.w * SCALE) / 2, READY_LABEL_Y, 255);
+		blit4(&art_how_to, (GAME_W - art_how_to.w * SCALE) / 2, how_to_y(), 255);
 		blit4_turned(bird, bird_cx(), bird_cy(), 0);
 		break;
 	case ST_PLAY:
@@ -1260,7 +1265,7 @@ static void render(bool whole) {
 	case ST_OVER:
 		blit4_turned(bird, bird_cx(), bird_cy(), bird_turn);
 		if (state == ST_PAUSED) {
-			blit4(&art_get_ready, (panel_w - art_get_ready.w * SCALE) / 2, READY_LABEL_Y + layout_shift, 255);
+			blit4(&art_get_ready, (GAME_W - art_get_ready.w * SCALE) / 2, READY_LABEL_Y, 255);
 		} else if (over_t < OVER_LABEL_AT) {
 			draw_score();
 		}
@@ -1269,8 +1274,8 @@ static void render(bool whole) {
 			if (p > 1) {
 				p = 1;
 			}
-			int y = OVER_LABEL_Y + layout_shift - (int)lroundf((1 - ease_out(p)) * 6 * SCALE);
-			blit4(&art_game_over, (panel_w - art_game_over.w * SCALE) / 2, y, (unsigned)lroundf(255 * p));
+			int y = OVER_LABEL_Y - (int)lroundf((1 - ease_out(p)) * 6 * SCALE);
+			blit4(&art_game_over, (GAME_W - art_game_over.w * SCALE) / 2, y, (unsigned)lroundf(255 * p));
 		}
 		if (state == ST_OVER) {
 			draw_board();
@@ -1497,7 +1502,7 @@ static void screen_unloaded_cb(lv_event_t *e) {
 void flappybird_open(void) {
 	release_all();
 
-	frame = malloc((size_t)panel_w * panel_h * sizeof(uint16_t));
+	frame = malloc((size_t)GAME_W * GAME_H * sizeof(uint16_t));
 	bg_wide = malloc((size_t)ground_top * BG_W * SCALE * sizeof(uint16_t));
 	ground_wide = malloc((size_t)GROUND_H * GROUND_W * SCALE * sizeof(uint16_t));
 	if (!frame || !bg_wide || !ground_wide || !art_load()) {
@@ -1531,10 +1536,10 @@ void flappybird_open(void) {
 
 	frame_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
 	frame_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
-	frame_dsc.header.w = (uint32_t)panel_w;
-	frame_dsc.header.h = (uint32_t)panel_h;
-	frame_dsc.header.stride = (uint32_t)panel_w * 2;
-	frame_dsc.data_size = (uint32_t)panel_w * panel_h * 2;
+	frame_dsc.header.w = (uint32_t)GAME_W;
+	frame_dsc.header.h = (uint32_t)GAME_H;
+	frame_dsc.header.stride = (uint32_t)GAME_W * 2;
+	frame_dsc.data_size = (uint32_t)GAME_W * GAME_H * 2;
 	frame_dsc.data = (const uint8_t *)frame;
 	lv_image_set_src(frame_image, &frame_dsc);
 
@@ -1542,11 +1547,9 @@ void flappybird_open(void) {
 }
 
 void flappybird_init(gui_config_t *cfg) {
-	panel_w = (int)cfg->screen_width;
-	panel_h = (int)cfg->screen_height;
-	view_h = panel_h / SCALE;
+	(void)cfg; // the game's own 480x720 space, not the panel's
+	view_h = GAME_H / SCALE;
 	ground_top = view_h - GROUND_H;
-	layout_shift = (panel_h - SC(720)) / 2;
 	// The background stands on the bottom of the panel.
 	bg_row0 = BG_H - view_h;
 
@@ -1556,7 +1559,7 @@ void flappybird_init(gui_config_t *cfg) {
 
 	frame_image = lv_image_create(flappybird_screen);
 	lv_obj_set_pos(frame_image, 0, 0);
-	lv_obj_set_size(frame_image, panel_w, panel_h);
+	lv_obj_set_size(frame_image, GAME_W, GAME_H);
 	lv_obj_set_clickable(frame_image, false);
 
 	lv_obj_add_event_cb(flappybird_screen, press_cb, LV_EVENT_PRESSED, NULL);

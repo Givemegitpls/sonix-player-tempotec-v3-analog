@@ -31,6 +31,32 @@ mipsel-rockbox-linux-gnu-gcc -static -O2 -o panctl panctl.c
 Static on purpose: it has to run on a device whose glibc is older than the
 toolchain's, and a static binary asks the loader for nothing.
 
+## sleepfb
+
+The stock player's panel sleep, measured: the proprietary `SET_SLEEP` ioctl
+(`0x80044620`) that takes the panel rails, reset and touch controller down
+without suspending the SoC (see [../docs/PANEL-POWER.md](../docs/PANEL-POWER.md)).
+
+```
+sleepfb status        registers and rails as they are
+sleepfb off           SET_SLEEP(1), then print what changed
+sleepfb on            SET_SLEEP(0), the driver pans a frame back
+sleepfb cycle 5       off, wait 5 s, on
+```
+
+It prints `LCDC_CTRL.ENA`, `SLCDC_CTRL.DMA_EN/DMA_START`,
+`SLCDC_STATE.BUSY`, the `lcd_3v3`/`lcd_1v8` rails and the backlight level
+around the call. The backlight is left alone on purpose: on the stock player
+it is a separate write, and a lit black glass is the expected intermediate
+state.
+
+```
+mipsel-rockbox-linux-gnu-gcc -static -O2 -o sleepfb sleepfb.c
+```
+
+Run it from the card while the player is running; it needs `/dev/mem` for the
+registers and `/dev/fb0` for the ioctl, nothing else.
+
 ## btprobe
 
 What the system bus says about Bluetooth, without `bluetoothctl` (which is not

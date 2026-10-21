@@ -46,9 +46,6 @@ lv_obj_t *gearboyplay_screen;
 #define GAME_DW SC(GAME_W)
 #define GAME_DH SC(GAME_H)
 
-// The panel the layout below is drawn for; a taller one has spare rows at the bottom.
-#define PANEL_H_REF 720
-
 // The D-pad: a square split into nine cells. The corners give two directions
 // at once, the centre none. The diagonals are not a luxury -- without them a
 // finger sitting between up and right produces nothing instead of the obvious

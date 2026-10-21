@@ -299,7 +299,7 @@ PY
 		chown -R "$(id -u):$(id -g)" build >/dev/null 2>&1 || true
 
 	fw python3 - "$VT" <<'PY'
-import os, stat, sys
+import os, re, stat, sys
 from pathlib import Path
 
 tree = Path(sys.argv[1])
@@ -321,9 +321,6 @@ want("usr/bin/sonix_launch", True)
 # The init script that starts the launcher: without the bit, init skips it and
 # the device sits on the boot logo with nothing running.
 want("etc/init.d/S92_03_start_music_player", True)
-# The adb watchdog: executable, or it cannot keep the device reachable when the
-# player does not come up.
-want("etc/init.d/S98adb_debug", True)
 # The script the player's ADB switch calls on a legacy-gadget firmware.
 want("etc/init.d/adb/S310adb", True)
 want("usr/bin/bluealsa", True)
@@ -366,8 +363,8 @@ if policy.exists():
         problems.append("the D-Bus policy does not let bluealsa own its name")
 
 launcher = tree / "usr/bin/sonix_player.sh"
-if launcher.exists() and "SONIX_LOG" not in launcher.read_text():
-    problems.append("the launcher does not set SONIX_LOG")
+if launcher.exists() and re.search(r"^\s*(?:export\s+)?SONIX_LOG[ \t]*=", launcher.read_text(), re.M):
+    problems.append("the launcher forces SONIX_LOG, which overrides the log setting")
 
 bt_init = tree / "usr/bin/bt_init"
 if bt_init.exists() and "brcm_patchram_plus" not in bt_init.read_text():

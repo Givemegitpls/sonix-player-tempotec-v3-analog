@@ -37,6 +37,8 @@ typedef struct {
 	const char *brightness_path;	 // e.g. /sys/class/backlight/backlight_pwm0/brightness
 	const char *max_brightness_path; // e.g. /sys/class/backlight/backlight_pwm0/max_brightness
 	const char *blank_path;			 // e.g. /sys/class/graphics/fb0/blank (screen on/off: 0=on, 1=off)
+	uint32_t panel_sleep_ioctl;		 // vendor SET_SLEEP on /dev/fb0 (0 = none); see docs/PANEL-POWER.md
+	int fb_fd;						 // the open framebuffer, or -1 (the host has none); -1 disables the ioctl
 	const char *power_state_path;	 // e.g. /sys/power/state ("mem" = suspend to RAM); NULL = never
 
 	// Desired on-screen backlight level in raw backlight units. If <= 0 at

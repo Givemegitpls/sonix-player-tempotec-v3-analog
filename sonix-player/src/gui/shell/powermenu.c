@@ -24,24 +24,33 @@
 #include "src/system/streaming/radio.h"
 
 // ---------------------------------------------------------------------------
-// The power menu, iOS-style: two slide-to-confirm pills over a near-opaque
-// black veil, and a round cancel button at the bottom that turns red under the
+// The power menu, iOS-style: two slide-to-confirm pills over an opaque black
+// veil, and a round cancel button at the bottom that turns red under the
 // finger. Sliding is the point: powering off a music player in a pocket must
 // take a deliberate gesture, not a stray tap.
 // ---------------------------------------------------------------------------
 
 #define SLIDE_WIDTH SC(380)
 #define SLIDE_HEIGHT SC(76)
-#define SLIDE_KNOB SC(64)
+// The ring of pill visible around the disc, the same at the top, the bottom and
+// both rounded ends: the knob is the pill minus it on each side, and its travel
+// stops that far short of each end.
+#define SLIDE_RIM SC(6)
+#define SLIDE_KNOB (SLIDE_HEIGHT - 2 * SLIDE_RIM)
 // How far along (as a fraction of the track) the knob has to be on release.
 #define SLIDE_COMMIT_PCT 88
 
-// Horizontal inset of the knob's travel: LVGL runs the knob's CENTRE from
-// edge to edge, which hangs half of it outside the pill at both ends. Padding
-// the track by half a knob (plus a hair of margin) keeps it inside.
-#define SLIDE_INSET (SLIDE_KNOB / 2 + 6)
+// Where the knob's CENTRE starts and ends, in pill coordinates. LVGL runs the
+// centre from edge to edge of the slider, so the slider is inset by this much
+// at both ends and the disc comes to rest exactly SLIDE_RIM inside the pill.
+#define SLIDE_INSET (SLIDE_KNOB / 2 + SLIDE_RIM)
 
 #define CANCEL_SIZE SC(76)
+// Between the round button and its label, and from the label to the bottom
+// edge of the panel. The pair is one column, so the gap does not have to be
+// guessed again from the label's height.
+#define CANCEL_GAP SC(10)
+#define CANCEL_MARGIN SC(30)
 
 static lv_obj_t *panel;
 
@@ -49,7 +58,7 @@ typedef struct {
 	lv_obj_t *pill; // the visible track
 	lv_obj_t *slider;
 	lv_obj_t *knob_icon;
-	int knob_icon_w; // real bitmap width: the two action icons are 56 px
+	int knob_icon_w; // the bitmap's width: the object is that size even when the picture is scaled
 	lv_obj_t *label;
 	void (*action)(void);
 } slide_t;
@@ -143,12 +152,17 @@ static void cancel_cb(lv_event_t *e) {
 static void slide_track_knob(slide_t *s) {
 	int value = lv_slider_get_value(s->slider);
 
-	// The slider is SLIDE_HEIGHT narrower than the pill and centred in it, so
-	// the knob's centre -- which LVGL runs from slider edge to slider edge --
-	// travels [SLIDE_HEIGHT/2, SLIDE_WIDTH - SLIDE_HEIGHT/2] in pill
-	// coordinates: always fully inside. The icon mirrors that in the pill.
-	int travel = SLIDE_WIDTH - SLIDE_HEIGHT;
-	int knob_center = SLIDE_HEIGHT / 2 + (travel * value) / 100;
+	// The slider is SLIDE_WIDTH - 2 * SLIDE_INSET wide and centred in the
+	// pill, and LVGL puts the knob on the last pixel of the indicator area:
+	// x1 - 1 at zero (an empty area is {x1, x1 - 1}) and x1 + width - 1 at the
+	// far end. So the disc's centre runs from SLIDE_INSET - 1 to
+	// SLIDE_INSET + travel - 1 in pill coordinates, and the icon mirrors that
+	// same line rather than the area's nominal edge.
+	int travel = SLIDE_WIDTH - 2 * SLIDE_INSET;
+	int knob_center = SLIDE_INSET - 1 + (travel * value) / 100;
+	// The image object is the bitmap's size whatever the scale is -- LVGL
+	// scales the picture about the object's centre -- so the offset is half
+	// that width, not half the drawn glyph.
 	lv_obj_align(s->knob_icon, LV_ALIGN_LEFT_MID, knob_center - s->knob_icon_w / 2, 0);
 
 	// The hint fades as the knob approaches, exactly like the real thing.
@@ -179,19 +193,19 @@ static void slide_event_cb(lv_event_t *e) {
 }
 
 // One pill: a rounded container carrying the hint text, with a transparent
-// slider inside it that is half a knob narrower on each side -- LVGL runs the
-// knob's centre from slider edge to slider edge, so insetting the slider is
+// slider inside it, inset by half a knob plus the rim at both ends -- LVGL runs
+// the knob's centre from slider edge to slider edge, so insetting the slider is
 // what keeps the white disc inside the pill at both extremes.
 static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon, lv_color_t icon_tint,
 					   const char *text, void (*action)(void)) {
 	s->action = action;
 
-	// The visible pill: translucent white over the blur, like iOS.
+	// The visible pill: translucent white over the veil, like iOS.
 	s->pill = lv_obj_create(parent);
 	lv_obj_set_size(s->pill, SLIDE_WIDTH, SLIDE_HEIGHT);
 	lv_obj_set_style_radius(s->pill, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(s->pill, lv_color_white(), 0);
-	lv_obj_set_style_bg_opa(s->pill, LV_OPA_20, 0);
+	lv_obj_set_style_bg_opa(s->pill, LV_OPA_30, 0);
 	lv_obj_set_style_border_width(s->pill, 0, 0);
 	lv_obj_set_style_pad_all(s->pill, 0, 0);
 	lv_obj_set_scrollable(s->pill, false);
@@ -203,9 +217,12 @@ static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon,
 	lv_obj_set_style_text_color(s->label, lv_color_white(), 0);
 	lv_obj_center(s->label);
 
-	// The working part: invisible track, white disc knob.
+	// The working part: invisible track, white disc knob. The slider is a
+	// knob's travel wide -- inset by half the knob plus the rim at both ends --
+	// and exactly one knob tall and centred, so LVGL draws the disc the size of
+	// the slider's thickness and the rim comes out equal on every side.
 	s->slider = lv_slider_create(s->pill);
-	lv_obj_set_size(s->slider, SLIDE_WIDTH - SLIDE_HEIGHT, SLIDE_HEIGHT);
+	lv_obj_set_size(s->slider, SLIDE_WIDTH - 2 * SLIDE_INSET, SLIDE_KNOB);
 	lv_obj_center(s->slider);
 	lv_slider_set_range(s->slider, 0, 100);
 	lv_slider_set_value(s->slider, 0, LV_ANIM_OFF);
@@ -218,7 +235,7 @@ static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon,
 	lv_obj_set_style_radius(s->slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 	lv_obj_set_style_bg_color(s->slider, lv_color_white(), LV_PART_KNOB);
 	lv_obj_set_style_bg_opa(s->slider, LV_OPA_COVER, LV_PART_KNOB);
-	lv_obj_set_style_pad_all(s->slider, (SLIDE_KNOB - SLIDE_HEIGHT) / 2, LV_PART_KNOB);
+	lv_obj_set_style_pad_all(s->slider, 0, LV_PART_KNOB);
 	lv_obj_set_style_shadow_width(s->slider, SC(10), LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(s->slider, LV_OPA_40, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(s->slider, lv_color_black(), LV_PART_KNOB);
@@ -232,7 +249,7 @@ static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon,
 	lv_obj_set_adv_hittest(s->slider, true);
 	// The knob stays easy to grab: the extended area applies to its hit-test,
 	// not to the track.
-	lv_obj_set_ext_click_area(s->slider, SLIDE_HEIGHT / 2);
+	lv_obj_set_ext_click_area(s->slider, SLIDE_INSET);
 
 	lv_obj_add_event_cb(s->slider, slide_event_cb, LV_EVENT_VALUE_CHANGED, s);
 	lv_obj_add_event_cb(s->slider, slide_event_cb, LV_EVENT_RELEASED, s);
@@ -242,12 +259,15 @@ static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon,
 	// itself cannot hold children).
 	s->knob_icon = lv_image_create(s->pill);
 	lv_image_set_src(s->knob_icon, icon);
-	// A touch smaller than the raw 56 px bitmap, so the disc keeps a clear
-	// rim around the glyph -- and two thirds of that on the native panel, where
-	// the pill around it is two thirds too. Scaling happens about the centre,
-	// so the centring maths below is unaffected.
-	lv_image_set_scale(s->knob_icon, (uint32_t)(200 * ui_layout_scale() / 3)); // 200/256 = ~44 px
-	s->knob_icon_w = (int)icon->header.w * ui_layout_scale() / 3; // the size the object now is, not the bitmap's
+	// A touch smaller than the raw bitmap, so the disc keeps a clear rim
+	// around the glyph. The scale factor is relative to the bitmap (200 of
+	// LV_SCALE_NONE's 256), and each icon set is already rasterised for its
+	// own panel, so the same factor gives the same look on both.
+	lv_image_set_scale(s->knob_icon, (uint32_t)(200 * ui_layout_scale() / 3)); // 200/256 = ~44 px at 480
+	// LVGL scales the picture about the image object's centre and leaves the
+	// object the bitmap's own size, so the centring below uses that width --
+	// not the width the glyph is drawn at.
+	s->knob_icon_w = (int)icon->header.w;
 	lv_obj_set_style_image_recolor(s->knob_icon, icon_tint, 0);
 	lv_obj_set_style_image_recolor_opa(s->knob_icon, LV_OPA_COVER, 0);
 	lv_obj_set_ignore_layout(s->knob_icon, true);
@@ -259,10 +279,11 @@ void powermenu_init(gui_config_t *cfg) {
 	panel = lv_obj_create(lv_layer_top());
 	lv_obj_set_size(panel, cfg->screen_width, cfg->screen_height);
 	lv_obj_align(panel, LV_ALIGN_TOP_LEFT, 0, 0);
-	// Nearly-opaque black: the page underneath is still just visible, but the
-	// menu clearly owns the screen.
+	// The veil: opaque black. The page underneath is a page, not a backdrop --
+	// a translucent veil let its tiles and labels read through the pills and
+	// made the discs look like they were floating outside them.
 	lv_obj_set_style_bg_color(panel, lv_color_black(), 0);
-	lv_obj_set_style_bg_opa(panel, LV_OPA_80, 0);
+	lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
 	lv_obj_set_style_border_width(panel, 0, 0);
 	lv_obj_set_style_radius(panel, 0, 0);
 	lv_obj_set_style_pad_all(panel, 0, 0);
@@ -288,10 +309,22 @@ void powermenu_init(gui_config_t *cfg) {
 	make_slide(pills, &slide_reboot, &icon_reboot, lv_color_make(0, 122, 255), "powermenu_slide_to_restart", do_reboot);
 
 	// Cancel: a round button at the bottom centre that goes red under the
-	// finger, with its label floating underneath.
-	lv_obj_t *cancel = lv_btn_create(panel);
+	// finger, with its label underneath. The two are one column anchored to the
+	// bottom edge by CANCEL_MARGIN, so the button cannot drift down over the
+	// page rows and the label keeps its gap whatever its height is.
+	lv_obj_t *cancel_group = lv_obj_create(panel);
+	lv_obj_set_size(cancel_group, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+	lv_obj_align(cancel_group, LV_ALIGN_BOTTOM_MID, 0, -CANCEL_MARGIN);
+	lv_obj_set_style_bg_opa(cancel_group, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_border_width(cancel_group, 0, 0);
+	lv_obj_set_style_pad_all(cancel_group, 0, 0);
+	lv_obj_set_style_pad_gap(cancel_group, CANCEL_GAP, 0);
+	lv_obj_set_scrollable(cancel_group, false);
+	lv_obj_set_flex_flow(cancel_group, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_flex_align(cancel_group, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+	lv_obj_t *cancel = lv_btn_create(cancel_group);
 	lv_obj_set_size(cancel, CANCEL_SIZE, CANCEL_SIZE);
-	lv_obj_align(cancel, LV_ALIGN_BOTTOM_MID, 0, SC(-84));
 	lv_obj_set_style_radius(cancel, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(cancel, lv_color_white(), 0);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_30, 0);
@@ -307,10 +340,9 @@ void powermenu_init(gui_config_t *cfg) {
 	lv_obj_set_style_image_recolor_opa(cancel_icon, LV_OPA_COVER, 0);
 	lv_obj_center(cancel_icon);
 
-	lv_obj_t *cancel_label = lv_label_create(panel);
+	lv_obj_t *cancel_label = lv_label_create(cancel_group);
 	lv_label_set_text(cancel_label, tr("cancel"));
 	lv_obj_set_style_text_font(cancel_label, &font_ui_24, 0);
 	lv_obj_set_style_text_color(cancel_label, lv_color_white(), 0);
-	lv_obj_align(cancel_label, LV_ALIGN_BOTTOM_MID, 0, SC(-44));
 
 }

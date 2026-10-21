@@ -1822,7 +1822,7 @@ static void lyrics_layout(void) {
 		return;
 	}
 	int head_bottom = lyrics_head_top() + STUDIO_HEAD_H + STUDIO_BADGE_GAP;
-	int top = layout_alt_now || layout_studio_now ? head_bottom : back_btn_centre_y() + 28;
+	int top = layout_alt_now || layout_studio_now ? head_bottom : back_btn_centre_y() + SC(28);
 	int pane_y = 0;
 	int x = 0, w = cover_box_w, h = cover_box_h - top;
 	if (layout_studio_now) {

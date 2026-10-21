@@ -1433,7 +1433,6 @@ static lv_obj_t *make_circle_button(lv_obj_t *parent, const lv_image_dsc_t *glyp
 	lv_obj_add_style(icon, &theme_style_icon, 0);
 	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
 	lv_obj_center(icon);
-	printf("ICONDBG w=%d h=%d scale=%lu src=%p\n", (int)lv_obj_get_width(icon), (int)lv_obj_get_height(icon), (unsigned long)lv_image_get_scale(icon), (void*)glyph);
 
 	return btn;
 }

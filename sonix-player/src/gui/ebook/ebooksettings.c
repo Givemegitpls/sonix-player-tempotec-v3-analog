@@ -178,7 +178,7 @@ void ebooksettings_init(gui_config_t *cfg) {
 	for (int i = 0; i < 2; i++) {
 		lv_obj_t *line = lv_obj_create(preview_paper);
 		lv_obj_remove_style_all(line);
-		lv_obj_set_size(line, lv_pct(i == 0 ? SC(100) : SC(72)), SC(10));
+		lv_obj_set_size(line, lv_pct(i == 0 ? 100 : 72), SC(10));
 		lv_obj_set_style_radius(line, SC(5), 0);
 		lv_obj_set_style_bg_color(line, lv_color_hex(PAPER_INK), 0);
 		lv_obj_set_style_bg_opa(line, LV_OPA_20, 0);

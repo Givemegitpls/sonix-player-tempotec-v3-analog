@@ -1883,10 +1883,19 @@ static bool fb_pan_refused;
 // PUT arms.
 static bool fb_armed;
 
-// Told by the power path that the panel has just been blanked, so the next
+// Told by the power path that the panel has just been taken down, so the next
 // wake knows it has to arm it again.
+//
+// The flip thread's own state goes with it: the panel's grid sample, the pan it
+// is still waiting to see, and the one-shot refusal notice. They describe a
+// transfer that the sleep ended; carried over, the next wake would pace against
+// a rise that will never come and copy behind a read the panel is not doing.
 void display_panel_disarmed(void) {
 	fb_armed = false;
+	pan_outstanding = false;
+	panel_rise_us = 0;
+	panel_xfer_start_us = 0;
+	fb_pan_refused = false;
 }
 
 // Unblank and put the mode back with FORCE, in that order: the pair is what
@@ -3939,6 +3948,10 @@ int main(int argc, char **argv) {
 		// undo -- and the glass then shows nothing until something
 		// power-cycles the panel.
 		.blank_path = (sysinfo_model() && sysinfo_model()->blank_panel) ? "/sys/class/graphics/fb0/blank" : NULL,
+		// ...and, where the stock firmware powers the panel down itself, its
+		// own ioctl instead: SET_SLEEP on /dev/fb0 (docs/PANEL-POWER.md). One
+		// value from the board profile; 0 on every model that has no such path.
+		.panel_sleep_ioctl = sysinfo_model() ? sysinfo_model()->panel_sleep_ioctl : 0,
 		// The suspend-to-RAM prototype writes "mem" here. NULL on the host
 		// build like every other device path, so nothing touches the
 		// developer's own machine.
@@ -3954,6 +3967,13 @@ int main(int argc, char **argv) {
 	// Whatever was chosen in Settings last time.
 	power_cfg.screen_off_timeout_ms = (uint32_t)config_get_int("power", "screen_off_seconds", SCREEN_OFF_DEFAULT_S) * 1000;
 	power_cfg.screen_off_enabled = (power_cfg.screen_off_timeout_ms > 0);
+	// The framebuffer the panel sleep ioctl goes to, opened by the display path
+	// above; -1 on the host, where there is none.
+#ifdef HOST_BUILD
+	power_cfg.fb_fd = -1;
+#else
+	power_cfg.fb_fd = fb_fd;
+#endif
 	// The brightness picked in Settings > Screen; -1 (not set yet) keeps
 	// the adopt-the-panel's-level behaviour above.
 	power_cfg.brightness = config_get_int("screen", "brightness", -1);
