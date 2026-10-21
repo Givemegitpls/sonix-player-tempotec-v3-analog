@@ -3632,6 +3632,14 @@ int main(int argc, char **argv) {
 #ifndef HOST_BUILD
 	logging_attach_sd(storage_sd_root());
 	btlog_card_attach(storage_sd_root());
+#endif
+	// The card carries the streaming accounts (<card>/sonix/streaming.json), and
+	// the card has a mount point only now. Qobuz and Tidal pick their tokens up
+	// after this; until then they are off, not broken.
+	streamkeys_attach_card(storage_sd_root());
+	qobuz_reload_session();
+	tidal_reload_session();
+#ifndef HOST_BUILD
 	// Now that the log is on the card: whatever the kernel said about the
 	// previous run, which is the only place a SIGKILL leaves a trace.
 	logging_report_previous_run();

@@ -1904,23 +1904,42 @@ static void build_search_page(gui_config_t *cfg) {
 	// Room for it, so a long query does not run underneath.
 	lv_obj_set_style_pad_right(search_field, SC(60), 0);
 
-	static const char *const KINDS[] = {"tracks_2", "albums", "artists"};
+	// The three kinds share the width between them: fixed pill sizes ran past
+	// the right edge on this panel, and a screen that scrolls sideways to show
+	// them drags the title and the field with it.
+	lv_obj_t *pill_row = lv_obj_create(search_screen);
+	lv_obj_set_size(pill_row, cfg->screen_width - 2 * cfg->padding, SC(52));
+	lv_obj_align(pill_row, LV_ALIGN_TOP_LEFT, cfg->padding, top + SC(78));
+	lv_obj_set_style_bg_opa(pill_row, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_border_width(pill_row, 0, 0);
+	lv_obj_set_style_pad_all(pill_row, 0, 0);
+	lv_obj_set_style_pad_column(pill_row, SC(10), 0);
+	lv_obj_set_scrollable(pill_row, false);
+	lv_obj_set_flex_flow(pill_row, LV_FLEX_FLOW_ROW);
+
+	static const char *const KINDS[] = {"search_tracks_2", "albums", "artists"};
 	for (int i = 0; i < 3; i++) {
-		lv_obj_t *pill = lv_btn_create(search_screen);
-		lv_obj_set_size(pill, SC(140), SC(52));
+		lv_obj_t *pill = lv_btn_create(pill_row);
+		lv_obj_set_height(pill, SC(52));
+		lv_obj_set_flex_grow(pill, 1);
 		lv_obj_set_style_radius(pill, LV_RADIUS_CIRCLE, 0);
 		lv_obj_set_style_shadow_width(pill, 0, 0);
 		lv_obj_set_style_border_width(pill, 0, 0);
-		lv_obj_align(pill, LV_ALIGN_TOP_LEFT, cfg->padding + i * 150, top + SC(78));
 		lv_obj_add_event_cb(pill, search_pill_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
 		lv_obj_t *label = lv_label_create(pill);
 		lv_label_set_text(label, tr(KINDS[i]));
+		lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+		lv_obj_set_style_max_width(label, lv_pct(100), 0);
 		lv_obj_set_style_text_font(label, &font_ui_20, 0);
 		lv_obj_center(label);
 		search_pills[i] = pill;
 	}
 	paint_search_pills();
+
+	// Nothing on this page is wider than the panel, so the sideways drag that
+	// used to cut the title off has nothing to reveal.
+	lv_obj_set_scroll_dir(search_screen, LV_DIR_VER);
 
 	search_keyboard = keyboard_create(search_screen, cfg->screen_width, SC(316), search_field, NULL, "ok",
 									  search_accept_cb, NULL);
@@ -2299,6 +2318,12 @@ static void rebuild_home(void) {
 	if (!qobuz_logged_in()) {
 		update_corner_buttons();
 		settingsrow_add(home_container, "sign_in", NULL, open_login_cb, NULL);
+		lv_obj_t *hint = lv_label_create(home_container);
+		lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+		lv_obj_set_width(hint, lv_pct(100));
+		lv_obj_add_style(hint, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(hint, &font_ui_22, 0);
+		lv_label_set_text(hint, tr("streaming_token_note"));
 		return;
 	}
 

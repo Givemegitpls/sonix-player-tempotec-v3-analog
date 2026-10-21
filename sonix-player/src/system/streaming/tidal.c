@@ -93,6 +93,45 @@ static char auth_url[256];
 static char client_id[64];
 static char client_secret[128];
 
+// Tidal's application credentials.
+//
+// They are public -- every open Tidal client carries them, and this pair is the
+// one tidalapi publishes -- but they are not written plainly, for the same
+// reason tidalapi does not: they are kept out of `strings` of an unpacked
+// image. The two halves are base64 of base64, decoded at startup. A card that
+// names its own pair in sonix/streaming.json overrides them (see streamkeys.h).
+#define TIDAL_CLIENT_ID_A "WmxneVNuaGtiVzUw"
+#define TIDAL_CLIENT_ID_B "V2xkTE1HbDRWQT09"
+#define TIDAL_CLIENT_SECRET_A "TVU1dU9VRm1SRUZxZUhKblNrWktZa3RPVjB4bFFY"
+#define TIDAL_CLIENT_SECRET_B "bExSMVpIYlVsT2RWaFFVRXhJVmxoQmRuaEJaejA9"
+
+// Decodes the two-part wrapped constant into `out`. Empty when it cannot.
+static void unwrap(const char *a, const char *b, char *out, size_t size) {
+	out[0] = '\0';
+	size_t len_a = 0, len_b = 0;
+	char joined[512];
+	snprintf(joined, sizeof(joined), "%s%s", a, b);
+
+	size_t outer = 0;
+	uint8_t *inner = base64_decode(joined, strlen(joined), sizeof(joined), &outer);
+	if (!inner) {
+		return;
+	}
+	size_t final = 0;
+	uint8_t *text = base64_decode((const char *)inner, outer, 256, &final);
+	free(inner);
+	if (!text) {
+		return;
+	}
+	if (final < size) {
+		memcpy(out, text, final);
+		out[final] = '\0';
+	}
+	free(text);
+	(void)len_a;
+	(void)len_b;
+}
+
 // Percent-encoded once, ready to drop into a form. One copy for both login
 // requests: device_authorization and token must ask for the same scopes, and
 // two hand-written copies meant one of them would eventually be changed alone.
@@ -194,104 +233,74 @@ const char *tidal_expected_mime(void) {
 // The format is the simplest that works: `key=value`, one per line, in write
 // order. A human can read it back without tools.
 
-#define SESSION_FILE "tidal_session.ini"
-
-// Alongside device_config.ini: that is the writable partition, and already the
-// place where things that survive a reboot live.
-static void session_path(char *out, size_t size) {
-	out[0] = '\0';
-	const char *cfg = config_path();
-	if (!cfg || !cfg[0]) {
-		return;
-	}
-	const char *slash = strrchr(cfg, '/');
-	if (slash) {
-		snprintf(out, size, "%.*s/%s", (int)(slash - cfg), cfg, SESSION_FILE);
-	} else {
-		snprintf(out, size, "%s", SESSION_FILE);
-	}
-}
-
-static void session_put(FILE *f, const char *key, const char *value) {
-	fprintf(f, "%s=%s\n", key, value ? value : "");
-}
+// The session lives on the card, beside the user's own streaming.json (see
+// streamkeys.h): the account travels with the card, and a player that is handed
+// on keeps nothing about it. The expiry is kept so a renewal is not attempted
+// on every request; the rest of the identity comes out of the access token's
+// own JWT, since a token typed into the card never came with a login response.
 
 static void save_session(void) {
-	char path[600];
-	session_path(path, sizeof(path));
-	if (!path[0]) {
+	streamkeys_save_tidal_session(access_token, refresh_token, token_expires_at);
+}
+
+// Finds `"uid":<number>` and `"cc":"<country>"` in an access token. Both are
+// claims Tidal puts in its JWTs; parsing them here is what lets a card with
+// nothing but a token reach favourites and playlists, whose URLs carry the user
+// id. A token that is not a JWT, or carries neither, leaves them as they are.
+static void read_token_identity(void) {
+	const char *dot = strchr(access_token, '.');
+	if (!dot) {
+		return;
+	}
+	const char *payload = dot + 1;
+	const char *end = strchr(payload, '.');
+	if (!end || end == payload) {
 		return;
 	}
 
-	// Atomic write: a temporary file first, then rename(). Opening the real file
-	// for writing truncates it before it is filled, and a battery dying at that
-	// instant would leave an empty session in place of a good one -- a sign-in to
-	// redo for an avoidable reason.
-	char tmp[640];
-	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-
-	FILE *f = fopen(tmp, "w");
-	if (!f) {
-		fprintf(stderr, "tidal: cannot save the session to %s\n", tmp);
+	size_t len = 0;
+	uint8_t *text = base64_decode(payload, (size_t)(end - payload), 4096, &len);
+	if (!text) {
 		return;
 	}
-	session_put(f, "access_token", access_token);
-	session_put(f, "refresh_token", refresh_token);
-	fprintf(f, "expires_at=%ld\n", token_expires_at);
-	session_put(f, "country", country_code);
-	session_put(f, "user_id", user_id);
-	session_put(f, "user", display_name);
-	bool ok = fclose(f) == 0;
 
-	if (!ok || rename(tmp, path) != 0) {
-		fprintf(stderr, "tidal: the session was not saved\n");
-		remove(tmp);
+	char *uid = strstr((char *)text, "\"uid\":");
+	if (uid) {
+		uid += 6;
+		long id = strtol(uid, NULL, 10);
+		if (id > 0) {
+			snprintf(user_id, sizeof(user_id), "%ld", id);
+		}
+	}
+
+	char *cc = strstr((char *)text, "\"cc\":\"");
+	if (cc) {
+		cc += 6;
+		if (strlen(cc) >= 2 && strncmp(cc, "\"\"", 2) != 0) {
+			snprintf(country_code, sizeof(country_code), "%c%c", cc[0], cc[1]);
+		}
+	}
+
+	free(text);
+}
+
+static void load_session(void) {
+	const char *access = streamkeys_tidal_access_token();
+	const char *refresh = streamkeys_tidal_refresh_token();
+	snprintf(access_token, sizeof(access_token), "%s", access ? access : "");
+	snprintf(refresh_token, sizeof(refresh_token), "%s", refresh ? refresh : "");
+	token_expires_at = streamkeys_tidal_expires_at();
+	if (access_token[0]) {
+		read_token_identity();
+	}
+	if (access_token[0] && !display_name[0]) {
+		snprintf(display_name, sizeof(display_name), "%s", tr("tidal"));
 	}
 }
 
-// Reads the file back. Lines are as long as they need to be, which is the
-// whole point.
-static void load_session(void) {
-	char path[600];
-	session_path(path, sizeof(path));
-	if (!path[0]) {
-		return;
-	}
-
-	FILE *f = fopen(path, "r");
-	if (!f) {
-		return; // not there yet: nobody has signed in
-	}
-
-	static char line[TIDAL_TOKEN_MAX + 128];
-	while (fgets(line, sizeof(line), f)) {
-		char *nl = strchr(line, '\n');
-		if (nl) {
-			*nl = '\0';
-		}
-		char *eq = strchr(line, '=');
-		if (!eq) {
-			continue;
-		}
-		*eq = '\0';
-		const char *key = line;
-		const char *value = eq + 1;
-
-		if (strcmp(key, "access_token") == 0) {
-			snprintf(access_token, sizeof(access_token), "%s", value);
-		} else if (strcmp(key, "refresh_token") == 0) {
-			snprintf(refresh_token, sizeof(refresh_token), "%s", value);
-		} else if (strcmp(key, "expires_at") == 0) {
-			token_expires_at = strtol(value, NULL, 10);
-		} else if (strcmp(key, "country") == 0) {
-			snprintf(country_code, sizeof(country_code), "%s", value);
-		} else if (strcmp(key, "user_id") == 0) {
-			snprintf(user_id, sizeof(user_id), "%s", value);
-		} else if (strcmp(key, "user") == 0) {
-			snprintf(display_name, sizeof(display_name), "%s", value);
-		}
-	}
-	fclose(f);
+void tidal_reload_session(void) {
+	load_session();
+	printf("tidal: %s\n", refresh_token[0] ? "token found on the card" : "no token on the card");
 }
 
 void tidal_init(void) {
@@ -319,27 +328,22 @@ void tidal_init(void) {
 
 	const char *id = streamkeys_tidal_client_id();
 	const char *secret = streamkeys_tidal_client_secret();
-	snprintf(client_id, sizeof(client_id), "%s", id ? id : "");
-	snprintf(client_secret, sizeof(client_secret), "%s", secret ? secret : "");
+	if (id && secret) {
+		snprintf(client_id, sizeof(client_id), "%s", id);
+		snprintf(client_secret, sizeof(client_secret), "%s", secret);
+	} else {
+		unwrap(TIDAL_CLIENT_ID_A, TIDAL_CLIENT_ID_B, client_id, sizeof(client_id));
+		unwrap(TIDAL_CLIENT_SECRET_A, TIDAL_CLIENT_SECRET_B, client_secret, sizeof(client_secret));
+	}
 
 	load_session();
 
-	// A session left in device_config.ini is truncated and worthless, so it is
-	// cleared out rather than left to linger. Only the country and the name are
-	// kept, since those fit in 128 bytes.
-	if (config_get("tidal", "access_token", NULL)) {
-		printf("tidal: found an old truncated session, dropping it\n");
+	// A session this player saved in its own storage before the card carried
+	// them is dropped rather than left to linger.
+	if (config_get("tidal", "access_token", NULL) || config_get("tidal", "refresh_token", NULL)) {
+		printf("tidal: dropping the session saved in the player's own storage\n");
 		config_set("tidal", "access_token", "");
 		config_set("tidal", "refresh_token", "");
-		if (!country_code[0]) {
-			snprintf(country_code, sizeof(country_code), "%s", config_get("tidal", "country", ""));
-		}
-		if (!user_id[0]) {
-			snprintf(user_id, sizeof(user_id), "%s", config_get("tidal", "user_id", ""));
-		}
-		if (!display_name[0]) {
-			snprintf(display_name, sizeof(display_name), "%s", config_get("tidal", "user", ""));
-		}
 		config_save();
 	}
 
@@ -349,7 +353,7 @@ void tidal_init(void) {
 	}
 
 	printf("tidal: %s, %s\n", tidal_configured() ? "configured" : "no application keys",
-		   tidal_logged_in() ? "saved session" : "no session");
+		   refresh_token[0] ? "session on the card" : "no session");
 }
 
 bool tidal_configured(void) { return client_id[0] && client_secret[0]; }

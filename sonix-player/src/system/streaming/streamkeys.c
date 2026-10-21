@@ -6,6 +6,7 @@
 
 #include "build_gen/streamkeys_key.h"
 #include "src/system/core/config.h"
+#include "src/system/core/json.h"
 #include "src/system/core/sha1.h"
 
 #define STREAMKEYS_MAX_FILE 16384 // mirrored as MAX_FILE in the tool
@@ -291,3 +292,205 @@ const char *streamkeys_lastfm_key(void) { return or_null(lastfm_key); }
 const char *streamkeys_lastfm_secret(void) { return or_null(lastfm_secret); }
 
 const char *streamkeys_source(void) { return loaded_any ? source_path : NULL; }
+
+// ---------------------------------------------------------------------------
+// The card's streaming.json, and the session file the player writes beside it
+// ---------------------------------------------------------------------------
+
+#define CARD_DIR_NAME "sonix"
+#define CARD_USER_FILE "streaming.json"
+#define CARD_SESSION_FILE "streaming-session.json"
+#define CARD_JSON_MAX 16384
+
+// Sized for Tidal's tokens, which are eight-to-nine hundred characters each.
+#define CARD_TOKEN_MAX 2048
+#define CARD_NAME_MAX 128
+
+static char card_user_path[512];
+static char card_session_path[512];
+static char qobuz_token[CARD_TOKEN_MAX];
+static char qobuz_token_user[CARD_NAME_MAX];
+static char tidal_access[CARD_TOKEN_MAX];
+static char tidal_refresh[CARD_TOKEN_MAX];
+static long tidal_expires;
+// Derived from the web player, kept in the session file (qobuzkey.h).
+static char cached_app_id[64];
+static char cached_app_secret[128];
+static long cached_creds_at;
+
+const char *streamkeys_card_json_path(void) { return card_user_path[0] ? card_user_path : NULL; }
+const char *streamkeys_session_json_path(void) { return card_session_path[0] ? card_session_path : NULL; }
+
+const char *streamkeys_qobuz_token(void) { return or_null(qobuz_token); }
+const char *streamkeys_qobuz_token_user(void) { return or_null(qobuz_token_user); }
+const char *streamkeys_tidal_access_token(void) { return or_null(tidal_access); }
+const char *streamkeys_tidal_refresh_token(void) { return or_null(tidal_refresh); }
+long streamkeys_tidal_expires_at(void) { return tidal_expires; }
+
+const char *streamkeys_qobuz_cached_app_id(void) { return or_null(cached_app_id); }
+const char *streamkeys_qobuz_cached_app_secret(void) { return or_null(cached_app_secret); }
+long streamkeys_qobuz_creds_at(void) { return cached_creds_at; }
+
+// Copies a JSON string field out, and wipes whatever was there before: a token
+// left behind in a buffer after it was replaced is a token still in memory.
+static void take_str(const json_doc_t *doc, int obj, const char *key, char *out, size_t size) {
+	char value[512];
+	value[0] = '\0';
+	if (obj < 0 || !json_obj_str(doc, obj, key, value, sizeof(value))) {
+		return;
+	}
+	snprintf(out, size, "%s", value);
+	wipe(value, sizeof(value));
+}
+
+// One file: `{"qobuz": {...}, "tidal": {...}}`. Unknown keys are ignored, and a
+// field that is not there leaves the value it was given by the other file.
+static bool read_card_json(const char *path, bool session) {
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		return false;
+	}
+	char *text = malloc(CARD_JSON_MAX + 1);
+	if (!text) {
+		fclose(f);
+		return false;
+	}
+	size_t len = fread(text, 1, CARD_JSON_MAX + 1, f);
+	fclose(f);
+	if (len > CARD_JSON_MAX) {
+		printf("streamkeys: %s is over %d bytes, ignored\n", path, CARD_JSON_MAX);
+		free(text);
+		return true;
+	}
+	text[len] = '\0';
+
+	json_doc_t doc;
+	if (!json_parse(text, &doc)) {
+		printf("streamkeys: %s is not valid JSON, ignored\n", path);
+		free(text);
+		return true;
+	}
+
+	int root = json_root(&doc);
+	int qobuz = json_get(&doc, root, "qobuz");
+	int tidal = json_get(&doc, root, "tidal");
+
+	take_str(&doc, qobuz, "token", qobuz_token, sizeof(qobuz_token));
+	take_str(&doc, qobuz, "user", qobuz_token_user, sizeof(qobuz_token_user));
+	if (session) {
+		// Derived from the web player the last time, not the user's to write.
+		take_str(&doc, qobuz, "app_id", cached_app_id, sizeof(cached_app_id));
+		take_str(&doc, qobuz, "app_secret", cached_app_secret, sizeof(cached_app_secret));
+		long at = json_obj_long(&doc, qobuz, "creds_at", -1);
+		if (at >= 0) {
+			cached_creds_at = at;
+		}
+	} else {
+		// The user's file may name the application itself; the service derives
+		// them from the web player when it does not.
+		take_str(&doc, qobuz, "app_id", qobuz_app_id, sizeof(qobuz_app_id));
+		take_str(&doc, qobuz, "app_secret", qobuz_app_secret, sizeof(qobuz_app_secret));
+	}
+
+	take_str(&doc, tidal, "access_token", tidal_access, sizeof(tidal_access));
+	take_str(&doc, tidal, "refresh_token", tidal_refresh, sizeof(tidal_refresh));
+	long expires = json_obj_long(&doc, tidal, "expires_at", -1);
+	if (expires >= 0) {
+		tidal_expires = expires;
+	}
+	if (!session) {
+		take_str(&doc, tidal, "client_id", tidal_client_id, sizeof(tidal_client_id));
+		take_str(&doc, tidal, "client_secret", tidal_client_secret, sizeof(tidal_client_secret));
+	}
+
+	json_free(&doc);
+	wipe(text, len);
+	free(text);
+	printf("streamkeys: %s read (%s)\n", path, session ? "the player's session" : "the user's tokens");
+	return true;
+}
+
+void streamkeys_attach_card(const char *sd_root) {
+	if (!sd_root || !sd_root[0]) {
+		printf("streamkeys: no card, the streaming accounts stay off\n");
+		return;
+	}
+	snprintf(card_user_path, sizeof(card_user_path), "%s/%s/%s", sd_root, CARD_DIR_NAME, CARD_USER_FILE);
+	snprintf(card_session_path, sizeof(card_session_path), "%s/%s/%s", sd_root, CARD_DIR_NAME,
+			 CARD_SESSION_FILE);
+
+	// The user's file first, the player's session over it: what the player saved
+	// after a renewal is newer than what the user wrote by hand.
+	read_card_json(card_user_path, false);
+	read_card_json(card_session_path, true);
+
+	printf("streamkeys: card -- Qobuz %s, Tidal %s\n", qobuz_token[0] ? "token" : "no token",
+		   tidal_refresh[0] ? "token" : "no token");
+}
+
+static void write_escaped(FILE *f, const char *s) {
+	for (const char *p = s; *p; p++) {
+		if (*p == '"' || *p == '\\') {
+			fputc('\\', f);
+		}
+		if ((unsigned char)*p < 0x20) {
+			continue; // control characters have no place in a token
+		}
+		fputc(*p, f);
+	}
+}
+
+static void write_session(void) {
+	if (!card_session_path[0]) {
+		return;
+	}
+	char tmp[560];
+	snprintf(tmp, sizeof(tmp), "%s.tmp", card_session_path);
+
+	FILE *f = fopen(tmp, "w");
+	if (!f) {
+		fprintf(stderr, "streamkeys: cannot write %s\n", tmp);
+		return;
+	}
+	fprintf(f, "{\n");
+	fprintf(f, "    \"qobuz\": {\"token\": \"");
+	write_escaped(f, qobuz_token);
+	fprintf(f, "\", \"user\": \"");
+	write_escaped(f, qobuz_token_user);
+	fprintf(f, "\", \"app_id\": \"");
+	write_escaped(f, cached_app_id);
+	fprintf(f, "\", \"app_secret\": \"");
+	write_escaped(f, cached_app_secret);
+	fprintf(f, "\", \"creds_at\": %ld},\n", cached_creds_at);
+	fprintf(f, "    \"tidal\": {\"access_token\": \"");
+	write_escaped(f, tidal_access);
+	fprintf(f, "\", \"refresh_token\": \"");
+	write_escaped(f, tidal_refresh);
+	fprintf(f, "\", \"expires_at\": %ld}\n", tidal_expires);
+	fprintf(f, "}\n");
+	bool ok = fclose(f) == 0;
+	if (!ok || rename(tmp, card_session_path) != 0) {
+		fprintf(stderr, "streamkeys: the session was not saved\n");
+		remove(tmp);
+	}
+}
+
+void streamkeys_save_qobuz_session(const char *token, const char *user) {
+	snprintf(qobuz_token, sizeof(qobuz_token), "%s", token ? token : "");
+	snprintf(qobuz_token_user, sizeof(qobuz_token_user), "%s", user ? user : "");
+	write_session();
+}
+
+void streamkeys_save_qobuz_creds(const char *app_id, const char *app_secret, long at) {
+	snprintf(cached_app_id, sizeof(cached_app_id), "%s", app_id ? app_id : "");
+	snprintf(cached_app_secret, sizeof(cached_app_secret), "%s", app_secret ? app_secret : "");
+	cached_creds_at = at;
+	write_session();
+}
+
+void streamkeys_save_tidal_session(const char *access_token, const char *refresh_token, long expires_at) {
+	snprintf(tidal_access, sizeof(tidal_access), "%s", access_token ? access_token : "");
+	snprintf(tidal_refresh, sizeof(tidal_refresh), "%s", refresh_token ? refresh_token : "");
+	tidal_expires = expires_at;
+	write_session();
+}

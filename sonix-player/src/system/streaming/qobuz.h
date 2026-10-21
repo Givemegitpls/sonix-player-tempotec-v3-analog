@@ -113,6 +113,10 @@ typedef struct {
 // after config_init() and streamkeys_init().
 void qobuz_init(void);
 
+// Reads the card's token again, after streamkeys_attach_card() -- at startup
+// the card has no mount point yet (see main.c).
+void qobuz_reload_session(void);
+
 // False when the keys file is missing: the service is not broken, it is off,
 // and the menu entry must say so instead of trying and failing.
 bool qobuz_configured(void);
