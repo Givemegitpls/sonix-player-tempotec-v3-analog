@@ -1594,6 +1594,15 @@ static void run_mapped_action(keymap_button_t button) {
 	}
 }
 
+// Whether the event came from the touch panel's own node. Its controller
+// reports the wake gesture as a power key (the V3 Analog's GT9xx does), and
+// that one is the double-tap option's to allow. The case's power key arrives on
+// its own node and always wakes the screen.
+static bool is_touch_node(const char *node) {
+	const char *touch = panel_touch_device();
+	return touch && strcmp(node, touch) == 0;
+}
+
 static void handle_key_press(const char *node, int code, bool headset) {
 	// The side buttons, translated from kernel code to the button as held (see
 	// keymap_button_for_code() for the R3 Pro II's swapped media keys).
@@ -1935,8 +1944,13 @@ static void *input_thread_func(void *arg) {
 			bool combo = !info->headset && combo_release(ev.code);
 
 			if (ev.code == KEY_POWER && !long_press_done && !combo) {
-				// Short press: the screen toggle.
-				power_notify_power_button();
+				// Short press: the screen toggle. The touch controller's
+				// gesture arrives as this same key, so with the double-tap
+				// option off a dark screen stays dark; the case's own power
+				// key is on another node and is never held back here.
+				if (power_screen_is_on() || !is_touch_node(node) || power_double_tap_wake_enabled()) {
+					power_notify_power_button();
+				}
 			}
 
 			if (ev.code == held) {

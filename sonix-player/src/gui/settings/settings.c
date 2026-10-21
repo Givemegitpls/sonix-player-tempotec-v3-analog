@@ -66,6 +66,10 @@ static lv_obj_t *screensaver_album_pill;
 static lv_obj_t *screensaver_images_pill;
 static lv_obj_t *rotate_switch;
 
+// The touch controller's wake gesture. Off by default: on this board the
+// controller raises it from inside the kernel driver and reports it as a power
+// key, so the player has to be the one that says no (system.c) rather than
+// trusting the controller to stay quiet.
 static void doubletap_toggle_cb(lv_event_t *e) {
 	(void)e;
 	bool on = lv_obj_has_state(doubletap_switch, LV_STATE_CHECKED);
@@ -301,10 +305,11 @@ static void build_screen_page(gui_config_t *cfg) {
 	lv_slider_set_value(screen_off_slider, screen_off_index(), LV_ANIM_OFF);
 	lv_label_set_text(screen_off_value, tr(SCREEN_OFF[screen_off_index()].label));
 
-	// Double-tap to wake: the touch controller's gesture mode. With the
-	// screen off, two taps light it back up -- the way the stock player's
-	// option works, through the same sysfs switch.
-	// Not on the R1, whose touch controller sleeps with the panel.
+	// Double-tap to wake: the touch controller's gesture. Two taps light the
+	// screen back up -- on this board the controller reports them from inside
+	// its own driver, so the option is the player's decision to let that key
+	// through, not a switch in the controller. Not on the R1, whose controller
+	// sleeps with the panel.
 	if (power_double_tap_wake_supported()) {
 		settingsrow_toggle(container, "settings_double_tap_to_wake", &doubletap_switch, doubletap_toggle_cb);
 		if (config_get_int("screen", "double_tap_wake", 0)) {
