@@ -161,8 +161,10 @@ bootloader and the recovery system are never touched.
 
 The player builds with the project's own MIPS toolchain and the packer wraps it
 in a firmware image; the whole recipe, from a fresh clone to
-`sonix-packer/out/v3_analog.upt`, is in [docs/BUILD.md](docs/BUILD.md). The
-toolchain side — `make target` in `sonix-player/`, the Rockbox MIPS
+`sonix-packer/out/v3_analog.upt`, is in [docs/BUILD.md](docs/BUILD.md). Both
+halves run in docker images this repository carries the recipes for, so the host
+needs docker and nothing else: `sonix-player/docker/build.sh` builds the player
+in `sonix-player/docker`'s image. The toolchain side — the Rockbox MIPS
 toolchain, the glibc 2.16 handling — is in
 [docs/V3-ANALOG.md](docs/V3-ANALOG.md#building-for-the-target), and the
 upstream build documentation in
@@ -177,15 +179,16 @@ kernel (`UIMAGE.BIN` md5 `35889275f8bed2f967a18f6a8b66495c`) through untouched:
 sonix-packer/
 ├── v3_analog_packer.sh
 ├── v3_analog_original.upt   the vendor's 1.3 UPT, put here by hand
-├── sonix_player             from make target
-├── sonix_launch             from make target
-├── assets/BLAZE/            the player's interface assets, shared by the models
-└── assets/V3ANALOG/         and what is this device's own, over them
+├── sonix_player             from sonix-player/docker/build.sh
+├── sonix_launch             from sonix-player/docker/build.sh
+├── assets/BLAZE/            the V3 Blaze's interface assets: this port's base
+└── assets/V3ANALOG/         and this device's own over them
 ```
 
 `./v3_analog_packer.sh` writes `out/v3_analog.upt`. It needs docker for the
 tools it runs (`7z`, `mkfs.ubifs`, `genisoimage`, `ubi_reader`), built from
-`sonix-packer/docker`.
+`sonix-packer/docker`; the player it packs is built in docker too
+(`sonix-player/docker`).
 
 ## Streaming
 

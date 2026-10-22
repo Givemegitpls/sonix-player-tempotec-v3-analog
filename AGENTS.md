@@ -41,6 +41,11 @@ tools/history.sh snaps                  # file-state snapshots (unreferenced git
 
 - **adb is USB only.** Plain `adb`; never `adb connect`, never an IP or port. The device shows up
   as `0123456789ABCDEF`; if `adb devices` is empty, stop and say so.
+- **Builds run in docker, not on the host.** `sonix-player/docker/build.sh` builds the player in
+  `sonix-player/docker`'s image, `sonix-packer/v3_analog_packer.sh` packs in `sonix-packer/docker`'s.
+  Do not apt-install build dependencies into the system to get a build going: the lists live in
+  those two Dockerfiles, and a missing package is a Dockerfile edit. `docs/BUILD.md`,
+  "Building on the host", is the escape hatch, not the default.
 - `git commit` is denied to agents by the global opencode config — stage, write the message, and
   hand the command to the owner.
 - The packer's image is the deliverable, not a file on the card: `sonix-packer/out/v3_analog.upt`.

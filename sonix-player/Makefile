@@ -15,7 +15,10 @@ LAUNCH_BIN = sonix_launch
 TARGET_DEBUG_BIN = sonix_player_debug
 
 LVGL_DIR = $(CURDIR)/lvgl
-ROCKBOX_TOOLCHAIN_DIR = $(CURDIR)/rockbox-toolchain
+# `?=`, so that ROCKBOX_TOOLCHAIN_DIR in the environment is used -- that is how
+# sonix-player/docker/build.sh hands over a toolchain that lives outside the
+# tree, and a plain `=` would silently ignore it and build a second one.
+ROCKBOX_TOOLCHAIN_DIR ?= $(CURDIR)/rockbox-toolchain
 
 CC = gcc
 CXX = g++
@@ -453,9 +456,44 @@ libs-clean:
 $(TARGET_OBJS): $(CROSS_CC) $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS)
 $(TARGET_BIN): $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS)
 
+# The rule above is a file target, and the compiler binary it produces exists
+# before the C library the compiler links against does. An interrupted
+# rockboxdev.sh therefore leaves a toolchain that make calls done, and every
+# configure after it fails with "C compiler cannot create executables" -- which
+# says nothing about the real cause. The sysroot's libc is what says the
+# toolchain is whole; this catches the half-built one and names it.
+CROSS_SYSROOT_LIBC = $(ROCKBOX_TOOLCHAIN_DIR)/mipsel-rockbox-linux-gnu/sysroot/lib/libc.so.6
+CROSS_SYSROOT_ASOUND = $(ROCKBOX_TOOLCHAIN_DIR)/mipsel-rockbox-linux-gnu/sysroot/usr/lib/libasound.so
+
+.PHONY: check-toolchain
+check-toolchain:
+	@if [ -x "$(CROSS_CC)" ] && { [ ! -f "$(CROSS_SYSROOT_LIBC)" ] || [ ! -f "$(CROSS_SYSROOT_ASOUND)" ]; }; then \
+		echo ""; \
+		echo "*** ERROR: $(CROSS_CC) is there, the libraries it was built for are not."; \
+		echo "*** The toolchain build was interrupted; remove $(ROCKBOX_TOOLCHAIN_DIR)"; \
+		echo "*** and build again. The downloaded tarballs are kept, so only the"; \
+		echo "*** build repeats."; \
+		echo ""; \
+		exit 1; \
+	fi
+
+# Order-only, so it is asked every run without making anything out of date, and
+# it is on the first things built with the toolchain: the libraries, then the
+# objects.
+$(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS) $(TARGET_OBJS): | check-toolchain
+
+# The toolchain is built without the Bluetooth userland libraries (libffi, zlib,
+# glib, expat, dbus): the player links libc and libasound out of the sysroot and
+# nothing else, and its Bluetooth userland is prebuilt, in sonix-packer/assets.
+# rockboxdev.sh takes that as a step list of its own and still builds binutils,
+# gcc, the headers, glibc and alsa-lib -- so it finishes and exits 0, instead of
+# being allowed to fail in glib's configure and leaving a tree whose state has to
+# be guessed.
+TOOLCHAIN_OPTS = --without-bluetooth-libs
+
 $(CROSS_CC):
 	@echo "Building Rockbox toolchain..."
-	./rockboxdev/rockboxdev.sh
+	@./rockboxdev/rockboxdev.sh $(TOOLCHAIN_OPTS)
 
 # The flags FreeType and the audio libraries are built with. -march and -mplt as
 # in TARGET_CFLAGS: they are static, so they end up in the same executable. They

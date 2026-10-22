@@ -30,6 +30,14 @@ dlwhere="${RBDEV_DOWNLOAD:-$TMP/rbdev-dl}"                 # download cache
 builddir="${RBDEV_BUILD:-$TMP/rbdev-build}"                # build directory
 MAKEFLAGS="${MAKEFLAGS:-}"                                 # extra make flags
 RBDEV_RESTART="${RBDEV_RESTART:-}"                         # restart at given step
+# Steps 7-11 build the Bluetooth userland libraries (libffi, zlib, glib, expat,
+# dbus). The Sonix Player port does not link them -- its Bluetooth userland is
+# prebuilt, in sonix-packer/assets -- so it links only libc and libasound out of
+# the sysroot, and those two are complete after step 6. Skipping the rest is a
+# decision, not a tolerance: the script then finishes, cleans its workspace and
+# exits 0, instead of dying in glib's configure and leaving a half-built tree
+# behind that `make` has to guess the state of.
+RBDEV_WITHOUT_BLUETOOTH_LIBS="${RBDEV_WITHOUT_BLUETOOTH_LIBS:-0}"
 
 # GNU make
 if [ -f "$(which gmake 2>/dev/null)" ]; then
@@ -332,6 +340,12 @@ build_hiby_toolchain() {
     # Ensure system libraries for gcc (gmp, mpfr, mpc)
     checklib "mpc" "gmp" "mpfr"
 
+    # Start from extracted-fresh sources. An interrupted run leaves them
+    # extracted and, some of them, already patched; `extract` skips what is
+    # there and the patch loop then applies a patch a second time, which fails
+    # with rejects that say nothing about the interruption that caused them.
+    # Extraction is cheap; the build is not. The downloaded tarballs stay.
+    rm -rf "$builddir"
     mkdir -p "$builddir" "$dlwhere"
 
     # Versions
@@ -417,9 +431,6 @@ build_hiby_toolchain() {
     # Add the cross compiler to PATH for subsequent library builds
     PATH="$HOST_PREFIX/bin:$PATH"
 
-    # ------------------------------------------------------------------
-    # Target libraries (Bluetooth support) – all installed into sysroot
-    # ------------------------------------------------------------------
     # 6. alsa-lib
     getfile_ex "alsa-lib-$alsalib_ver.tar.bz2" "alsa-lib-$alsalib_ver.tar.bz2" \
         "https://www.alsa-project.org/files/pub/lib"
@@ -428,6 +439,17 @@ build_hiby_toolchain() {
     buildtool "alsa-lib" "$alsalib_ver" \
         "--host=$target --disable-python" "" "install DESTDIR=$sysroot"
 
+    if [ "$RBDEV_WITHOUT_BLUETOOTH_LIBS" = "1" ]; then
+        echo "ROCKBOXDEV: steps 7-11 (libffi, zlib, glib, expat, dbus) skipped."
+        echo "ROCKBOXDEV:   They are the Bluetooth userland's libraries; this port"
+        echo "ROCKBOXDEV:   links only libc and libasound from the sysroot."
+        echo "ROCKBOXDEV: Hiby OS toolchain build complete."
+        return 0
+    fi
+
+    # ------------------------------------------------------------------
+    # Target libraries (Bluetooth support) – all installed into sysroot
+    # ------------------------------------------------------------------
     # 7. libffi
     getfile_ex "libffi-$libffi_ver.tar.gz" "libffi-$libffi_ver.tar.gz" \
         "https://sourceware.org/pub/libffi"
@@ -484,8 +506,18 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --help)
             echo "Usage: $0 [--prefix=PREFIX] [--dlwhere=DIR] [--builddir=DIR] [--makeflags=FLAGS] [--restart=STEP]"
+            echo "       $0 --without-bluetooth-libs [...]"
             echo "  PREFIX defaults to ./rockbox-toolchain (host install + sysroot)"
+            echo "  --without-bluetooth-libs  stop after alsa-lib: the Bluetooth userland"
+            echo "                            libraries (libffi, zlib, glib, expat, dbus)"
+            echo "                            are for a port that links them, and this one"
+            echo "                            does not (RBDEV_WITHOUT_BLUETOOTH_LIBS=1 does"
+            echo "                            the same from the environment)"
             exit 0
+            ;;
+        --without-bluetooth-libs)
+            RBDEV_WITHOUT_BLUETOOTH_LIBS=1
+            shift
             ;;
         --prefix=*)
             HOST_PREFIX="${1#*=}"
@@ -547,6 +579,7 @@ echo "Host install prefix: $HOST_PREFIX"
 echo "Download directory:  $dlwhere"
 echo "Build directory:     $builddir"
 echo "Restart step:        $RBDEV_RESTART"
+echo "Bluetooth libs:      $([ "$RBDEV_WITHOUT_BLUETOOTH_LIBS" = "1" ] && echo "skipped" || echo "built")"
 echo "MAKEFLAGS:           $MAKEFLAGS"
 
 # ----------------------------------------------------------------------
@@ -556,7 +589,12 @@ PATH="$HOST_PREFIX/bin:$PATH"
 build_hiby_toolchain
 
 cd "$INITIAL_DIR"
-rm -r "$TMP"
+# The extracted sources and the per-step build directories go; the downloaded
+# tarballs stay, so a toolchain that has to be rebuilt does not need the network
+# again. $TMP itself goes only if nothing is left in it -- with the default
+# download cache there is, so the empty directory would just come back.
+[ -n "$builddir" ] && [ "$builddir" != "/" ] && rm -rf "$builddir" || true
+rmdir "$TMP" 2>/dev/null || true
 
 echo ""
 echo "ROCKBOXDEV: Done!"
