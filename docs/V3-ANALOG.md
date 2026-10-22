@@ -35,7 +35,9 @@ a Bluetooth stack that is not the port's.
 The player is built with the project's own MIPS toolchain,
 `mipsel-rockbox-linux-gnu` (binutils 2.38, gcc 9.5.0, headers 3.10.108,
 **glibc 2.27 configured with `--enable-oldest-abi=2.16`**), the same one the
-Blaze port uses. `make target` in `sonix-player/`.
+Blaze port uses. `sonix-player/docker/build.sh` runs `make target` in the image
+`sonix-player/docker` describes, so the toolchain's own build dependencies stay
+out of the host.
 
 The device's glibc is **2.16**, so the Makefile sets:
 
@@ -62,20 +64,36 @@ glibc 2.16; the highest actually present is **`GLIBC_2.9`**.
 
 The toolchain is not in the repository (`.gitignore` keeps `rockbox-toolchain`
 out: it is hundreds of megabytes), but the script that builds it is, and so are
-the patches it applies:
+the patches it applies. The first `sonix-player/docker/build.sh` runs it inside
+the image, which is where its build dependencies (autotools, makeinfo, a native
+compiler) come from:
+
+```sh
+sonix-player/docker/build.sh     # the toolchain first, then the player
+```
+
+On the host it is the same script, and `RBDEV_HOST_PREFIX` is where its build
+lands — `sonix-player/rockbox-toolchain` is where the Makefile looks for it:
 
 ```sh
 cd sonix-player/rockboxdev
-RBDEV_HOST_PREFIX="$PWD/../rockbox-toolchain" ./rockboxdev.sh   # binutils 2.38, gcc 9.5.0, headers, glibc 2.27
+RBDEV_HOST_PREFIX="$PWD/../rockbox-toolchain" ./rockboxdev.sh --without-bluetooth-libs
 cd ..
 make target
 ```
 
-`RBDEV_HOST_PREFIX` is where the build of the toolchain lands, and
-`sonix-player/rockbox-toolchain` is where the Makefile looks for it; with the
-variable left alone the script installs next to itself instead, and the tree
-then has to be moved or linked. `RBDEV_DOWNLOAD=<dir>` keeps the downloaded
-tarballs for the next run.
+`--without-bluetooth-libs` is not optional in practice: without it the script
+goes on to build libffi, zlib, glib, expat and dbus — the libraries of a
+Bluetooth userland built from source — and dies in glib's `configure`, which
+finds no gettext. This port does not link any of them: its Bluetooth userland is
+prebuilt, in `sonix-packer/assets`, so `libc` and `libasound` out of the sysroot
+are all it needs. The Makefile's rule for the toolchain passes the flag, so
+`make target` alone does the right thing.
+
+With the variable left alone the script installs next to itself instead, and the
+tree then has to be moved or linked. `RBDEV_DOWNLOAD=<dir>` keeps the downloaded
+tarballs for the next run. An existing toolchain is reused rather than rebuilt:
+`make ROCKBOX_TOOLCHAIN_DIR=/path/to/rockbox-toolchain target`.
 
 Two fetches in that build are known to be fragile on some networks, and both
 can be satisfied by hand:
@@ -373,8 +391,9 @@ What it does, in order: unpacks the stock `.upt` (an ISO) and extracts
 `SYSTEM.UBI` (the UBIFS rootfs) from it; deletes `usr/bin/hiby_player` and
 installs `sonix_player`; installs the launcher (`usr/bin/sonix_player.sh`) and
 `sonix_launch` and points `etc/init.d/S92_03_start_music_player` at them; copies
-`assets/BLAZE/` -- the player's own interface, its fonts, languages, images and
-Bluetooth userland -- and then `assets/V3ANALOG/` over it; writes the build
+`assets/BLAZE/` -- the interface assets of the Blaze port, another player whose
+UI this one shares: fonts, languages, images and the Bluetooth userland -- and
+then `assets/V3ANALOG/` over it; writes the build
 stamp into `system-info.json`; deletes the stock interface's own resources
 (`litegui`, `layout`, `str`, `fonts`); repacks the rootfs with `mkfs.ubifs`
 (`-c 480 -e 0x1F000 -m 0x800`, the geometry of this device's rootfs volume),
@@ -463,16 +482,18 @@ docker build -t tempotec-fw-tools sonix-packer/docker
 
 ### What a fresh clone needs
 
-A clone of this branch has the packer, its assets (the player's interface, its
-fonts, the Bluetooth userland), the player's sources and this document. What it
-does not have, and what the build therefore asks for by name:
+A clone of this branch has the packer, its assets (the Blaze port's interface,
+another player this one takes its fonts and its Bluetooth userland from), the
+player's sources and this document. What it does not have, and what the build
+therefore asks for by name:
 
 | input | how to get it |
 |---|---|
-| docker | the host's own; the script refuses to start without it |
+| docker | the host's own; the scripts refuse to start without it |
 | the tools image | `docker build -t tempotec-fw-tools sonix-packer/docker` |
+| the player's image | `docker build -t tempotec-player-build sonix-player/docker`, or let `sonix-player/docker/build.sh` build it |
 | the stock `.upt` | the vendor's 1.3 firmware for the V3 Analog, above; not in the repository |
-| `sonix-packer/sonix_player`, `sonix_launch` | `make target` in `sonix-player/` (see "Building for the target") |
+| `sonix-packer/sonix_player`, `sonix_launch` | `sonix-player/docker/build.sh` (see "Building for the target") |
 | `sonix-packer/kernel/UIMAGE.BIN` | nothing: it must **not** be there. The packer installs a kernel from that slot when one is present, and only kernel work deliberately puts one there (`patch/v3-kernel/FLASHING.md` in the kernel working copy next to this repository; the mechanism is in `docs/KERNEL.md`) |
 
 The packer checks each of these before it starts and says which one is missing,

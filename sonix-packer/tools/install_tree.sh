@@ -9,8 +9,8 @@
 set -euo pipefail
 
 TREE=build/SYSTEM
-BASE=assets/BLAZE	   # the player's own interface assets, shared by the models
-MODEL=assets/V3ANALOG  # and what is this device's own
+BASE=assets/BLAZE	   # the V3 Blaze's interface assets: another player, this port's base
+MODEL=assets/V3ANALOG  # and this device's own over them
 
 [ -d "$TREE" ] || { echo "install_tree: $TREE is missing -- unpack first" >&2; exit 1; }
 [ -f sonix_player ] || { echo "install_tree: sonix_player is missing" >&2; exit 1; }
@@ -69,7 +69,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. The assets: the player's own tree, then this device's files over it
+# 3. The assets: the Blaze port's interface, then this device's files over it
 # ---------------------------------------------------------------------------
 #
 # tar rather than cp: it merges into the directories that already exist,

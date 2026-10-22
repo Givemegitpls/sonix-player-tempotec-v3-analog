@@ -19,10 +19,14 @@
 #                              somewhere else): the vendor's 1.3 build for this
 #                              model, which this repository does not carry --
 #                              docs/V3-ANALOG.md, "What a fresh clone needs"
-#   sonix_player               the binary to install (make target in sonix-player/)
-#   assets/BLAZE/              the player's own interface assets: fonts,
-#                              languages, images, and the Bluetooth userland
-#   assets/V3ANALOG/           and what is this device's own, over them
+#   sonix_player               the binary to install -- built from sonix-player/
+#   sonix_launch               and its launcher when they are not here yet, in
+#                              the container sonix-player/docker describes
+#   assets/BLAZE/              the TempoTec V3 Blaze's interface assets -- fonts,
+#                              languages, images, the Bluetooth userland. Another
+#                              player, and this one's base: the interface is
+#                              shared, so its resources are installed first
+#   assets/V3ANALOG/           and this device's own over them
 #   kernel/UIMAGE.BIN          a kernel to install instead of the stock one
 #                              (optional, $KERNEL_IMAGE to point elsewhere; the
 #                              stock kernel is carried through without it)
@@ -30,17 +34,22 @@
 #   tools/fix_update_md5.py    the digest the updater checks
 #
 # and, for the tools themselves (7z, ubireader, mkfs.ubifs, genisoimage), the
-# docker image this repository carries the recipe for:
+# docker image this repository carries the recipe for, which is built on the
+# first run:
 #
-#   docker build -t tempotec-fw-tools sonix-packer/docker
+#   sonix-packer/docker
 #
 # Run it and it does the lot:
 #
 #   ./v3_analog_packer.sh            # build, then verify the result
 #   ./v3_analog_packer.sh verify     # only re-check out/v3_analog.upt
 #   STOCK=... ./v3_analog_packer.sh  # from another stock image
+#   SKIP_PLAYER_BUILD=1 ./v3_analog_packer.sh   # pack the binaries already here
 #   VERSION_OVERRIDE=<base>/<tag> ./v3_analog_packer.sh   # name the build by
 #                                    hand, for a release git cannot name here
+#
+# The host needs docker and nothing else: the player, its toolchain and the
+# firmware tools all live in images this repository carries the recipes for.
 #
 set -euo pipefail
 
@@ -51,6 +60,12 @@ STOCK="${STOCK:-$SCRIPT_DIR/v3_analog_original.upt}"
 PLAYER_BIN="$SCRIPT_DIR/sonix_player"
 LAUNCH_BIN="$SCRIPT_DIR/sonix_launch"
 DOCKER_IMAGE="${DOCKER_IMAGE:-tempotec-fw-tools}"
+
+# What this run needs: `verify` only re-checks the image that is already on
+# disk, so it builds nothing and asks for nothing beyond docker and that image --
+# not the vendor's stock firmware, and not the player.
+NEED_PLAYER=1
+NEED_STOCK=1
 
 # The stock image's bootloader, which is carried through into ours untouched.
 # It is the one file whose contents matter more than anything else here: a wrong
@@ -80,7 +95,11 @@ NC='\033[0m'
 
 say() { echo -e "$@"; }
 step() { echo -e "${BLUE}==>${NC} $*"; }
-warn() { echo -e "${YELLOW}!!${NC}  $*"; }
+# Warnings go to stderr: they are not part of any value. `os_version` warns when
+# the tree is not a git repository, and it is read as `$(os_version)` -- a warning
+# on stdout would become part of the version string, and the sed that writes it
+# into system-info.json would then fail on it.
+warn() { echo -e "${YELLOW}!!${NC}  $*" >&2; }
 die() {
 	echo -e "${RED}Error:${NC} $*" >&2
 	exit 1
@@ -146,32 +165,96 @@ os_version() {
 	fi
 }
 
+# Builds the player, in the container its own tree describes, and puts the two
+# binaries where this script looks for them. The first run also builds the MIPS
+# toolchain, FreeType and the audio libraries -- the 20-60 minutes docs/BUILD.md
+# warns about; the runs after it take minutes.
+build_player() {
+	local player_dir="$SCRIPT_DIR/../sonix-player"
+	local wrapper="$player_dir/docker/build.sh"
+
+	[ -x "$wrapper" ] || die "there is no sonix_player next to this script, and no
+     $wrapper to build one."
+
+	step "Building the player (a no-op when nothing changed; the first run builds
+     the toolchain and takes 20-60 minutes)"
+	"$wrapper"
+	# -p: the stamp the player shows in About is its build time, and it is read
+	# from the file's mtime.
+	cp -p "$player_dir/sonix_player" "$player_dir/sonix_launch" "$SCRIPT_DIR/"
+}
+
+# The tools image, when it is not there yet. It is built from the recipe in this
+# repository, so the host still needs nothing but docker.
+build_tools_image() {
+	[ -f "$SCRIPT_DIR/docker/Dockerfile" ] ||
+		die "no docker image $DOCKER_IMAGE, and no Dockerfile in $SCRIPT_DIR/docker
+     to build one from."
+
+	step "Building the tools image $DOCKER_IMAGE (a few minutes, once)"
+	docker build -t "$DOCKER_IMAGE" "$SCRIPT_DIR/docker"
+}
+
 check_inputs() {
 	step "Checking what is needed"
 
 	command -v docker >/dev/null 2>&1 || die "docker is not installed."
-	docker image inspect "$DOCKER_IMAGE" >/dev/null 2>&1 ||
-		die "the docker image $DOCKER_IMAGE is not built. Build it with:
-     docker build -t $DOCKER_IMAGE sonix-packer/docker"
+	docker image inspect "$DOCKER_IMAGE" >/dev/null 2>&1 || build_tools_image
 
-	[ -f "$STOCK" ] || die "no stock image at $STOCK (set STOCK=...): the vendor's 1.3
+	if [ "$NEED_STOCK" = "1" ]; then
+		[ -f "$STOCK" ] || die "no stock image at $STOCK (set STOCK=...): the vendor's 1.3
      firmware for the V3 Analog, which this repository does not carry. See
      docs/V3-ANALOG.md, 'What a fresh clone needs', for what it has to be."
-	[ -f "$PLAYER_BIN" ] || die "no sonix_player next to this script: build it with 'make target' in sonix-player/."
-	[ -d assets/BLAZE ] || die "assets/BLAZE is missing."
-	[ -d assets/V3ANALOG ] || die "assets/V3ANALOG is missing."
+		# The build directory is wiped before the stock image is unpacked, so a
+		# stock image kept inside it would be deleted before it was read.
+		case "$(cd "$(dirname "$STOCK")" && pwd)/$(basename "$STOCK")" in
+		"$BUILD"/*) die "the stock image is inside $BUILD, which this script clears:
+     copy it somewhere else and pass that path (STOCK=...)." ;;
+		esac
+	fi
 
-	BUILD_STAMP="$(stamp_of "$PLAYER_BIN")"
-	OS_VERSION="$(os_version)"
-	say "    stock:  $STOCK ($(stat -c%s "$STOCK") bytes)"
-	say "    player: $(stat -c%s "$PLAYER_BIN") bytes, built $BUILD_STAMP"
-	say "    version: OS_version $OS_VERSION"
-	[ -f "$LAUNCH_BIN" ] || die "no sonix_launch next to this script: build it with 'make target' in sonix-player/."
-	say "    launch: $(stat -c%s "$LAUNCH_BIN") bytes"
-	if [ -f "$KERNEL_IMAGE" ]; then
-		say "    kernel: $(stat -c%s "$KERNEL_IMAGE") bytes, md5 $(md5sum "$KERNEL_IMAGE" | cut -d' ' -f1) -- installed instead of the stock one"
-	else
-		say "    kernel: the stock UIMAGE.BIN, unchanged"
+	# The player is not carried in the repository either -- it is built from its
+	# sources, in the container its own Dockerfile describes. Asking for it
+	# instead of building it would make the one documented entry point depend on
+	# a step the reader has to know about; this way `STOCK=... ./v3_analog_packer.sh`
+	# is the whole recipe on a machine with nothing but docker.
+	#
+	# Asked every run, not only when the binaries are missing: `make` decides
+	# what is stale in a second when nothing changed, and a binary left from an
+	# earlier build would otherwise be packed into an image that claims to be
+	# this commit's. SKIP_PLAYER_BUILD=1 packs what is here, for a run that only
+	# wants to repack.
+	if [ "$NEED_PLAYER" = "1" ] && [ -z "${SKIP_PLAYER_BUILD:-}" ]; then
+		build_player
+	fi
+
+	if [ "$NEED_PLAYER" = "1" ]; then
+		[ -f "$PLAYER_BIN" ] || die "no sonix_player next to this script: build it
+     with sonix-player/docker/build.sh, or run this script without
+     SKIP_PLAYER_BUILD=1."
+		[ -f "$LAUNCH_BIN" ] || die "no sonix_launch next to this script: build it
+     with sonix-player/docker/build.sh, or run this script without
+     SKIP_PLAYER_BUILD=1."
+
+		[ -d assets/BLAZE ] || die "assets/BLAZE is missing."
+		[ -d assets/V3ANALOG ] || die "assets/V3ANALOG is missing."
+
+		BUILD_STAMP="$(stamp_of "$PLAYER_BIN")"
+		OS_VERSION="$(os_version)"
+	fi
+
+	if [ "$NEED_STOCK" = "1" ]; then
+		say "    stock:  $STOCK ($(stat -c%s "$STOCK") bytes)"
+	fi
+	if [ "$NEED_PLAYER" = "1" ]; then
+		say "    player: $(stat -c%s "$PLAYER_BIN") bytes, built $BUILD_STAMP"
+		say "    version: OS_version $OS_VERSION"
+		say "    launch: $(stat -c%s "$LAUNCH_BIN") bytes"
+		if [ -f "$KERNEL_IMAGE" ]; then
+			say "    kernel: $(stat -c%s "$KERNEL_IMAGE") bytes, md5 $(md5sum "$KERNEL_IMAGE" | cut -d' ' -f1) -- installed instead of the stock one"
+		else
+			say "    kernel: the stock UIMAGE.BIN, unchanged"
+		fi
 	fi
 	say ""
 }
@@ -404,6 +487,8 @@ all)
 	verify_image
 	;;
 verify)
+	NEED_PLAYER=0
+	NEED_STOCK=0
 	check_inputs
 	verify_image
 	;;

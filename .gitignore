@@ -19,6 +19,9 @@ sonix-player/audio-target
 
 sonix-player/compile_commands.json
 sonix-player/rockbox-toolchain
+# rockboxdev.sh's workspace: downloaded tarballs and the extracted sources of
+# binutils, gcc, glibc and alsa-lib. Gigabytes, and only a cache.
+sonix-player/tmp/
 
 sonix-player/lvgl/
 sonix-player/opus-1.4/

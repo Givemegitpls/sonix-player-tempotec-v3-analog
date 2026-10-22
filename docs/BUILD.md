@@ -13,30 +13,30 @@ nothing else that is not public.
 
 ## 0. What you need
 
-A Linux host (x86_64), about 3 GB of free disk, and an internet connection for
-the first build.
+A Linux host (x86_64) with **docker**, about 6 GB of free disk, and an internet
+connection for the first build. Nothing else: both compilers the build uses live
+in images this repository carries the recipes for, so there is no list of
+packages to install.
 
 ```sh
-# Debian / Ubuntu
-sudo apt install build-essential git wget xz-utils bzip2 texinfo \
-                 autoconf automake libtool pkg-config p7zip-full
-# Fedora
-sudo dnf install gcc gcc-c++ make git wget xz bzip2 texinfo \
-                 autoconf automake libtool pkgconf-pkg-config p7zip
+docker build -t tempotec-player-build sonix-player/docker   # builds the player
+docker build -t tempotec-fw-tools sonix-packer/docker       # packs the image
 ```
 
-Plus **docker**, which the packer runs its tools in (`7z`, `mkfs.ubifs`,
-`genisoimage`, `ubi_reader` — none of which a normal host has):
+Both are built from pinned bases, so the same recipe produces the same tools
+later, and neither has to be built by hand: `sonix-player/docker/build.sh` builds
+its own image on every run (docker reuses the layers of an unchanged
+`Dockerfile` in a second), and the packer builds its image on the first run
+because it cannot run `7z`, `mkfs.ubifs`, `genisoimage` or `ubi_reader` without
+it — none of which a normal host has.
 
-```sh
-docker build -t tempotec-fw-tools sonix-packer/docker
-```
+What the images carry, in one line each: the player's image has the native
+compiler, autotools, makeinfo and the archivers that `rockboxdev.sh` and the
+library `configure` scripts need, because the MIPS toolchain and FreeType are
+built from source; the packer's has the firmware tools.
 
-That image is built from `sonix-packer/docker/Dockerfile`, pinned by digest, so
-the same recipe produces the same tools later.
-
-The player itself needs no docker: its toolchain is built from source by the
-project's own script.
+If you would rather have those packages on the machine itself, the build runs on
+the host too — see "Building on the host", at the end.
 
 ---
 
@@ -73,9 +73,10 @@ digest when a kernel is installed instead (step 6).
 To look before you build:
 
 ```sh
-7z l v3_analog.upt                          # the six files inside the ISO
-7z x v3_analog.upt -o/tmp/stock
-md5sum /tmp/stock/UBOOT.BIN /tmp/stock/UIMAGE.BIN
+# 7z lives in the packer's image, so nothing has to be installed for this
+docker run --rm -v "$PWD":/w -w /w tempotec-fw-tools 7z l v3_analog.upt   # the six files inside the ISO
+docker run --rm -v "$PWD":/w -w /w tempotec-fw-tools 7z x v3_analog.upt -ostock-unpacked
+md5sum stock-unpacked/UBOOT.BIN stock-unpacked/UIMAGE.BIN
 ```
 
 Put the image where you like and pass its path to the packer with `STOCK=`
@@ -85,13 +86,30 @@ Put the image where you like and pass its path to the packer with `STOCK=`
 
 ## 3. Build the player
 
+Nothing to do here either: step 5 builds the player in the image
+`sonix-player/docker` describes and puts both binaries next to itself. On a
+machine with nothing but docker that is the whole recipe; the step is in this
+document because it is where the time goes.
+
+It runs on every packer run, not only when the binaries are missing: `make`
+answers "nothing to do" in a second when the sources have not changed, and a
+binary left from an earlier build would otherwise be packed into an image that
+claims to be this commit's. `SKIP_PLAYER_BUILD=1` packs the binaries that are
+already in `sonix-packer/`, for a run that only wants to repack.
+
+To build the player on its own, without packing:
+
 ```sh
-cd sonix-player
-make target -j"$(nproc)"
+sonix-player/docker/build.sh
 ```
 
+That is `make target -j"$(nproc)"` in that image, with the tree mounted at its
+own path and the container running as you — the outputs are ordinary files of
+yours, in the tree. Anything `make` takes goes through: `build.sh host` builds
+the SDL simulator, `build.sh target -j2` builds with two jobs.
+
 The **first** run does four things by itself and takes a while (20–60 minutes
-on a laptop):
+on a laptop), all of it inside the container:
 
 1. builds the Rockbox MIPS cross toolchain into `sonix-player/rockbox-toolchain`
    (binutils, gcc 9.5, Linux headers, glibc 2.27 with `--enable-oldest-abi=2.16`
@@ -101,7 +119,25 @@ on a laptop):
    into `audio-target/`;
 4. clones LVGL 9.6 and builds the player itself.
 
-Later runs go straight to step 4 and take a couple of minutes.
+Later runs go straight to step 4 and take a couple of minutes: all four live in
+the tree, not in the image, so they are built once.
+
+The toolchain build stops after alsa-lib, on purpose: the steps after it
+(libffi, zlib, glib, expat, dbus) are the libraries of a Bluetooth userland
+built from source, and this port does not link them — its Bluetooth userland is
+prebuilt, in `sonix-packer/assets`, and the player links `libc` and `libasound`
+out of the sysroot and nothing else. `rockboxdev.sh --without-bluetooth-libs`
+says so, finishes, cleans its workspace and exits 0; without the flag it tries
+those steps and dies in glib's `configure`, which finds no gettext.
+
+If a toolchain already exists — from another checkout of this port, or from an
+earlier build — point the build at it instead of rebuilding: `TOOLCHAIN_DIR` is
+not a thing, the Makefile's variable is `ROCKBOX_TOOLCHAIN_DIR`, and
+`sonix-player/docker/build.sh` passes the environment through:
+
+```sh
+ROCKBOX_TOOLCHAIN_DIR=/path/to/rockbox-toolchain sonix-player/docker/build.sh
+```
 
 Two things can stall the downloads on some networks; both have a way around
 them:
@@ -138,15 +174,17 @@ make host
 ./sonix_player_host
 ```
 
+This one is a host build on purpose: the image has no SDL, and the simulator is
+only ever run on a desktop.
+
 ---
 
-## 4. Put the player where the packer looks
+## 4. Where the binaries come from
 
-The packer takes the binary from its own directory:
-
-```sh
-cp sonix-player/sonix_player sonix-player/sonix_launch sonix-packer/
-```
+`sonix-packer/sonix_player` and `sonix_launch` are the copies the packer installs
+into the rootfs. It rebuilds and copies them on every run (step 3), so they are
+never older than the sources: an unchanged tree costs a second of `make`, a
+changed one costs the compile. `SKIP_PLAYER_BUILD=1` leaves them alone.
 
 ---
 
@@ -158,9 +196,12 @@ STOCK=/path/to/v3_analog.upt ./v3_analog_packer.sh
 ```
 
 With no `STOCK=` it looks for `sonix-packer/v3_analog_original.upt`; drop the
-vendor image there if you prefer, that name is git-ignored.
+vendor image there if you prefer, that name is git-ignored. Keep it out of
+`sonix-packer/build/`: that directory is cleared before the stock image is
+unpacked, and the script refuses a stock image it is about to delete.
 
-What it does, in order:
+First it builds the player (step 3) and copies `sonix_player` and
+`sonix_launch` next to itself, which `SKIP_PLAYER_BUILD=1` skips. Then, in order:
 
 1. unpacks the stock ISO (it *is* an ISO, despite the extension);
 2. extracts the UBIFS rootfs from `SYSTEM.UBI`;
@@ -188,7 +229,8 @@ Useful invocations:
 
 ```sh
 STOCK=... DOCKER_IMAGE=tempotec-fw-tools ./v3_analog_packer.sh   # the defaults
-./v3_analog_packer.sh verify                                     # re-check out/v3_analog.upt
+./v3_analog_packer.sh verify                                     # re-check out/v3_analog.upt, build nothing
+SKIP_PLAYER_BUILD=1 ./v3_analog_packer.sh                        # repack the binaries already in sonix-packer/
 KERNEL_IMAGE=/path/UIMAGE.BIN ./v3_analog_packer.sh              # install a replacement kernel
 VERSION_OVERRIDE=1.2.0.1/0.1.0 ./v3_analog_packer.sh             # name the build by hand
 ```
@@ -258,3 +300,42 @@ HiBy's binaries (`sys_server`, the stock codecs), Ingenic's kernel, the vendor
 bootloader. Building it for yourself is one thing; publishing it is another, and
 the vendor's licence does not allow that. Hence: this repository carries the
 sources and the scripts, not an image.
+
+---
+
+## Building on the host
+
+The image supplies the tools; the recipe is the Makefile, and it runs on the
+machine just as well. What it needs there, beyond a C/C++ compiler and `make`:
+
+```sh
+# Debian / Ubuntu
+sudo apt install build-essential git wget xz-utils bzip2 texinfo \
+                 autoconf automake libtool libtool-bin pkg-config p7zip-full
+# Fedora
+sudo dnf install gcc gcc-c++ make git wget xz bzip2 texinfo \
+                 autoconf automake libtool libtool-bin pkgconf-pkg-config p7zip
+```
+
+`libtool-bin` is a package of its own on Debian and Ubuntu, and it is the one
+that matters: `rockboxdev.sh` looks for the `libtool` script by name, and the
+`libtool` package carries only the macros and `libtoolize`.
+
+Then, from `sonix-player/`:
+
+```sh
+make target -j"$(nproc)"
+```
+
+The toolchain, FreeType and the audio libraries land in the tree exactly as they
+do in the container, so the two can be mixed — a tree built once on the host can
+be rebuilt in the image and the other way round. A toolchain that already exists
+somewhere else is reused rather than rebuilt:
+
+```sh
+make ROCKBOX_TOOLCHAIN_DIR=/path/to/rockbox-toolchain target -j"$(nproc)"
+```
+
+This list is exactly what `sonix-player/docker/Dockerfile` installs, so a package
+missing there is missing here too.
+
