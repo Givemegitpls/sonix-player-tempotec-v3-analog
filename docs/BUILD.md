@@ -227,12 +227,22 @@ First it builds the player (step 3) and copies `sonix_player` and
 3. deletes `usr/bin/hiby_player` and installs `usr/bin/sonix_player`, the
    launcher and `assets/BLAZE` + `assets/V3ANALOG` over the tree, and points
    `etc/init.d/S92_03_start_music_player` at the new launcher;
-4. repacks the rootfs with `mkfs.ubifs` (`-x lzo -e 0x1F000 -c 480 -m 0x800`,
+4. trims the stock libraries nothing in the image uses any more
+   (`tools/trim_stock.py`): the deleted player's decoders — `libFLAC`,
+   `libmp3lame`, `libwma`, `libaac`, `libmp3`, `libdsd2pcm`, `libmad`, and SDL —
+   plus the stock `libglib-2.0.so.0.4000.0`, 7.45 MB in all, and the duplicate
+   `usr/lib/libcrypto.so.1.0.0` (the copy in `/lib` is the one the loader
+   finds). `libssl.so.1.0.0` stays: `wpa_supplicant`, `sshd` and `shairport`
+   link against it and there is no second copy. The script fails the build if a
+   remaining ELF file still names a library it removed. The point is headroom:
+   the rootfs is exactly the volume's size and boots 100 % full, which is what
+   makes an in-place binary replacement on a test unit die halfway;
+5. repacks the rootfs with `mkfs.ubifs` (`-x lzo -e 0x1F000 -c 480 -m 0x800`,
    the geometry of this device's rootfs volume — it fails loudly if the tree no
    longer fits);
-5. recomputes the digests in `UPDATE.TXT` (the updater checks them) and builds
+6. recomputes the digests in `UPDATE.TXT` (the updater checks them) and builds
    the ISO with `genisoimage`;
-6. unpacks its own result and checks it: digests, files, modes, and that the
+7. unpacks its own result and checks it: digests, files, modes, and that the
    Bluetooth userland in the image is the port's and not the stock one.
 
 The result:

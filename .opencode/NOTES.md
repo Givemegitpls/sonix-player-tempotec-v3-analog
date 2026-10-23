@@ -176,3 +176,24 @@ same file as `kernel: <4> … spdif_optical power on` / `OPTICAL_MOODE`.
 `tools/keyinj.c` built statically (`mipsel-rockbox-linux-gnu-gcc -static -O2`)
 drives the buttons from adb: `keyinj /dev/input/event1 116 164` wakes the screen
 and presses play/pause. Push it to `/data`, not `/tmp`.
+
+## The rootfs is exactly the volume's size, and it boots 100 % full
+
+`mkfs.ubifs -c 480` is the whole volume, so the stock tree fills it. Anything
+that adds files to the image without removing some (assets, a bigger player)
+fails at the packer's `mkfs` or, worse, leaves no room to replace a binary on a
+test unit. The packer therefore trims the stock libraries nothing uses
+(`sonix-packer/tools/trim_stock.py`, run after `install_tree.sh`): the deleted
+`hiby_player`'s decoders and the stock glib 2.40, 7.45 MB.
+
+What must NOT be trimmed, because the rest of the firmware uses it:
+
+- `usr/lib/libssl.so.1.0.0` -- `sbin/wpa_supplicant`, `bin/sshd`,
+  `sbin/shairport` link against it, and there is **no** copy in `/lib`. Remove it
+  and Wi-Fi never comes up (measured the hard way on 2026-10-24: the port is
+  fine, `wpa_supplicant` is simply not running).
+- `lib/libcrypto.so.1.0.0` -- the only copy; the duplicate in `usr/lib` may go.
+
+The trim script checks the finished tree for ELF files that still name a
+removed soname and fails the build if it finds one, so a wrong entry is caught
+at pack time rather than after a flash.
