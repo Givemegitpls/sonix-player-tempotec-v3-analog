@@ -20,6 +20,21 @@ looks empty while the parent has:
 Check there **first**; a full `make target` from scratch is 20-60 minutes and is
 only needed on a machine that has none.
 
+## An incremental build proves nothing after a merge
+
+`sonix-player/docker/build.sh` is incremental, and `make` compares mtimes against
+`build_target/`: when the objects are newer than every source it prints
+`Scanning source files...`, links nothing and exits 0. To check that a merge
+actually compiles, force it -- `./sonix-player/docker/build.sh clean` wipes only
+`build_*` and the binaries, the toolchain and the library prefixes stay -- and
+then run the build again. The link ends with `check-abi: no symbol beyond glibc
+2.16` and the stripped `sonix_player` (7.4 MB from a 40 MB debug binary).
+
+This worktree carries its own `sonix-player/rockbox-toolchain` (350 MB),
+`freetype-target/`, `audio-target/`, `build_target/` and
+`sonix-packer/v3_analog_original.upt`, so it builds and packs without borrowing
+anything from `~/Projects/own/tempotec-v3`.
+
 ## The toolchain is a build artifact, not a package
 
 Building it means compiling binutils, gcc and glibc from source. Its steps 7-11
