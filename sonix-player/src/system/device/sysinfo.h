@@ -169,7 +169,11 @@ typedef struct {
 							   // "md-gpio-keys"/"jz adc keyboard"; the V3 Analog's is "gpio-keys",
 							   // which neither list holds -- and a key device nothing reads is a
 							   // player whose volume and skip buttons do nothing at all
-	const char *pcm_device;	   // the ALSA name the built-in output is opened as; NULL is "default"
+	const char *pcm_device;	   // the ALSA name the built-in analogue output is opened as; NULL is "default"
+	const char *digital_pcm;   // the ALSA name of a second, separately opened output -- the S/PDIF one on
+							   // the V3 Analog, where the optical route is card 0 and the analogue one is
+							   // card 1. NULL means the board has one output and the route only touches the
+							   // mixer, as on the HiBy boards and the Blaze
 } sysinfo_model_t;
 
 // The writable user area: /usr/data on the HiBy boards and the Blaze, /data on

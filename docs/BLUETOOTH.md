@@ -99,7 +99,7 @@ MIPS/glibc 2.16 — the HCI/L2CAP/AVDTP decoder that found the MTU defect.
   `aplay -D bluealsa:DEV=<MAC>,PROFILE=a2dp /mnt/sd_0/tone.wav`.
 - After installing `20-bluealsa.conf`, restart the player: alsa-lib caches the config per
   process, and the symptom of a stale cache is `Unknown PCM bluealsa:…` followed by a fallback
-  to `plughw:1,0`.
+  to the analogue card (`hw:1,0`).
 
 ## Archive
 

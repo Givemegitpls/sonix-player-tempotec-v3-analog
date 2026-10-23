@@ -172,15 +172,75 @@ typedef struct {
 //
 // Which name that is comes from the model, not from this file: on the HiBy
 // boards and the Blaze the analogue output is what "default" resolves to, while
-// on the V3 Analog "default" is card 0 -- the S/PDIF dummy -- and the analogue
-// output is card 1, so the model names plughw:1,0 (see sysinfo.h).
+// on the V3 Analog "default" is card 0 -- the S/PDIF one -- and the analogue
+// output is card 1, so the model names hw:1,0 (see sysinfo.h).
+//
+// The V3 Analog also has a second output that is a separate card: the optical
+// transmitter is card 0. The stock player chooses between the two the way it
+// chooses everything else about the output -- by port -- and so does this file
+// now: the route detect_output() reports picks the card, and the mixer write
+// that goes with it ("Output Port Switch" = 0 for S/PDIF) is what feeds it.
+// The table is the stock player's own (see alsa-controls.c).
 #define AUDIO_FALLBACK_PCM "default"
 static const char *default_pcm(void) {
 	const sysinfo_model_t *model = sysinfo_model();
 	const char *name = model ? model->pcm_device : NULL;
 	return (name && name[0]) ? name : AUDIO_FALLBACK_PCM;
 }
-static char output_pcm[160] = AUDIO_FALLBACK_PCM;
+
+// The second output, when the board has one (the V3 Analog's optical card).
+static const char *digital_pcm(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	const char *name = model ? model->digital_pcm : NULL;
+	return (name && name[0]) ? name : NULL;
+}
+
+// The built-in output the route says is live. Routes 0 (S/PDIF) and 5 (nothing)
+// are the digital card; 1, 2 and 3 are the analogue one. Boards with a single
+// output answer default_pcm() for every route, which is what they did before.
+static const char *routed_pcm(void) {
+	const char *digital = digital_pcm();
+	if (!digital) {
+		return default_pcm();
+	}
+	int route = detect_output();
+	return (route == 0 || route == 5) ? digital : default_pcm();
+}
+
+// True for the names routed_pcm() can produce: the built-in outputs, whose
+// formats are the card's own and not a plug's. A plug in front of one of them
+// counts as the card -- "plughw:1,0" is the fallback open, still card 1.
+static bool is_builtin_pcm(const char *name) {
+	if (!name) {
+		return false;
+	}
+	if (strncmp(name, "plughw:", 7) == 0) {
+		name += 4; // "plughw:1,0" -> "hw:1,0"
+	}
+	const char *digital = digital_pcm();
+	return strcmp(name, default_pcm()) == 0 || (digital && strcmp(name, digital) == 0);
+}
+
+// The built-in output that is not `name`, or NULL when `name` is not one of
+// them (Bluetooth, a USB DAC, or a board with a single output).
+static const char *other_builtin_pcm(const char *name) {
+	const char *digital = digital_pcm();
+	if (!name || !digital) {
+		return NULL;
+	}
+	const char *bare = strncmp(name, "plughw:", 7) == 0 ? name + 4 : name;
+	if (strcmp(bare, default_pcm()) == 0) {
+		return digital;
+	}
+	if (strcmp(bare, digital) == 0) {
+		return default_pcm();
+	}
+	return NULL;
+}
+
+// An empty string means "follow the route": Bluetooth and a USB DAC install a
+// name of their own, and giving it back means returning to whatever the port is.
+static char output_pcm[160];
 
 // ---------------------------------------------------------------------------
 // 32-bit samples on the built-in card
@@ -211,7 +271,7 @@ static char output_pcm[160] = AUDIO_FALLBACK_PCM;
 // own name, so it is right for a handle that fell back to the card.
 static bool pcm_takes_s24(snd_pcm_t *pcm, int bits) {
 	const char *name = (pcm && bits == 32) ? snd_pcm_name(pcm) : NULL;
-	return name && strcmp(name, default_pcm()) == 0;
+	return is_builtin_pcm(name);
 }
 
 typedef struct {
@@ -274,6 +334,10 @@ static volatile long quiet_since_ms;
 // made it give up. play_file() reads it to tell a device that cannot do S32
 // from a driver that has run out of memory.
 static int last_open_err;
+
+// The name the plug retry opens instead of the routed one; empty otherwise.
+// Kept beside last_open_err because it exists for exactly one open attempt.
+static char forced_device[160];
 
 // Set by audio_notify_resume(): a system suspend leaves an open stream in
 // SND_PCM_STATE_SUSPENDED, and a paused track keeps its stream open across
@@ -917,12 +981,10 @@ bool audio_get_gapless(void) { return gapless_enabled; }
 // buffer not going down is one nobody is reading.
 #define DRAIN_STALL_MS 200
 
-// How long a period should last above 192 kHz, and how large one is ever
-// allowed to get. The length is what 4096 frames last at 44.1 kHz, which is the
-// sizing every rate below has been using all along; the cap is there because
-// the frames are what the driver has to find DMA memory for, and a request it
-// cannot meet is settled downwards rather than refused.
-#define PERIOD_TARGET_MS 90
+// How large a period is ever allowed to get. The cap is there because the
+// frames are what the driver has to find DMA memory for, and a request it
+// cannot meet is settled downwards rather than refused. 32768 is also what the
+// stock player asks for above 192 kHz.
 #define PERIOD_FRAMES_MAX 32768
 
 // The smallest period the two limits below will go down to: 23 ms at 44.1 kHz,
@@ -1404,13 +1466,29 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 
 	release_external_output();
 
+	// The route first, then the stream: the two outputs of this board are two
+	// cards, so the port decides *which* PCM is opened (routed_pcm() below) and
+	// the mixer write is what feeds it -- "Output Port Switch" = 0 routes the
+	// SoC's digital side to the optical transmitter, 1..3 to the codec. Doing
+	// it here means every open agrees with the jacks, including the first track
+	// after headphones were plugged in while nothing was playing; and it is a
+	// no-op when the cache already holds the route. Safe because this is the
+	// one place with no stream live on this card: it is about to be opened.
+	auto_set_output();
+
 	// A track change closes the old PCM and opens a new one back to back. On
 	// real hardware the close is not always instantaneous -- the driver can
 	// report EBUSY for a moment while the old stream is torn down -- and one
 	// failed open here means the new track silently never starts. So the open
 	// is retried briefly instead of being given up on the first attempt.
 	char device[sizeof(output_pcm)];
-	audio_get_output_device(device, sizeof(device));
+	if (forced_device[0]) {
+		// Set only by the plug retry in open_pcm_device(), which is the one
+		// caller that opens a name other than the one the route resolved.
+		snprintf(device, sizeof(device), "%s", forced_device);
+	} else {
+		audio_get_output_device(device, sizeof(device));
+	}
 
 	// bluealsa reports the same race differently. Where a card driver says EBUSY
 	// while the old stream is torn down, the plugin has to re-acquire the A2DP
@@ -1431,7 +1509,7 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	if (bluetooth && !bluetooth_audio_active()) {
 		fprintf(stderr, "audio: '%s' has no sink any more; the jack takes it back\n", device);
 		audio_set_output_device(NULL);
-		snprintf(device, sizeof(device), "%s", default_pcm());
+		snprintf(device, sizeof(device), "%s", routed_pcm());
 		bluetooth = false;
 	}
 
@@ -1485,11 +1563,23 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 
 	// Headphones that walked out of range take their PCM with them, and a
 	// track that refuses to start is a worse outcome than one coming out of
-	// the wrong hole. Fall back to the jack, and say so in the log.
-	if (err < 0 && strcmp(device, default_pcm()) != 0) {
+	// the wrong hole. Fall back to a built-in output, and say so in the log.
+	//
+	// Which one: the other built-in -- optical when the analogue device refused,
+	// the analogue when the optical one did (the two are separate cards on this
+	// board and either can be the one that is not routed). A Bluetooth or USB
+	// name that dies falls back to whatever the route now says.
+	const char *backup = other_builtin_pcm(device);
+	if (err < 0 && !backup && !is_builtin_pcm(device)) {
+		backup = routed_pcm();
+	}
+	if (err < 0 && backup && strcmp(device, backup) != 0) {
 		fprintf(stderr, "audio: '%s' would not open (%s); falling back to '%s'\n", device, snd_strerror(err),
-				default_pcm());
-		err = snd_pcm_open(&pcm_handle, default_pcm(), SND_PCM_STREAM_PLAYBACK, 0);
+				backup);
+		err = snd_pcm_open(&pcm_handle, backup, SND_PCM_STREAM_PLAYBACK, 0);
+		if (err >= 0) {
+			snprintf(device, sizeof(device), "%s", backup);
+		}
 
 		// And stop asking for it, so the dead name does not stay installed and
 		// cost every following track the same wait while the interface, the
@@ -1535,6 +1625,11 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	}
 
 	if (snd_pcm_hw_params_set_format(pcm_handle, hw_params, format) < 0) {
+		// Recorded, because it is the one failure the plug can repair: the
+		// built-in card takes S16_LE and S24_LE and nothing else, and asking it
+		// for S32_LE or S24_3LE is a refusal, not a broken device. See the
+		// plug retry in open_pcm_device().
+		last_open_err = -EINVAL;
 		fprintf(stderr, "audio: format %s refused by the device\n", snd_pcm_format_name(format));
 		snd_pcm_close(pcm_handle);
 		return NULL;
@@ -1563,37 +1658,40 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 		fprintf(stderr, "audio: %d Hz unavailable, device settled on %u Hz\n", sample_rate, val);
 	}
 
-	// A deep buffer, on purpose: ~0.75 s at 44.1 kHz. The playback thread can
-	// stall for seconds when a big album cover decodes at a track change
-	// (memory pressure evicts code pages, the SD is saturated, the thread
-	// page-faults), and the AIC driver answers a starved stream with EIO. Four
-	// periods of 1024 frames (93 ms) cannot ride that out; this absorbs most of
-	// it. Responsiveness does not suffer: stops and switches drop the buffer,
-	// they never drain it.
-	unsigned int periods = 8;
-	snd_pcm_uframes_t period_size = 4096;
-
-	// ...as long as 4096 frames are still a period. Past 96 kHz they stop being
-	// one and become a fragment, and the reserve goes with them: 4096 frames are
-	// 93 ms at 44.1 kHz, 23 ms at 176.4 kHz, and 5.8 ms at 705.6 kHz, where
-	// DSD256 goes over DoP. The whole eight-period buffer at 705.6 kHz was
-	// 46 ms, and the stream starts on a full buffer, so that was also all it
-	// ever had in hand against an interface sharing the one core. The first
-	// thing that takes the core for longer than that is an underrun, a prepare
-	// and a rewrite.
+	// The stock player's own geometry, taken from its device layer: four
+	// periods, and a period whose length is chosen by the sample rate --
+	// 1024 frames at 8 and 11.025 kHz, 2048 to 22.05 kHz, 4096 at 32, 44.1 and
+	// 48 kHz, 8192 to 192 kHz, 32768 above that. The reserve that leaves is
+	// 371 ms at 44.1 kHz, which is what the stock firmware has always had.
 	//
-	// So above 96 kHz the period is chosen by how long it lasts instead, and the
-	// reserve comes out where it is at 44.1 kHz. Everything at or below keeps
-	// exactly the sizing it has always had.
-	if (sample_rate > 96000) {
-		// Doubled while the next step is still near the target rather than past
-		// it: a period is a power of two here, and always taking the first one
-		// longer than the target would ask for 170 ms at 192 kHz to hit 90.
-		snd_pcm_uframes_t want = (snd_pcm_uframes_t)(((long)sample_rate * PERIOD_TARGET_MS) / 1000);
-		while (period_size * 2 <= want + want / 2 && period_size * 2 <= PERIOD_FRAMES_MAX) {
-			period_size *= 2;
-		}
+	// The deeper buffer this port grew up with exists for a reason of its own:
+	// the playback thread can stall for seconds when a big album cover decodes
+	// at a track change (memory pressure evicts code pages, the SD is saturated,
+	// the thread page-faults), and the AIC driver answers a starved stream with
+	// EIO. That is what the "buffer_time_ms" key and period_count below are for;
+	// the default is the stock geometry, so that what the player sounds like at
+	// a track change is what the stock firmware sounds like.
+	unsigned int periods = (unsigned int)config_get_int("audio", "period_count", 4);
+	if (periods < 1 || periods > 32) {
+		periods = 4;
 	}
+	snd_pcm_uframes_t period_size;
+	if (sample_rate <= 11025) {
+		period_size = 1024;
+	} else if (sample_rate <= 22050) {
+		period_size = 2048;
+	} else if (sample_rate <= 48000) {
+		period_size = 4096;
+	} else if (sample_rate <= 192000) {
+		period_size = 8192;
+	} else {
+		period_size = PERIOD_FRAMES_MAX; // 32768, as the stock asks above 192 kHz
+	}
+
+	// DoP above 192 kHz: the period is already the largest the stock uses, and
+	// PERIOD_FRAMES_MAX is where the ladder tops out, so nothing more to do.
+	// Below that the ladder is the whole rule; the old "grow past 96k" step is
+	// folded into it.
 
 	// A USB DAC is the exception, up to 192 kHz. Its buffer is not memory the
 	// card was given at boot, as the built-in DAC's is: snd-usb-audio allocates
@@ -1606,9 +1704,11 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	// already as thin as it can be and the sizing stays; a refusal there is left
 	// to the retry below.
 	//
-	// A card named by number is a USB one: the built-in DAC is "default" and
-	// Bluetooth is "bluealsa...".
-	bool usb_card = strncmp(device, "plughw:", 7) == 0 || strncmp(device, "hw:", 3) == 0;
+	// A card named by number that is not one of the board's own is a USB one:
+	// the built-in outputs come from the model (hw:1,0 and hw:0,0), and Bluetooth
+	// is "bluealsa...".
+	bool usb_card = (strncmp(device, "plughw:", 7) == 0 || strncmp(device, "hw:", 3) == 0) &&
+					!is_builtin_pcm(device);
 	unsigned int frame_bytes = (unsigned int)channels * (unsigned int)((bits_per_sample + 7) / 8);
 	if (usb_card && sample_rate <= 192000 && frame_bytes > 0) {
 		while (period_size > PERIOD_FRAMES_MIN && period_size * periods * frame_bytes > USB_BUFFER_MAX_BYTES) {
@@ -1666,7 +1766,6 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 		fprintf(stderr, "audio: no memory in the driver for the buffer; asking again with %lu-frame periods\n",
 				(unsigned long)period_size);
 		snd_pcm_hw_params_copy(hw_params, unsized);
-		periods = 8;
 		snd_pcm_hw_params_set_periods_near(pcm_handle, hw_params, &periods, &dir);
 		snd_pcm_hw_params_set_period_size_near(pcm_handle, hw_params, &period_size, &dir);
 		err = snd_pcm_hw_params(pcm_handle, hw_params);
@@ -1763,6 +1862,27 @@ static snd_pcm_t *open_pcm_device(int channels, int sample_rate, int bits_per_sa
 	pcm_opening = true;
 	last_open_err = 0;
 	snd_pcm_t *pcm = open_pcm_device_now(channels, sample_rate, bits_per_sample, period_size_out);
+
+	// The built-in cards take S16_LE and S24_LE and nothing else (measured on
+	// the V3 Analog: hw:1,0 and hw:0,0 both list exactly those two). The open
+	// path asks for the card's own format, so this is the rare case of a track
+	// that wants another one -- 24-bit in three bytes, or S32. Falling back to
+	// the plug is better than a silent track, and the stock player's device
+	// layer does the same in spirit: it converts in its own chain rather than
+	// refusing. The written samples still take the driver's copy path unless
+	// the plug really has something to convert.
+	if (!pcm && last_open_err == -EINVAL) {
+		char device[sizeof(output_pcm)];
+		audio_get_output_device(device, sizeof(device));
+		if (strncmp(device, "hw:", 3) == 0) {
+			snprintf(forced_device, sizeof(forced_device), "plughw:%s", device + 3);
+			fprintf(stderr, "audio: '%s' refused the format; converting through '%s'\n", device, forced_device);
+			last_open_err = 0;
+			pcm = open_pcm_device_now(channels, sample_rate, bits_per_sample, period_size_out);
+			forced_device[0] = '\0';
+		}
+	}
+
 	if (!pcm && last_open_err == 0) {
 		last_open_err = -EIO;
 	}
@@ -2994,8 +3114,11 @@ static void play_wav_file(const char *filepath) {
 		}
 		pthread_mutex_unlock(&audio_mutex);
 
-		// Every ~32 buffers: has the jack changed?
-		if (++route_check >= 32) {
+		// Every ~8 buffers: has the jack changed? A buffer is a period, and the
+		// period is the stock player's -- 4096 frames at 44.1 kHz -- so this is
+		// under a second, which is what makes unplugging the headphones feel
+		// like the stock firmware and not like a player thinking about it.
+		if (++route_check >= 8) {
 			route_check = 0;
 			int now_route = alsa_output_key();
 			if (now_route != track_route) {
@@ -3667,8 +3790,11 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		}
 		pthread_mutex_unlock(&audio_mutex);
 
-		// Every ~32 buffers: has the jack changed?
-		if (++route_check >= 32) {
+		// Every ~8 buffers: has the jack changed? A buffer is a period, and the
+		// period is the stock player's -- 4096 frames at 44.1 kHz -- so this is
+		// under a second, which is what makes unplugging the headphones feel
+		// like the stock firmware and not like a player thinking about it.
+		if (++route_check >= 8) {
 			route_check = 0;
 			int now_route = alsa_output_key();
 			if (now_route != track_route) {
@@ -4151,9 +4277,11 @@ int audio_init(void) {
 	growfile_set_reader_abort_cb(playback_reader_should_abort);
 	playback_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 
-	// The built-in output's name is the model's, not the literal "default"
-	// (sysinfo.h): on the V3 Analog "default" is the S/PDIF dummy on card 0 and
-	// the analogue output is card 1, so the model names plughw:1,0. Installed
+	// The built-in outputs' names are the model's, not the literal "default"
+	// (sysinfo.h): on the V3 Analog "default" is the optical card and the
+	// analogue output is card 1, so the model names hw:1,0 and hw:0,0 and the
+	// port decides between them (routed_pcm()). Empty means "follow the port",
+	// so this also picks up a jack plugged in before the first track. Installed
 	// here, once, so no track can open the wrong card before Bluetooth has had a
 	// chance to move the route somewhere else.
 	audio_set_output_device(NULL);
@@ -4592,21 +4720,31 @@ void audio_seek(double seconds) {
 // where the sound goes
 // ---------------------------------------------------------------------------
 
+// The name to open, called with output_lock held: the override if there is one,
+// otherwise whatever the route says (routed_pcm()).
+static void resolve_output_locked(char *out, size_t out_size) {
+	snprintf(out, out_size, "%s", output_pcm[0] ? output_pcm : routed_pcm());
+}
+
 void audio_set_output_device(const char *pcm) {
 	pthread_mutex_lock(&output_lock);
 	char before[sizeof(output_pcm)];
-	snprintf(before, sizeof(before), "%s", output_pcm);
+	resolve_output_locked(before, sizeof(before));
 	if (pcm && pcm[0]) {
 		snprintf(output_pcm, sizeof(output_pcm), "%s", pcm);
 	} else {
-		snprintf(output_pcm, sizeof(output_pcm), "%s", default_pcm());
+		// Empty is "follow the port": the route decides between the analogue and
+		// the digital card, and picks up a jack plugged in while Bluetooth or a
+		// USB DAC had the output. Storing the resolved name here instead would
+		// freeze the choice at the moment the link dropped.
+		output_pcm[0] = '\0';
 	}
 	// Only when it really moved, and on stderr. This line is how a log answers
 	// "did the sound stop going to the headphones, or did it stop coming out of
 	// them" -- so it must not be one of twenty identical lines, and it must not
 	// be sitting in a block buffer when the interesting moment passes.
 	char after[sizeof(output_pcm)];
-	snprintf(after, sizeof(after), "%s", output_pcm);
+	resolve_output_locked(after, sizeof(after));
 	pthread_mutex_unlock(&output_lock);
 
 	if (strcmp(before, after) != 0) {
@@ -4619,7 +4757,7 @@ void audio_get_output_device(char *out, size_t out_size) {
 		return;
 	}
 	pthread_mutex_lock(&output_lock);
-	snprintf(out, out_size, "%s", output_pcm);
+	resolve_output_locked(out, out_size);
 	pthread_mutex_unlock(&output_lock);
 }
 
