@@ -91,7 +91,7 @@ Put the image where you like and pass its path to the packer with `STOCK=`
 ## 3. Build the player
 
 Nothing to do here either: step 5 builds the player in the image
-`sonix-player/docker` describes and puts both binaries next to itself. On a
+`sonix-player/docker` describes and puts the binaries next to itself. On a
 machine with nothing but docker that is the whole recipe; the step is in this
 document because it is where the time goes.
 
@@ -109,8 +109,10 @@ sonix-player/docker/build.sh
 
 That is `make target -j"$(nproc)"` in that image, with the tree mounted at its
 own path and the container running as you — the outputs are ordinary files of
-yours, in the tree. Anything `make` takes goes through: `build.sh host` builds
-the SDL simulator, `build.sh target -j2` builds with two jobs.
+yours, in the tree. Anything `make` takes goes through: `build.sh target -j2`
+builds with two jobs, `build.sh clean` wipes the objects. Not `host`, though:
+the image carries no SDL, FreeType, opusfile, wavpack or ALSA headers, so the
+simulator is a build on the machine and nothing to do with this image (below).
 
 The **first** run does four things by itself and takes a while (20–60 minutes
 on a laptop), all of it inside the container:
@@ -121,7 +123,7 @@ on a laptop), all of it inside the container:
 2. downloads and cross-builds FreeType, static, into `freetype-target/`;
 3. downloads and cross-builds libogg, libopus, opusfile and libwavpack, static,
    into `audio-target/`;
-4. clones LVGL 9.6 and builds the player itself.
+4. clones LVGL v9.6.0 and builds the player itself.
 
 Later runs go straight to step 4 and take a couple of minutes: all four live in
 the tree, not in the image, so they are built once.
@@ -152,10 +154,23 @@ them:
 - LVGL is cloned from GitHub. A half-finished clone leaves `sonix-player/lvgl/`
   behind; remove that directory before retrying.
 
-The build ends with two files in `sonix-player/`:
+An incremental run is not proof that the tree compiles. `make` compares mtimes
+against `build_target/`, so when the objects are newer than every source — after
+a build that already saw this tree, or a `git` operation that rewrote nothing —
+it prints `Scanning source files...`, links nothing and exits 0. Wipe the
+objects to force it; `clean` removes `build_*` and the binaries and leaves the
+toolchain, FreeType and the audio libraries where they are:
+
+```sh
+sonix-player/docker/build.sh clean
+sonix-player/docker/build.sh
+```
+
+The build ends with three files in `sonix-player/`:
 
 ```
-sonix_player         the player
+sonix_player         the player, stripped (7.4 MB)
+sonix_player_debug   the same binary with its symbols, for gdb (41 MB)
 sonix_launch         the launcher that reboots the device if the player exits
 ```
 
@@ -315,15 +330,20 @@ machine just as well. What it needs there, beyond a C/C++ compiler and `make`:
 ```sh
 # Debian / Ubuntu
 sudo apt install build-essential git wget xz-utils bzip2 texinfo \
-                 autoconf automake libtool libtool-bin pkg-config p7zip-full
+                 autoconf automake libtool libtool-bin pkg-config p7zip-full \
+                 libgmp-dev libmpfr-dev libmpc-dev gawk bison gtk-doc-tools \
+                 patch file python3 ca-certificates
 # Fedora
 sudo dnf install gcc gcc-c++ make git wget xz bzip2 texinfo \
-                 autoconf automake libtool libtool-bin pkgconf-pkg-config p7zip
+                 autoconf automake libtool pkgconf-pkg-config p7zip \
+                 gmp-devel mpfr-devel libmpc-devel gawk bison gtk-doc \
+                 patch file python3 ca-certificates
 ```
 
 `libtool-bin` is a package of its own on Debian and Ubuntu, and it is the one
 that matters: `rockboxdev.sh` looks for the `libtool` script by name, and the
-`libtool` package carries only the macros and `libtoolize`.
+`libtool` package carries only the macros and `libtoolize`. Fedora's `libtool`
+is the whole thing, `libtool` script included.
 
 Then, from `sonix-player/`:
 
@@ -340,6 +360,9 @@ somewhere else is reused rather than rebuilt:
 make ROCKBOX_TOOLCHAIN_DIR=/path/to/rockbox-toolchain target -j"$(nproc)"
 ```
 
-This list is exactly what `sonix-player/docker/Dockerfile` installs, so a package
-missing there is missing here too.
+`sonix-player/docker/Dockerfile` installs the same set, in Debian names; it is
+the authoritative list, so a package missing there is missing here too. The gcc
+prerequisites (`libgmp-dev libmpfr-dev libmpc-dev gawk bison`) and
+`gtk-doc-tools` are on it because the toolchain and alsa-lib are built from
+source, and the host build does the same.
 
