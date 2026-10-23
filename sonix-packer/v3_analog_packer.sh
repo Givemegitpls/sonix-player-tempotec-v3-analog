@@ -309,6 +309,20 @@ install_tree() {
 	say ""
 }
 
+trim_stock() {
+	step "Trimming the stock libraries nothing uses"
+
+	# Not tidiness: this rootfs boots 100% full, and a test build replaces a
+	# 7.4 MB binary in place -- on a full volume that copy dies halfway and
+	# leaves a player that cannot start. ~6 MB of the stock player's decoders
+	# and a duplicate libcrypto are what buys that headroom back.
+	#
+	# The script itself fails the build if a remaining binary still needs one of
+	# the files it removed, so this is not a leap of faith.
+	fw python3 tools/trim_stock.py
+	say ""
+}
+
 pack_image() {
 	step "Packing the image"
 
@@ -483,6 +497,7 @@ all)
 	check_inputs
 	unpack_stock
 	install_tree
+	trim_stock
 	pack_image
 	verify_image
 	;;
