@@ -7,6 +7,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/pagetimer.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/bluetooth/btsettings.h"
 #include "src/gui/shell/settingsrow.h"
@@ -351,5 +352,5 @@ void btreceiverpage_init(gui_config_t *cfg) {
 	switcher_set_back_guard(btreceiverpage_screen, back_guard);
 
 	poll_timer = lv_timer_create(poll_cb, POLL_MS, NULL);
-	(void)poll_timer;
+	pagetimer_bind(poll_timer, btreceiverpage_screen, NULL);
 }

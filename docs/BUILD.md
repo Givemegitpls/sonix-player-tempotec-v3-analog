@@ -9,6 +9,10 @@ The stock firmware is **not** in the repository — it is the vendor's, and the
 port only carries what it adds to it. You need one copy of it (below), and
 nothing else that is not public.
 
+This document builds one image from the source as it stands. Taking a newer
+upstream Sonix release into the tree is a different job, with its own recipe:
+[docs/UPDATING.md](UPDATING.md).
+
 ---
 
 ## 0. What you need

@@ -10,6 +10,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/clocklabel.h"
 #include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/unchanged.h"
 #include "src/gui/nowplaying/player.h"
@@ -40,7 +41,10 @@
 
 // The inner cavity of the battery shell, in the SVG's 24x24 coordinates: the
 // body rect runs 2..18 with a 2px stroke centred on it, so the hole is 3..17
-// across and 7..17 down.
+// across and 7..17 down. Not pixels, so not SC(): draw_battery() scales these
+// by BATTERY_ICON_SIZE / 24 itself (cavity_x and the rest, at init), and
+// scaling them here as well shrank the level bar to two thirds of the cavity
+// and shifted it a pixel towards the corner.
 #define BATTERY_CAVITY_X 3
 #define BATTERY_CAVITY_Y 7
 #define BATTERY_CAVITY_W 14
@@ -81,6 +85,13 @@
 // Comfortably more than the wobble of a tap.
 #define FLICK_OPEN_PX SC(24)
 
+// Over the player's artwork the bar blurs whatever is drawn under it, as it is
+// drawn, and darkens it towards black about as far as the block behind the
+// player's controls (BACKDROP_BRIGHTNESS_PCT in cover.c), so the white type
+// reads on any picture.
+#define OVER_ART_BLUR_RADIUS SC(24)
+#define OVER_ART_DIM_OPA 148
+
 static lv_obj_t *top_bar;
 static lv_obj_t *bat_widget;
 static lv_obj_t *bat_fill;
@@ -109,6 +120,40 @@ static lv_timer_t *jack_timer;
 // moved, and new colours are not a new reading.
 static int last_battery_percent = -2;
 static int last_battery_charging = -1;
+
+// A page painted in a colour of its own -- an album in its sleeve's -- has the
+// bar in that colour too, a shade darker as the theme's own bar is, with the
+// glyphs and the type in the ink worked out for it. Only while that page is
+// the one shown: `tint_page` is the page being shown, set as it is loaded.
+//
+// The glyphs and the labels wear two styles added after the theme's, empty
+// until a tint is in force, so a glyph whose colour means something -- the
+// gold jack, the codec on the Bluetooth glyph, the volume warning -- keeps it:
+// those are set on the object itself and win over any style.
+static lv_obj_t *tint_screen;
+static lv_obj_t *tint_page;
+static lv_color_t tint_bg;
+static lv_color_t tint_ink;
+static bool tint_active;
+static bool tint_held; // topbar_tint_hold()
+static lv_style_t tint_text_style;
+static lv_style_t tint_icon_style;
+
+// The battery shell's colour: the ink, or the theme's, and quieter when the
+// level is not known.
+// Up over the player's artwork (topbar_set_over_artwork): white on the
+// picture, whatever the theme or the page underneath says.
+static bool over_art;
+
+static lv_color_t shell_color(bool known) {
+	if (over_art) {
+		return known ? lv_color_white() : lv_color_make(200, 200, 200);
+	}
+	if (tint_active) {
+		return known ? tint_ink : lv_color_mix(tint_ink, tint_bg, 140);
+	}
+	return known ? theme()->text_primary : theme()->text_secondary;
+}
 static lv_timer_t *clock_timer;
 static lv_timer_t *radio_timer;
 
@@ -143,14 +188,14 @@ static void update_battery_indicator(int percent, bool charging) {
 	if (percent < 0) {
 		// Unknown level: empty shell, with nothing to fill in.
 		lv_obj_set_hidden(bat_fill, true);
-		lv_obj_set_style_image_recolor(bat_shell, theme()->text_secondary, 0);
+		lv_obj_set_style_image_recolor(bat_shell, shell_color(false), 0);
 		lv_label_set_text(bat_label, "--%");
 		return;
 	}
 
 	lv_label_set_text_fmt(bat_label, "%d%%", percent);
 
-	lv_obj_set_style_image_recolor(bat_shell, theme()->text_primary, 0);
+	lv_obj_set_style_image_recolor(bat_shell, shell_color(true), 0);
 
 	if (charging) {
 		lv_obj_set_hidden(bat_fill, true);
@@ -172,29 +217,24 @@ static void update_battery_indicator(int percent, bool charging) {
 
 // Redraws the clock. Before the time has been set there is nothing truthful to
 // show, so it reads as blank rather than as 1970.
-void topbar_refresh_clock(void) {
-	if (!clock_label) {
-		return;
-	}
-
-	if (!clock_is_set()) {
-		lv_label_set_text(clock_label, "--:--");
-		return;
-	}
-
-	time_t now = time(NULL);
-	struct tm local;
-	localtime_r(&now, &local);
-
-	char text[16];
-	clock_format_hm(text, sizeof(text), local.tm_hour, local.tm_min);
-	lv_label_set_text(clock_label, text);
-}
+void topbar_refresh_clock(void) { clocklabel_refresh(clock_label); }
 
 static void clock_timer_cb(lv_timer_t *timer) {
 	(void)timer;
+	// A time zone the network has just located goes in place first, so the
+	// bar shows the time in it.
+	clock_poll();
 	topbar_refresh_clock();
 }
+
+static void clock_changed_cb(void *unused) {
+	(void)unused;
+	clock_poll();
+	topbar_refresh_clock();
+}
+
+// From the network attempt's thread: onto this one.
+static void clock_changed(void) { gui_post(clock_changed_cb, NULL); }
 
 static void remember_timer_cb(lv_timer_t *timer) {
 	(void)timer;
@@ -977,15 +1017,28 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_hidden(bat_bolt, true);
 
 	// Clock, centred on the bar and independent of everything around it.
-	clock_label = lv_label_create(top_bar);
+	clock_label = clocklabel_create(top_bar, &font_ui_24, 24, &font_ui_14, 14);
 	lv_obj_add_style(clock_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(clock_label, &font_ui_24, 0);
 	lv_obj_align(clock_label, LV_ALIGN_CENTER, 0, 0);
 	topbar_refresh_clock();
 	topbar_set_clock_position((int)config_get_int("screen", "clock_pos", TOPBAR_CLOCK_CENTER));
 
+	// The tint's two styles, after the theme's so that they win over it; empty
+	// until a tinted page is shown (topbar_tint_on_screen).
+	lv_style_init(&tint_text_style);
+	lv_style_init(&tint_icon_style);
+	lv_obj_t *tinted_icons[] = {vol_icon, hp_icon, play_icon, library_icon, sonixlink_icon, bt_icon, wifi_icon};
+	for (size_t i = 0; i < sizeof(tinted_icons) / sizeof(tinted_icons[0]); i++) {
+		lv_obj_add_style(tinted_icons[i], &tint_icon_style, 0);
+	}
+	lv_obj_t *tinted_labels[] = {vol_label, bat_label, clock_label};
+	for (size_t i = 0; i < sizeof(tinted_labels) / sizeof(tinted_labels[0]); i++) {
+		lv_obj_add_style(tinted_labels[i], &tint_text_style, 0);
+	}
+
 	// Ten seconds keeps the minute from ever looking stale and costs nothing.
 	clock_timer = lv_timer_create(clock_timer_cb, 10000, NULL);
+	clock_set_change_hook(clock_changed);
 	power_pause_in_standby(clock_timer); // a clock nobody can see is pure drain
 
 	// The current time is written to the config, and checked against the RTC, so
@@ -1050,6 +1103,108 @@ void topbar_set_battery_percent(bool shown) {
 	} else {
 		lv_obj_set_hidden(bat_label, true);
 	}
+}
+
+// Puts the bar in the tint or back in the theme, for the page now shown.
+static void tint_apply(void) {
+	if (!top_bar || over_art) {
+		return; // the artwork's look holds for as long as the player is up
+	}
+	bool active = tint_screen && tint_page == tint_screen && !tint_held;
+	if (active == tint_active && !active) {
+		return;
+	}
+	tint_active = active;
+
+	if (active) {
+		lv_obj_set_style_bg_color(top_bar, tint_bg, 0);
+		lv_style_set_text_color(&tint_text_style, tint_ink);
+		lv_style_set_image_recolor(&tint_icon_style, tint_ink);
+		lv_style_set_image_recolor_opa(&tint_icon_style, LV_OPA_COVER);
+	} else {
+		lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BG_COLOR, 0);
+		lv_style_remove_prop(&tint_text_style, LV_STYLE_TEXT_COLOR);
+		lv_style_remove_prop(&tint_icon_style, LV_STYLE_IMAGE_RECOLOR);
+		lv_style_remove_prop(&tint_icon_style, LV_STYLE_IMAGE_RECOLOR_OPA);
+	}
+	lv_obj_report_style_change(&tint_text_style);
+	lv_obj_report_style_change(&tint_icon_style);
+
+	// The shell carries its colour on itself; it is painted now, and the next
+	// poll paints the whole indicator again.
+	lv_obj_set_style_image_recolor(bat_shell, shell_color(last_battery_percent >= 0), 0);
+	last_battery_percent = -2;
+}
+
+// The blur and the dimming behind the bar, or neither.
+static void over_art_backdrop(bool blur) {
+	if (blur) {
+		lv_obj_set_style_bg_color(top_bar, lv_color_black(), 0);
+		lv_obj_set_style_bg_opa(top_bar, OVER_ART_DIM_OPA, 0);
+		lv_obj_set_style_blur_radius(top_bar, OVER_ART_BLUR_RADIUS, 0);
+		lv_obj_set_style_blur_backdrop(top_bar, true, 0);
+		lv_obj_set_style_blur_quality(top_bar, LV_BLUR_QUALITY_SPEED, 0);
+	} else {
+		lv_obj_set_style_bg_opa(top_bar, LV_OPA_TRANSP, 0);
+		lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BLUR_RADIUS, 0);
+		lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BLUR_BACKDROP, 0);
+		lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BLUR_QUALITY, 0);
+	}
+}
+
+void topbar_set_over_artwork(bool on, bool blur) {
+	if (!top_bar) {
+		return;
+	}
+	if (on) {
+		over_art = true;
+		over_art_backdrop(blur);
+		lv_style_set_text_color(&tint_text_style, lv_color_white());
+		lv_style_set_image_recolor(&tint_icon_style, lv_color_white());
+		lv_style_set_image_recolor_opa(&tint_icon_style, LV_OPA_COVER);
+		lv_obj_report_style_change(&tint_text_style);
+		lv_obj_report_style_change(&tint_icon_style);
+	} else if (over_art) {
+		over_art = false;
+		over_art_backdrop(false);
+		lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BG_OPA, 0);
+		// Whatever the page underneath wants, from scratch: the tint's styles
+		// hold the artwork's white until this puts them back.
+		tint_active = true;
+		tint_apply();
+	} else {
+		return;
+	}
+	lv_obj_set_style_image_recolor(bat_shell, shell_color(last_battery_percent >= 0), 0);
+	last_battery_percent = -2;
+}
+
+void topbar_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t bg, lv_color_t ink) {
+	if (on) {
+		tint_screen = screen;
+		tint_bg = bg;
+		tint_ink = ink;
+		tint_active = false; // apply again even if it was on: the colours are new
+	} else if (tint_screen == screen) {
+		tint_screen = NULL;
+	}
+	if (!tint_page) {
+		tint_page = lv_screen_active();
+	}
+	tint_apply();
+}
+
+void topbar_page_shown(lv_obj_t *screen) {
+	tint_page = screen;
+	tint_apply();
+}
+
+void topbar_tint_hold(bool held) {
+	if (tint_held == held) {
+		return;
+	}
+	tint_held = held;
+	tint_apply();
 }
 
 void topbar_bring_to_front(void) {

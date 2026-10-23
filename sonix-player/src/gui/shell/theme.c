@@ -1,5 +1,7 @@
 #include "theme.h"
 
+#include "src/gui/shell/scale.h"
+
 #include "src/system/device/bootlogo.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/core/config.h"
@@ -274,13 +276,10 @@ void theme_init(void) {
 	rebuild_active();
 	apply_palette();
 
-	// A player with one boot logo puts back a marker that an earlier build,
-	// which wrote it by theme, left on the flash (see bootlogo.h). Read on a
-	// worker, written only when it differs.
-	const sysinfo_model_t *model = sysinfo_model();
-	if (model && model->one_boot_logo) {
-		bootlogo_follow_theme(active->dark);
-	}
+	// The marker on the flash may be missing or older than these settings.
+	// bootlogo_follow() is a no-op on a board whose logo is not on the flash
+	// (the V3 Analog's /dev/mtd5 is the /data volume) -- see bootlogo.c.
+	bootlogo_follow(active->dark, accent_index);
 }
 
 void theme_apply_slider_knob(lv_obj_t *slider) {
@@ -503,16 +502,12 @@ void theme_set_mode(theme_mode_t m) {
 	config_set_bool("ui", "amoled", last_dark_mode == THEME_MODE_AMOLED);
 	config_save();
 
-	// The picture shown while the player boots follows the theme too. It is
-	// written into raw flash rather than into the config, because the script
-	// that draws it runs long before any filesystem holding a config is
-	// mounted -- see bootlogo.h. Dark and AMOLED share the dark picture, so a
-	// move between those two leaves the flash alone. A player with one boot
-	// logo has nothing to follow; theme_init() already set it.
-	const sysinfo_model_t *model = sysinfo_model();
-	if (active->dark != was_dark && !(model && model->one_boot_logo)) {
-		bootlogo_follow_theme(active->dark);
-	}
+	// The boot logo follows the theme and the accent; see bootlogo.h. Dark and
+	// AMOLED share the dark picture, so a move between those two leaves the
+	// flash alone -- and on a board without a logo on the flash it does nothing
+	// at all.
+	(void)was_dark;
+	bootlogo_follow(active->dark, accent_index);
 
 	refresh_all();
 }
@@ -534,6 +529,8 @@ void theme_set_accent(int index) {
 
 	config_set_int("ui", "accent", index);
 	config_save();
+
+	bootlogo_follow(active->dark, accent_index);
 
 	refresh_all();
 }

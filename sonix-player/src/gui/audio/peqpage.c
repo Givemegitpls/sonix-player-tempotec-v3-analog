@@ -423,8 +423,10 @@ static int entry_parse_scaled(const char *text, int decimals) {
 	return (int)(negative ? -value : value);
 }
 
+// The keypad's own X is its way out: the back arrow goes while it is up.
 static void entry_hide(void) {
 	lv_obj_set_hidden(entry_layer, true);
+	back_btn_hide_on_screen(band_screen, false);
 }
 
 static void entry_cancel_cb(lv_event_t *e) {
@@ -558,6 +560,7 @@ static void entry_open(entry_kind_t kind) {
 		break;
 	}
 	entry_fresh = true;
+	back_btn_hide_on_screen(band_screen, true);
 
 	// The frequency is whole hertz: no comma. Only the gain has a sign.
 	lv_obj_set_state(entry_comma_btn, LV_STATE_DISABLED, kind == ENTRY_FREQ);
@@ -680,12 +683,15 @@ static void build_entry_layer(gui_config_t *cfg) {
 	lv_obj_set_style_text_color(lv_obj_get_child(entry_ok_btn, 0), lv_color_white(), 0);
 }
 
-// The number over a slider becomes the way into the keypad, with a margin
-// round it a finger can find.
+// The number over a slider becomes the way into the keypad: set on a rounded
+// box of the pressed-card colour, with a margin round it a finger can find.
 static void entry_attach(lv_obj_t *value_label, entry_kind_t kind) {
+	lv_obj_add_style(value_label, &theme_style_card_pressed, 0);
+	lv_obj_set_style_radius(value_label, SC(10), 0);
+	lv_obj_set_style_pad_hor(value_label, SC(12), 0);
+	lv_obj_set_style_pad_ver(value_label, SC(4), 0);
 	lv_obj_set_clickable(value_label, true);
-	lv_obj_set_ext_click_area(value_label, SC(24));
-	lv_obj_set_style_text_decor(value_label, LV_TEXT_DECOR_UNDERLINE, 0);
+	lv_obj_set_ext_click_area(value_label, SC(20));
 	lv_obj_add_event_cb(value_label, entry_open_cb, LV_EVENT_CLICKED, (void *)(intptr_t)kind);
 }
 

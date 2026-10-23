@@ -430,6 +430,52 @@ build_one() {
 	fi
 
 	# ==========================================================================
+	# 4c. Room for the system libraries in the assets
+	# ==========================================================================
+	#
+	# assets/MODEL/usr/lib holds libraries rebuilt from newer sources under
+	# their sonames (tools/system-libs in sonix-player). In the stock image a
+	# soname is usually a symlink to a versioned file, which the overlay would
+	# leave behind beside the new library: the symlink and that file go, and
+	# every other symlink to the file (libfoo.so) is pointed at the soname.
+	LIB_ASSETS="$(cd "$ASSETS_DIR/$MODEL_DIR" && find usr/lib -maxdepth 1 -type f -name 'lib*.so.*' 2>/dev/null | sort)"
+	if [ -n "$LIB_ASSETS" ]; then
+		step "[$MODEL_NAME] making room for the updated system libraries"
+
+		for rel in $LIB_ASSETS; do
+			soname="$(basename "$rel")"
+			dst="$SQUASH_DIR/$rel"
+			[ -L "$dst" ] || continue
+			target="$(readlink "$dst")"
+			rm -f "$dst"
+			case "$target" in
+			*/*) continue ;; # outside usr/lib: not this library's file
+			esac
+			if [ -f "$SQUASH_DIR/usr/lib/$target" ] && [ ! -L "$SQUASH_DIR/usr/lib/$target" ]; then
+				rm -f "$SQUASH_DIR/usr/lib/$target"
+				say "    usr/lib/$target removed: $soname replaces it"
+			fi
+			for link in "$SQUASH_DIR"/usr/lib/*; do
+				[ -L "$link" ] && [ "$(readlink "$link")" = "$target" ] || continue
+				ln -sfn "$soname" "$link"
+				say "    usr/lib/$(basename "$link") -> $soname"
+			done
+		done
+
+		# The assets' ntfs-3g has libntfs-3g linked in, and nothing else in
+		# the image uses the stock library.
+		NTFS_ASSET="$ASSETS_DIR/$MODEL_DIR/usr/bin/ntfs-3g"
+		if [ -f "$NTFS_ASSET" ] && ! LC_ALL=C grep -aq 'libntfs-3g\.so\.' "$NTFS_ASSET"; then
+			for f in "$SQUASH_DIR"/usr/lib/libntfs-3g.so*; do
+				[ -e "$f" ] || [ -L "$f" ] || continue
+				rm -f "$f"
+				say "    usr/lib/$(basename "$f") removed: the new ntfs-3g carries it"
+			done
+		fi
+		say ""
+	fi
+
+	# ==========================================================================
 	# 5. The overlay
 	# ==========================================================================
 	step "[$MODEL_NAME] copying the overlay onto the root of the rootfs"
@@ -508,6 +554,18 @@ build_one() {
 	# enough to cause it, which is why this is checked rather than assumed.
 	step "[$MODEL_NAME] making the boot path executable"
 
+	# Readable by everyone first, as the stock tree is. tar brings every mode
+	# along -- the directories' too, the top one included -- so an assets folder
+	# checked out under a strict umask (700 directories, 600 files) makes those
+	# parts of the image readable by root alone. Some of what reads them checks
+	# for "others" whoever it runs as: thttpd answers 403 "not world-readable"
+	# for the Wi-Fi transfer page in a directory like that. Only read, and
+	# execute where a directory or the owner already has it, is added; nothing
+	# is taken away. Not through symlinks: chmod follows them, and their
+	# targets are paths on the device, not in the image.
+	( cd "$ASSETS_DIR/$MODEL_DIR" && find . ! -type l -print0 ) | ( cd "$SQUASH_DIR" && xargs -0 chmod go+rX )
+	say "    everything the assets added is readable by all"
+
 	for rel in "$NEW_LAUNCHER" "$INIT_SCRIPT" usr/bin/bluealsa usr/bin/shairport_on.sh etc/init.d/S80_bt_init; do
 		if [ -f "$SQUASH_DIR/$rel" ]; then
 			chmod 755 "$SQUASH_DIR/$rel"
@@ -516,8 +574,8 @@ build_one() {
 	done
 
 	# Anything else the overlay put in a directory of executables, the
-	# kernel-module scripts and the init scripts with it.
-	for rel in $(cd "$ASSETS_DIR/$MODEL_DIR" && find usr/bin module_driver etc/init.d -type f 2>/dev/null); do
+	# libraries, the kernel-module scripts and the init scripts with it.
+	for rel in $(cd "$ASSETS_DIR/$MODEL_DIR" && find usr/bin usr/lib module_driver etc/init.d -type f 2>/dev/null); do
 		[ -f "$SQUASH_DIR/$rel" ] || continue
 		chmod 755 "$SQUASH_DIR/$rel"
 	done

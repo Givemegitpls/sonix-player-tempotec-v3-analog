@@ -22,9 +22,12 @@
 // Browser rows use slots 0..9; the library index pages (medialist.c) use
 // 12..23 for the name lists and 24..35 for the track lists; the search page
 // takes 36..59 -- its twelve track hits and twelve album hits; the audiobook
-// list takes 60..71 for its twelve rows; one artist's records take 72..83; and the
-// album carousel takes 84..89 -- so the pools never trample each other's requests.
-#define COVERLOADER_SLOTS 90
+// list takes 60..71 for its twelve rows; one artist's records take 72..83; the
+// album carousel takes 84..89; and the cover at the head of an album's tracks
+// takes 90; the podcasts on the card take 91..102 for their twelve rows, 103
+// for the cover at the head of one of them and 104..107 for the episodes being
+// listened to -- so the pools never trample each other's requests.
+#define COVERLOADER_SLOTS 108
 #define COVERLOADER_SEARCH_BASE 36
 #define COVERLOADER_SEARCH_COUNT 24
 #define COVERLOADER_AUDIOBOOKS_BASE 60
@@ -36,12 +39,23 @@
 // never more than six at a time, and only while its page is the one on screen.
 #define COVERLOADER_COVERFLOW_BASE 84
 
+// The big cover above an album's tracks, when the album page is laid out with
+// one (Music > Library). One picture, the size of most of the
+// screen's width.
+#define COVERLOADER_ALBUM_HEAD 90
+
 // Starts the worker. Safe to call more than once.
 void coverloader_start(void);
 
 // Asks for the artwork of `path` at `size` pixels, for `slot`. Returns
 // immediately. Any earlier request on this slot is abandoned.
 void coverloader_request(int slot, const char *path, int size);
+
+// The same, with the picture made from the player's own cover of the file at
+// player_w x player_h and scaled to `size` (cover_load_shared): the player's
+// table of covers serves it, and is filled by it. What an album's head asks
+// with.
+void coverloader_request_shared(int slot, const char *path, int size, int player_w, int player_h);
 
 // Forgets the slot: anything pending is abandoned and anything already decoded
 // for it is freed.
@@ -65,25 +79,18 @@ bool coverloader_take(int slot, cover_image_t *out, bool *finished);
 
 // Asks for the playing track's cover (cover_w x cover_h, CONTAIN) and blurred
 // backdrop (backdrop_w x backdrop_h). Returns immediately.
+// Called on the loader's thread each time a player question -- the id of a
+// track's picture, or its pictures -- has been answered, so the answer can be
+// picked up at once rather than on the next progress poll. It must not touch
+// LVGL: post to the interface thread (gui_post) and take the result there.
+void coverloader_set_player_ready_cb(void (*cb)(void));
+
 void coverloader_request_player(const char *path, int cover_w, int cover_h, int backdrop_w, int backdrop_h);
 
 // Collects the finished pair. `finished` goes true exactly once per request;
 // the return value says whether there was artwork. The backdrop can be empty
 // even when the cover is not.
 bool coverloader_take_player(cover_image_t *cover, cover_image_t *backdrop, bool *finished);
-
-// The next track's pictures, decoded into the disk cache at the lowest
-// priority so that changing to it is a read. Nothing to collect.
-// Called on the worker each time a player question -- the id of a track's
-// picture, or its pictures -- has been answered, so the answer can be picked up
-// at once rather than on the next progress poll. It must not touch LVGL: post
-// to the interface thread (gui_post) and take the result there.
-void coverloader_set_player_ready_cb(void (*cb)(void));
-
-void coverloader_warm_player(const char *path, int cover_w, int cover_h, int backdrop_w, int backdrop_h);
-// The same for the track before the current one, done after the next one's:
-// so that "previous" finds its picture ready as well.
-void coverloader_warm_player_back(const char *path, int cover_w, int cover_h, int backdrop_w, int backdrop_h);
 
 // Asks only WHAT the artwork of `path` is, without decoding any of it: the
 // answer is cover_source_id()'s number, and the player compares it with the one
@@ -99,6 +106,12 @@ void coverloader_request_player_id(const char *path);
 // Collects that answer. `finished` goes true exactly once per request; `id` is
 // 0 when the track has no artwork at all.
 bool coverloader_take_player_id(uint64_t *id, bool *finished);
+
+// Makes the player's cover of `path` at cover_w x cover_h and keeps it in the
+// cache (cover_prefetch_player()), for the track that is likely to come next.
+// Nothing comes back. The lowest priority there is: it waits for every other
+// job, and a newer request replaces one not yet started.
+void coverloader_prefetch_player(const char *path, int cover_w, int cover_h);
 
 // ---------------------------------------------------------------------------
 // The screensaver's photograph -- the full-screen picture and the blurred block

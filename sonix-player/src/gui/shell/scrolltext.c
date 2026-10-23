@@ -1,10 +1,8 @@
 #include "scrolltext.h"
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/animpark.h"
 #include "src/gui/shell/scale.h"
-#include "src/system/core/frameprof.h"
-#include "src/system/device/power.h"
-#include "src/gui/shell/shown.h"
 
 #include "lvgl/src/misc/lv_text_ap.h"
 
@@ -197,7 +195,10 @@ static const fade_masks_t *fade_masks(int32_t w, int32_t h) {
 typedef struct {
 	lv_obj_t *label;
 	const fade_masks_t *masks; // NULL while the text fits
-	bool parked;			   // its scroll was stopped for being out of sight
+	// Where the scroll stood when the label was parked (see scroll_park), as
+	// the animation's own clock; `resume` while it is still to be put back.
+	int32_t resume_time;
+	bool resume;
 } fade_label_t;
 
 static fade_label_t fade_labels[FADE_LABELS_MAX];
@@ -215,7 +216,7 @@ static fade_label_t *fade_entry(lv_obj_t *label) {
 	}
 	fade_labels[fade_label_count].label = label;
 	fade_labels[fade_label_count].masks = NULL;
-	fade_labels[fade_label_count].parked = false;
+	fade_labels[fade_label_count].resume = false;
 	return &fade_labels[fade_label_count++];
 }
 
@@ -243,14 +244,13 @@ static void fade_pick(fade_label_t *entry) {
 	}
 }
 
+// A parked label (see the end of this file) is not moving and keeps the mask
+// it was parked with, so only the others are looked at.
 static void fade_poll_cb(lv_timer_t *timer) {
 	(void)timer;
 	bool any = false;
 	for (int i = 0; i < fade_label_count; i++) {
-		// A label parked out of sight (scroll_refr_start_cb) is not polled: its
-		// fade is as the park left it, and the timer is woken again when one
-		// comes back.
-		if (!fade_labels[i].masks || fade_labels[i].parked) {
+		if (!fade_labels[i].masks || animpark_is_parked(fade_labels[i].label)) {
 			continue;
 		}
 		any = true;
@@ -282,55 +282,11 @@ static void fade_update(lv_obj_t *label) {
 	// The one timer that decides, for every scrolling label, whether its left
 	// end is a cut or the start of the title. Made when the first overflowing
 	// label turns up, and paused again by the poll once none is left.
-	if (entry->masks) {
+	if (entry->masks && !animpark_is_parked(label)) {
 		if (!fade_timer) {
 			fade_timer = lv_timer_create(fade_poll_cb, FADE_POLL_MS, NULL);
-			// Twelve wake-ups a second for as long as a title overflows, and
-			// nothing shows with the panel dark. Slowed rather than paused
-			// because fade_update() resumes it at every text change, which
-			// with the screen off is every track.
-			power_slow_in_standby(fade_timer, 60000);
 		} else {
 			lv_timer_resume(fade_timer);
-		}
-	}
-}
-
-// Only while it can be seen. A scrolling label on a page that is not showing
-// -- the player's title while another page is on top, a row of the quick panel
-// while it is closed -- carried on regardless, and an animation alive keeps
-// LVGL's animation timer running every frame, with every step of the label
-// invalidating an area nobody can see. At the start of a refresh, a label that
-// has gone out of sight is put back at its start and its animation dropped; one
-// that has come back into sight is given a fresh one, which waits its pause at
-// the start of the title as a new title does. The refresh is the right moment
-// for both: whatever hides or shows a page invalidates it, so one comes.
-static lv_anim_t *scroll_anim(lv_obj_t *label) {
-	lv_anim_t *a = lv_anim_get(label, NULL);
-	return a && a->repeat_cnt == LV_ANIM_REPEAT_INFINITE ? a : NULL;
-}
-
-static void scroll_refr_start_cb(lv_event_t *e) {
-	(void)e;
-	for (int i = 0; i < fade_label_count; i++) {
-		fade_label_t *entry = &fade_labels[i];
-		bool shown = gui_obj_shown(entry->label);
-		lv_anim_t *a = scroll_anim(entry->label);
-		if (shown) {
-			if (entry->parked && !a) {
-				// Only a label parked here is restarted: one whose text fits has
-				// no animation either, and must not be laid out again for it.
-				lv_label_set_text_static(entry->label, NULL);
-			}
-			if (entry->parked && fade_timer) {
-				lv_timer_resume(fade_timer); // its fade follows the scroll again
-			}
-			entry->parked = false;
-		} else if (a) {
-			a->exec_cb(entry->label, a->start_value);
-			lv_anim_delete(entry->label, a->exec_cb);
-			entry->parked = true;
-			fade_pick(entry);
 		}
 	}
 }
@@ -340,10 +296,13 @@ static void scroll_refr_start_cb(lv_event_t *e) {
 // does, so the mask is decided here as well as at every text change.
 static void fade_size_cb(lv_event_t *e) { fade_update(lv_event_get_target(e)); }
 
+static void resume_cb(lv_event_t *e);
+
 // A label that goes away must leave the list with it: the next one allocated
 // could land on the same address and inherit its state.
 static void fade_delete_cb(lv_event_t *e) {
 	lv_obj_t *label = lv_event_get_target(e);
+	lv_display_remove_event_cb_with_user_data(lv_obj_get_display(label), resume_cb, label);
 	for (int i = 0; i < fade_label_count; i++) {
 		if (fade_labels[i].label != label) {
 			continue;
@@ -395,6 +354,61 @@ static void fonts_changed(void) {
 	}
 }
 
+// Out of sight the label stops scrolling: clipped, with no animation left for
+// LVGL to run, and the point the scroll had reached kept. Given back before it
+// is drawn again (animpark.h), it carries on from there; a new text in the
+// meantime starts from its pause instead. The text, the duration and the fade
+// all go on being kept up to date while parked.
+static void scroll_park(lv_obj_t *label) {
+	// No animation: the text fits, or the label was given back so recently
+	// that LVGL has not built it yet -- then the point still to be put back
+	// is the one to keep.
+	fade_label_t *entry = fade_entry(label);
+	const lv_anim_t *anim = lv_anim_get(label, NULL);
+	if (entry && anim) {
+		entry->resume = true;
+		entry->resume_time = anim->act_time;
+	}
+	lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
+	fade_update(label);
+}
+
+// Puts the scroll back where it was parked. LVGL builds the scroll animation
+// when the label is next laid out, which is still before the frame is drawn;
+// this runs right after, at the same layout pass, so the frame already shows
+// the text where it stopped.
+static void resume_cb(lv_event_t *e) {
+	lv_obj_t *label = lv_event_get_user_data(e);
+	lv_display_remove_event_cb_with_user_data(lv_obj_get_display(label), resume_cb, label);
+	fade_label_t *entry = fade_entry(label);
+	if (!entry || !entry->resume || animpark_is_parked(label)) {
+		return;
+	}
+	entry->resume = false;
+	lv_anim_t *anim = lv_anim_get(label, NULL);
+	if (!anim || !anim->exec_cb || !anim->path_cb || anim->duration <= 0) {
+		return;
+	}
+	// The pass may have got shorter (a smaller font): no further than its end.
+	anim->act_time = entry->resume_time < anim->duration ? entry->resume_time : anim->duration;
+	if (anim->act_time > 0) {
+		anim->current_value = anim->path_cb(anim);
+		anim->exec_cb(anim->var, anim->current_value);
+	}
+	fade_pick(entry);
+}
+
+static void scroll_unpark(lv_obj_t *label) {
+	lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+	fade_label_t *entry = fade_entry(label);
+	if (entry && entry->resume) {
+		// Added after the label's own handler, which set_long_mode has just
+		// queued for the same event: the animation exists by the time this runs.
+		lv_display_add_event_cb(lv_obj_get_display(label), resume_cb, LV_EVENT_UPDATE_LAYOUT_COMPLETED, label);
+	}
+	fade_update(label);
+}
+
 void scrolltext_apply(lv_obj_t *label) {
 	if (!label) {
 		return;
@@ -403,7 +417,6 @@ void scrolltext_apply(lv_obj_t *label) {
 	static bool registered;
 	if (!registered) {
 		fonts_register_change(fonts_changed);
-		lv_display_add_event_cb(lv_display_get_default(), scroll_refr_start_cb, LV_EVENT_REFR_START, NULL);
 		registered = true;
 	}
 
@@ -414,6 +427,7 @@ void scrolltext_apply(lv_obj_t *label) {
 	lv_obj_add_event_cb(label, fade_size_cb, LV_EVENT_SIZE_CHANGED, NULL);
 	lv_obj_add_event_cb(label, fade_delete_cb, LV_EVENT_DELETE, NULL);
 	fade_update(label);
+	animpark_watch(label, scroll_park, scroll_unpark);
 }
 
 // `text` on one line: line breaks, tabs and other control characters become
@@ -490,13 +504,6 @@ static bool label_shows(lv_obj_t *label, const char *text) {
 #endif
 }
 
-// frameprof marks (only logged with the profiler on): how a text change splits
-// into measuring the pass, setting the text and deciding the end fade. The
-// letters are looked up in the font by each of them.
-static const char *const PROF_ST_MEASURE = "st_measure";
-static const char *const PROF_ST_SET = "st_set_text";
-static const char *const PROF_ST_FADE = "st_fade";
-
 void scrolltext_set(lv_obj_t *label, const char *text) {
 	if (!label) {
 		return;
@@ -512,18 +519,18 @@ void scrolltext_set(lv_obj_t *label, const char *text) {
 		return; // same words: leave the animation where it is
 	}
 
+	// A new text scrolls from its start, wherever the old one had got to.
+	fade_label_t *entry = fade_entry(label);
+	if (entry) {
+		entry->resume = false;
+	}
+
 	// The duration first: changing it rebuilds the scroll animation, so doing
 	// it before the text means the text change is the last word and the
 	// animation it builds is the one that stays.
-	frameprof_begin(PROF_ST_MEASURE);
 	apply_duration(label, line);
-	frameprof_end(PROF_ST_MEASURE);
-	frameprof_begin(PROF_ST_SET);
 	lv_label_set_text(label, line);
-	frameprof_end(PROF_ST_SET);
-	frameprof_begin(PROF_ST_FADE);
 	fade_update(label);
-	frameprof_end(PROF_ST_FADE);
 	if (line != text) {
 		free(line);
 	}

@@ -1,5 +1,6 @@
 #include "spinner.h"
 
+#include "src/gui/shell/animpark.h"
 #include "src/gui/shell/theme.h"
 
 // One full turn. A second and a half: faster looks frantic, slower looks stalled.
@@ -40,6 +41,8 @@ static bool spinner_kept(lv_obj_t *img) {
 	return false;
 }
 
+static void spin_start(lv_obj_t *img);
+
 static void spin_cb(void *obj, int32_t angle) {
 	// Only one the table holds is stopped: nothing would start any other again.
 	if (!spinner_shown((lv_obj_t *)obj) && spinner_kept((lv_obj_t *)obj)) {
@@ -47,19 +50,6 @@ static void spin_cb(void *obj, int32_t angle) {
 		return;
 	}
 	lv_image_set_rotation((lv_obj_t *)obj, angle);
-}
-
-static void spin_start(lv_obj_t *img) {
-	lv_anim_t a;
-	lv_anim_init(&a);
-	lv_anim_set_var(&a, img);
-	lv_anim_set_exec_cb(&a, spin_cb);
-	lv_anim_set_values(&a, 0, SPIN_FULL_TURN);
-	lv_anim_set_duration(&a, SPIN_PERIOD_MS);
-	lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-	// Linear: a spinner that speeds up and slows down each turn looks broken.
-	lv_anim_set_path_cb(&a, lv_anim_path_linear);
-	lv_anim_start(&a);
 }
 
 static void spin_refr_start_cb(lv_event_t *e) {
@@ -79,6 +69,24 @@ static void spin_deleted_cb(lv_event_t *e) {
 		}
 	}
 }
+
+// One endless turn from wherever the icon stands, so a spinner given back by
+// animpark carries on from where it stopped.
+static void spin_start(lv_obj_t *img) {
+	int32_t from = lv_image_get_rotation(img);
+	lv_anim_t a;
+	lv_anim_init(&a);
+	lv_anim_set_var(&a, img);
+	lv_anim_set_exec_cb(&a, spin_cb);
+	lv_anim_set_values(&a, from, from + SPIN_FULL_TURN);
+	lv_anim_set_duration(&a, SPIN_PERIOD_MS);
+	lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+	// Linear: a spinner that speeds up and slows down each turn looks broken.
+	lv_anim_set_path_cb(&a, lv_anim_path_linear);
+	lv_anim_start(&a);
+}
+
+static void spin_stop(lv_obj_t *img) { lv_anim_delete(img, spin_cb); }
 
 lv_obj_t *spinner_create(lv_obj_t *parent, const lv_image_dsc_t *icon) {
 	lv_obj_t *img = lv_image_create(parent);
@@ -100,6 +108,10 @@ lv_obj_t *spinner_create(lv_obj_t *parent, const lv_image_dsc_t *icon) {
 		refr_hooked = true;
 		lv_display_add_event_cb(lv_display_get_default(), spin_refr_start_cb, LV_EVENT_REFR_START, NULL);
 	}
+	spin_start(img);
+	// Spinners wait on hidden layers and on pages left behind; turning there
+	// would keep LVGL's animation timer awake for nothing.
+	animpark_watch(img, spin_stop, spin_start);
 	bool kept = false;
 	for (int i = 0; i < SPINNERS_MAX && !kept; i++) {
 		if (!spinners[i]) {

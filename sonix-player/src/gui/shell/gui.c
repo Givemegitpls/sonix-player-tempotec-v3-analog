@@ -12,6 +12,7 @@
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/settings/ccsettings.h"
 #include "src/gui/nowplaying/chapters.h"
+#include "src/gui/nowplaying/lyricsearch.h"
 #include "src/gui/wireless/airplay.h"
 #include "src/gui/bluetooth/airpodspage.h"
 #include "src/gui/settings/appearance.h"
@@ -19,6 +20,7 @@
 #include "src/gui/bluetooth/btsettings.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/corners.h"
+#include "src/gui/settings/bootlogopage.h"
 #include "src/gui/settings/kblayoutpage.h"
 #include "src/gui/settings/screensaver.h"
 #include "src/gui/library/audiobookextras.h"
@@ -37,9 +39,11 @@
 #include "src/gui/gearboy/gearboysettings.h"
 #include "src/gui/flappybird/flappybird.h"
 #include "src/gui/gearboy/gearboyplay.h"
+#include "src/gui/shell/lowbattery.h"
 #include "src/gui/shell/main_menu.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/library/filespage.h"
+#include "src/gui/library/imageview.h"
 #include "src/gui/library/textview.h"
 #include "src/gui/shell/morepage.h"
 #include "src/gui/shell/popover.h"
@@ -58,6 +62,7 @@
 #include "src/gui/shell/quickpanel.h"
 #include "src/gui/bluetooth/btreceiverpage.h"
 #include "src/gui/audio/dacpage.h"
+#include "src/gui/audio/metronomepage.h"
 #include "src/system/bluetooth/btreceiver.h"
 #include "src/system/audio/usbdac.h"
 #include "src/system/net/wifitransfer.h"
@@ -66,6 +71,7 @@
 #include "src/gui/library/search.h"
 #include "src/gui/settings/settings.h"
 #include "src/gui/settings/systempage.h"
+#include "src/gui/shell/setupwifi.h"
 #include "src/gui/shell/welcome.h"
 #include "src/gui/streaming/streaming.h"
 #include "src/gui/shell/switcher.h"
@@ -505,6 +511,10 @@ static void key_async_cb(void *user_data) {
 	if (usbdac_is_active() || wifitransfer_running()) {
 		return;
 	}
+	// The same while the metronome holds the output.
+	if (metronomepage_key(key)) {
+		return;
+	}
 
 	// Receiver mode is the exception, and the only one: the press still means
 	// what it says, it just has somewhere else to go. The music is on the phone
@@ -600,6 +610,7 @@ void gui_init(gui_config_t *cfg) {
 	audiobookcontrols_screen = lv_obj_create(NULL);
 	audiobookscan_screen = lv_obj_create(NULL);
 	chapters_screen = lv_obj_create(NULL);
+	lyricsearch_screen = lv_obj_create(NULL);
 	queue_screen = lv_obj_create(NULL);
 	details_screen = lv_obj_create(NULL);
 	wireless_screen = lv_obj_create(NULL);
@@ -620,9 +631,11 @@ void gui_init(gui_config_t *cfg) {
 	morepage_screen = lv_obj_create(NULL);
 	filespage_screen = lv_obj_create(NULL);
 	textview_screen = lv_obj_create(NULL);
+	imageview_screen = lv_obj_create(NULL);
 	gearboypage_screen = lv_obj_create(NULL);
 	gearboyplay_screen = lv_obj_create(NULL);
 	flappybird_screen = lv_obj_create(NULL);
+	metronomepage_screen = lv_obj_create(NULL);
 
 	// Persistent topbar that stays above every screen.
 	topbar_init(cfg);
@@ -669,6 +682,7 @@ void gui_init(gui_config_t *cfg) {
 	gearboysettings_init(cfg); // before the page: its gear opens this
 	gearboypage_init(cfg);
 	flappybird_init(cfg);
+	metronomepage_init(cfg);
 	// before morepage: the books tile opens the shelf, and the shelf opens the
 	// reader.
 	ebookreader_init(cfg);
@@ -677,7 +691,8 @@ void gui_init(gui_config_t *cfg) {
 	ebooksettings_init(cfg); // likewise: the other corner button opens this
 	ebookpage_init(cfg);
 	morepage_init(cfg);
-	textview_init(cfg); // before filespage: a text file tapped there opens here
+	textview_init(cfg);	 // before filespage: a text file tapped there opens here
+	imageview_init(cfg); // likewise, for a picture
 	filespage_init(cfg);
 	streaming_init(cfg);
 
@@ -696,6 +711,7 @@ void gui_init(gui_config_t *cfg) {
 	processespage_init(cfg); // the processes page the devoptions entry opens
 	// after devoptions: the system entry opens the page that can unlock it
 	systempage_init(cfg);
+	bootlogopage_init(cfg); // before appearance: its row carries the screen
 	appearance_init(cfg);
 	language_init(cfg);
 	libraryscan_init(cfg);
@@ -710,6 +726,7 @@ void gui_init(gui_config_t *cfg) {
 	audiobookextras_init(cfg); // the bookmarks and summary pages
 	audiobooks_init(cfg);
 	chapters_init(cfg);
+	lyricsearch_init(cfg);
 	trackmenu_init(cfg);
 
 	// The leftward swipe that pulls the player in works on the browsing pages
@@ -740,11 +757,12 @@ void gui_init(gui_config_t *cfg) {
 		language_screen,
 		medialist_screen,  medialist_tracks_screen, medialist_albums_screen, audiobooks_screen, audiobooksettings_screen,
 		queue_screen,	  chapters_screen,		 details_screen,   audiobookcontrols_screen,
+		lyricsearch_screen,
 		wireless_screen,
 		wifisettings_screen,
 		btsettings_screen, btaudio_screen,	 airpodspage_screen, airplay_screen,   streaming_screen,
 		radiopage_screen,  radiolist_screen, radiosearch_screen,
-		dlna_screen,	   sonixlink_screen,	 morepage_screen,	  gearboypage_screen,
+		dlna_screen,	   sonixlink_screen,	 morepage_screen,	  gearboypage_screen, metronomepage_screen,
 	};
 	for (size_t i = 0; i < sizeof(back_swipe_screens) / sizeof(back_swipe_screens[0]); i++) {
 		switcher_attach_back_gesture(back_swipe_screens[i]);
@@ -755,6 +773,7 @@ void gui_init(gui_config_t *cfg) {
 	powersettings_init(cfg);
 	confirm_init(cfg);
 	toast_init(cfg);
+	lowbattery_init(cfg);
 
 	// The screensaver is drawn both when the panel goes dark (so the wake opens
 	// on it rather than on the page) and when it lights up again; and the
@@ -844,6 +863,7 @@ void gui_init(gui_config_t *cfg) {
 	// language brings the clock up itself, so the two only chain here on the
 	// path where the language has already been answered before.
 	welcome_init(cfg);
+	setupwifi_init(cfg); // the step between the language and the clock
 
 	// Ahead of everything else, and only on a device that has never been booted:
 	// the greeting. Its button opens the language picker itself, which in turn

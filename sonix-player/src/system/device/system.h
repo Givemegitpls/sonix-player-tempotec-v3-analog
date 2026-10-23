@@ -48,6 +48,10 @@ char *read_battery_percent();
 // True while the charger is plugged in (sysfs status "Charging" or "Full").
 bool read_battery_charging(void);
 
+// The cell's voltage in millivolts, from the supply the level is read from, or
+// -1 when that supply does not say.
+int read_battery_millivolts(void);
+
 // Hides the charging indication (battery icon, status LED) while something has
 // deliberately turned the charger off -- DAC mode with charging disabled.
 void system_suppress_charging(bool suppressed);
@@ -124,6 +128,13 @@ void storage_release_for_shutdown(void);
 // headphone remote keep working. Turning the option off drops the lock. Off
 // until set.
 void input_set_key_lock(bool on);
+
+// How far one press of a volume key moves the volume, in percent: on the case,
+// on the headphone cable and from Bluetooth headphones alike. Clamped to
+// VOLUME_STEP_MIN..VOLUME_STEP_MAX; VOLUME_STEP_MIN until set.
+#define VOLUME_STEP_MIN 1
+#define VOLUME_STEP_MAX 5
+void input_set_volume_step(int percent);
 
 #ifdef HOST_BUILD
 // Feeds one key press or release to the button thread, as if it had come off

@@ -8,17 +8,14 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <utime.h>
 
 #include "src/system/db/sqlite3.h"
 
-#include "src/gui/shell/scale.h"
-
 #include "src/system/library/albumart.h"
 #include "src/system/streaming/podcastcache.h"
+#include "src/system/image/art_shrink.h"
 #include "src/system/image/jpeg_planes.h"
 #include "src/system/image/jpeg_scaled.h"
 #include "src/system/image/png_scaled.h"
@@ -33,7 +30,7 @@
 
 // Box blur radius, in pixels of the half-size image. Repeated passes of a box
 // blur approximate a gaussian closely enough that nothing looks boxy.
-#define BACKDROP_BLUR_RADIUS SC(9)
+#define BACKDROP_BLUR_RADIUS 9
 #define BACKDROP_BLUR_PASSES 3
 
 // How far the backdrop is pushed towards black (dark theme) or white (light
@@ -304,11 +301,6 @@ static crop_t crop_to_aspect(int src_w, int src_h, int dst_w, int dst_h) {
 // half is below 2^32.
 // ---------------------------------------------------------------------------
 
-// Not a size: it is how many fractional bits the area weights carry, and the
-// accumulator is shifted back by twice it. SC() must never touch it -- at the
-// panel's own resolution SC(12) is 8, AREA_ONE becomes 256, and the 16-bit
-// shift back turns every resampled pixel into zero, which is exactly the black
-// covers and note-glyph placeholders the lists showed.
 #define AREA_SHIFT 12
 #define AREA_ONE (1 << AREA_SHIFT)
 
@@ -828,12 +820,15 @@ static bool make_backdrop(const raw_image_t *src, int box_w, int box_h, bool fro
 #define TONE_CHROMA_FLOOR 14
 #define TONE_MONO 0xF2EEE8 // barely warm white: light, not paint
 
-uint32_t cover_dominant_tone(const cover_image_t *cover) {
+// The sleeve's colours averaged with each pixel weighted by how far it is from
+// grey (see above): what the eye would call the colour of the sleeve. False
+// when there is nothing to look at.
+static bool tone_weighted_average(const cover_image_t *cover, unsigned *r_out, unsigned *g_out, unsigned *b_out) {
 	int w = (int)cover->dsc.header.w;
 	int h = (int)cover->dsc.header.h;
 	int stride = (int)cover->dsc.header.stride / 2;
 	if (!cover->pixels || w <= 0 || h <= 0) {
-		return 0;
+		return false;
 	}
 
 	uint64_t ar = 0, ag = 0, ab = 0, weight = 0;
@@ -855,13 +850,18 @@ uint32_t cover_dominant_tone(const cover_image_t *cover) {
 		}
 	}
 	if (!weight) {
-		return 0;
+		return false;
 	}
-	unsigned r = (unsigned)(ar / weight), g = (unsigned)(ag / weight), b = (unsigned)(ab / weight);
+	*r_out = (unsigned)(ar / weight);
+	*g_out = (unsigned)(ag / weight);
+	*b_out = (unsigned)(ab / weight);
+	return true;
+}
 
-	// Pull it away from grey: the gap between the strongest channel and the
-	// weakest is stretched, and the middle one moves with it, so the hue stays
-	// where it was and only the strength changes.
+// Pulls a colour away from grey: the gap between the strongest channel and
+// the weakest is stretched, and the middle one moves with it, so the hue stays
+// where it was and only the strength changes.
+static uint32_t tone_stretch(unsigned r, unsigned g, unsigned b) {
 	unsigned hi = r > g ? (r > b ? r : b) : (g > b ? g : b);
 	unsigned lo = r < g ? (r < b ? r : b) : (g < b ? g : b);
 	if (hi - lo < TONE_CHROMA_FLOOR) {
@@ -895,34 +895,261 @@ uint32_t cover_dominant_tone(const cover_image_t *cover) {
 	return (r << 16) | (g << 8) | b;
 }
 
-bool cover_blur_copy(const cover_image_t *src, cover_image_t *out) {
-	if (!src) {
-		if (out) {
-			memset(out, 0, sizeof(*out));
-		}
-		return false;
+uint32_t cover_dominant_tone(const cover_image_t *cover) {
+	unsigned r, g, b;
+	if (!tone_weighted_average(cover, &r, &g, &b)) {
+		return 0;
 	}
-	return cover_blur_fill(src, (int)src->dsc.header.w, (int)src->dsc.header.h, out);
+	return tone_stretch(r, g, b);
 }
 
-bool cover_blur_fill(const cover_image_t *src, int out_w, int out_h, cover_image_t *out) {
-	if (!out) {
+uint32_t cover_tone_stretched(uint32_t tone) {
+	return tone_stretch((tone >> 16) & 0xFF, (tone >> 8) & 0xFF, tone & 0xFF);
+}
+
+int cover_mean_luma(const cover_image_t *cover) {
+	if (!cover || !cover->pixels) {
+		return -1;
+	}
+	int w = (int)cover->dsc.header.w;
+	int h = (int)cover->dsc.header.h;
+	int stride = (int)cover->dsc.header.stride / 2;
+	if (w <= 0 || h <= 0) {
+		return -1;
+	}
+
+	// Every fourth pixel each way, as cover_dominant_tone() samples it.
+	uint64_t sum = 0, count = 0;
+	for (int y = 0; y < h; y += 4) {
+		const uint16_t *row = (const uint16_t *)cover->pixels + (size_t)y * stride;
+		for (int x = 0; x < w; x += 4) {
+			uint16_t c = row[x];
+			unsigned r5 = (c >> 11) & 0x1F, g6 = (c >> 5) & 0x3F, b5 = c & 0x1F;
+			unsigned r = (r5 << 3) | (r5 >> 2), g = (g6 << 2) | (g6 >> 4), b = (b5 << 3) | (b5 >> 2);
+			sum += (r * 299 + g * 587 + b * 114) / 1000;
+			count++;
+		}
+	}
+	return count ? (int)(sum / count) : -1;
+}
+
+// A page painted in a sleeve's colour cannot take the plain average of
+// tone_weighted_average(): a yellow and blue sleeve averages to a grey-olive
+// that is neither, and a yellow darkened for a dark page is olive whatever is
+// done to it. So the sleeve's colours are sorted into families of hue, and the
+// page takes one family rather than a mix of all of them.
+//
+// A family is three neighbouring bins of 15 degrees, scored by how much of the
+// sleeve is that colour: each pixel votes with its saturation, its distance
+// from grey measured against its own brightness. Measured against full scale
+// instead, a deep navy (16,32,48) is as far from grey as a mid grey's rounding
+// noise and gets no vote at all, and a dark blue sleeve with a gold crest on it
+// is called gold. A pixel too dark to have a hue, or too close to grey, does
+// not vote.
+//
+// The strongest family is always a candidate, and so is any other family that
+// does not overlap it and scores at least half as much. A dark page takes the
+// darkest candidate and a light page the lightest, so the page is a colour
+// that looks right at that brightness. The family's colour is its pixels
+// averaged as tone_weighted_average() weighs them, the vivid ones counting
+// most, so a yellow is the yellow of the sleeve and not of its shaded edges.
+// A sleeve with no colour worth sorting falls back to the plain average, which
+// is near grey anyway.
+#define TONE_BINS 24		 // 15 degrees of hue each
+#define TONE_FAMILY_SAT 64	 // saturation out of 256 below which a pixel has no hue to vote for
+#define TONE_FAMILY_DARK 24	 // and a brightest channel below which it is black
+#define TONE_FAMILY_SPREAD 10 // and a channel spread below which its hue is noise
+#define TONE_FAMILIES (TONE_BINS / 3)
+// A yellow family that covers this much of the sleeve, in tenths, and is this
+// bright makes a light page even on a darker sleeve: darkened, it would only
+// be olive.
+#define TONE_YELLOW_SHARE 3
+#define TONE_YELLOW_LUMA 150
+#define TONE_YELLOW_FROM 40 // degrees
+#define TONE_YELLOW_TO 75
+
+typedef struct {
+	uint64_t r, g, b, weight; // the colours, weighted as tone_weighted_average() weighs them
+	uint64_t score;			  // the saturation voted, for choosing between bins
+	unsigned count;			  // how many samples
+} tone_bin_t;
+
+// The hue of a colour in degrees, 0..359, or -1 for a grey.
+static int tone_hue(unsigned r, unsigned g, unsigned b) {
+	unsigned hi = r > g ? (r > b ? r : b) : (g > b ? g : b);
+	unsigned lo = r < g ? (r < b ? r : b) : (g < b ? g : b);
+	int d = (int)(hi - lo);
+	if (d == 0) {
+		return -1;
+	}
+	int h;
+	if (hi == r) {
+		h = ((int)g - (int)b) * 60 / d;
+	} else if (hi == g) {
+		h = 120 + ((int)b - (int)r) * 60 / d;
+	} else {
+		h = 240 + ((int)r - (int)g) * 60 / d;
+	}
+	return (h % 360 + 360) % 360;
+}
+
+static int tone_luma(unsigned r, unsigned g, unsigned b) { return (int)((r * 299 + g * 587 + b * 114) / 1000); }
+
+// How far apart two bins are around the circle.
+static int bin_distance(int a, int b) {
+	int d = a > b ? a - b : b - a;
+	return d < TONE_BINS - d ? d : TONE_BINS - d;
+}
+
+bool cover_page_tone(const cover_image_t *cover, int light_from, uint32_t *tone, int *luma, bool *light) {
+	int mean = cover_mean_luma(cover);
+	if (mean < 0) {
 		return false;
 	}
+	int w = (int)cover->dsc.header.w;
+	int h = (int)cover->dsc.header.h;
+	int stride = (int)cover->dsc.header.stride / 2;
+
+	tone_bin_t bins[TONE_BINS];
+	memset(bins, 0, sizeof(bins));
+	unsigned samples = 0;
+	uint64_t colour = 0;
+	// Every fourth pixel each way, as tone_weighted_average() samples it.
+	for (int y = 0; y < h; y += 4) {
+		const uint16_t *row = (const uint16_t *)cover->pixels + (size_t)y * stride;
+		for (int x = 0; x < w; x += 4) {
+			uint16_t c = row[x];
+			unsigned r5 = (c >> 11) & 0x1F, g6 = (c >> 5) & 0x3F, b5 = c & 0x1F;
+			unsigned r = (r5 << 3) | (r5 >> 2), g = (g6 << 2) | (g6 >> 4), b = (b5 << 3) | (b5 >> 2);
+			unsigned hi = r > g ? (r > b ? r : b) : (g > b ? g : b);
+			unsigned lo = r < g ? (r < b ? r : b) : (g < b ? g : b);
+			samples++;
+			if (hi < TONE_FAMILY_DARK || hi - lo < TONE_FAMILY_SPREAD) {
+				continue;
+			}
+			unsigned sat = (hi - lo) * 256 / hi;
+			if (sat < TONE_FAMILY_SAT) {
+				continue;
+			}
+			tone_bin_t *bin = &bins[tone_hue(r, g, b) * TONE_BINS / 360];
+			unsigned k = (hi - lo) * 4 + hi / 8 + 1;
+			bin->r += (uint64_t)r * k;
+			bin->g += (uint64_t)g * k;
+			bin->b += (uint64_t)b * k;
+			bin->weight += k;
+			bin->score += sat;
+			bin->count++;
+			colour += sat;
+		}
+	}
+
+	bool is_light = mean >= light_from;
+	unsigned r = 0, g = 0, b = 0;
+	// On average less than an eighth of the floor's worth of saturation per
+	// sample: a grey sleeve with a few coloured specks, which the plain average
+	// describes better than any one family.
+	if (colour * 8 < (uint64_t)samples * TONE_FAMILY_SAT) {
+		if (!tone_weighted_average(cover, &r, &g, &b)) {
+			return false;
+		}
+	} else {
+		// Each family's score, centred on each bin.
+		uint64_t score[TONE_BINS];
+		int best = 0;
+		for (int i = 0; i < TONE_BINS; i++) {
+			score[i] = bins[(i + TONE_BINS - 1) % TONE_BINS].score + bins[i].score + bins[(i + 1) % TONE_BINS].score;
+			if (score[i] > score[best]) {
+				best = i;
+			}
+		}
+
+		// The candidates, strongest first, none overlapping another.
+		int picks[TONE_FAMILIES];
+		int picked = 0;
+		picks[picked++] = best;
+		for (;;) {
+			int next = -1;
+			for (int i = 0; i < TONE_BINS; i++) {
+				if (score[i] * 2 < score[best]) {
+					continue;
+				}
+				bool apart = true;
+				for (int j = 0; j < picked; j++) {
+					if (bin_distance(i, picks[j]) < 3) {
+						apart = false;
+						break;
+					}
+				}
+				if (apart && (next < 0 || score[i] > score[next])) {
+					next = i;
+				}
+			}
+			if (next < 0 || picked == TONE_FAMILIES) {
+				break;
+			}
+			picks[picked++] = next;
+		}
+
+		// The darkest candidate for a dark page, the lightest for a light one.
+		int chosen_luma = -1;
+		unsigned chosen_count = 0;
+		for (int j = 0; j < picked; j++) {
+			uint64_t ar = 0, ag = 0, ab = 0, weight = 0;
+			unsigned count = 0;
+			for (int d = -1; d <= 1; d++) {
+				const tone_bin_t *bin = &bins[(picks[j] + d + TONE_BINS) % TONE_BINS];
+				ar += bin->r;
+				ag += bin->g;
+				ab += bin->b;
+				weight += bin->weight;
+				count += bin->count;
+			}
+			if (!weight) {
+				continue;
+			}
+			unsigned fr = (unsigned)(ar / weight), fg = (unsigned)(ag / weight), fb = (unsigned)(ab / weight);
+			int fl = tone_luma(fr, fg, fb);
+			if (chosen_luma < 0 || (is_light ? fl > chosen_luma : fl < chosen_luma)) {
+				r = fr;
+				g = fg;
+				b = fb;
+				chosen_luma = fl;
+				chosen_count = count;
+			}
+		}
+		if (chosen_luma < 0) {
+			return false;
+		}
+
+		int hue = tone_hue(r, g, b);
+		if (!is_light && hue >= TONE_YELLOW_FROM && hue <= TONE_YELLOW_TO && chosen_luma >= TONE_YELLOW_LUMA &&
+			chosen_count * 10 >= samples * TONE_YELLOW_SHARE) {
+			is_light = true;
+		}
+	}
+
+	// Never 0, which says "no sleeve": a black one comes back one step above.
+	uint32_t packed = (r << 16) | (g << 8) | b;
+	*tone = packed ? packed : 0x010101;
+	*luma = mean;
+	*light = is_light;
+	return true;
+}
+
+// A packed cover opened back out to RGB888, the form the resampler and the
+// blur work in. The top bits are replicated into the low ones, so white comes
+// back as 255.
+static bool raw_from_cover(const cover_image_t *src, raw_image_t *out) {
 	memset(out, 0, sizeof(*out));
 	if (!src || !src->pixels) {
 		return false;
 	}
-
 	int w = (int)src->dsc.header.w;
 	int h = (int)src->dsc.header.h;
 	int stride = (int)src->dsc.header.stride / 2;
 	if (w < 2 || h < 2 || stride < w) {
 		return false;
 	}
-
-	// Back out to RGB888: the blur and the resampler both work there, and five
-	// and six bit channels have nowhere to put the intermediate values.
 	uint8_t *rgb = malloc((size_t)w * h * 3);
 	if (!rgb) {
 		return false;
@@ -938,6 +1165,37 @@ bool cover_blur_fill(const cover_image_t *src, int out_w, int out_h, cover_image
 			drow[x * 3 + 2] = (uint8_t)((b5 << 3) | (b5 >> 2));
 		}
 	}
+	out->pixels = rgb;
+	out->w = w;
+	out->h = h;
+	return true;
+}
+
+bool cover_blur_copy(const cover_image_t *src, cover_image_t *out) {
+	if (!src) {
+		if (out) {
+			memset(out, 0, sizeof(*out));
+		}
+		return false;
+	}
+	return cover_blur_fill(src, (int)src->dsc.header.w, (int)src->dsc.header.h, out);
+}
+
+bool cover_blur_fill(const cover_image_t *src, int out_w, int out_h, cover_image_t *out) {
+	if (!out) {
+		return false;
+	}
+	memset(out, 0, sizeof(*out));
+
+	// Back out to RGB888: the blur and the resampler both work there, and five
+	// and six bit channels have nowhere to put the intermediate values.
+	raw_image_t opened;
+	if (!raw_from_cover(src, &opened)) {
+		return false;
+	}
+	uint8_t *rgb = opened.pixels;
+	int w = opened.w;
+	int h = opened.h;
 
 	if (out_w < 2 || out_h < 2) {
 		free(rgb);
@@ -1108,8 +1366,9 @@ typedef enum {
 	COVER_BUILD_FAILED, // a picture was found, none of them would decode
 } cover_build_t;
 
-static cover_build_t build_from_sources(const char *path, bool is_dir, const image_request_t *reqs, int n,
-										cover_image_t *outs) {
+// `used`, when given, is set to the candidate index the images came from.
+static cover_build_t build_from_sources_at(const char *path, bool is_dir, const image_request_t *reqs, int n,
+										   cover_image_t *outs, int *used) {
 	bool had_bytes = false;
 
 	// Noted for the crash handler and cleared on the way out, so a log that
@@ -1138,6 +1397,9 @@ static cover_build_t build_from_sources(const char *path, bool is_dir, const ima
 		albumart_free(&art);
 		if (ok) {
 			crumb_set_artwork(NULL);
+			if (used) {
+				*used = i;
+			}
 			return COVER_BUILD_OK;
 		}
 
@@ -1151,6 +1413,11 @@ static cover_build_t build_from_sources(const char *path, bool is_dir, const ima
 
 	crumb_set_artwork(NULL);
 	return had_bytes ? COVER_BUILD_FAILED : COVER_BUILD_NONE;
+}
+
+static cover_build_t build_from_sources(const char *path, bool is_dir, const image_request_t *reqs, int n,
+										cover_image_t *outs) {
+	return build_from_sources_at(path, is_dir, reqs, n, outs, NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -1306,7 +1573,9 @@ static uint64_t bytes_id(const uint8_t *data, size_t size) {
 	return h ? h : 1;
 }
 
-uint64_t cover_source_id(const char *filepath) {
+// `index` is set to the candidate the bytes came from (see cover_source_id()).
+static uint64_t source_id_uncached(const char *filepath, int *index) {
+	*index = -1;
 	if (!filepath || !filepath[0]) {
 		return 0;
 	}
@@ -1325,16 +1594,32 @@ uint64_t cover_source_id(const char *filepath) {
 		}
 		albumart_free(&art);
 		if (id) {
+			*index = i;
 			return id;
 		}
 	}
 	return 0;
 }
 
-static bool playerart_key(char *out, size_t out_size, uint64_t id, int cw, int ch, int bw, int bh);
-static bool playerart_load(const char *key, cover_image_t *cover, cover_image_t *backdrop);
-static void playerart_store(const char *key, const cover_image_t *cover, const cover_image_t *backdrop);
-static bool playerart_has(const char *key);
+// The player's cover cache, further down with the other tables.
+static uint64_t player_source_id(const char *filepath, int *index);
+static bool player_cover_load(uint64_t id, int w, int h, cover_image_t *out);
+static bool player_cover_kept(uint64_t id, int w, int h);
+static void player_cover_store(uint64_t id, int w, int h, const cover_image_t *img);
+static void cover_tone_attach(uint64_t id, cover_image_t *img);
+
+// The backdrop made from a cover already scaled and packed, for a cover that
+// came out of the cache with no source decoded.
+static bool backdrop_from_cover(const cover_image_t *cover, int box_w, int box_h, cover_image_t *out) {
+	raw_image_t raw;
+	if (!raw_from_cover(cover, &raw)) {
+		memset(out, 0, sizeof(*out));
+		return false;
+	}
+	bool ok = make_backdrop(&raw, box_w, box_h, false, out);
+	raw_free(&raw);
+	return ok;
+}
 
 bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, cover_image_t *cover_out,
 							  int backdrop_w, int backdrop_h, cover_image_t *backdrop_out) {
@@ -1342,6 +1627,17 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 		memset(cover_out, 0, sizeof(*cover_out));
 	if (backdrop_out)
 		memset(backdrop_out, 0, sizeof(*backdrop_out));
+
+	// The cover from the cache, the backdrop made from it: no source decoded.
+	int source_index = -1;
+	uint64_t id = cover_out ? player_source_id(filepath, &source_index) : 0;
+	if (id && player_cover_load(id, cover_w, cover_h, cover_out)) {
+		cover_tone_attach(id, cover_out);
+		if (backdrop_out) {
+			backdrop_from_cover(cover_out, backdrop_w, backdrop_h, backdrop_out);
+		}
+		return true;
+	}
 
 	// One decode feeds both images: the expensive part is the JPEG, not the
 	// scaling, so a track change decodes once rather than twice.
@@ -1359,27 +1655,8 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 		reqs[n++] = (image_request_t){.w = backdrop_w, .h = backdrop_h, .fit = COVER_FIT_COVER, .backdrop = true};
 	}
 
-	// Both pictures, the only request the player makes: try the card first.
-	// Timed in two parts, because the key is not free: it reads the picture's
-	// bytes to hash them.
-	struct timespec t_id;
-	clock_gettime(CLOCK_MONOTONIC, &t_id);
-	char art_key[96];
-	bool cacheable = cover_out && backdrop_out &&
-					 playerart_key(art_key, sizeof(art_key), cover_source_id(filepath), cover_w, cover_h, backdrop_w,
-								   backdrop_h);
-	struct timespec t0;
-	clock_gettime(CLOCK_MONOTONIC, &t0);
-	long id_ms = (long)((t0.tv_sec - t_id.tv_sec) * 1000 + (t0.tv_nsec - t_id.tv_nsec) / 1000000);
-	if (cacheable && playerart_load(art_key, cover_out, backdrop_out)) {
-		struct timespec t1;
-		clock_gettime(CLOCK_MONOTONIC, &t1);
-		printf("cover: player artwork from the cache in %ld ms (finding its key took %ld ms)\n",
-			   (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000), id_ms);
-		return true;
-	}
-
-	cover_build_t built = build_from_sources(filepath, false, reqs, n, results);
+	int used = -1;
+	cover_build_t built = build_from_sources_at(filepath, false, reqs, n, results, &used);
 	if (built == COVER_BUILD_NONE) {
 		// A podcast episode with no cover file beside it: fetch it now, on the
 		// loader thread, which can afford to wait on a network request, then
@@ -1388,15 +1665,19 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 		if (!podcastcache_ensure_cover(filepath)) {
 			return false;
 		}
-		built = build_from_sources(filepath, false, reqs, n, results);
+		built = build_from_sources_at(filepath, false, reqs, n, results, &used);
 	}
 	bool ok = (built == COVER_BUILD_OK);
-	if (ok && cacheable) {
-		struct timespec t1;
-		clock_gettime(CLOCK_MONOTONIC, &t1);
-		printf("cover: player artwork decoded in %ld ms, cached\n",
-			   (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000));
-		playerart_store(art_key, &results[cover_index], &results[backdrop_index]);
+
+	// Kept only when the picture came from the source the id was taken from:
+	// a cover that fell back to another one would be stored under a key that
+	// does not describe it.
+	if (ok && id && cover_index >= 0 && used == source_index) {
+		player_cover_store(id, cover_w, cover_h, &results[cover_index]);
+	}
+	// The colour goes with it, kept under the same id on the same condition.
+	if (ok && cover_index >= 0) {
+		cover_tone_attach(used == source_index ? id : 0, &results[cover_index]);
 	}
 
 	// A missing backdrop is survivable; the controls just stay plain.
@@ -1408,24 +1689,88 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 	return ok;
 }
 
-bool cover_warm_player_images(const char *filepath, int cover_w, int cover_h, cover_image_t *cover_out,
-							  int backdrop_w, int backdrop_h, cover_image_t *backdrop_out) {
-	memset(cover_out, 0, sizeof(*cover_out));
-	memset(backdrop_out, 0, sizeof(*backdrop_out));
-
-	char art_key[96];
-	if (!playerart_key(art_key, sizeof(art_key), cover_source_id(filepath), cover_w, cover_h, backdrop_w,
-					   backdrop_h) ||
-		playerart_has(art_key)) {
-		return false; // no artwork, or already on the card
+void cover_prefetch_player(const char *filepath, int cover_w, int cover_h) {
+	if (!filepath || !filepath[0] || cover_w <= 0 || cover_h <= 0) {
+		return;
 	}
-	// The ordinary load decodes and stores it. The pictures themselves are not
-	// wanted now: the track that needs them comes later and reads them back.
-	cover_image_t cover, backdrop;
-	cover_load_player_images(filepath, cover_w, cover_h, &cover, backdrop_w, backdrop_h, &backdrop);
+	// Nothing to make: no artwork, or the cover is already kept at this size.
+	int source_index = -1;
+	uint64_t id = player_source_id(filepath, &source_index);
+	if (!id || player_cover_kept(id, cover_w, cover_h)) {
+		return;
+	}
+	cover_image_t cover;
+	cover_load_player_images(filepath, cover_w, cover_h, &cover, 0, 0, NULL);
 	cover_free(&cover);
-	cover_free(&backdrop);
-	return false;
+}
+
+bool cover_load_shared(const char *filepath, int player_w, int player_h, int size, cover_image_t *out) {
+	memset(out, 0, sizeof(*out));
+	if (!filepath || player_w <= 0 || player_h <= 0 || size <= 0) {
+		return false;
+	}
+
+	// The player's picture of this file: from its table, or decoded at the
+	// player's size and kept there for the player too.
+	int source_index = -1;
+	uint64_t id = player_source_id(filepath, &source_index);
+	cover_image_t big;
+	bool have = id && player_cover_load(id, player_w, player_h, &big);
+	bool keyed = have; // whether `id` describes the picture in `big`
+	if (!have) {
+		image_request_t req = {.w = player_w, .h = player_h, .fit = COVER_FIT_COVER, .backdrop = false};
+		int used = -1;
+		if (build_from_sources_at(filepath, false, &req, 1, &big, &used) != COVER_BUILD_OK) {
+			return false;
+		}
+		keyed = id && used == source_index;
+		if (keyed) {
+			player_cover_store(id, player_w, player_h, &big);
+		}
+	}
+
+	// Its colour, from the player's picture, so the player and the album page
+	// share one row of it.
+	cover_tone_attach(keyed ? id : 0, &big);
+
+	// Then down to the size asked for.
+	if (player_w == size && player_h == size) {
+		*out = big;
+		return true;
+	}
+	raw_image_t raw;
+	bool ok = raw_from_cover(&big, &raw);
+	cover_image_t tones = big;
+	cover_free(&big);
+	if (!ok) {
+		return false;
+	}
+	ok = make_scaled(&raw, size, size, COVER_FIT_COVER, out);
+	raw_free(&raw);
+	if (ok) {
+		out->has_tone = tones.has_tone;
+		out->tone = tones.tone;
+		out->tone_luma = tones.tone_luma;
+		out->tone_light = tones.tone_light;
+	}
+	return ok;
+}
+
+bool cover_scaled_copy(const cover_image_t *src, int size, cover_image_t *out) {
+	memset(out, 0, sizeof(*out));
+	raw_image_t raw;
+	if (size <= 0 || !raw_from_cover(src, &raw)) {
+		return false;
+	}
+	bool ok = make_scaled(&raw, size, size, COVER_FIT_COVER, out);
+	raw_free(&raw);
+	if (ok) {
+		out->has_tone = src->has_tone;
+		out->tone = src->tone;
+		out->tone_luma = src->tone_luma;
+		out->tone_light = src->tone_light;
+	}
+	return ok;
 }
 
 void cover_free(cover_image_t *img) {
@@ -1454,8 +1799,8 @@ void cover_free(cover_image_t *img) {
 // meaning nothing was found there.
 // ---------------------------------------------------------------------------
 
-// Only thumbnails are worth keeping on disk. The player's full-size cover is
-// decoded once per track change, which is not worth a megabyte of cache.
+// The largest thumbnail kept in the thumbs table; the player's own cover has a
+// table of its own (see the player's cover below).
 //
 // The album carousel sets the ceiling: it decodes at 210, and a carousel that
 // re-decoded every cover on every visit would be the one page that never got
@@ -1463,12 +1808,7 @@ void cover_free(cover_image_t *img) {
 // hundred albums a card holds, but not for anything larger.
 #define THUMB_DISK_MAX_SIZE 216
 #define THUMB_WAV_EPOCH "|w2"
-// The thumbnails were once fitted inside their box -- a square picture in a
-// square row, but with the black bars of a letterbox whenever the cover was
-// not square. They fill the box now (COVER_FIT_COVER), and this goes into the
-// key of every thumbnail so the letterboxed ones already on disk are not handed
-// back.
-#define THUMB_FIT_EPOCH "|f1"
+
 // A cached "no artwork here" is a row with no width, and its height carries
 // the epoch of the readers that gave that answer. A row from another epoch is
 // a miss: raising the epoch has every file without artwork asked again, while
@@ -1491,14 +1831,6 @@ static file_identity_t thumb_db_identity;
 // directory, so a card ends up with a single .local folder rather than one dot
 // entry per feature.
 #define THUMB_DB_SUBPATH ".local/thumbnails"
-
-// The player's own artwork cache lives beside it (see further down) and opens,
-// closes and reopens with it.
-static bool playerart_ready;
-static char playerart_path[512];
-static file_identity_t playerart_identity;
-static void playerart_open(const char *base);
-static void playerart_close(void);
 
 // An earlier release kept the cache as a directory at the path the database now
 // wants, so on first open it is emptied and removed. Everything inside it was
@@ -1549,7 +1881,28 @@ static bool thumb_db_prepare_schema(sqlite3 *db) {
 					 " title TEXT,"
 					 " w INTEGER NOT NULL,"
 					 " h INTEGER NOT NULL,"
-					 " pixels BLOB)",
+					 " pixels BLOB);"
+					 // The player's cover, one row per picture and size, and
+					 // the picture of each track that carries its own (see
+					 // the player's cover below).
+					 "CREATE TABLE IF NOT EXISTS player_covers("
+					 " key TEXT PRIMARY KEY,"
+					 " w INTEGER NOT NULL,"
+					 " h INTEGER NOT NULL,"
+					 " used INTEGER NOT NULL,"
+					 " pixels BLOB NOT NULL);"
+					 "CREATE INDEX IF NOT EXISTS player_covers_used ON player_covers(used);"
+					 "CREATE TABLE IF NOT EXISTS player_cover_ids("
+					 " key TEXT PRIMARY KEY,"
+					 " id TEXT NOT NULL);"
+					 // The colour of each of those pictures, so the pages
+					 // that wear it do not work it out again (see the
+					 // picture's colour below).
+					 "CREATE TABLE IF NOT EXISTS cover_colours("
+					 " key TEXT PRIMARY KEY,"
+					 " tone INTEGER NOT NULL,"
+					 " luma INTEGER NOT NULL,"
+					 " light INTEGER NOT NULL)",
 					 NULL, NULL, &err) == SQLITE_OK) {
 		return true;
 	}
@@ -1624,11 +1977,6 @@ void cover_cache_reopen_if_replaced(void) {
 			printf("cover: thumbnail cache disabled\n");
 		}
 	}
-	if (playerart_ready && playerart_path[0] && file_identity_changed(playerart_path, &playerart_identity)) {
-		char base[sizeof(thumb_db_base)];
-		snprintf(base, sizeof(base), "%s", thumb_db_base);
-		playerart_open(base);
-	}
 	pthread_mutex_unlock(&thumb_db_lock);
 }
 
@@ -1639,10 +1987,8 @@ void cover_set_cache_dir(const char *sd_root) {
 		sqlite3_close(thumb_db);
 		thumb_db = NULL;
 	}
-	playerart_close();
 
 	bool ok = sd_root && sd_root[0] && try_cache_db(sd_root);
-	playerart_open(ok ? sd_root : NULL);
 	if (!ok) {
 		// The card may be missing or read-only; a tmpfs cache still saves the
 		// rescan cost within a single run.
@@ -1672,10 +2018,10 @@ static uint64_t thumb_hash(const char *path, int box, bool is_dir) {
 
 	char material[700];
 	if (stat(path, &st) == 0) {
-		snprintf(material, sizeof(material), "%s|%d|%c|%lld|%lld%s%s", path, box, is_dir ? 'd' : 'f',
-				 (long long)st.st_mtime, (long long)st.st_size, epoch, THUMB_FIT_EPOCH);
+		snprintf(material, sizeof(material), "%s|%d|%c|%lld|%lld%s", path, box, is_dir ? 'd' : 'f',
+				 (long long)st.st_mtime, (long long)st.st_size, epoch);
 	} else {
-		snprintf(material, sizeof(material), "%s|%d|%c|?%s%s", path, box, is_dir ? 'd' : 'f', epoch, THUMB_FIT_EPOCH);
+		snprintf(material, sizeof(material), "%s|%d|%c|?%s", path, box, is_dir ? 'd' : 'f', epoch);
 	}
 
 	for (const char *p = material; *p; p++) {
@@ -1792,236 +2138,11 @@ static void thumb_db_store(const char *key, const cover_image_t *img, bool has_i
 }
 
 // ---------------------------------------------------------------------------
-// on-disk player artwork cache
-//
-// The player's sleeve and its blurred backdrop are the most expensive pictures
-// in the interface: a full decode of the original, a resample to the width of
-// the screen, three blur passes and a dithered pack, on every album the player
-// is asked to show. Kept on the card, coming back to an album costs one read of
-// about a megabyte instead.
-//
-// Not more rows in the thumbnails database: SonixLink copies that one to the
-// phone, and a few hundred screen-sized pictures in it would turn every sync
-// into a long download. Not a database of its own either, which it once was:
-// SQLite reads a megabyte blob as a chain of overflow pages, and the
-// least-recently-shown bookkeeping rewrote the whole row -- the megabyte of
-// pixels with it -- on every hit. On the Blaze's card a hit took 2.3 seconds,
-// longer than decoding the cover. So one plain file per entry, read in one go,
-// in .local/playerart.d; "least recently shown" is the file's mtime, set on
-// every hit, and the oldest go once there are more than PLAYERART_MAX_ROWS.
-//
-// The key is the artwork's own bytes (cover_source_id), not the track, so every
-// track of an album that shares a cover.jpg or the same embedded picture shares
-// one entry; the sizes and the backdrop's light/upright treatment go in too,
-// since each of them changes the pixels.
-// ---------------------------------------------------------------------------
-
-#define PLAYERART_SUBPATH ".local/playerart.d"
-#define PLAYERART_OLD_DB ".local/playerart" // the database it replaces, deleted on sight
-#define PLAYERART_MAX_ROWS 150 // about a megabyte each at the Blaze's sizes
-#define PLAYERART_MAGIC 0x41505853u // "SXPA"
-
-typedef struct {
-	uint32_t magic;
-	uint16_t cw, ch, bw, bh;
-} playerart_header_t;
-
-// Call with thumb_db_lock held, like everything else that touches the caches.
-static void playerart_close(void) { playerart_ready = false; }
-
-// Only on the card: a tmpfs copy of pictures this size would be memory the
-// player needs for everything else.
-static void playerart_open(const char *base) {
-	playerart_close();
-	if (!base || !base[0] || strcmp(base, "/tmp") == 0) {
-		return;
-	}
-	char old[600];
-	snprintf(old, sizeof(old), "%s/%s", base, PLAYERART_OLD_DB);
-	struct stat st;
-	if (stat(old, &st) == 0 && S_ISREG(st.st_mode)) {
-		unlink(old);
-	}
-	if (snprintf(playerart_path, sizeof(playerart_path), "%s/%s", base, PLAYERART_SUBPATH) >=
-		(int)sizeof(playerart_path)) {
-		playerart_path[0] = '\0';
-		return;
-	}
-	mkdir(playerart_path, 0755);
-	if (stat(playerart_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
-		playerart_path[0] = '\0';
-		return;
-	}
-	playerart_ready = true;
-	file_identity_read(playerart_path, &playerart_identity);
-	printf("cover: player artwork cache in %s\n", playerart_path);
-}
-
-static bool playerart_key(char *out, size_t out_size, uint64_t id, int cw, int ch, int bw, int bh) {
-	if (!id) {
-		return false;
-	}
-	snprintf(out, out_size, "%016llx|%d|%d|%d|%d|%d%d", (unsigned long long)id, cw, ch, bw, bh, backdrop_light ? 1 : 0,
-			 backdrop_upright ? 1 : 0);
-	return true;
-}
-
-// The entry's file, or false with no cache. Takes and drops the lock: the
-// reading and writing happen outside it, so a megabyte going to or from the
-// card does not hold up the thumbnails.
-static bool playerart_file(const char *key, char *out, size_t out_size) {
-	uint64_t h = 1469598103934665603ULL;
-	for (const char *p = key; *p; p++) {
-		h ^= (uint8_t)*p;
-		h *= 1099511628211ULL;
-	}
-	pthread_mutex_lock(&thumb_db_lock);
-	bool ok = playerart_ready &&
-			  snprintf(out, out_size, "%s/%016llx.px", playerart_path, (unsigned long long)h) < (int)out_size;
-	pthread_mutex_unlock(&thumb_db_lock);
-	return ok;
-}
-
-static bool playerart_read_image(FILE *f, int w, int h, cover_image_t *out) {
-	if (w <= 0 || h <= 0) {
-		return false;
-	}
-	size_t bytes = (size_t)w * h * 2;
-	uint8_t *pixels = malloc(bytes);
-	if (!pixels || fread(pixels, 1, bytes, f) != bytes) {
-		free(pixels);
-		return false;
-	}
-	memset(out, 0, sizeof(*out));
-	out->pixels = pixels;
-	out->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-	out->dsc.header.cf = LV_COLOR_FORMAT_RGB565;
-	out->dsc.header.w = (uint32_t)w;
-	out->dsc.header.h = (uint32_t)h;
-	out->dsc.header.stride = (uint32_t)w * 2;
-	out->dsc.data_size = (uint32_t)bytes;
-	out->dsc.data = pixels;
-	return true;
-}
-
-static bool playerart_load(const char *key, cover_image_t *cover, cover_image_t *backdrop) {
-	char path[600];
-	if (!playerart_file(key, path, sizeof(path))) {
-		return false;
-	}
-	FILE *f = fopen(path, "rb");
-	if (!f) {
-		return false;
-	}
-	playerart_header_t hdr;
-	bool hit = fread(&hdr, sizeof(hdr), 1, f) == 1 && hdr.magic == PLAYERART_MAGIC &&
-			   playerart_read_image(f, hdr.cw, hdr.ch, cover);
-	if (hit && !playerart_read_image(f, hdr.bw, hdr.bh, backdrop)) {
-		cover_free(cover);
-		hit = false;
-	}
-	fclose(f);
-	if (hit) {
-		utime(path, NULL); // shown now: the last to go
-	} else {
-		unlink(path); // short or foreign: decode again and write it anew
-	}
-	return hit;
-}
-
-static bool playerart_has(const char *key) {
-	char path[600];
-	if (!playerart_file(key, path, sizeof(path))) {
-		return true; // no cache to warm: nothing to do
-	}
-	return access(path, F_OK) == 0;
-}
-
-// Drops the least recently shown entries beyond PLAYERART_MAX_ROWS.
-static void playerart_trim(const char *dir) {
-	DIR *d = opendir(dir);
-	if (!d) {
-		return;
-	}
-	for (;;) {
-		int count = 0;
-		time_t oldest_time = 0;
-		char oldest[300] = "";
-		struct dirent *de;
-		rewinddir(d);
-		while ((de = readdir(d)) != NULL) {
-			size_t len = strlen(de->d_name);
-			if (len < 4 || strcmp(de->d_name + len - 3, ".px") != 0) {
-				continue;
-			}
-			char path[900];
-			struct stat st;
-			snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
-			if (stat(path, &st) != 0) {
-				continue;
-			}
-			count++;
-			if (!oldest[0] || st.st_mtime < oldest_time) {
-				oldest_time = st.st_mtime;
-				snprintf(oldest, sizeof(oldest), "%s", de->d_name);
-			}
-		}
-		if (count <= PLAYERART_MAX_ROWS || !oldest[0]) {
-			break;
-		}
-		char path[900];
-		snprintf(path, sizeof(path), "%s/%s", dir, oldest);
-		unlink(path);
-	}
-	closedir(d);
-}
-
-static void playerart_store(const char *key, const cover_image_t *cover, const cover_image_t *backdrop) {
-	if (!cover->pixels || !backdrop->pixels) {
-		return;
-	}
-	char path[600];
-	if (!playerart_file(key, path, sizeof(path))) {
-		return;
-	}
-	playerart_header_t hdr = {.magic = PLAYERART_MAGIC,
-							  .cw = (uint16_t)cover->dsc.header.w,
-							  .ch = (uint16_t)cover->dsc.header.h,
-							  .bw = (uint16_t)backdrop->dsc.header.w,
-							  .bh = (uint16_t)backdrop->dsc.header.h};
-	// The loader and the warm-up thread can be storing the same picture at
-	// once: each writes a part file of its own, and the rename settles it.
-	char tmp[640];
-	snprintf(tmp, sizeof(tmp), "%s.%lx.part", path, (unsigned long)pthread_self());
-	FILE *f = fopen(tmp, "wb");
-	if (!f) {
-		return;
-	}
-	bool ok = fwrite(&hdr, sizeof(hdr), 1, f) == 1 &&
-			  fwrite(cover->pixels, 1, (size_t)hdr.cw * hdr.ch * 2, f) == (size_t)hdr.cw * hdr.ch * 2 &&
-			  fwrite(backdrop->pixels, 1, (size_t)hdr.bw * hdr.bh * 2, f) == (size_t)hdr.bw * hdr.bh * 2;
-	ok = fclose(f) == 0 && ok;
-	if (!ok || rename(tmp, path) != 0) {
-		unlink(tmp); // a failure only costs a future decode
-		return;
-	}
-	char *slash = strrchr(path, '/');
-	if (slash) {
-		*slash = '\0';
-		playerart_trim(path);
-	}
-}
-
-// ---------------------------------------------------------------------------
 // browser thumbnails
 // ---------------------------------------------------------------------------
 
 static cover_build_t thumb_load_uncached(const char *path, bool is_dir, int size, cover_image_t *out) {
-	// Fills its box rather than fitting inside it: a square row around a
-	// rectangular cover used to come out with the black bars of a letterbox
-	// down both sides. The row is a picture of the album, and a picture of an
-	// album is its cover edge to edge.
-	image_request_t req = {.w = size, .h = size, .fit = COVER_FIT_COVER, .backdrop = false};
+	image_request_t req = {.w = size, .h = size, .fit = COVER_FIT_CONTAIN, .backdrop = false};
 	return build_from_sources(path, is_dir, &req, 1, out);
 }
 
@@ -2061,31 +2182,7 @@ bool cover_thumb_load(const char *path, bool is_dir, int size, cover_image_t *ou
 		}
 	}
 
-	// A track's picture is very often its album's: the same embedded image in
-	// every file, or the one cover.jpg beside them. Keyed by the file alone,
-	// the songs list decoded that picture once per track -- fifteen times for
-	// an album that the albums list decodes once -- and that was the whole
-	// difference between scrolling the two. So a file whose thumbnail is not
-	// cached yet asks by its picture too (cover_source_id: the picture's length
-	// and its two ends, read from the mapped file), and the answer is stored
-	// under both keys.
-	char pic_key[40] = "";
-	if (cacheable && !is_dir) {
-		uint64_t id = cover_source_id(path);
-		if (id) {
-			snprintf(pic_key, sizeof(pic_key), "p%016llx-%d", (unsigned long long)id, size);
-			bool has_image = false;
-			if (thumb_db_load(pic_key, out, &has_image) && has_image) {
-				thumb_db_store(key, out, true); // and by the file, for next time
-				return true;
-			}
-		}
-	}
-
 	cover_build_t built = thumb_load_uncached(path, is_dir, size, out);
-	if (pic_key[0] && built == COVER_BUILD_OK) {
-		thumb_db_store(pic_key, out, true);
-	}
 
 	// "There is no artwork here" is worth storing too: a folder without any is
 	// otherwise rescanned from scratch every time it scrolls past.
@@ -2202,4 +2299,420 @@ void cover_book_store(const char *path, int box_w, int box_h, const cover_image_
 		sqlite3_finalize(stmt);
 	}
 	pthread_mutex_unlock(&thumb_db_lock);
+}
+
+// ---------------------------------------------------------------------------
+// the player's cover
+//
+// The finished cover is kept in player_covers under cover_source_id() and its
+// size. The id is a hash of the picture's bytes, so the tracks of a record
+// that carry the same picture share one row, and tracks that carry different
+// pictures get one row each. player_cover_ids keeps the id of each track whose
+// picture is embedded, keyed by the file's path, size and mtime, so a track
+// already seen is matched without reading its picture. A picture from a cover
+// file beside the track is hashed every time: replacing that file does not
+// change the track.
+//
+// The backdrop is not kept; it is made from the cover (backdrop_from_cover()).
+//
+// A row holds the cover as a JPEG at quality PLAYER_COVER_QUALITY: some 60 to
+// 100 KB at 480x480 against 450 KB as pixels, which is what lets the table
+// keep five times as many in the same room. Above 90 the encoder keeps the
+// colour at full resolution, so lettering on a sleeve stays clean. Reading one
+// back is a small read and a decode at 1:1 -- far less than the poster-sized
+// picture in the file it came from. A row written as pixels by an older build
+// is still read, and written again as a JPEG.
+// ---------------------------------------------------------------------------
+
+// The most recently shown covers are kept, the rest deleted: about 90 MB at
+// 480x480.
+#define PLAYER_COVER_MAX_ROWS 1000
+#define PLAYER_COVER_QUALITY 92
+#define PLAYER_ID_MAX_ROWS 20000
+#define PLAYER_ID_PRUNE_EVERY 256
+// Part of every cover key: raising it makes every stored cover a miss.
+#define PLAYER_COVER_EPOCH 1
+
+static uint64_t fnv1a(const char *text) {
+	uint64_t h = 1469598103934665603ULL;
+	for (const char *p = text; *p; p++) {
+		h ^= (uint8_t)*p;
+		h *= 1099511628211ULL;
+	}
+	return h;
+}
+
+static bool player_id_key(const char *path, char *out, size_t out_size) {
+	struct stat st;
+	if (!path || !path[0] || stat(path, &st) != 0) {
+		return false;
+	}
+	char material[700];
+	snprintf(material, sizeof(material), "pid|%s|%lld|%lld", path, (long long)st.st_mtime, (long long)st.st_size);
+	snprintf(out, out_size, "%016llx", (unsigned long long)fnv1a(material));
+	return true;
+}
+
+static bool player_id_lookup(const char *key, uint64_t *id) {
+	bool hit = false;
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db &&
+		sqlite3_prepare_v2(thumb_db, "SELECT id FROM player_cover_ids WHERE key = ?1", -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			const char *text = (const char *)sqlite3_column_text(stmt, 0);
+			char *end = NULL;
+			unsigned long long value = text ? strtoull(text, &end, 16) : 0;
+			if (value && end && *end == '\0') {
+				*id = (uint64_t)value;
+				hit = true;
+			}
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+	return hit;
+}
+
+// Every PLAYER_ID_PRUNE_EVERY stores the table is cut back to its newest
+// PLAYER_ID_MAX_ROWS rows. Called with the lock held.
+static void player_id_prune(void) {
+	static unsigned stores;
+	if (++stores % PLAYER_ID_PRUNE_EVERY) {
+		return;
+	}
+	sqlite3_stmt *stmt = NULL;
+	if (sqlite3_prepare_v2(thumb_db,
+						   "DELETE FROM player_cover_ids WHERE rowid IN"
+						   " (SELECT rowid FROM player_cover_ids ORDER BY rowid DESC LIMIT -1 OFFSET ?1)",
+						   -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_int(stmt, 1, PLAYER_ID_MAX_ROWS);
+		sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
+	}
+}
+
+static void player_id_store(const char *key, uint64_t id) {
+	char text[24];
+	snprintf(text, sizeof(text), "%016llx", (unsigned long long)id);
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db && sqlite3_prepare_v2(thumb_db, "INSERT OR REPLACE INTO player_cover_ids(key, id) VALUES(?1, ?2)", -1,
+									   &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+		sqlite3_bind_text(stmt, 2, text, -1, SQLITE_STATIC);
+		sqlite3_step(stmt); // a failure here only costs reading the picture again
+		sqlite3_finalize(stmt);
+		player_id_prune();
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+}
+
+// The id, and the candidate it came from (0 when it was found in the table,
+// which only holds embedded pictures).
+static uint64_t player_source_id(const char *filepath, int *index) {
+	char key[32];
+	bool keyed = player_id_key(filepath, key, sizeof(key));
+	uint64_t id = 0;
+	if (keyed && player_id_lookup(key, &id)) {
+		*index = 0;
+		return id;
+	}
+	id = source_id_uncached(filepath, index);
+	if (keyed && id && *index == 0) {
+		player_id_store(key, id);
+	}
+	return id;
+}
+
+uint64_t cover_source_id(const char *filepath) {
+	int index;
+	return player_source_id(filepath, &index);
+}
+
+bool cover_known_id(const char *filepath, uint64_t *id) {
+	char key[32];
+	return player_id_key(filepath, key, sizeof(key)) && player_id_lookup(key, id);
+}
+
+bool cover_picture_known(const char *filepath) {
+	uint64_t id = 0;
+	if (!cover_known_id(filepath, &id)) {
+		return false;
+	}
+	// Any size of it: the rows of one picture share the id and then '|', and
+	// '}' is the character after '|', so the range is exactly those rows and
+	// is answered from the key's index.
+	char from[24], to[24];
+	snprintf(from, sizeof(from), "%016llx|", (unsigned long long)id);
+	snprintf(to, sizeof(to), "%016llx}", (unsigned long long)id);
+	bool kept = false;
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db && sqlite3_prepare_v2(thumb_db, "SELECT 1 FROM player_covers WHERE key >= ?1 AND key < ?2 LIMIT 1", -1,
+									   &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, from, -1, SQLITE_STATIC);
+		sqlite3_bind_text(stmt, 2, to, -1, SQLITE_STATIC);
+		kept = sqlite3_step(stmt) == SQLITE_ROW;
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+	return kept;
+}
+
+static void player_cover_key(char *out, size_t out_size, uint64_t id, int w, int h) {
+	snprintf(out, out_size, "%016llx|%dx%d|%d", (unsigned long long)id, w, h, PLAYER_COVER_EPOCH);
+}
+
+// A row's JPEG back as the cover it was made from. Its size has to be the one
+// the key says, or the row is not the picture asked for.
+static bool image_from_jpeg(const uint8_t *data, size_t size, int w, int h, cover_image_t *out) {
+	int dw = 0, dh = 0;
+	// The short side is under twice `w`, so TJpgDec decodes at 1:1.
+	uint8_t *rgb = jpeg_scaled_decode(data, size, w > h ? w : h, &dw, &dh, NULL, NULL);
+	if (!rgb) {
+		int comp = 0;
+		rgb = stbi_load_from_memory(data, (int)size, &dw, &dh, &comp, 3);
+	}
+	if (!rgb) {
+		return false;
+	}
+	bool ok = dw == w && dh == h && pack_rgb565(rgb, w, h, out);
+	free(rgb);
+	return ok;
+}
+
+static bool player_cover_load(uint64_t id, int w, int h, cover_image_t *out) {
+	memset(out, 0, sizeof(*out));
+	if (w <= 0 || h <= 0 || w > 0xFFFF || h > 0xFFFF) {
+		return false;
+	}
+	char key[64];
+	player_cover_key(key, sizeof(key), id, w, h);
+
+	// The row is copied out under the lock and decoded after it, so a list
+	// asking for its thumbnails is not held up behind a decode.
+	uint8_t *blob = NULL;
+	size_t blob_len = 0;
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db && sqlite3_prepare_v2(thumb_db, "SELECT w, h, pixels FROM player_covers WHERE key = ?1", -1, &stmt,
+									   NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+		if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) == w && sqlite3_column_int(stmt, 1) == h) {
+			const void *data = sqlite3_column_blob(stmt, 2);
+			int len = sqlite3_column_bytes(stmt, 2);
+			if (data && len > 0 && (blob = malloc((size_t)len)) != NULL) {
+				memcpy(blob, data, (size_t)len);
+				blob_len = (size_t)len;
+			}
+		}
+		sqlite3_finalize(stmt);
+	}
+	if (blob && sqlite3_prepare_v2(thumb_db,
+								   "UPDATE player_covers SET used = (SELECT IFNULL(MAX(used), 0) + 1 FROM player_covers)"
+								   " WHERE key = ?1",
+								   -1, &stmt, NULL) == SQLITE_OK) {
+		// Moved to the front of the queue the pruning deletes from.
+		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+		sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+	if (!blob) {
+		return false;
+	}
+
+	bool hit;
+	bool legacy = blob_len == (size_t)w * h * 2;
+	if (legacy) {
+		// Pixels, as an older build wrote them: used as they are, and the row
+		// rewritten as a JPEG.
+		hit = true;
+		memset(out, 0, sizeof(*out));
+		out->pixels = blob;
+		out->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+		out->dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+		out->dsc.header.w = (uint32_t)w;
+		out->dsc.header.h = (uint32_t)h;
+		out->dsc.header.stride = (uint32_t)w * 2;
+		out->dsc.data_size = (uint32_t)blob_len;
+		out->dsc.data = blob;
+		player_cover_store(id, w, h, out);
+	} else {
+		hit = blob_len > 2 && blob[0] == 0xFF && blob[1] == 0xD8 && image_from_jpeg(blob, blob_len, w, h, out);
+		free(blob);
+	}
+	return hit;
+}
+
+// Whether the cover of picture `id` is kept at w x h, without reading it.
+static bool player_cover_kept(uint64_t id, int w, int h) {
+	char key[64];
+	player_cover_key(key, sizeof(key), id, w, h);
+	bool kept = false;
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db &&
+		sqlite3_prepare_v2(thumb_db, "SELECT 1 FROM player_covers WHERE key = ?1", -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+		kept = sqlite3_step(stmt) == SQLITE_ROW;
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+	return kept;
+}
+
+static void player_cover_store(uint64_t id, int w, int h, const cover_image_t *img) {
+	if (!img || !img->pixels) {
+		return;
+	}
+	char key[64];
+	player_cover_key(key, sizeof(key), id, w, h);
+	int iw = (int)img->dsc.header.w;
+	int ih = (int)img->dsc.header.h;
+	if (iw != w || ih != h) {
+		return; // the key would not describe it
+	}
+
+	// Encoded before the lock is taken: it is the slow part.
+	raw_image_t raw;
+	if (!raw_from_cover(img, &raw)) {
+		return;
+	}
+	size_t jpeg_len = 0;
+	uint8_t *jpeg = art_encode_jpeg(raw.pixels, raw.w, raw.h, PLAYER_COVER_QUALITY, &jpeg_len);
+	raw_free(&raw);
+	if (!jpeg) {
+		return;
+	}
+
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db && sqlite3_prepare_v2(thumb_db,
+									   "INSERT OR REPLACE INTO player_covers(key, w, h, used, pixels) VALUES(?1, ?2, ?3,"
+									   " (SELECT IFNULL(MAX(used), 0) + 1 FROM player_covers), ?4)",
+									   -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+		sqlite3_bind_int(stmt, 2, iw);
+		sqlite3_bind_int(stmt, 3, ih);
+		sqlite3_bind_blob(stmt, 4, jpeg, (int)jpeg_len, SQLITE_STATIC);
+		sqlite3_step(stmt); // a failure here only costs a future decode
+		sqlite3_finalize(stmt);
+
+		// Everything older than the newest PLAYER_COVER_MAX_ROWS goes.
+		if (sqlite3_prepare_v2(thumb_db,
+							   "DELETE FROM player_covers WHERE used <="
+							   " (SELECT used FROM player_covers ORDER BY used DESC LIMIT 1 OFFSET ?1)",
+							   -1, &stmt, NULL) == SQLITE_OK) {
+			sqlite3_bind_int(stmt, 1, PLAYER_COVER_MAX_ROWS);
+			sqlite3_step(stmt);
+			sqlite3_finalize(stmt);
+		}
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+	free(jpeg);
+}
+
+// ---------------------------------------------------------------------------
+// the picture's colour
+//
+// What the pages that wear a sleeve's colour need from it: the colour an
+// album's page is painted in, which the player is tinted with as well
+// (cover_page_tone). Working it out is a few passes over the picture, small
+// next to decoding it, but not something to repeat on the interface thread
+// every time a page opens. It is kept in cover_colours under the picture's id,
+// like the picture itself, so it is worked out once per picture, on the loader
+// thread, and read back with the picture after that.
+//
+// The epoch is part of the key: raising it when the way the colour is worked
+// out changes makes every stored row a miss.
+// ---------------------------------------------------------------------------
+
+#define COVER_TONE_EPOCH 1
+#define COVER_TONE_MAX_ROWS 20000
+#define COVER_TONE_PRUNE_EVERY 256
+
+static void cover_tone_key(char *out, size_t out_size, uint64_t id) {
+	snprintf(out, out_size, "%016llx|%d|%d", (unsigned long long)id, COVER_PAGE_LIGHT_FROM, COVER_TONE_EPOCH);
+}
+
+static bool cover_tone_load(uint64_t id, cover_image_t *img) {
+	char key[64];
+	cover_tone_key(key, sizeof(key), id);
+	bool hit = false;
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db && sqlite3_prepare_v2(thumb_db, "SELECT tone, luma, light FROM cover_colours WHERE key = ?1", -1,
+									   &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			img->tone = (uint32_t)sqlite3_column_int64(stmt, 0);
+			img->tone_luma = (int16_t)sqlite3_column_int(stmt, 1);
+			img->tone_light = sqlite3_column_int(stmt, 2) != 0;
+			img->has_tone = true;
+			hit = true;
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+	return hit;
+}
+
+static void cover_tone_store(uint64_t id, const cover_image_t *img) {
+	static unsigned stores;
+	char key[64];
+	cover_tone_key(key, sizeof(key), id);
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db && sqlite3_prepare_v2(thumb_db,
+									   "INSERT OR REPLACE INTO cover_colours(key, tone, luma, light) VALUES(?1, ?2, ?3, ?4)",
+									   -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+		sqlite3_bind_int64(stmt, 2, img->tone);
+		sqlite3_bind_int(stmt, 3, img->tone_luma);
+		sqlite3_bind_int(stmt, 4, img->tone_light ? 1 : 0);
+		sqlite3_step(stmt); // a failure here only costs working it out again
+		sqlite3_finalize(stmt);
+
+		// A row is a few dozen bytes, so the table keeps many more pictures
+		// than player_covers does; past that the oldest rows go.
+		if (++stores % COVER_TONE_PRUNE_EVERY == 0 &&
+			sqlite3_prepare_v2(thumb_db,
+							   "DELETE FROM cover_colours WHERE rowid IN"
+							   " (SELECT rowid FROM cover_colours ORDER BY rowid DESC LIMIT -1 OFFSET ?1)",
+							   -1, &stmt, NULL) == SQLITE_OK) {
+			sqlite3_bind_int(stmt, 1, COVER_TONE_MAX_ROWS);
+			sqlite3_step(stmt);
+			sqlite3_finalize(stmt);
+		}
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+}
+
+// Fills in the colour of `img`: read back under `id`, or worked out from the
+// picture and written down. An id of 0 is a picture the id does not describe,
+// whose colour is worked out and not kept.
+static void cover_tone_attach(uint64_t id, cover_image_t *img) {
+	img->has_tone = false;
+	if (!img->pixels) {
+		return;
+	}
+	if (id && cover_tone_load(id, img)) {
+		return;
+	}
+	uint32_t tone = 0;
+	int luma = 0;
+	bool light = false;
+	if (!cover_page_tone(img, COVER_PAGE_LIGHT_FROM, &tone, &luma, &light)) {
+		return;
+	}
+	img->tone = tone;
+	img->tone_luma = (int16_t)luma;
+	img->tone_light = light;
+	img->has_tone = true;
+	if (id) {
+		cover_tone_store(id, img);
+	}
 }

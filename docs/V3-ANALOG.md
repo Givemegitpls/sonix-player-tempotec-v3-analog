@@ -579,6 +579,31 @@ onto one "current output".
 Verified on the device (2026-10-13): each slider takes effect on its own
 output, and moving one no longer moves another.
 
+## Upstream base: 1.3.0
+
+The player's source is a fork of [Jepl4r/sonix-player](https://github.com/Jepl4r/sonix-player):
+the tree carries that project's history, so an update is a merge of its release
+tag, not a patch-by-patch port. The base this image was built on is **1.3.0**
+(`a488e25`, 16 October 2026); the tree it was taken from, `d9a0f1b` (10 October),
+is what the two ports share as an ancestor. The recipe for taking the next one
+-- the merge, the interface scaling, the icons, the language files -- is in
+[UPDATING.md](UPDATING.md).
+
+What is deliberately **not** taken from upstream, because this board has no path
+for it:
+
+- the kernel and its modules (`axp2101.ko`, `soc_fb.ko`, `brcmfmac.ko`, zram):
+  the V3 Analog keeps TempoTec's 3.10 kernel;
+- the boot logo by theme (`/etc/boot-logo`, `S11jpeg_display_shell`):
+  `boot_logo_flash = false` and `one_boot_logo = false` in `board.h`, because
+  `/dev/mtd5` here is the `/data` UBI volume, not a scratch partition. The
+  kernel shows TempoTec's own logo before the player exists;
+- the charging screen while off: it reads its marker from the AXP2101 over I2C,
+  and there is no `/dev/i2c-0` on this board, so `chargescreen_run_if_wanted()`
+  returns at once;
+- the charge limit: same reason, see [PANEL-POWER.md](PANEL-POWER.md) and the
+  list below.
+
 ## What does not work, and what is not verified
 
 Not working, with the reason:

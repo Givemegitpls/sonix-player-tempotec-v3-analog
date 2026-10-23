@@ -2,6 +2,8 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons_select.h"
+#include "src/gui/shell/keyboard.h"
+#include "src/gui/shell/setupwifi.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
@@ -9,6 +11,7 @@
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
+#include "src/system/input/kblayout.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -116,6 +119,9 @@ static void pick_cb(lv_event_t *e) {
 	fonts_set_language(entries[index].name);
 	if (!lang_set(entries[index].name)) {
 		fonts_set_language(lang_current());
+	} else {
+		kblayout_language_changed();
+		keyboard_refresh_layout();
 	}
 	paint_checks();
 	refresh_titles();
@@ -155,9 +161,10 @@ static void confirm_cb(lv_event_t *e) {
 	power_notify_activity();
 
 	// And on to the clock, which is the other thing a player that has never
-	// run cannot work out for itself.
+	// run cannot work out for itself: by way of the Wi-Fi, so that the
+	// network can tell it.
 	if (timeset_needed()) {
-		timeset_show();
+		setupwifi_show();
 	}
 }
 
