@@ -454,8 +454,22 @@ int alsa_set_control(const char *name, long value) {
 	return err;
 }
 
+// Whether the model names a second, separately opened output -- the optical
+// card on the V3 Analog (sysinfo.h). When it does, the route table below picks
+// between two cards, not just between two mixer values.
+static bool digital_output_present(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	return model && model->digital_pcm && model->digital_pcm[0];
+}
+
 // Returns a valid value for ALSA "Output Port Switch" based on what is plugged
 // in.
+//
+// The numbers are the stock player's own table (its output_port_detect(): 0
+// spdif, 1 lineout, 2 headset, 3 balance, 4 i2s, 5 none), read out of the
+// binary, and they are what the machine driver turns into a real route: mute
+// the old port, switch the SoC's digital side and the codec board's GPIOs,
+// unmute the new one.
 int detect_output(void) {
 	const char *const sysfs_hs_switch = "/sys/class/switch/headset/state";
 	const char *const sysfs_bal_switch = "/sys/class/switch/balance/state";
@@ -481,6 +495,20 @@ int detect_output(void) {
 
 	if (file_matches(sysfs_hs_switch, "1")) {
 		return 2; // 3.5mm headset output
+	}
+
+	// Nothing in either analogue socket.
+	//
+	// On a board with a separate digital output (the V3 Analog's optical card,
+	// sysinfo.h) the route becomes the S/PDIF one, which is what the stock
+	// player does: its port table gives "spdif" priority 1 and its "default"
+	// port is spdif, so a player with no jack plugged in writes its PCM to card
+	// 0 and the mixer to route 0. The optical jack's own switch
+	// (/sys/class/switch/digital_dt2) says whether a cable is in, and is not
+	// consulted: the stock player does not consult it either, and the route is
+	// the same with and without the cable.
+	if (digital_output_present()) {
+		return 0; // spdif
 	}
 
 	return 2; // Default to 3.5mm device
@@ -812,6 +840,13 @@ void alsa_controls_reapply(void) {
 // (routing happens before opening, and a reroute closes first). Writing the
 // route on a live stream stalls the DMA.
 static int write_output_route(int route) {
+	// The digital routes are not one of the two analogue sockets: there is no
+	// HBC3000 muting sequence to break out of, and the stock player writes them
+	// with a single control write. Passing through an analogue route on the way
+	// would power the codec up and down for nothing.
+	if (route == 0 || route == 5) {
+		return alsa_set_control("Output Port Switch", route);
+	}
 	// A different valid route, to break the "X == X" shortcut -- but one from
 	// the same socket as the target wherever there is a choice. Routes 1 and 2
 	// are the two faces of the 3.5 mm jack and the driver runs nothing when it
@@ -1135,12 +1170,12 @@ void volume_profile_persist_now(void) {
 // from the PCM name alone.
 //
 // The caller (btaudio.c) names the output from the PCM string, and on this
-// board that string cannot tell the analogue route from the USB one: the
-// analogue output is itself a "plughw:" PCM -- card 1, because "default" here
-// is card 0's S/PDIF dummy (see pcm_device in the model) -- so every analogue
-// track would be taken for USB. usbaudio.c owns the USB card it found and
-// clears it the moment the port empties, so its answer is the one to trust,
-// with the jack switch settling which analogue socket it is.
+// board that string cannot tell the analogue route from the USB one on its own:
+// btaudio takes anything starting with "plughw:" for USB, and the analogue
+// output can be opened as plughw:1,0 -- the plug fallback in
+// open_pcm_device() -- when the card refuses a format. usbaudio.c owns the USB
+// card it found and clears it the moment the port empties, so its answer is the
+// one to trust, with the jack switch settling which analogue socket it is.
 //
 // Getting this wrong is not cosmetic. limit_enforce() only bites on the profile
 // in force, so a route read as USB makes the USB ceiling the only one that is

@@ -137,3 +137,42 @@ The part that is easy to underestimate:
   the key itself on screen. After every merge, diff each `.ini`'s key set
   against upstream's and count duplicates (`uniq -d`); `docs/UPDATING.md`,
   step 5, has the loop. The loader keeps the **last** line of a key.
+
+## Updating the player on the device: / and /tmp are not the same filesystem
+
+`/` is a 52 MB UBIFS volume and it boots **100 % full** (the packer fills it).
+`/tmp` and `/data` are not: `/tmp` is tmpfs, `/data` is UBIFS with ~36 MB free.
+So `mv /tmp/sonix_player.new /usr/bin/sonix_player` is not a rename -- it is a
+copy that needs the whole 7.7 MB free on `/` while the old binary is still
+there, and it dies with `No space left on device` **after truncating the
+target**. That is a player that cannot start again, on a device whose launcher
+reboots when the player exits.
+
+Safe recipe:
+
+1. `cp sonix-player/sonix_player /data/sonix_player.new` (not `/tmp`), `chmod 775`;
+2. free ~7.7 MB on `/` -- the otherwise unused stock decoder libraries are the
+   cheapest: `libFLAC.so{,.8}`, `libwma.so`, `libmp3lame.so{,.0}`, `libaac.so`,
+   `libmp3.so`, `libdsd2pcm.so`, `libmad.so.0` (~4.1 MB), and if still short
+   `libcrypto.so.1.0.0` (1.9 MB), `libssl.so.1.0.0` (0.38 MB),
+   `libglib-2.0.so.0.4000.0` (1.36 MB) -- all stock-only, none of them is on the
+   port's NEEDED list (ours are `*.so.1.1` and glib `0.4600.1`);
+3. `rm /usr/bin/sonix_player`, then `cp /data/sonix_player.new /usr/bin/sonix_player`
+   (UBIFS compresses it, so ~6.3 MB of free space is enough for the 7.4 MB file),
+   `chmod 775`, `md5sum` against the host build, `sync`, reboot.
+
+A reflash restores the deleted libraries; the shipped `.upt` never had them
+removed.
+
+## Logs for a device test
+
+Settings live in `/data/device_config.ini` and can be hand-edited (read back at
+start). `[system] log_to_sd = 1` writes `/mnt/sd_0/.local/sonix_player.log`,
+which is where the audio path prints its evidence: `set output to N`,
+`PCM open on 'hw:…'`, `audio: buffer … frames (… ms), period … frames (… ms)`,
+`jack changed, rerouting`. The kernel side of the optical route shows up in the
+same file as `kernel: <4> … spdif_optical power on` / `OPTICAL_MOODE`.
+
+`tools/keyinj.c` built statically (`mipsel-rockbox-linux-gnu-gcc -static -O2`)
+drives the buttons from adb: `keyinj /dev/input/event1 116 164` wakes the screen
+and presses play/pause. Push it to `/data`, not `/tmp`.

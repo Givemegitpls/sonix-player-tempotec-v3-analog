@@ -189,20 +189,60 @@ left that can free a panel that has stopped showing anything.
 `[power] screen_off_seconds` is what starts that countdown: 30 seconds by
 default, `0` for never, and the Screen page's slider is the same setting.
 
-## Sound: card 1, and the analogue output is `plughw:1,0`
+## Sound: two cards, chosen by port, the way the stock player does it
 
-Card 0 on this device is `sa_spdif`, a dummy the optical route shares. The
-codec's mixer controls and the analogue output are on **card 1**:
+The board has two outputs and they are two ALSA cards. Card 0 is `sa_spdif`,
+the optical transmitter (the "dummy" in its name is the *codec* side of the DAI
+-- S/PDIF out needs no codec; `jz_spdif_hw_params` runs and the DMA starts when
+it is played to). Card 1 is `v3_analog`, the AK4493. The mixer and the analogue
+output are on card 1:
 
 - the mixer (`AK4493 Gain Control`, `Digital Filter`, `Output Port Switch`, the
   playback volumes) is opened as **`hw:1`** (`mixer_card = 1`);
-- the analogue output is opened as **`plughw:1,0`** (`pcm_device`), because
-  `default` resolves to card 0 here. `plughw` and not `hw`: the codec takes a
-  narrow set of formats and rates, and the plug keeps a 24/96 track from being
-  refused outright until exactly what it takes is measured.
+- the analogue output is opened as **`hw:1,0`** (`pcm_device`);
+- the optical output is opened as **`hw:0,0`** (`digital_pcm`).
 
-Both are model fields (`sysinfo.h`), so the Blaze and the HiBy boards keep
-their `hw:0` and `default`.
+`hw` and not `plughw`, because what both cards take has now been measured
+(`aplay --dump-hw-params` on the device):
+
+| | formats | channels | rates |
+|---|---|---|---|
+| `hw:1,0` (analogue) | `S16_LE`, `S24_LE` | 1-2 | 8000-768000 |
+| `hw:0,0` (optical) | `S16_LE`, `S24_LE` | 1-2 | 8000-384000 |
+
+`S16_LE` for a 16-bit source and `S24_LE` (24 bits in a 4-byte word) for
+anything deeper is exactly what the stock player asks its tinyalsa stream for,
+and it is also what keeps the alsa-lib plug out of the path: a plug with
+nothing to convert passes writes straight to the driver's copy path. The plug
+survives only as a fallback, taken when a card refuses a format
+(`open_pcm_device()`), and the format is never silently converted otherwise.
+
+Which card is opened is decided by the port, as in the stock player, whose
+`Output Port Switch` values were read out of the binary
+(`output_port_detect()`): **0** S/PDIF, **1** line out, **2** headset (3.5 mm),
+**3** balanced (4.4 mm), **4** i2s, **5** none. `detect_output()` maps the
+`headset`/`balance` switches onto that table; with nothing plugged in it
+returns 0, which is the stock player's own answer (its port table gives
+`spdif` priority 1 and its `default` port is `spdif` -- the measured file
+descriptors agree: no jack, `pcmC0D0p`). The route is written from
+`open_pcm_device_now()` before every open, so a jack plugged in while nothing
+was playing is picked up by the next track, and the playback loop re-reads
+`alsa_output_key()` every eight periods to reroute mid-track.
+
+The optical jack's own switch, `/sys/class/switch/digital_dt2` (GPIO PB21), is
+a presence input and is not consulted: the stock player does not consult it
+either, and the route is 0 with and without a cable.
+
+The stream geometry is the stock player's too, read from its device layer
+(`period_count = 4`, and a period chosen by rate: 1024 frames at 8 and
+11.025 kHz, 2048 up to 22.05, 4096 at 32/44.1/48, 8192 up to 192, 32768
+above). At 44.1 kHz that is `buffer 16384 frames (371 ms), period 4096 frames
+(92 ms)`, and the player prints those two numbers on every open. The deeper
+buffer this port used to open with can be had back with `[audio] period_count`
+or `[audio] buffer_time_ms`, which is what the two knobs exist for.
+
+Both names are model fields (`sysinfo.h`), so the Blaze and the HiBy boards
+keep their `hw:0` and `default` and their single-output routing.
 
 ## Bluetooth: a BlueZ 5 userland on a glibc 2.16 device
 
@@ -555,9 +595,9 @@ follow the user to the line out, or to a PC on the other end of the cable.
 
 Getting that wrong once produced two symptoms at the same time, and both came
 from one line: the routing watcher classified the current output by the PCM's
-name and treated anything starting with `plughw:` as the USB port. On this board
-the analogue output *is* `plughw:1,0` (card 0 is `sa_spdif`, the optical dummy),
-so the profile was always "USB". Its ceiling was then the only one ever enforced
+name and treated anything starting with `plughw:` as the USB port. At the time
+the analogue output *was* opened as `plughw:1,0` (it is `hw:1,0` now), so the
+profile was always "USB". Its ceiling was then the only one ever enforced
 -- and it was enforced through the codec's attenuation, which is what the jacks
 are plugged into -- while the 3.5 mm and 4.4 mm sliders stored a value that
 nothing applied. The values were never shared; the *classification* was.
@@ -614,8 +654,13 @@ Not working, with the reason:
   is written, the switch is off rather than pretending.
 - **Serial number in About**: the device's node is
   `/proc/jz/efuse/efuse_serial_nb`, not the `efuse_chip_id` the port reads.
-- **Optical / S/PDIF**: the route to card 0 (`sa_spdif`) on the `digital_dt2`
-  switch is not implemented.
+- **Optical / S/PDIF at rates above 192 kHz**: the route and the card are
+  implemented (see "Sound" above: nothing plugged in means `hw:0,0` and
+  `Output Port Switch` 0, as in the stock player), and the card itself accepts
+  up to 384 kHz. The stock player limits its digital port to 44.1-192 kHz and
+  resamples above that; the port does not resample, so a 352.8/384 kHz DoP
+  track would go out at a rate no S/PDIF receiver is specified for. What an
+  actual receiver does with it has not been measured.
 - **Smoothness of page opens**: the first frame of a new page takes 96-135 ms
   (widget building, font rasterisation, the blurred backdrop); scrolling is at
   about 45 fps. Profiling and the cheap wins are still to be done.

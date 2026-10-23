@@ -155,11 +155,19 @@ static const sysinfo_model_t BOARD_MODEL = {
 	// The SoC stays awake -- the music keeps playing -- and FBIOBLANK, the
 	// path that wedges this glass, is never used. See docs/PANEL-POWER.md.
 	.panel_sleep_ioctl = 0x80044620u,
-	// plughw and not hw: the codec's PCM accepts a narrow set of formats and
-	// rates, and what it takes exactly has not been measured yet, so the plug is
-	// what keeps a 24/96 track from being refused outright. The name "default"
-	// on this board is the dummy SPDIF device, not the analog output.
-	.pcm_device = "plughw:1,0",
+	// hw: and not plughw: the card's own formats are known now, measured on the
+	// device: card 1 device 0 takes exactly S16_LE and S24_LE, one or two
+	// channels, 8000..768000 Hz (the stock player asks for the same two, and for
+	// nothing else). The name "default" on this board is the dummy SPDIF device,
+	// not the analogue output. The plug stays as a fallback in the open path --
+	// see open_pcm_device_now() -- for the moment the card refuses a format.
+	.pcm_device = "hw:1,0",
+	// The optical output is its own card on this board ("sa_spdif"), and the
+	// route that feeds it is "Output Port Switch" = 0 (the stock player's own
+	// table: 0 spdif, 1 lineout, 2 headset, 3 balanced, 4 i2s, 5 none).
+	// Measured: card 0 device 0 takes S16_LE and S24_LE, 1-2 channels, 8..384 kHz,
+	// and its DAI is a real transmitter -- jz_spdif_hw_params runs when it starts.
+	.digital_pcm = "hw:0,0",
 };
 
 // What the packer writes into system-info.json and what sysinfo_load() compares

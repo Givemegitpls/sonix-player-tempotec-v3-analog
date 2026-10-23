@@ -38,7 +38,9 @@ difference between a player and a brick or a boot loop:
   (`panel_sleep_ioctl`), and the backlight alone comes first;
 - **one framebuffer page** and the pan: a frame reaches the glass only through
   `FBIOPAN_DISPLAY`;
-- the codec is **ALSA card 1** (`hw:1` for the mixer, `plughw:1,0` for playback);
+- the codec is **ALSA card 1** (`hw:1` for the mixer, `hw:1,0` for the analogue
+  output) and the optical transmitter is **card 0** (`hw:0,0`); the port picks
+  between them, the stock player's own table;
 - **nothing newer than glibc 2.16** may leave the binary — `make check-abi`
   decides, and it is run by the target build itself;
 - **`/dev/mtd5` is the `/data` UBI volume** here, not a scratch partition;
