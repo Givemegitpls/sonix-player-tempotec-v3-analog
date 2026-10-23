@@ -21,6 +21,8 @@ consolidated documents sit next to this file:
 - `docs/KERNEL.md` — the stock kernel's addresses and functions, the board platform data, and how
   a replacement kernel would (and would not) reach the image.
 - `docs/BUILD.md` — the end-to-end build, from a fresh clone to `sonix-packer/out/v3_analog.upt`.
+- `docs/UPDATING.md` — taking a newer upstream Sonix release: the merge, the interface scaling,
+  the icons and the language files, and what is not taken from it.
 
 ## The session archive is part of the record
 
@@ -52,6 +54,15 @@ tools/history.sh snaps                  # file-state snapshots (unreferenced git
   A replacement kernel may not be larger than the stock one, and `UPDATE.TXT` carries digests for
   both the rootfs and the kernel.
 - The panel's frame rate is the panel's own (75.57 Hz). Nothing on the SoC side changes it.
+- The interface is written at 480x720 and compiled at 320x480: every pixel size or position
+  goes through `SC()` (`src/gui/shell/scale.h`, pulled in by `gui.h`). Upstream UI code arrives
+  without it -- `tools/scale_gui.py` finds the bare literals in layout calls, and the `#define`d
+  sizes at the top of each page have to be wrapped by hand. Nulls, counts, milliseconds and
+  percentages are not sizes.
+- The player's source follows upstream `Jepl4r/sonix-player`: an update is `git merge <tag>`,
+  not a hand-applied diff. `docs/UPDATING.md` is the recipe, and the invariants it lists
+  (`SET_SLEEP` instead of `FBIOBLANK`, one framebuffer page and the pan, card 1, glibc 2.16,
+  `/dev/mtd5` is `/data`, BlueZ 5) must survive every merge.
 - Never use `FBIOBLANK` on this panel: `blank_panel = false` is deliberate, and the stock
   screen-off is the vendor `SET_SLEEP` ioctl instead (`panel_sleep_ioctl`, `power.c`). See
   `docs/DISPLAY.md` and `docs/PANEL-POWER.md`.

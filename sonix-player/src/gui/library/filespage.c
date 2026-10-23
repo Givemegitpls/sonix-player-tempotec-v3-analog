@@ -16,6 +16,7 @@
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons_select.h"
 #include "src/gui/shell/keyboard.h"
+#include "src/gui/library/imageview.h"
 #include "src/gui/library/textview.h"
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/nowplaying/player.h"
@@ -27,6 +28,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 #include "src/system/device/system.h"
+#include "src/system/library/library.h"
 #include "src/system/playback/playlist.h"
 
 lv_obj_t *filespage_screen;
@@ -613,8 +615,18 @@ static void delete_confirmed(void *user) {
 	}
 
 	char full[PATH_MAX_LEN + NAME_MAX + 2];
-	bool ok = child_path(acting_on, full, sizeof(full)) && remove_tree(full);
+	bool named = child_path(acting_on, full, sizeof(full));
+	bool ok = named && remove_tree(full);
 	acting_on[0] = '\0';
+
+	// Music that was in the library leaves it with the files, at once, rather
+	// than at the next look for changes. Asked even after a failure: what did
+	// go, went. Only tracks the index holds are touched, which means only what
+	// is in the folders chosen for the scan.
+	if (named) {
+		const char *const gone[] = {full};
+		library_forget_deleted(gone, 1);
+	}
 
 	if (ok) {
 		toast_success("files_deleted");
@@ -954,15 +966,17 @@ static void row_clicked_cb(lv_event_t *e) {
 		return;
 	}
 
-	// A text file opens to be read. Any other file has nothing to open into,
-	// and the tap does nothing: the menu is what the three dots are for, and a
-	// row that opens a menu when pressed anywhere is a row that opens one every
-	// time a scroll ends on it.
+	// A text file opens to be read and a picture to be looked at. Any other
+	// file has nothing to open into, and the tap does nothing: the menu is what
+	// the three dots are for, and a row that opens a menu when pressed anywhere
+	// is a row that opens one every time a scroll ends on it.
 	if (!entries[index].dir) {
 		char file[PATH_MAX_LEN];
-		if (ext_in(ext_of(entries[index].name), EXT_TEXT) && child_path(entries[index].name, file, sizeof(file)) &&
-			!textview_open(file)) {
+		const char *ext = ext_of(entries[index].name);
+		if (ext_in(ext, EXT_TEXT) && child_path(entries[index].name, file, sizeof(file)) && !textview_open(file)) {
 			gui_notify_popup("files_text_unreadable");
+		} else if (ext_in(ext, EXT_IMAGE) && child_path(entries[index].name, file, sizeof(file))) {
+			imageview_open(file);
 		}
 		return;
 	}

@@ -9,10 +9,24 @@
 
 // A cover picture already decoded and scaled to the size it is drawn at, in
 // the display's own pixel format, so drawing it costs nothing more than a blit.
+//
+// The player's cover and an album page's head also carry the picture's colour,
+// read from the thumbnail database or worked out once on the loader thread and
+// written there (see cover_load_player_images, cover_load_shared), so the page
+// that shows the picture does not work it out again every time it opens.
 typedef struct {
 	lv_image_dsc_t dsc;	 // hand this straight to lv_image_set_src()
 	uint8_t *pixels;	 // pixel buffer referenced by dsc.data
+	bool has_tone;		 // the three below are filled in
+	uint32_t tone;		 // cover_page_tone() at COVER_PAGE_LIGHT_FROM: the sleeve's colour,
+	int16_t tone_luma;	 // its brightness as a whole,
+	bool tone_light;	 // and whether a page in it is a light one
 } cover_image_t;
+
+// How bright a sleeve has to be for a page in its colour to be a light one,
+// written in dark ink. The colour kept with a picture is worked out at this
+// threshold.
+#define COVER_PAGE_LIGHT_FROM 150
 
 // Where the on-disk thumbnail cache lives -- normally a hidden folder on the
 // card, which is what the stock player does too (it keeps its own JPEGs under
@@ -65,23 +79,31 @@ bool cover_load_image_memory(const void *data, size_t size, int box_w, int box_h
 // to the same place.
 //
 // 0 means there is no artwork at all. Cheap: it reads the picture but never
-// decodes it, and hashes its size with a slice of each end.
+// decodes it, and hashes its size with a slice of each end. For a track whose
+// picture is embedded the answer is kept in the thumbnail database, keyed by
+// the file's path, size and mtime, and the picture is not read again.
 uint64_t cover_source_id(const char *filepath);
 
-// Decodes the artwork once and builds both images the player screen needs: the
-// artwork itself, and the upside-down blurred copy drawn behind the controls.
-// Either output may be skipped by passing NULL for its size. Returns false if
-// the track has no artwork at all, leaving both outputs zeroed.
+// True when the player will not need the picture embedded in `filepath` at
+// all: its id is kept (see above), and so is a cover made from it. Reads
+// neither the picture nor the cover, only the two tables. Any thread.
+bool cover_picture_known(const char *filepath);
+
+// Builds both images the player screen needs: the artwork itself, and the
+// upside-down blurred copy drawn behind the controls. A picture already shown
+// at this size comes out of the thumbnail database (one row per picture, shared
+// by the tracks that carry it) and the backdrop is made from it; otherwise the
+// artwork is decoded once for both and the cover stored. Either output may be
+// skipped by passing NULL for its size. Returns false if the track has no
+// artwork at all, leaving both outputs zeroed.
 bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, cover_image_t *cover_out,
 							  int backdrop_w, int backdrop_h, cover_image_t *backdrop_out);
 
-// Puts the player's pictures for `filepath` in the on-disk cache without
-// handing them to anybody: the next track's, decoded while this one plays, so
-// that skipping to it reads them back instead of decoding. Does nothing when
-// they are already cached or the track has no artwork. Always returns false
-// with both outputs zeroed (the coverloader's dual-job signature).
-bool cover_warm_player_images(const char *filepath, int cover_w, int cover_h, cover_image_t *cover_out,
-							  int backdrop_w, int backdrop_h, cover_image_t *backdrop_out);
+// Makes the player's cover of `filepath` at cover_w x cover_h and keeps it in
+// the thumbnail database, as cover_load_player_images() does, so that the
+// track's cover later comes out of the cache. Does nothing when the track has no
+// artwork or its cover is already kept at that size. Loader thread only.
+void cover_prefetch_player(const char *filepath, int cover_w, int cover_h);
 
 // The two pictures the screensaver needs from one photograph: the picture
 // itself filling the screen, and the blurred block along the bottom that the
@@ -116,6 +138,46 @@ bool cover_blur_fill(const cover_image_t *src, int out_w, int out_h, cover_image
 // warm white rather than a colour squeezed out of rounding noise. Zero when
 // there is nothing to look at.
 uint32_t cover_dominant_tone(const cover_image_t *cover);
+
+// How bright a sleeve looks as a whole, 0..255 (Rec. 601 luma of its average),
+// or -1 when there is nothing to look at. cover_dominant_tone() says what colour
+// a sleeve is and always answers at full strength; this says whether it is a
+// dark record or a light one, for a page that takes the sleeve's colour and
+// has to choose the ink to write on it in.
+int cover_mean_luma(const cover_image_t *cover);
+
+// The colour a page painted in the sleeve's colours takes, as 0xRRGGBB in
+// *tone, without the push to full strength that a light needs and a painted
+// surface does not. One family of the sleeve's hues rather than an average of
+// all of them, so a two-colour sleeve gives one of its two colours and not the
+// mud between them. *luma is cover_mean_luma(), and *light says whether the
+// page should be a light one: a sleeve at least light_from bright, or one
+// mostly of a bright yellow, which only darkens to olive. False when there is
+// nothing to look at.
+bool cover_page_tone(const cover_image_t *cover, int light_from, uint32_t *tone, int *luma, bool *light);
+
+// A colour from cover_page_tone() at full strength, the way
+// cover_dominant_tone() answers: for a mark drawn over a dark backdrop, where
+// the colour of a painted page would be too faint to read. A colour that is
+// hardly a colour at all comes back the same warm white.
+uint32_t cover_tone_stretched(uint32_t tone);
+
+// A square picture of `size` made from the player's own cover of `filepath`
+// (player_w x player_h, the size the now-playing page draws it at). The player's
+// table of covers is asked first, so a record already played comes back
+// without its file being read; otherwise the cover is decoded at the player's
+// size and kept there, so the player finds it the first time the record plays.
+// What an album's page puts at its head. Runs on the loader thread.
+bool cover_load_shared(const char *filepath, int player_w, int player_h, int size, cover_image_t *out);
+
+// A copy of `src` scaled to fill a square of `size`, with its colour kept. For
+// a picture already on screen that another page wants smaller, on the spot:
+// a scale, no decode.
+bool cover_scaled_copy(const cover_image_t *src, int size, cover_image_t *out);
+
+// The id cover_source_id() keeps for `filepath`, when it keeps one: from the
+// table only, nothing is read. False for a track not seen yet.
+bool cover_known_id(const char *filepath, uint64_t *id);
 
 void cover_free(cover_image_t *img);
 

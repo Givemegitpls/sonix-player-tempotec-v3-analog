@@ -225,6 +225,16 @@ void power_set_screen_off_timeout(uint32_t ms);
 // exist there.
 void power_set_standby_enabled(bool enabled);
 
+// How long the screen stays dark before the SoC is suspended, in seconds (the
+// Power page's 1, 3, 5 and 10 minutes). Never below STANDBY_MEM_MIN_SECONDS: a
+// shorter wait would put the device to sleep under the user's fingers.
+void power_set_standby_after(uint32_t seconds);
+
+// Puts back the pause on LVGL's animation timer that the screen going dark
+// leaves in place, for the paths that start an animation anyway (see power.c).
+// A no-op while the screen is on.
+void power_keep_animations_paused(void);
+
 // Suspend-to-RAM is ON unless it is turned off: [power] standby_mem = 0 in
 // device_config.ini, or the switch on the power settings page. See power.c for
 // what it waits for; the three places that read the key share this one answer so

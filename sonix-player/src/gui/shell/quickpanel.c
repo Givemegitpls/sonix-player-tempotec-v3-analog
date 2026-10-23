@@ -85,6 +85,8 @@
 #define CARD_ROW_GAP SC(12) // between the blocks inside the controls card
 #define HANDLE_ROOM SC(24)	// added under the slider when the card has a handle
 #define BRIGHT_ROW_H SC(44)
+// The dimmest backlight level on the slider: 0 would put the backlight out.
+#define BRIGHTNESS_FLOOR 1
 
 // The sheet's own padding. The cards are aligned inside the content area, so
 // every y below is measured from there and not from the top of the screen;
@@ -493,6 +495,9 @@ static void restore_topbar(void) {
 			topbar_set_hidden(true);
 		}
 	}
+	// And the colours of a page painted in its own (an album's page), which the
+	// bar gave up while the sheet was over it.
+	topbar_tint_hold(false);
 }
 
 static void hide_when_parked_cb(lv_anim_t *a) {
@@ -612,10 +617,9 @@ static void panel_prepare(void) {
 	if (max <= 0) {
 		max = 100;
 	}
-	long floor = max / 20 > 0 ? max / 20 : 1;
-	lv_slider_set_range(brightness_slider, (int32_t)floor, (int32_t)max);
+	lv_slider_set_range(brightness_slider, BRIGHTNESS_FLOOR, (int32_t)max);
 	long value = power_get_brightness();
-	if (value < floor) {
+	if (value < BRIGHTNESS_FLOOR) {
 		value = max;
 	}
 	lv_slider_set_value(brightness_slider, (int32_t)value, LV_ANIM_OFF);
@@ -644,6 +648,8 @@ static void panel_prepare(void) {
 		raised_topbar = true;
 		topbar_set_hidden(false);
 	}
+	// In the theme's colours, like the sheet it now belongs to.
+	topbar_tint_hold(true);
 
 	// The bar is also restacked above the sheet, so clock, battery and volume
 	// stay readable with the control centre open.
@@ -2104,7 +2110,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	brightness_slider = lv_slider_create(bright_row);
 	lv_obj_set_height(brightness_slider, SC(10));
 	lv_obj_set_flex_grow(brightness_slider, 1);
-	lv_slider_set_range(brightness_slider, 5, 100);
+	lv_slider_set_range(brightness_slider, BRIGHTNESS_FLOOR, 100);
 	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
 	lv_obj_set_style_bg_color(brightness_slider, theme()->text_secondary, LV_PART_MAIN);
 	lv_obj_set_style_bg_opa(brightness_slider, LV_OPA_40, LV_PART_MAIN);

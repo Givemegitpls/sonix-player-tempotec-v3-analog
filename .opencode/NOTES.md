@@ -78,3 +78,47 @@ SDL_VIDEODRIVER=offscreen SONIX_SD_ROOT=/tmp/opencode/sd ./sonix_player_host > /
 - Input is injected by writing to `/tmp/sonix/tap`: `x y` is a tap, `drag x1 y1 x2 y2` a drag.
 - `touch /tmp/sonix/shot` asks for a screenshot; the PNG lands in `$SONIX_SD_ROOT/Screenshots/`.
 - The app consumes the tap/shot files, so they do not stay in `/tmp/sonix/`.
+- The simulator needs the language files or every label shows its key:
+  `SONIX_LANG_DIR=sonix-packer/assets/BLAZE/usr/resource/sonix/language`, and a
+  fresh `SONIX_HOST_STATE_DIR` goes through the welcome flow again.
+- `sonix-player/docker/build.sh host` does NOT build the simulator: the image
+  has no ALSA/SDL host headers. `host` is for a machine with those installed --
+  run `make host` in `sonix-player/` directly.
+
+## Updating to a newer upstream Sonix release
+
+The tree carries upstream's history, so an update is `git merge <tag>` (upstream
+remote, tag fetched), not a diff to apply by hand. The base of this image is
+1.3.0 (`a488e25`); `docs/V3-ANALOG.md`, "Upstream base: 1.3.0", has the recipe.
+The part that is easy to underestimate:
+
+- Upstream writes the interface at 480x720; this board compiles it at 320x480
+  through `SC()` (src/gui/shell/scale.h, pulled in by gui.h). New upstream UI
+  arrives unscaled: `python3 tools/scale_gui.py --check src/gui/*.c` lists bare
+  pixel literals in layout calls, `--write` wraps them, and the `#define`d sizes
+  at the top of each page have to be wrapped by hand. Counts, milliseconds and
+  percentages must not be wrapped.
+- New icons need `icons_small.c` regenerated: run the `sonix-icons:latest` image
+  (`python:3.12` + cairosvg + pillow, `tools/svg_to_lvgl.py --small-only`) with
+  the tree mounted at its absolute path and `-u $(id -u):$(id -g)`. Do not
+  regenerate `icons.c` -- it is upstream's and not compiled here.
+- Language files: merge `assets/R3PII/.../language/*.ini` into
+  `assets/BLAZE/.../language/` three-way (base = previous R3PII file, ours =
+  BLAZE). Ours carries the V3 AK4493 strings, theirs the new keys.
+- Upstream's boot-logo marker, its charging screen and its kernel modules do not
+  apply here; the guards for the first two are in `bootlogo.c`
+  (`bootlogo_board_supports()`) and in the AXP2101 read that fails at once.
+- `SC()` wraps pixels only. A number in another space must not be wrapped:
+  `topbar.c`'s `BATTERY_CAVITY_*` are 24x24 SVG coordinates that
+  `draw_battery()` scales by `BATTERY_ICON_SIZE / 24` itself, and scaling them
+  here shrank the level bar to two thirds of the cavity and shifted it. The same
+  goes for percentages, blur radii in a 0..255 space, and counts.
+- `SONIX_BATTERY_CAPACITY` / `SONIX_BATTERY_STATUS` take *paths* to files, not
+  values: `printf '64\n' > /tmp/cap`, `printf 'Discharging\n' > /tmp/stat`. That
+  is how the battery icon is checked in the simulator at a level, low and
+  charging.
+- Language files: a 3-way merge keeps "deleted on our side", so a key our old
+  BLAZE file lacked stays missing while upstream has it, and the player shows
+  the key itself on screen. After every merge, diff each `.ini`'s key set
+  against upstream's and count duplicates (`uniq -d`); `docs/UPDATING.md`,
+  step 5, has the loop. The loader keeps the **last** line of a key.

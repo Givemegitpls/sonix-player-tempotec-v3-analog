@@ -4,20 +4,25 @@
 #include "src/system/core/utils.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/audio/audio.h"
+#include "src/system/audio/readahead.h"
+#include "src/system/audio/replaygain.h"
 #include "src/system/device/power.h"
-#include "src/system/playback/audiobook.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
+#include "src/system/decode/growfile.h"
+#include "src/system/device/system.h"
 #include "src/system/library/library.h"
 #include "src/system/library/metadata.h"
+#include "src/system/playback/audiobook.h"
+#include "src/system/playback/playhistory.h"
 #include "src/system/playback/playlist.h"
+#include "src/system/remote/dlna.h"
 #include "src/system/streaming/podcast.h"
 #include "src/system/streaming/podcastcache.h"
+#include "src/system/streaming/podcaststate.h"
 #include "src/system/streaming/qobuzcache.h"
-#include "src/system/streaming/tidalcache.h"
 #include "src/system/streaming/radio.h"
-#include "src/system/audio/replaygain.h"
-#include "src/system/device/system.h"
+#include "src/system/streaming/tidalcache.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -183,6 +188,8 @@ void device_state_remember_note(void) {
 // saves are not. Nothing under a second, which is a book whose resume seek
 // the engine has not reached yet rather than a place anyone stopped at.
 static void flush_book_position(const device_state_t *state) {
+	// And the podcast episode's, which is kept the same way.
+	podcaststate_flush();
 	if (state->live || !audiobook_is_playing() || state->progress_current_secs <= 1.0) {
 		return;
 	}
@@ -873,6 +880,50 @@ static void apply_track_speed(void) {
 	}
 }
 
+// The file the engine was last started on. A podcast episode picks up where it
+// was left only when it is started afresh: the same file started again by the
+// player itself -- repeat-one, a seek after the end -- goes back to its
+// beginning. A tap in a list clears this first.
+static char started_file[512];
+
+// The history (playhistory.h) is told about every track that starts, and about
+// the one it replaces. A track started again where it already is -- the same
+// file picked up at a position, as a book or an interrupted track is, or
+// restarted to be sought in -- has not been left.
+static bool history_same_listen;
+
+static void history_leave_for(const char *next, double position) {
+	bool same = next && strcmp(next, current_metadata_file) == 0 && (position > 0 || history_same_listen);
+	history_same_listen = false;
+	if (!same) {
+		playhistory_left();
+	}
+}
+
+// `restored`: put back by a reboot, paused, and not played again until play is
+// pressed.
+static void note_started(bool restored) {
+	snprintf(started_file, sizeof(started_file), "%s", current_metadata_file);
+	bool kept_out = audiobook_is_playing() || podcastcache_is_episode(current_metadata_file) || dlna_owns_path(current_metadata_file);
+	playhistory_started(current_metadata_file, current_metadata.title, metadata_shown_artist(&current_metadata), kept_out, restored);
+}
+
+// Where a podcast episode should start when nobody said: where it was left.
+// Not on a file still coming down -- the point may not have arrived, and a seek
+// past what has arrived is refused rather than waited for; the podcast page
+// waits for it itself before starting one (podcastpage.c).
+static double podcast_resume(const char *filepath) {
+	if (!podcastcache_is_episode(filepath) || strcmp(started_file, filepath) == 0 || growfile_is_growing(filepath)) {
+		return -1.0;
+	}
+	double at = podcaststate_resume_point(filepath);
+	if (at > 0) {
+		fprintf(stderr, "podcast: '%s' picks up at %.0f s\n", filepath, at);
+		return at;
+	}
+	return -1.0;
+}
+
 // Loads metadata for `filepath` and starts playback, without touching the
 // folder queue. Shared by fresh selections, queue advances, and replays.
 //
@@ -891,6 +942,7 @@ static void load_and_play_at(const char *filepath, double position) {
 	// the track can change under a held button -- the queue advances on its
 	// own when the outgoing one ends.
 	scrub_cancel();
+	history_leave_for(filepath, position);
 
 	// A file and a stream cannot both have the output. Starting a track ends
 	// the radio outright -- not merely stops it -- because from here on the
@@ -934,11 +986,15 @@ static void load_and_play_at(const char *filepath, double position) {
 	}
 
 	frameprof_begin(PROF_START);
+	if (position <= 0) {
+		position = podcast_resume(current_metadata_file);
+	}
 	if (position > 0) {
 		audio_play_at(current_metadata_file, position);
 	} else {
 		audio_play(current_metadata_file);
 	}
+	note_started(false);
 	frameprof_end(PROF_START);
 
 	// Any track load supersedes the note: it belongs to the one press that
@@ -957,6 +1013,7 @@ static void load_and_play(const char *filepath) { load_and_play_at(filepath, -1.
 // play starts it. The queue is left as it is.
 static void load_paused(const char *filepath) {
 	scrub_cancel();
+	history_leave_for(filepath, -1.0);
 	radio_clear();
 
 	if (filepath != current_metadata_file) {
@@ -968,6 +1025,7 @@ static void load_paused(const char *filepath) {
 	apply_track_speed();
 
 	audio_play_paused(current_metadata_file, 0);
+	note_started(false);
 	audiobook_suppress_rewind_once();
 
 	interrupted_file[0] = '\0';
@@ -1009,6 +1067,7 @@ void device_state_restore_file(const char *filepath, double position) {
 	apply_track_speed();
 
 	audio_play_paused(current_metadata_file, position);
+	note_started(true);
 	device_state_remember_restored(current_metadata_file, position);
 
 	queue_persist();
@@ -1091,6 +1150,7 @@ void device_state_restore_index(library_index_t *ix, int start_index, const char
 	restore_queue_album();
 
 	audio_play_paused(current_metadata_file, position);
+	note_started(true);
 	device_state_remember_restored(current_metadata_file, position);
 }
 
@@ -1141,6 +1201,7 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 	restore_queue_album();
 
 	audio_play_paused(current_metadata_file, position);
+	note_started(true);
 	device_state_remember_restored(current_metadata_file, position);
 }
 
@@ -1165,6 +1226,7 @@ void device_state_play_file_at(const char *filepath, double position) {
 
 	playlist_load_folder(folder, filename);
 
+	history_leave_for(filepath, position);
 	radio_clear();
 	if (filepath != current_metadata_file) {
 		strncpy(current_metadata_file, filepath, sizeof(current_metadata_file) - 1);
@@ -1177,6 +1239,7 @@ void device_state_play_file_at(const char *filepath, double position) {
 	apply_track_speed();
 
 	audio_play_at(current_metadata_file, position);
+	note_started(false);
 
 	queue_persist();
 }
@@ -1237,6 +1300,9 @@ void device_state_play_list_ordered_at(const char *const *list, int count, int s
 	}
 	playlist_load_paths_ordered(list, count, start_index);
 
+	// Chosen from a list: an episode picks up where it was left even when it is
+	// the one already loaded.
+	started_file[0] = '\0';
 	char path[512];
 	if (playlist_current_path(path, sizeof(path))) {
 		load_and_play_at(path, position);
@@ -1248,6 +1314,7 @@ bool device_state_play_queue_index(int index) {
 	if (!playlist_set_current(index)) {
 		return false;
 	}
+	started_file[0] = '\0';
 	char path[512];
 	if (!playlist_current_path(path, sizeof(path))) {
 		return false;
@@ -1355,6 +1422,177 @@ static bool album_track_cb(const char *name, const char *path, const char *artis
 	return true;
 }
 
+// Starts the record `wanted` (an album value), its tracks in their order: on the
+// first track going forward, on the last going back. False when the record has
+// no tracks.
+static bool start_album(const char *wanted, bool forward) {
+	album_tracks_t tracks = {NULL, 0, 0};
+	library_for_each_ordered(LIBRARY_LIST_TRACKS, LIBRARY_FILTER_ALBUM, wanted, LIBRARY_ORDER_DEFAULT,
+							 album_track_cb, &tracks);
+
+	bool started = false;
+	if (tracks.count > 0) {
+		device_state_play_list((const char *const *)tracks.paths, tracks.count,
+							   forward ? 0 : tracks.count - 1);
+		playlist_set_album(wanted); // so the record beyond that one can follow too
+		char shown[256];
+		library_album_title(wanted, shown, sizeof(shown));
+		fprintf(stderr, "album: %s \"%s\" (%d tracks)\n", forward ? "on to" : "back to", shown, tracks.count);
+		started = true;
+	}
+
+	for (int i = 0; i < tracks.count; i++) {
+		free(tracks.paths[i]);
+	}
+	free(tracks.paths);
+	return started;
+}
+
+// ---------------------------------------------------------------------------
+// Records in random order
+//
+// "Play albums in random order" starts one record of a list of records picked
+// at random, its tracks in their order, and when "play albums back to back"
+// takes over at its end, the next record is another one of the same list
+// picked at random rather than the one after it by name. Back from the first
+// track goes to the record played before, while there is one.
+//
+// It holds for as long as the queue is one of the records it started: the
+// album label is what says so. Anything else that starts a queue sets a label
+// of its own, or none, and the next record is again the one after by name.
+// ---------------------------------------------------------------------------
+
+#define RANDOM_ALBUM_HISTORY 16
+#define RANDOM_ALBUM_TRIES 8
+
+static struct {
+	bool on;
+	library_filter_t filter;
+	char value[256];
+	// The records played, the one playing last.
+	char history[RANDOM_ALBUM_HISTORY][256];
+	int depth;
+} random_albums;
+
+static bool album_value_cb(const char *name, const char *path, const char *artist, void *user) {
+	(void)path;
+	(void)artist;
+	snprintf(user, 256, "%s", name ? name : "");
+	return false;
+}
+
+static bool random_albums_recent(const char *album, int how_far) {
+	for (int i = random_albums.depth - 1; i >= 0 && how_far > 0; i--, how_far--) {
+		if (library_album_same(random_albums.history[i], album)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void random_albums_push(const char *album) {
+	if (random_albums.depth == RANDOM_ALBUM_HISTORY) {
+		memmove(random_albums.history[0], random_albums.history[1],
+				(RANDOM_ALBUM_HISTORY - 1) * sizeof(random_albums.history[0]));
+		random_albums.depth--;
+	}
+	snprintf(random_albums.history[random_albums.depth++], sizeof(random_albums.history[0]), "%s", album);
+}
+
+// A record of the list at random into `out`: never `avoid`, and where the list
+// is long enough, none of the last few played either. False when the list has
+// no record to give.
+static bool random_albums_pick(const char *avoid, char *out, size_t size) {
+	library_index_t *ix = library_index_open(LIBRARY_LIST_ALBUMS, random_albums.filter,
+											 random_albums.value[0] ? random_albums.value : NULL,
+											 LIBRARY_ORDER_DEFAULT, false);
+	int count = library_index_count(ix);
+	if (count <= 0) {
+		library_index_close(ix);
+		return false;
+	}
+
+	// How many of the records played last are kept out of the draw: never all
+	// of them, or a short list would have nothing left to give.
+	int keep_out = count / 2;
+	if (keep_out > RANDOM_ALBUM_HISTORY) {
+		keep_out = RANDOM_ALBUM_HISTORY;
+	}
+
+	static bool seeded;
+	if (!seeded) {
+		srand((unsigned)time(NULL));
+		seeded = true;
+	}
+
+	char name[256] = "";
+	bool found = false;
+	for (int tries = 0; tries < RANDOM_ALBUM_TRIES && !found; tries++) {
+		name[0] = '\0';
+		library_index_window(ix, rand() % count, 1, album_value_cb, name);
+		if (!name[0]) {
+			continue;
+		}
+		bool is_avoided = avoid && avoid[0] && library_album_same(name, avoid);
+		found = count == 1 || (!is_avoided && !random_albums_recent(name, keep_out));
+	}
+	if (!found && count > 1) {
+		// Unlucky draws: the first record that is not the one playing.
+		for (int i = 0; i < count && !found; i++) {
+			name[0] = '\0';
+			library_index_window(ix, i, 1, album_value_cb, name);
+			found = name[0] && !(avoid && avoid[0] && library_album_same(name, avoid));
+		}
+	}
+	library_index_close(ix);
+	if (found) {
+		snprintf(out, size, "%s", name);
+	}
+	return found;
+}
+
+bool device_state_play_random_album(library_filter_t filter, const char *value) {
+	random_albums.on = false;
+	random_albums.depth = 0;
+	random_albums.filter = filter;
+	snprintf(random_albums.value, sizeof(random_albums.value), "%s", value ? value : "");
+
+	char album[256];
+	if (!random_albums_pick(playlist_album(), album, sizeof(album)) || !start_album(album, true)) {
+		return false;
+	}
+	random_albums_push(album);
+	random_albums.on = true;
+	return true;
+}
+
+// The record after `current` when the queue is one the random order started:
+// another at random going forward, the one before going back. False when the
+// queue is not one of those records, which leaves the step to the order by name.
+static bool random_albums_beside(const char *current, bool forward) {
+	if (!random_albums.on || random_albums.depth == 0 ||
+		!library_album_same(random_albums.history[random_albums.depth - 1], current)) {
+		random_albums.on = false;
+		return false;
+	}
+
+	if (!forward && random_albums.depth >= 2) {
+		random_albums.depth--;
+		return start_album(random_albums.history[random_albums.depth - 1], false);
+	}
+
+	char album[256];
+	if (!random_albums_pick(current, album, sizeof(album)) || !start_album(album, forward)) {
+		return false;
+	}
+	if (!forward) {
+		// Back past the first record played: a record at random before it.
+		random_albums.depth = 0;
+	}
+	random_albums_push(album);
+	return true;
+}
+
 // Starts the record either side of `album`. Going forward it opens on the first
 // track, going back on the last: "previous" from the top of a record means the
 // end of the one before it, the same way it means the end of the track before
@@ -1381,27 +1619,7 @@ static bool play_album_beside(const char *album, bool forward) {
 	if (!wanted || !wanted[0]) {
 		return false;
 	}
-
-	album_tracks_t tracks = {NULL, 0, 0};
-	library_for_each_ordered(LIBRARY_LIST_TRACKS, LIBRARY_FILTER_ALBUM, wanted, LIBRARY_ORDER_DEFAULT,
-							 album_track_cb, &tracks);
-
-	bool started = false;
-	if (tracks.count > 0) {
-		device_state_play_list((const char *const *)tracks.paths, tracks.count,
-							   forward ? 0 : tracks.count - 1);
-		playlist_set_album(wanted); // so the record beyond that one can follow too
-		char shown[256];
-		library_album_title(wanted, shown, sizeof(shown));
-		fprintf(stderr, "album: %s \"%s\" (%d tracks)\n", forward ? "on to" : "back to", shown, tracks.count);
-		started = true;
-	}
-
-	for (int i = 0; i < tracks.count; i++) {
-		free(tracks.paths[i]);
-	}
-	free(tracks.paths);
-	return started;
+	return start_album(wanted, forward);
 }
 
 // Starts the folder either side of the one the queue was built from, opening on
@@ -1463,7 +1681,7 @@ static bool chain_beside(bool forward) {
 	if (album && album[0] && device_state_album_chaining()) {
 		char held[256];
 		snprintf(held, sizeof(held), "%s", album); // the queue is about to be replaced
-		if (play_album_beside(held, forward)) {
+		if (random_albums_beside(held, forward) || play_album_beside(held, forward)) {
 			return true;
 		}
 	}
@@ -1526,7 +1744,10 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 	}
 
 	if (!playlist_advance_auto(path, sizeof(path))) {
-		return false; // the queue is spent, and there was no record to follow
+		// The queue is spent, and there was no record to follow: the last
+		// track has been heard to its end.
+		playhistory_left();
+		return false;
 	}
 
 	load_and_play(path);
@@ -1536,6 +1757,42 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 		out_path[out_size - 1] = '\0';
 	}
 	return true;
+}
+
+// How long before the end of a track the next one is read ahead
+// (readahead.h), and how far into the track at the earliest, so the read does
+// not land on the moment a track starts and its output is being opened.
+#define READAHEAD_LEAD_SECS 20.0
+#define READAHEAD_SETTLE_SECS 3.0
+
+void device_state_read_ahead(double position, double total) {
+	// Only where gapless can use it: what it buys is the next track opening
+	// before the queue held at the end of this one runs out.
+	if (!audio_get_gapless() || radio_is_active() || total <= 0.0 || position < READAHEAD_SETTLE_SECS ||
+		total - position > READAHEAD_LEAD_SECS) {
+		return;
+	}
+	// The same ends device_state_advance_auto() stops at. At the end of the
+	// queue, which record or folder follows (if any) is decided when the track
+	// ends, so there is nothing to read ahead of.
+	if (audiobook_is_playing() && !audiobook_has_next_part()) {
+		return;
+	}
+	if (playlist_at_end() && playlist_get_mode() != PLAYBACK_MODE_REPEAT_ONE) {
+		return;
+	}
+
+	char next[512];
+	if (!playlist_peek_auto(next, sizeof(next)) || strcmp(next, current_metadata_file) == 0) {
+		return; // nothing next, or this track again, which is already read
+	}
+	// Asked once per track: the poll comes round twice a second.
+	static char asked[512];
+	if (strcmp(next, asked) == 0) {
+		return;
+	}
+	snprintf(asked, sizeof(asked), "%s", next);
+	readahead_file(next);
 }
 
 // Re-anchors the queue to the track that is actually loaded. If the two ever
@@ -1677,6 +1934,7 @@ audio_status_t device_state_toggle_play_pause(void) {
 			double back = current - (double)audiobook_rewind_seconds();
 			audio_seek(back > 0 ? back : 0);
 		}
+		playhistory_resumed();
 		audio_resume();
 		return AUDIO_STATUS_PLAYING;
 	case AUDIO_STATUS_STOPPED:
@@ -1799,6 +2057,7 @@ void device_state_seek(double seconds) {
 	// (e.g. dragging the slider or hitting prev) resumes playback intuitively
 	// instead of silently doing nothing.
 	if (audio_get_status() == AUDIO_STATUS_STOPPED && current_metadata_file[0]) {
+		history_same_listen = true;
 		load_and_play(current_metadata_file);
 	}
 	audio_seek(seconds);
