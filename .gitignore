@@ -85,3 +85,21 @@ __pycache__/
 # output, empty in a fresh clone -- and it must stay empty unless a kernel is
 # being tested, since the packer installs whatever it finds here.
 sonix-packer/kernel/UIMAGE.BIN
+
+# The cross-compiled helpers in tools/: each has its .c beside it and is built
+# by hand (tools/README.md), so the binaries are build output, not source. They
+# used to be tracked, which made `git status` dirty after every rebuild.
+/tools/panctl
+/tools/sleepfb
+/tools/panwatch
+/tools/vsynctest
+/tools/blit_bench
+/tools/powsample
+/tools/fbtool
+/tools/hciwatch
+/tools/rxprobe
+/tools/keyinj
+/tools/btadm
+/tools/btprobe
+/tools/tprobe
+/tools/ldacdec-test

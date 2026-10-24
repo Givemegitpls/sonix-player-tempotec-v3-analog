@@ -150,16 +150,18 @@ reboots when the player exits.
 
 Safe recipe:
 
-1. `cp sonix-player/sonix_player /data/sonix_player.new` (not `/tmp`), `chmod 775`;
-2. free ~7.7 MB on `/` -- the otherwise unused stock decoder libraries are the
-   cheapest: `libFLAC.so{,.8}`, `libwma.so`, `libmp3lame.so{,.0}`, `libaac.so`,
-   `libmp3.so`, `libdsd2pcm.so`, `libmad.so.0` (~4.1 MB), and if still short
-   `libcrypto.so.1.0.0` (1.9 MB), `libssl.so.1.0.0` (0.38 MB),
-   `libglib-2.0.so.0.4000.0` (1.36 MB) -- all stock-only, none of them is on the
-   port's NEEDED list (ours are `*.so.1.1` and glib `0.4600.1`);
+1. `cp sonix-player/sonix_player /data/sonix_player.new` (not `/tmp`), `chmod 775`,
+   and `cp /usr/bin/sonix_player /data/sonix_player.prev` -- a rollback copy of
+   the running build, which `/data` has room for;
+2. free space on `/` if the copy will not fit. **Measured 2026-10-24** on a
+   build made by the current packer: `/` is 52 MB with **6.2 MB free**, not the
+   100 % full volume the older images were -- `trim_stock.py` already removed the
+   stock decoders (`libFLAC`, `libwma`, `libmp3lame`, `libaac`, `libmp3`,
+   `libdsd2pcm`, `libmad` are all gone), so that step of the old recipe is a
+   no-op now. `rm` first, then copy; nothing else had to be deleted;
 3. `rm /usr/bin/sonix_player`, then `cp /data/sonix_player.new /usr/bin/sonix_player`
-   (UBIFS compresses it, so ~6.3 MB of free space is enough for the 7.4 MB file),
-   `chmod 775`, `md5sum` against the host build, `sync`, reboot.
+   (UBIFS compresses it: 6.2 MB of free space took the 7.7 MB file and left
+   1.6 MB), `chmod 775`, `md5sum` against the host build, `sync`, reboot.
 
 A reflash restores the deleted libraries; the shipped `.upt` never had them
 removed.
@@ -197,3 +199,132 @@ What must NOT be trimmed, because the rest of the firmware uses it:
 The trim script checks the finished tree for ELF files that still name a
 removed soname and fails the build if it finds one, so a wrong entry is caught
 at pack time rather than after a flash.
+
+## adb and the power cable are the same cable
+
+One USB-C port carries both, so a measurement of the device **on battery** is
+blind: unplugging the cable takes `adb` with it, and there is no shell, no
+`dumpsys`-equivalent, nothing -- until the cable is back. Consequences that keep
+biting:
+
+- a discharge or standby-rate measurement has to write its data to `/data` (not
+  `/tmp`, and not a `adb shell` pipe) and be read after the cable returns;
+  `tools/powsample` (`powsample.c`, documented in `docs/POWER.md`) exists for
+  exactly that: one CSV line per interval with the battery current, the level,
+  the backlight, **both panel rails** and the `slcd_vsync` count;
+- with the cable in, `suspend_if_idle()` refuses `mem` while **ADB is running**
+  (`power: mem deferred: ADB is on with the cable plugged in`) -- by design, so
+  a session does not die mid-test. Testing the "asleep on the charger" case
+  therefore means turning ADB off in Developer options first, which ends the
+  adb session;
+- a plain charger with ADB off no longer blocks `mem` (changed 2026-10-24): the
+  charge limit cannot be enforced on this board (no MP2731 node), so there was
+  nothing to stay awake for. A cable carrying the card to a host, DAC mode or
+  ADB still does.
+
+## Where the player's own log goes
+
+`[system] log_to_sd = 1` in `/data/device_config.ini` writes
+`/mnt/sd_0/.local/sonix_player.log`; the launcher sends stdout and stderr to
+`/dev/null` otherwise (`/proc/<pid>/fd/1 -> /dev/null`), so with the key off
+there is no player log at all. The power path's lines are the ones to read for
+a sleep test: `power: initialized (...)`, `power: screen off`, `power: wake
+serial (us): before … unblank … settle … fb_begin … draw …`, `power: mem:
+writing`, `power: mem: awake after N s`, `power: mem deferred: <reason>`.
+
+## The device clock is not the host clock
+
+Measured 2026-10-24: the host was at 12:20 MSK while the device reported
+12:19 **CST** -- the same instant, but the device's timezone is UTC+8, i.e. five
+hours behind the owner's wall clock (and its log timestamps are the device's
+own). Do not correlate device log lines with host times; correlate them with
+each other. The RTC alarm math is unaffected (it works in epoch seconds), but a
+"12 h battery check" reads as a different hour than the one on the owner's
+clock.
+
+## The battery current sensor is not usable on this firmware
+
+`/sys/class/power_supply/axp_battery/current_now` reports **200000 (uA) both
+while charging and while discharging** -- it is the configured charge current,
+not a measurement. The CW2015 gauge (`/sys/class/power_supply/battery`) exposes
+`voltage_now`, `capacity`, `status` and `temp` only, no current. So a discharge
+measurement on this device is limited to:
+
+- the power **state** (rails, backlight, `slcd_vsync`, `/proc/stat`, per-thread
+  ticks) -- `tools/powsample` records exactly these;
+- `voltage_now`, which drifts ~10 mV per few minutes at idle, too coarse for a
+  short window;
+- `capacity`, whole percent, i.e. ~16 mAh with the 1600 mAh cell.
+
+An honest mA number would need a meter in series with the battery, i.e. opening
+the device. Do not promise one from adb.
+
+## Telling a hard power-off from a reboot on the device
+
+A player that "went off" is not necessarily a crash, and the difference decides where to look:
+
+- `cat /sys/class/axp/axp_reg` after `echo 0x20 > ...` gives the power-on status. `0x01` means
+  the **key** started it, i.e. the device was really off (a reboot by the launcher or a
+  watchdog would show no key and a shorter uptime gap);
+- a hard power-off leaves **no closing lines** in `/mnt/sd_0/.local/sonix_player.log` -- the
+  last line is whatever ran before the supply went, so an event "at the same time" as the last
+  line is not in the log at all;
+- `uptime` plus the log's last timestamp separates "the device rebooted 10 minutes ago" from
+  "the player restarted inside a running system" (the log then shows a new
+  `power: initialized` line, the device keeps its uptime).
+
+Measured on 2026-10-24: inserting a 4.4 mm plug killed the supply twice, and the log simply
+stops.
+
+## 4.4 mm plug insertion can cut the power (open, 2026-10-24)
+
+Reproduced 3 times in one session, always on inserting the 4.4 mm Pentaconn plug: the device
+loses power instantly (no reboot -- `REG[0x20]` afterwards says the power key started it, and
+it must be switched on by hand), or the picture freezes when the player is killed by the
+kernel's SIGHUP after the plug event. The **stock firmware does not do it**: the same plug,
+3-4 insertions, clean (flashed `sonix-packer/v3_analog_original.upt`, md5s `35889275…` /
+`1f54858d…`, then flashed the port back). It is not the cable and not the pack's protection.
+
+Clean insertions happen too (5+ in the same session), so it is a race. Everything below was
+ruled out: charge current held at 0 and charge voltage lowered to 4.0 V both still died, so it
+is not the AXP BATFET opening; the pack sits at 4.4 V on stock as well (the driver sets
+`REG[0x64]=0x5` at boot and the stock player never writes it).
+
+**Catch it live.** The player's own log is useless for the last second: with `log_to_sd = 1`
+the port pipes stdout/stderr through a thread that `fdatasync`s at most once a second
+(`QUEUE_SYNC_MS` in `logging.c`), and a hard power cut keeps whatever was not synced. So:
+
+```
+# stop the supervisor first, or it reboots the device when the player exits
+kill $(pidof sonix_launch); killall sonix_player
+# SONIX_LOG makes the player write its log straight into that file (no relay thread)
+adb shell 'sh -c "ulimit -s 1024; export MALLOC_ARENA_MAX=1 SONIX_LOG=/data/pl.log; \
+    cd /; exec setsid /usr/bin/sonix_player" </dev/null >/dev/null 2>&1 &'
+# and keep the flash caught up, so the tail survives the cut
+adb push tools/...  # /data/syncloop.sh: while true; do sync; usleep 200000; done
+adb shell 'setsid /data/syncloop.sh </dev/null >/dev/null 2>&1 &'
+```
+
+`setsid` is not optional either way: a player started as an ordinary background child of an
+`adb shell` is killed by the kernel's SIGHUP when that shell exits, and the crash handler
+records it as `*** sonix_player is being stopped: SIGHUP *** *** sent by pid 0 uid 0 ***` --
+which reads like a bug and is not one. A plain reboot restores the normal setup (the init
+script starts `sonix_launch` again).
+
+**The diagnosis trial also failed to reproduce it**, which is itself a result: with the
+player in a manual session, `SONIX_LOG` on `/data`, a 200 ms `sync` loop, the charge current
+held at 0, music playing through 4.4 mm and the screen dark -- i.e. every condition of the
+three failures -- four insertions went through cleanly. So the charge hold is **not** the
+trigger, and neither is the state the device was in when it died. What the failures do share
+is a **time window**: all three fell inside ~40 minutes (13:45-14:25), with a dozen clean
+insertions before and after. That points at something that comes and goes (temperature, the
+pack at 4.41 V settling, a stale driver state after the day's many reboots) rather than at the
+plug.
+
+The device was returned to the normal setup (`log_to_sd = 1`, `sonix_launch` supervising) so
+that the next occurrence leaves the card log. Expect the last second to be missing from it.
+
+What to look for when it happens: the last `set output to`, `jack changed`,
+`PCM open`, and the `kernel:` lines the port relays (the codec's `hbc2500_hw_enable`,
+`hbc3000 id code`, and `i2c i2c-1: transfer error, ABORT`). The I2C aborts appear on clean
+insertions too, so they are only a lead when a *new* kind of line shows up next to them.

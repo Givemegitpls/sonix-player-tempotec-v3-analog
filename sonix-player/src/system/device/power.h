@@ -52,6 +52,11 @@ typedef struct {
 
 // Initialize the power manager and start its state-machine timer. Copies cfg
 // (does not retain the pointer) and remembers disp for inactivity tracking and
+// The default wait before suspend-to-RAM, in seconds: the stock firmware's own
+// (docs/V3-ANALOG.md, "Power"), and the first entry of the settings page's
+// table. One definition, so a change cannot leave the two disagreeing.
+#define POWER_STANDBY_MEM_SECONDS_DEFAULT 60
+
 // display blanking. Call once, after lv_init() and gui_init().
 void power_init(const power_config_t *cfg, lv_display_t *disp);
 
@@ -65,6 +70,13 @@ void power_init(const power_config_t *cfg, lv_display_t *disp);
 // right after the repaint. Both are no-ops on the host build.
 void display_wake_begin(lv_display_t *disp);
 void display_wake_end(lv_display_t *disp);
+// The same, for a panel whose power cycle the kernel performed itself (the
+// vendor SET_SLEEP ioctl): nothing to arm, only a pan to put a frame on the
+// glass. No-op on the host build.
+void display_wake_repan(void);
+// Returns once no flip is in flight, so the caller may take the panel down
+// without racing the flip thread's FBIOPAN_DISPLAY.
+void display_flip_wait(void);
 
 // Told by the power path that the panel has just been blanked: the panel's own
 // DMA is disarmed by a blank and only a fresh FBIOPUT_VSCREENINFO arms it
@@ -253,6 +265,5 @@ void power_bluetooth_off(void);
 bool power_radios_parked(void);
 
 // Snapshot the live configuration (reflects any runtime changes).
-void power_get_config(power_config_t *out);
 
 #endif // POWER_H

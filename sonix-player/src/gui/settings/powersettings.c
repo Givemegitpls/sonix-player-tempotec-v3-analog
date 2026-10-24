@@ -20,6 +20,8 @@ lv_obj_t *powersettings_screen;
 #define CHARGE_LIMIT_STEP 5
 #define CHARGE_LIMIT_COUNT 5 // 80, 85, 90, 95, 100
 
+#define AUTO_OFF_DEFAULT_MINUTES 30
+
 static const struct {
 	int minutes;
 	const char *label;
@@ -34,7 +36,7 @@ static const struct {
 	int seconds;
 	const char *label;
 } STANDBY_AFTER[] = {
-	{60, "power_1_minute"}, {180, "power_3_minutes"}, {300, "power_5_minutes"}, {600, "power_10_minutes"},
+	{POWER_STANDBY_MEM_SECONDS_DEFAULT, "power_1_minute"}, {180, "power_3_minutes"}, {300, "power_5_minutes"}, {600, "power_10_minutes"},
 };
 #define STANDBY_AFTER_COUNT ((int)(sizeof(STANDBY_AFTER) / sizeof(STANDBY_AFTER[0])))
 
@@ -66,13 +68,20 @@ static int charge_index(void) {
 }
 
 static int auto_off_index(void) {
-	int minutes = (int)config_get_int("power", "auto_off_minutes", 30);
+	// The default is the table's second entry, named rather than counted so a
+	// reordered table cannot move it.
+	long minutes = config_get_int("power", "auto_off_minutes", AUTO_OFF_DEFAULT_MINUTES);
 	for (int i = 0; i < AUTO_OFF_COUNT; i++) {
 		if (AUTO_OFF[i].minutes == minutes) {
 			return i;
 		}
 	}
-	return 1;
+	for (int i = 0; i < AUTO_OFF_COUNT; i++) {
+		if (AUTO_OFF[i].minutes == AUTO_OFF_DEFAULT_MINUTES) {
+			return i;
+		}
+	}
+	return 0;
 }
 
 // A wait saved by hand that is not one of the four lands on the next one up,

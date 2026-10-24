@@ -36,6 +36,7 @@ bool chargescreen_mark(int mark) {
 #include "src/system/device/axpcharge.h"
 #include "src/system/device/bootlogo.h"
 #include "src/system/device/power.h"
+#include "src/system/device/sysinfo.h"
 
 #define AXP_REG_STATUS1 0x00
 #define AXP_STATUS1_VBUS_GOOD 0x20
@@ -46,8 +47,14 @@ bool chargescreen_mark(int mark) {
 
 #define FB_DEV "/dev/fb0"
 #define BLANK_NODE "/sys/class/graphics/fb0/blank"
-#define BACKLIGHT_NODE "/sys/class/backlight/backlight_pwm0/brightness"
-#define BACKLIGHT_MAX_NODE "/sys/class/backlight/backlight_pwm0/max_brightness"
+// The backlight class node is the kernel driver's name, and it is not the same
+// on every model: the HiBy boards' driver registers "backlight_pwm0", this
+// board's "pwm-backlight.0". The model's backlight_dir is the one place that
+// knows (sysinfo.h); a wrong name here is silent -- every write goes nowhere
+// and the panel stays at whatever level the last process left it.
+#define BACKLIGHT_DIR_DEFAULT "backlight_pwm0"
+static char backlight_node[256] = "/sys/class/backlight/" BACKLIGHT_DIR_DEFAULT "/brightness";
+static char backlight_max_node[256] = "/sys/class/backlight/" BACKLIGHT_DIR_DEFAULT "/max_brightness";
 #define SUPPLY_DIR "/sys/class/power_supply"
 
 // The R3 Pro II's RGB LED takes a pattern; the R1 has a red and a blue LED of
@@ -477,14 +484,19 @@ static bool fb_open(void) {
 	if (fb_var.bits_per_pixel != 16 && fb_var.bits_per_pixel != 32) {
 		return false;
 	}
-	// Two pages, as the player asks for them, so whichever page is scanned out
-	// shows the same picture.
-	struct fb_var_screeninfo two = fb_var;
-	two.yres_virtual = two.yres * 2;
-	two.xres_virtual = two.xres;
-	two.yoffset = 0;
-	if (ioctl(fb_fd, FBIOPUT_VSCREENINFO, &two) == 0) {
-		ioctl(fb_fd, FBIOGET_VSCREENINFO, &fb_var);
+	// Two pages, so whichever page is scanned out shows the same picture -- on
+	// the boards that drive the panel that way. This one does not: a single page
+	// is what its model asks for (single_fb_page), and forcing a second one here
+	// would leave the player to undo it after the charge screen.
+	const sysinfo_model_t *m = sysinfo_model();
+	if (!(m && m->single_fb_page)) {
+		struct fb_var_screeninfo two = fb_var;
+		two.yres_virtual = two.yres * 2;
+		two.xres_virtual = two.xres;
+		two.yoffset = 0;
+		if (ioctl(fb_fd, FBIOPUT_VSCREENINFO, &two) == 0) {
+			ioctl(fb_fd, FBIOGET_VSCREENINFO, &fb_var);
+		}
 	}
 	struct fb_fix_screeninfo fix;
 	if (ioctl(fb_fd, FBIOGET_FSCREENINFO, &fix) < 0) {
@@ -528,12 +540,46 @@ static void paint(int percent) {
 	}
 }
 
+// The panel on or off, the way this board does it.
+//
+// The blank node is the generic path and what the HiBy boards use. It is also
+// the path that wedges this panel: FB_BLANK_POWERDOWN clears LCDC_CTRL.ENA and
+// SLCDC_CTRL.DMA_EN, UNBLANK restores only ENA, and after that the driver
+// answers every pan with success and transfers nothing (docs/DISPLAY.md). A
+// model that carries the vendor SET_SLEEP ioctl is powered down with that
+// instead -- the call the player's own power path makes, and the one the stock
+// firmware makes on every screen-off (docs/PANEL-POWER.md).
+static void panel_power(bool on) {
+	const sysinfo_model_t *m = sysinfo_model();
+	if (m && m->panel_sleep_ioctl) {
+		if (fb_fd < 0) {
+			return;
+		}
+		int value = on ? 0 : 1;
+		ioctl(fb_fd, (unsigned long)m->panel_sleep_ioctl, &value);
+		return;
+	}
+	write_str(BLANK_NODE, on ? "0" : "4");
+}
+
+// The backlight directory, from the model: it is the kernel driver's name and
+// differs per board (see backlight_node above).
+static void model_paths(void) {
+	const sysinfo_model_t *m = sysinfo_model();
+	const char *dir = (m && m->backlight_dir && m->backlight_dir[0]) ? m->backlight_dir : BACKLIGHT_DIR_DEFAULT;
+	snprintf(backlight_node, sizeof(backlight_node), "/sys/class/backlight/%s/brightness", dir);
+	snprintf(backlight_max_node, sizeof(backlight_max_node), "/sys/class/backlight/%s/max_brightness", dir);
+}
+
 // The panel back from a blank, dark until backlight_on().
 static void unblank(void) {
-	write_str(BLANK_NODE, "0");
+	const sysinfo_model_t *m = sysinfo_model();
+	panel_power(true);
 	usleep(SETTLE_US);
 	// The unblank can reset the mode: put it back, as the player's wake does.
-	if (fb_mem) {
+	// The vendor power-on already ran the driver's own set_par, so on that path
+	// there is nothing to restore and the PUT would only re-init the panel.
+	if (fb_mem && !(m && m->panel_sleep_ioctl)) {
 		fb_var.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_FORCE;
 		ioctl(fb_fd, FBIOPUT_VSCREENINFO, &fb_var);
 	}
@@ -542,7 +588,7 @@ static void unblank(void) {
 static void backlight_on(void) {
 	char buf[16];
 	snprintf(buf, sizeof(buf), "%d", brightness);
-	write_str(BACKLIGHT_NODE, buf);
+	write_str(backlight_node, buf);
 	screen_on = true;
 }
 
@@ -583,8 +629,7 @@ static void show_boot_logo(int percent) {
 }
 
 static void dark(void) {
-	write_str(BACKLIGHT_NODE, "1");
-	write_str(BLANK_NODE, "4"); // FB_BLANK_POWERDOWN
+	panel_power(false);
 	screen_on = false;
 }
 
@@ -618,7 +663,7 @@ static void font_close(void) {
 
 // [screen] brightness, clamped to what the panel takes.
 static int configured_brightness(void) {
-	int max = read_int(BACKLIGHT_MAX_NODE, 100);
+	int max = read_int(backlight_max_node, 100);
 	int value = (int)config_get_int("screen", "brightness", -1);
 	if (value < 0) {
 		value = BRIGHTNESS_DEFAULT;
@@ -754,6 +799,7 @@ void chargescreen_run_if_wanted(void) {
 	if (!fb_open()) {
 		fprintf(stderr, "charge: no usable framebuffer\n");
 	}
+	model_paths();
 	font_open();
 	brightness = configured_brightness();
 	led(CHARGE_LED_RED);

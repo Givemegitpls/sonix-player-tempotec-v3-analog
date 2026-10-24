@@ -74,10 +74,13 @@ are `addrs[k] ↔ names[k+4]`.
   copied from the original). Without an xImage the stock kernel is carried across untouched.
 - Those xImages are built from **https://github.com/Jepl4r/hiby-custom-kernel** — a 4.4.94 kernel
   for that family; modules in `assets/<model>/module_driver/` are built against it.
-- **Our V3 Analog packer has no such mechanism** (`kernel/` exists but `install_tree.sh` never
-  touches it, and `v3_analog_packer.sh` always carries the stock `UIMAGE.BIN`). Adding it means
-  mirroring the rule above and recomputing the kernel digest in `UPDATE.TXT`
-  (`sonix-packer/tools/fix_update_md5.py` does the rootfs one).
+- **The V3 Analog packer has the mechanism, under another name.** A kernel drops in at
+  `sonix-packer/kernel/UIMAGE.BIN` (or wherever `KERNEL_IMAGE=` points): `v3_analog_packer.sh`
+  refuses one larger than the stock kernel, installs it and recomputes the kernel digest in
+  `UPDATE.TXT` (`sonix-packer/tools/fix_update_md5.py` does the rootfs one). Without it the
+  stock kernel is carried across untouched, which is the normal case -- see
+  [BUILD.md](BUILD.md) and `patch/v3-kernel/FLASHING.md` in the kernel working copy next to
+  this repository.
 - The V3 Analog's stock kernel is **3.10-era**, so the 4.4.94 tree does not fit it. The X1000
   source the owner keeps — **https://github.com/XBurst/Linux-X1000** — was assessed on 2026-10-12
   and is **not usable for this device**: it is mainline Linux 5.0.0-rc1 with `MACH_X1000`, a

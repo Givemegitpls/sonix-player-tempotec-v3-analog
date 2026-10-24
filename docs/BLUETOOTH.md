@@ -11,9 +11,9 @@ Read this before touching anything BT.
   `Media1`, `RegisterPlayer`), which 4.101 cannot serve. The stock's LDAC was a HiBy patch
   inside their BlueZ 4 (`a2dp_ldac_support`, `LDACSinks=1` in their `audio.conf`), not a
   library.
-- **D-Bus policy**: `etc/dbus-1/system.d/bluealsa.conf` (owning `org.bluealsa`) and
-  `bluez5-agent.conf`, both in `sonix-packer/assets/<model>/etc/dbus-1/system.d/`. Without
-  them, pairing from a phone fails.
+- **D-Bus policy**: `etc/dbus-1/system.d/sonix-player.conf` (it allows owning `org.bluealsa`,
+  and the rest of what this port needs on the system bus) and `bluez5-agent.conf`, both in
+  `sonix-packer/assets/<model>/etc/dbus-1/system.d/`. Without them, pairing from a phone fails.
 - **The chip is brought up by the firmware, not the player** (`bt_chip_by_firmware`): the
   stock `/usr/bin/bt_init` runs `brcm_patchram_plus` on `/dev/ttyS0`. Two of those on one UART
   kill the adapter (`hci0 command 0x1003 tx timeout`, then `Number of controllers: 0`).

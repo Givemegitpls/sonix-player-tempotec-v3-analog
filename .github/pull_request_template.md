@@ -16,8 +16,7 @@ with "N/A" and a reason.
 
 ## How was it tested?
 
-- [ ] On a real **HiBy R1**
-- [ ] On a real **HiBy R3 Pro II**
+- [ ] On a real **TempoTec V3 Analog** (the board this tree is ported to)
 - [ ] In the simulator (`make host`)
 
 <!-- What you did and what you saw. Screenshots or a short video for anything visible on screen. -->
@@ -29,17 +28,17 @@ with "N/A" and a reason.
 ### Scope
 - [ ] The PR does **one thing**. Unrelated changes go in their own PR.
 - [ ] **No files or folders were moved or renamed** unless the PR is about that and it was agreed in an issue first.
-- [ ] **No markdown file was moved.** `README.md`, `FEATURES.md`, `PATCHES.md` and any new guide stay in the **repository root**. There is no `doc/` folder and none should be created.
+- [ ] **No markdown file was moved.** `README.md`, `FEATURES.md`, `PATCHES.md` stay in the **repository root**; the guides this port adds live in `docs/` and a new one goes there.
 - [ ] It is rebased on the current `main`, and the commit titles say what changes (not "fix", "update", "add X").
 
 ### Both devices
-- [ ] It works on **both** the R1 and the R3 Pro II, with files under both `sonix-packer/assets/R1/` and `sonix-packer/assets/R3PII/`, or it is hidden on the model it doesn't apply to.
+- [ ] Anything model-specific is a field of the board profile (`sonix-player/src/system/device/board.h`, `sysinfo.h`), not a literal in a page, and it is hidden on the models it does not apply to.
 
 ### Translations
-- [ ] Every user-visible string is in **all 22 language files**: the 11 languages, in both `sonix-packer/assets/R1/usr/resource/sonix/language/` and `sonix-packer/assets/R3PII/usr/resource/sonix/language/`. No hard-coded text in C.
+- [ ] Every user-visible string is a key present in the language files this image ships (`sonix-packer/assets/V3ANALOG/usr/resource/sonix/language/`, merged from the Blaze set -- see `docs/UPDATING.md`). No hard-coded text in C.
 
 ### Binaries and third-party code
-- [ ] **No prebuilt binaries** (`.so`, executables, `.ko`) built on your machine. Third-party programs and libraries are built by `sonix-player/tools/system-libs/build.sh`, with a pinned source, linked against the device's glibc 2.22, and checked by `abicheck.py`.
+- [ ] **No prebuilt binaries** (`.so`, executables, `.ko`) built on your machine, except the firmware's own Bluetooth userland, which this image ships deliberately (`docs/BLUETOOTH.md`). Everything else is built from a pinned source against the device's **glibc 2.16**, and `make check-abi` refuses anything newer.
 - [ ] Any third-party code is at its **latest release with no known CVEs**. The version is given in the PR description.
 - [ ] No HiBy firmware, HiBy binaries, keys, passwords or `streaming-keys.*` files.
 
@@ -50,8 +49,8 @@ with "N/A" and a reason.
 
 ### Power and storage
 - [ ] Anything that runs in the background, uses Wi-Fi/Bluetooth or writes to the card works with the **screen off and standby** (see `power.c`: `wifi_in_use()`, the suspend checks), or keeps the device awake while it works.
-- [ ] Nothing writes to the card when it is **not mounted** or is **exported over USB**, because then the path lands on the internal `/usr/data` partition.
-- [ ] Nothing writes to the read-only root filesystem. Persistent data goes to `/usr/data` or the card, temporary data to `/tmp`.
+- [ ] Nothing writes to the card when it is **not mounted** or is **exported over USB**, because then the path lands on the internal volume.
+- [ ] Nothing writes to the read-only root filesystem. Persistent data goes to the model's `user_data_dir` (`/data` here, `/usr/data` on the HiBy boards) or the card, temporary data to `/tmp`.
 
 ### Network services
 - [ ] Any server runs **only while its page is open** and stops when the page is left, like Wi-Fi transfer (`src/gui/wireless/wifitransfer.c`).

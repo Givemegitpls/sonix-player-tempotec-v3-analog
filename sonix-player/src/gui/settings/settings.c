@@ -166,7 +166,14 @@ static int screen_off_index(void) {
 			return i;
 		}
 	}
-	return 2; // the 30 second default
+	// The default's own index, not a literal: reordering the table must not
+	// silently change which timeout an unknown value falls back to.
+	for (int i = 0; i < SCREEN_OFF_COUNT; i++) {
+		if (SCREEN_OFF[i].seconds == SCREEN_OFF_DEFAULT_S) {
+			return i;
+		}
+	}
+	return 0;
 }
 
 void settings_apply_screen_off(void) {

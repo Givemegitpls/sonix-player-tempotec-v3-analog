@@ -122,14 +122,13 @@ typedef struct {
 							   // it. The layout then has to be authored for that size too, which is
 							   // what SC() in src/gui/shell/scale.h is for.
 	bool blank_panel;		   // screen-off writes the framebuffer blank node (power.h, power.c).
-							   // False where the stock player never writes it: the panel is then
-							   // left powered and scanning its last frame, and the backlight alone
-							   // makes the screen dark. That is the V3 Analog's own behaviour -- its
-							   // stock player has no FBIOBLANK, no FBIOPAN_DISPLAY and no
-							   // FBIOPUT_VSCREENINFO in it at all -- and on that panel the blank is
-							   // what wedges the glass (LCDC_CTRL.ENA comes back on unblank, but
-							   // SLCDC_CTRL.DMA_EN does not, and a panel in that state shows nothing
-							   // until something power-cycles it).
+							   // False where that node is not the way down -- not because the panel
+							   // stays powered: on the V3 Analog it is powered down with the vendor
+							   // SET_SLEEP ioctl below, which is what its stock player does. FBIOBLANK
+							   // is the path that wedges this glass (LCDC_CTRL.ENA comes back on
+							   // unblank, SLCDC_CTRL.DMA_EN does not, and a panel in that state shows
+							   // nothing until something power-cycles it), so the two fields are
+							   // exclusive on this model.
 	// The vendor ioctl that powers this panel down (jzfb SET_SLEEP), 0 where
 	// there is none. The stock player on the V3 Analog uses it on every
 	// screen-off: the kernel's jzfb_suspend waits for the SLCDC transfer,

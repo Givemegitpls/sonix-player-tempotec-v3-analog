@@ -54,6 +54,7 @@ body:
     attributes:
       label: Device
       options:
+        - TempoTec V3 Analog
         - R1
         - R3 Pro II
     validations:

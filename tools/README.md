@@ -6,8 +6,8 @@ device could not answer from the player's log, and each is meant to be pushed
 to the card and run there.
 
 All of them are built with the same MIPS toolchain as the player
-(`rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-*`, see the build notes in
-[../docs/V3-ANALOG.md](../docs/V3-ANALOG.md)).
+(`../sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-*`, which is where the
+player's own build puts it; see [../docs/V3-ANALOG.md](../docs/V3-ANALOG.md)).
 
 ## panctl
 
@@ -151,6 +151,35 @@ mipsel-rockbox-linux-gnu-gcc -O2 -o btadm btadm.c \
     -I<sysroot>/usr/include/dbus-1.0 -I<sysroot>/usr/lib/dbus-1.0/include \
     -L<sysroot>/usr/lib -ldbus-1
 ```
+
+## powsample
+
+One line of power state every N seconds, for a discharge measurement: battery
+current and voltage, level, backlight, **the two panel rails** (`LDO7`/`LDO8`,
+the panel's 3.0 V and 1.8 V), the `slcd_vsync` interrupt count and the player's
+own CPU time. Written for the audit in
+[../docs/POWER.md](../docs/POWER.md), whose three states -- screen on, screen
+off awake, standby -- are indistinguishable from the backlight alone.
+
+```
+mipsel-rockbox-linux-gnu-gcc -static -O2 -march=mips32r2 -mno-madd4 \
+    -o powsample powsample.c
+adb push powsample /data/powsample
+adb shell 'nohup /data/powsample /data/powsample.log 20 >/dev/null 2>&1 &'
+```
+
+It logs to `/data`, not to the card, so the log is readable over adb as soon as
+the cable is back; a suspend shows up as a jump in `boot - mono`.
+
+## Also here, undocumented
+
+`vsynctest.c` (the panel's frame boundary), `blit_bench.c` (the RGB565-to-BGRA
+copy), `panwatch.c` (one transfer, sampled from `/dev/mem`), `fbtool.c`
+(registers, put, pan, poll), `hciwatch.c` (an HCI trace), `rxprobe.c` (PCM
+throughput of a Bluetooth receiver), `keyinj.c` (drives the buttons from adb),
+`watch_wake.sh` and `profreport.py` (`.local/profile.out` to something
+readable). The icon rasteriser is the one exception: its recipe lives in
+`../sonix-player/docker/icons.Dockerfile`, not here.
 
 ## The patches
 

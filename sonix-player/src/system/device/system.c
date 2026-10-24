@@ -314,7 +314,12 @@ static void battery_read_into(char *battery_cache, size_t battery_cache_size) {
 // transfer to it: the walk over the supplies took up to 40 ms, four times a
 // second, on the interface thread (named in a slow-pass report). The thread
 // keeps that beat; the interface only ever reads what it last found.
-#define BATTERY_POLL_MS 250
+//
+// One second rather than a quarter of one: the icon shows whole percent, and a
+// level moves by one in minutes. At 250 ms the walk was the second-largest
+// always-on cost with the screen lit (~160 ms of every second's worth of PMIC
+// traffic on the Blaze), for three readings that could not differ.
+#define BATTERY_POLL_MS 1000
 #define BATTERY_POLL_OFF_MS 5000
 
 static volatile bool battery_poller_on;

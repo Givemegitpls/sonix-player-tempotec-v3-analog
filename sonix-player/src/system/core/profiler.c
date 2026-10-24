@@ -1,6 +1,7 @@
 #include "profiler.h"
 
 #include <dirent.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <pthread.h>
 #include <signal.h>
@@ -8,12 +9,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/inotify.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <ucontext.h>
 #include <unistd.h>
 
 #define PROFILE_MAX_SAMPLES 65536
+
+// How often the trigger is looked for when inotify cannot be used. The event
+// path wakes on the file being created, so this is a fallback only.
+#define PROFILER_POLL_S 5
+// A safety net on the event path: a missed event (the card remounted, the
+// watch lost) costs one look, not a profiler that never runs.
+#define PROFILER_WATCH_TIMEOUT_S 300
 
 typedef struct {
 	uintptr_t pc;
@@ -112,8 +121,43 @@ static void *profiler_thread(void *arg) {
 	if (access(left, F_OK) == 0 && access(trigger_path, F_OK) != 0) {
 		rename(left, trigger_path);
 	}
+
+	// Watching for the trigger instead of asking the card for it every two
+	// seconds: the old loop ran one open() on the card half a hertz forever,
+	// with the screen off and the device supposed to be idle, for a file that
+	// only ever appears when someone is profiling this very build. inotify on
+	// the directory the trigger lives in costs nothing until it is written.
+	char dir[600];
+	snprintf(dir, sizeof(dir), "%s", trigger_path);
+	char *slash = strrchr(dir, '/');
+	if (slash) {
+		*slash = '\0';
+	}
+	int watch = -1;
+	int ifd = inotify_init1(IN_CLOEXEC);
+	if (ifd >= 0 && slash) {
+		watch = inotify_add_watch(ifd, dir, IN_CREATE | IN_MOVED_TO | IN_CLOSE_WRITE);
+		if (watch < 0) {
+			close(ifd);
+			ifd = -1;
+		}
+	}
+
 	for (;;) {
-		sleep(2);
+		if (ifd >= 0) {
+			// Blocking: no wake-up at all until the directory changes, with a
+			// long timeout that only re-confirms the watch is alive.
+			struct pollfd p = {.fd = ifd, .events = POLLIN};
+			if (poll(&p, 1, PROFILER_WATCH_TIMEOUT_S * 1000) == 0) {
+				continue; // nothing happened; the file is still not there
+			}
+			char events[1024];
+			while (read(ifd, events, sizeof(events)) > 0) {
+				// drained: one look below covers them all
+			}
+		} else {
+			sleep(PROFILER_POLL_S);
+		}
 		FILE *t = fopen(trigger_path, "r");
 		if (!t) {
 			continue;

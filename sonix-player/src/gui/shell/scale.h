@@ -85,8 +85,9 @@ static inline uint32_t ui_image_scale(void) {
 // gets whichever drawing its own panel needs, with no rescaling and no lookup.
 //
 // Both sets declare the same identifiers and both are generated and checked in
-// (tools/svg_to_lvgl.py, run in the sonix-icons container -- see
-// tools/icons-gen). Exactly one of them is compiled: BOARD in the Makefile
+// (tools/svg_to_lvgl.py, run in the sonix-icons container --
+// sonix-player/docker/icons.Dockerfile, the recipe docs/UPDATING.md uses).
+// Exactly one of them is compiled: BOARD in the Makefile
 // leaves the other out of APP_SRCS, and every page includes icons_select.h
 // rather than one of the two headers, so which set is in play is decided in one
 // place. Compiling both would be a link error on duplicate symbols, which is

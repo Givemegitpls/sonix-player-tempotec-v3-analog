@@ -18,6 +18,8 @@ consolidated documents sit next to this file:
   design, the freeze bug, and what "display off" can and cannot mean on this board.
 - `docs/PANEL-POWER.md` — the stock `SET_SLEEP` panel power path, the evidence for it, and what
   the port now does; it corrects the power sections of `DISPLAY.md` and `V3-ANALOG.md`.
+- `docs/POWER.md` — what costs battery, the state the panel is in for each of them, the audit of
+  2026-10-24 and what it changed, and `tools/powsample`, the tool the numbers came from.
 - `docs/KERNEL.md` — the stock kernel's addresses and functions, the board platform data, and how
   a replacement kernel would (and would not) reach the image.
 - `docs/BUILD.md` — the end-to-end build, from a fresh clone to `sonix-packer/out/v3_analog.upt`.
@@ -56,7 +58,7 @@ tools/history.sh snaps                  # file-state snapshots (unreferenced git
 - The panel's frame rate is the panel's own (75.57 Hz). Nothing on the SoC side changes it.
 - The interface is written at 480x720 and compiled at 320x480: every pixel size or position
   goes through `SC()` (`src/gui/shell/scale.h`, pulled in by `gui.h`). Upstream UI code arrives
-  without it -- `tools/scale_gui.py` finds the bare literals in layout calls, and the `#define`d
+  without it -- `sonix-player/tools/scale_gui.py` finds the bare literals in layout calls, and the `#define`d
   sizes at the top of each page have to be wrapped by hand. Nulls, counts, milliseconds and
   percentages are not sizes.
 - The player's source follows upstream `Jepl4r/sonix-player`: an update is `git merge <tag>`,

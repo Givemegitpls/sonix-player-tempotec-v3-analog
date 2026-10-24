@@ -157,25 +157,21 @@ while the interface behind it keeps drawing: a frozen picture, a clock that
 stopped, an indicator still saying what was true minutes ago. The pan is retried
 once after re-reading the mode (`fb_mode_stale`), which is all it takes.
 
-## Power: the backlight goes out, then the SoC sleeps
+## Power: the backlight and the rails, then the SoC sleeps
 
-The screen-off on this device is the **backlight alone**. The stock player never
-blanks the panel -- its binary has no `FBIOBLANK` in it at all, and dims
-`/sys/class/backlight/pwm-backlight.0/brightness` to 0 instead -- and the port
-follows it: `blank_panel = false` in the model, so no blank is ever issued and
-the panel stays armed, scanning the frame it was last given. That is deliberate,
-and it is what the freeze fix rests on: the state a blank leaves behind
-(`LCDC_CTRL.ENA` back on, `SLCDC_CTRL.DMA_EN` still down) is the one this panel
-does not come back from without a reboot.
+Screen-off on this device is **two steps**, exactly as the stock player does it: the
+backlight goes to 0 at `/sys/class/backlight/pwm-backlight.0/brightness`, and then the
+vendor `SET_SLEEP` ioctl (`0x80044620`) powers the panel down -- `LCDC_CTRL.ENA`, the LCD
+clocks, the AXP2101 rails `LDO7`/`LDO8`, the reset line and the touch controller's doze.
+`blank_panel = false` in the model and the ioctl is `panel_sleep_ioctl`; `FBIOBLANK` is
+never used, because the state *it* leaves behind (`ENA` back on, `DMA_EN` still down) is the
+one this panel does not come back from without a reboot. The full evidence is in
+[PANEL-POWER.md](PANEL-POWER.md).
 
-> **Corrected 2026-10-20:** the premise of the paragraph above is wrong. The stock player
-> *does* power the panel down on every screen-off, with the vendor `SET_SLEEP` ioctl, not
-> with `FBIOBLANK`; the backlight is only the first half. The port now does the same
-> (`panel_sleep_ioctl` in the board profile, `power.c`). See [PANEL-POWER.md](PANEL-POWER.md).
-
-The price is that the glass keeps showing the last frame. With the backlight off
-an LCD's pixels still hold their state, so in ambient light the picture stays
-readable; that is the panel, not a backlight that failed to go out.
+What that means outside the panel, the wake-ups the SoC still serves, and the defects this
+port had in this area until 2026-10-24 (a panel left powered after a wake from standby, an
+`FBIOBLANK` at every boot, a frame drawn after the panel was dead, a charger that forbade
+standby) are in [POWER.md](POWER.md).
 
 The device does not stay awake for it. **Suspend-to-RAM is on by default**, 60
 seconds after the screen goes dark, with the stock standby's own sequence: a
@@ -448,13 +444,13 @@ assets carry and not the stock's.
 interface shows as **Operating system version**, and the packer writes it per
 build instead of leaving it to whoever edited the asset last. The base is the
 port's own -- everything in the asset's value up to the first `-` or `/`, today
-`1.2.0.1` -- and what follows the slash names the build, out of this repository:
+`1.3.0` -- and what follows the slash names the build, out of this repository:
 
 | the tree in this repository | the string |
 |---|---|
-| HEAD carries a tag | `1.2.0.1/0.1.0` |
-| a commit, no tag | `1.2.0.1/#5436fdd` |
-| changes not committed yet | `1.2.0.1/f2e2493d` |
+| HEAD carries a tag | `1.3.0/0.1.0` |
+| a commit, no tag | `1.3.0/#5436fdd` |
+| changes not committed yet | `1.3.0/f2e2493d` |
 
 The third row is a test build, and its eight hex are an md5 of the changes git
 has not committed: the image's own md5 cannot be written inside the image, since
@@ -466,7 +462,7 @@ tree has moved on since -- is named by hand, which sidesteps git rather than
 moving tags around:
 
 ```
-VERSION_OVERRIDE=1.2.0.1/0.1.0 ./v3_analog_packer.sh
+VERSION_OVERRIDE=1.3.0/0.1.0 ./v3_analog_packer.sh
 ```
 
 `build_version` is a row of its own: the mtime of the player binary, the stamp
@@ -648,12 +644,15 @@ for it:
 
 Not working, with the reason:
 
-- **Charge limit**: the AXP2101 is not reachable over I2C here (`/dev/i2c-0`
-  does not exist); the stock firmware goes through
-  `/sys/class/axppower` and `/sys/class/power_supply/usb` instead. Until that
-  is written, the switch is off rather than pretending.
-- **Serial number in About**: the device's node is
-  `/proc/jz/efuse/efuse_serial_nb`, not the `efuse_chip_id` the port reads.
+- **Charge limit** (*fixed 2026-10-24*): implemented through the AXP2101's own
+  charge current, `/sys/class/power_supply/usb/constant_charge_current_max`
+  (REG62h) -- 0 holds the battery, the previous value lets it go. The PMIC's
+  `charge_control_limit_max` is not used: writing 100 to it also drops the
+  input current limit to 100 mA and starves the system. There is still no
+  `/dev/i2c*` on this firmware, so anything else the PMIC can do is reachable
+  only through the driver's raw node, `/sys/class/axp/axp_reg` (read a register,
+  or write `0xRRVV`). See [POWER.md](POWER.md) for the register evidence, and
+  for the reason the cable keeps the device awake.
 - **Optical / S/PDIF at rates above 192 kHz**: the route and the card are
   implemented (see "Sound" above: nothing plugged in means `hw:0,0` and
   `Output Port Switch` 0, as in the stock player), and the card itself accepts

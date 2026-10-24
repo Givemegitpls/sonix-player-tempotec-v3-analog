@@ -43,6 +43,9 @@
 #define BEACON_PORT 7801
 #define BEACON_MS 2000
 #define TICK_MS 200
+// How long the worker sleeps while the feature is switched off. It is woken
+// early by sonixlink_set_enabled(), so this is only a safety net.
+#define SONIXLINK_IDLE_WAIT_S 60
 
 // A phone counts as present for this long after its last request. The app
 // polls every few seconds for as long as it is connected (its heartbeat), so
@@ -82,6 +85,9 @@
 // ---------------------------------------------------------------------------
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+// Signalled when the feature is switched on, so the worker does not have to
+// poll for it (see the idle branch of its loop).
+static pthread_cond_t idle_wake = PTHREAD_COND_INITIALIZER;
 static pthread_t worker;
 static bool worker_running;
 static bool enabled;
@@ -365,6 +371,10 @@ bool sonixlink_get_enabled(void) {
 void sonixlink_set_enabled(bool on) {
 	pthread_mutex_lock(&lock);
 	enabled = on;
+	// The worker sleeps for seconds at a time while the feature is off (see its
+	// idle branch); starting the service has to reach it now, not up to a sleep
+	// later.
+	pthread_cond_broadcast(&idle_wake);
 	pthread_mutex_unlock(&lock);
 	config_set_int("wireless", "sonixlink", on ? 1 : 0);
 	config_save();
@@ -2989,7 +2999,20 @@ static void *sonixlink_worker(void *unused) {
 				pthread_mutex_unlock(&lock);
 				printf("sonixlink: off\n");
 			}
-			usleep(300 * 1000);
+			// Off: the worker has nothing to do until the switch is flipped,
+			// and it is flipped from this very thread (sonixlink_set_enabled
+			// signals idle_wake). Waking twelve thousand times an hour to read
+			// a boolean is the largest idle cost the player has.
+			pthread_mutex_lock(&lock);
+			while (!enabled) {
+				struct timespec until;
+				// The condition variable uses the default (realtime) clock;
+				// the timeout has to be measured on the same one.
+				clock_gettime(CLOCK_REALTIME, &until);
+				until.tv_sec += SONIXLINK_IDLE_WAIT_S;
+				pthread_cond_timedwait(&idle_wake, &lock, &until);
+			}
+			pthread_mutex_unlock(&lock);
 			continue;
 		}
 

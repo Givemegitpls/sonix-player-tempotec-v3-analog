@@ -261,7 +261,7 @@ STOCK=... DOCKER_IMAGE=tempotec-fw-tools ./v3_analog_packer.sh   # the defaults
 ./v3_analog_packer.sh verify                                     # re-check out/v3_analog.upt, build nothing
 SKIP_PLAYER_BUILD=1 ./v3_analog_packer.sh                        # repack the binaries already in sonix-packer/
 KERNEL_IMAGE=/path/UIMAGE.BIN ./v3_analog_packer.sh              # install a replacement kernel
-VERSION_OVERRIDE=1.2.0.1/0.1.0 ./v3_analog_packer.sh             # name the build by hand
+VERSION_OVERRIDE=1.3.0/0.1.0 ./v3_analog_packer.sh             # name the build by hand
 ```
 
 `OS_version` in `usr/resource/sonix/components/system-info.json` is the string

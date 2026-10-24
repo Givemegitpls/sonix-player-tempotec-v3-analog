@@ -15,6 +15,7 @@
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/device/sysserver.h"
+#include "src/system/device/sysinfo.h"
 #include "src/system/device/system.h"
 
 #include <dirent.h>
@@ -82,12 +83,17 @@
 // This player's own configuration. Deleting it here rather than leaving it to
 // the script is deliberate: on a rootfs missing the two pieces above, the reset
 // still amounts to "settings are back to new", the part the user notices most.
-#define CONFIG_FILE "/usr/data/device_config.ini"
+//
+// The folder is the model's, not a literal: the Blaze keeps its data in
+// /usr/data (and /data is a symlink to it there), the V3 Analog keeps it in
+// /data with no /usr/data at all. A reset that unlinked the Blaze's path on the
+// V3 left the settings file in place -- see config_path().
+#define CONFIG_FILE_NAME "device_config.ini"
 // And the reader's, which is a second file for the reason config.h explains.
 // Listed here because a reset that leaves every book open at the page it was on
 // is not a reset -- and because a file nobody deletes is a file that outlives
 // the thing that made it.
-#define EBOOK_CONFIG_FILE "/usr/data/ebook_config.ini"
+#define EBOOK_CONFIG_FILE_NAME "ebook_config.ini"
 
 // The two functions below serve only the real procedure, which the host build
 // does not have; without this guard the compiler reports them as defined but
@@ -158,9 +164,13 @@ bool factoryreset_supported(void) {
 }
 
 void factoryreset_run(void) {
+	const char *data_dir = sysinfo_user_data_dir();
+	char config_path[512], ebook_path[512];
+	snprintf(config_path, sizeof(config_path), "%s/%s", data_dir, CONFIG_FILE_NAME);
+	snprintf(ebook_path, sizeof(ebook_path), "%s/%s", data_dir, EBOOK_CONFIG_FILE_NAME);
 #ifdef HOST_BUILD
-	printf("factoryreset: (build host) would delete %s and %s, write the note and reboot\n", CONFIG_FILE,
-		   EBOOK_CONFIG_FILE);
+	printf("factoryreset: (build host) would delete %s and %s, write the note and reboot\n", config_path,
+		   ebook_path);
 #else
 	printf("factoryreset: starting the reset\n");
 
@@ -200,10 +210,10 @@ void factoryreset_run(void) {
 	unmount_card();
 
 	// This player's configuration goes now, without waiting for the reboot.
-	static const char *const OURS[] = {CONFIG_FILE, EBOOK_CONFIG_FILE};
-	for (size_t i = 0; i < sizeof(OURS) / sizeof(OURS[0]); i++) {
-		if (unlink(OURS[i]) == 0) {
-			printf("factoryreset: %s deleted\n", OURS[i]);
+	const char *ours[2] = {config_path, ebook_path};
+	for (size_t i = 0; i < 2; i++) {
+		if (unlink(ours[i]) == 0) {
+			printf("factoryreset: %s deleted\n", ours[i]);
 		}
 	}
 

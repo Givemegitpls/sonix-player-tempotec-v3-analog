@@ -66,7 +66,7 @@ the way the first one was.
 
 About's **Operating system version** reads `<base>/<build>`. The base is the
 `OS_version` in `system-info.json` up to the first `-` or `/` (today
-`1.2.0.1`); the build is the tag on HEAD, `#<short hash>` for a commit without
+`1.3.0`); the build is the tag on HEAD, `#<short hash>` for a commit without
 one, or eight hex digits of an md5 of the uncommitted changes for a test build.
 The packer writes it per build (`os_version()` in
 `sonix-packer/v3_analog_packer.sh`); the table is in
@@ -172,8 +172,11 @@ upstream build documentation in
 
 The packer starts from the **vendor's own 1.3 firmware**, which is not
 redistributed here. It checks that the bootloader inside it is the stock one
-(`UBOOT.BIN` md5 `1f54858d6b4e6f482a81a3378c0e5bf8`) and carries the stock
-kernel (`UIMAGE.BIN` md5 `35889275f8bed2f967a18f6a8b66495c`) through untouched:
+(`UBOOT.BIN` md5 `1f54858d6b4e6f482a81a3378c0e5bf8`) and, unless asked to
+replace it, carries the stock kernel (`UIMAGE.BIN` md5
+`35889275f8bed2f967a18f6a8b66495c`) through untouched -- `KERNEL_IMAGE=` puts
+a replacement in its place and the update digest is recomputed
+([docs/KERNEL.md](docs/KERNEL.md), [docs/BUILD.md](docs/BUILD.md)):
 
 ```
 sonix-packer/

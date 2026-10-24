@@ -1223,10 +1223,27 @@ static void panel_size(int *width, int *height, int fb_w, int fb_h) {
 	}
 }
 
+// LVGL asks for the time once per timer per pass (lv_timer_handler and
+// lv_timer_get_time_to_next both walk the list), and on this device
+// clock_gettime is a real system call, not a vDSO read: measured 0.56 us per
+// call on the X1000 (300 000 calls, twice, both runs). With ~40 live timers that
+// is about eighty calls per pass, 105 passes a second while idle -- several
+// milliseconds of the core per second spent asking what time it is.
+//
+// So the value is taken once per pass and handed out unchanged inside it. The
+// pass lasts a few milliseconds at most, and every timer that reads it reads
+// the same instant, which is what a scheduler wants anyway: no timer can be
+// "due" later in the pass than at its start.
+static __thread uint32_t tick_cached;
+static __thread bool tick_pass_active;
+
 static uint32_t custom_tick_get(void) {
+	if (tick_pass_active) {
+		return tick_cached;
+	}
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+	return (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
 }
 
 static void post_gui_popup(const char *message, void *user_data) {
@@ -1318,6 +1335,8 @@ static lv_display_t *init_host_display(void) {
 // No panel to re-arm on the host: the SDL window never blanks.
 void display_wake_begin(lv_display_t *disp) { (void)disp; }
 void display_wake_end(lv_display_t *disp) { (void)disp; }
+void display_wake_repan(void) {}
+void display_flip_wait(void) {}
 
 // Nothing to disarm either: power.c calls this after a blank it does not
 // perform here. It has no host counterpart otherwise, which is what the link
@@ -1882,9 +1901,13 @@ static bool fb_pan_refused;
 // FB_BLANK_POWERDOWN, ENA=1 / DMA_EN=0 and a pan reports success with no
 // SLCDC activity at all; after the PUT, DMA_EN=1 and the frame goes. The
 // registers are identical in the working and the wedged state, so the state
-// cannot be read back -- the port keeps it itself: every blank disarms, every
-// PUT arms.
-static bool fb_armed;
+// cannot be read back.
+//
+// The port does not track it in a variable any more: the only path that blanks
+// is the fbdev one (blank_panel), and both of its ends arm the panel through
+// display_wake_begin(). This board's screen-off is the vendor SET_SLEEP ioctl,
+// which leaves the panel initialised on the way back (docs/PANEL-POWER.md), so
+// there is no "disarmed" state to remember here.
 
 // Told by the power path that the panel has just been taken down, so the next
 // wake knows it has to arm it again.
@@ -1894,7 +1917,6 @@ static bool fb_armed;
 // transfer that the sleep ended; carried over, the next wake would pace against
 // a rise that will never come and copy behind a read the panel is not doing.
 void display_panel_disarmed(void) {
-	fb_armed = false;
 	pan_outstanding = false;
 	panel_rise_us = 0;
 	panel_xfer_start_us = 0;
@@ -1911,7 +1933,6 @@ static void fb_arm(void) {
 		perror("fb: FBIOPUT_VSCREENINFO (arm)");
 		return;
 	}
-	fb_armed = true;
 }
 
 // Ask the panel to show what has been written into the page.
@@ -2045,6 +2066,16 @@ static void *flip_thread(void *arg) {
 		uint64_t now = ft_now_us();
 		if (!pan_target_us) {
 			pan_target_us = now;
+		}
+		// While the panel is powered down there is nothing to hand a frame to:
+		// the driver answers every pan with -EINVAL (lcd is disabled) and the
+		// transfer the poll below waits for can never start. The copy above has
+		// already been made -- that one is wanted, the page keeps the picture
+		// the wake opens on -- and the next real wake re-takes the grid.
+		if (!power_screen_is_on()) {
+			pan_target_us = 0;
+			pan_outstanding = false;
+			continue;
 		}
 		// How late the interface thread was for the slot it asked for: the pan
 		// then lands on the next boundary instead of the one wanted, and that
@@ -3045,6 +3076,31 @@ void display_wake_end(lv_display_t *disp) {
 	lv_linux_fbdev_set_force_refresh(disp, false);
 }
 
+// The wake of a panel the *kernel* has already re-initialised: SET_SLEEP(0)
+// runs lcd_power_on, the 343-entry panel table and DMA_EN before it returns, so
+// the video mode is intact and there is nothing to arm. What is missing is a
+// frame on the glass, which is one pan -- the repaint that follows writes the
+// page, its own flush pans it.
+void display_wake_repan(void) {
+	if (fb_fd < 0) {
+		return;
+	}
+	fb_flip_wait();
+	if (ioctl(fb_fd, FBIOPAN_DISPLAY, &fb_var) < 0) {
+		perror("fb: FBIOPAN_DISPLAY (wake)");
+	}
+}
+
+// Lets a flip in flight finish before the caller touches the panel. The vendor
+// driver takes no lock of its own around jzfb_pan_display and jzfb_suspend, and
+// a pan issued while the clocks are being gated is the one combination this
+// kernel is known to dislike.
+void display_flip_wait(void) {
+	if (fb_fd >= 0) {
+		fb_flip_wait();
+	}
+}
+
 // Frees the RAM pages once the refresh that may still be reading them is
 // over: an async call runs at the top of the next lv_timer_handler pass.
 static void free_rot_pages_cb(void *unused) {
@@ -3816,14 +3872,14 @@ int main(int argc, char **argv) {
 	// Before the radio, so a bring-up that fails is in the Bluetooth log from
 	// its first line.
 	btlog_init();
-	// The Bluetooth stack is not ported to the V3 Analog yet: the firmware's own
-	// one is what runs there, with its own modules, scripts and firmware files,
-	// and the port's management of it (bring it down at boot, run its own) has
-	// nothing to talk to. Left running, it reads that stack as "the radio is on"
-	// -- which it is, just not this player's -- and retries a media-player
-	// registration against it every three seconds, forever, each attempt a failed
-	// D-Bus round trip and four lines written to the log on the card. The model
-	// says whether the stack is this port's (sysinfo.h, bluetooth_stack).
+	// The model says whether the Bluetooth stack this port manages is the one
+	// that runs on the board (sysinfo.h, bluetooth_stack). On a board where the
+	// firmware's own stack is a different one -- the Blaze's -- nothing here can
+	// talk to it: bring-up would read that stack as "the radio is on" and retry a
+	// media-player registration against it every three seconds, forever, each
+	// attempt a failed D-Bus round trip and four lines written to the log on the
+	// card. The V3 Analog replaces the firmware's BlueZ 4 with this port's BlueZ 5
+	// (docs/BLUETOOTH.md), so its model sets the flag and this runs.
 	if (!sysinfo_model() || sysinfo_model()->bluetooth_stack) {
 		bluetooth_init();
 	} else {
@@ -4062,7 +4118,12 @@ int main(int argc, char **argv) {
 	while (running) {
 		ui_heartbeat++;
 		frameprof_pass_begin();
+		// One clock read for the whole pass (see custom_tick_get).
+		tick_pass_active = false;
+		tick_cached = custom_tick_get();
+		tick_pass_active = true;
 		uint32_t time_till_next = lv_timer_handler();
+		tick_pass_active = false;
 		frameprof_pass_end();
 		// Animations started in the dark are parked; keep them that way until
 		// the screen is back (see power_keep_animations_paused).

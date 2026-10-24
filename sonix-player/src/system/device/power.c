@@ -137,7 +137,6 @@ static bool g_usb_present_known;   // false until the cable has been read at lea
 
 
 static long g_hw_brightness = -1;	   // last brightness value actually written to sysfs
-static uint32_t g_last_playing_ms;	   // last tick audio was PLAYING (suspend clock)
 static uint32_t g_ignore_button_until; // tick until which power presses are absorbed
 static uint32_t g_last_active_boot_ms;	// last activity, on a clock that counts suspended time
 static bool g_bt_powered_down;			// the boot-time stack has already been put down
@@ -241,6 +240,16 @@ static void screen_power(bool on) {
 		// the driver's panel init, which is not something to do around a
 		// sleep/unblank pair.
 		if (g_cfg.fb_fd < 0) {
+			// Not once per call: this runs on every screen cycle. The panel
+			// cannot be powered down at all without the descriptor, so the
+			// screen-off is a backlight-off over a live, scanning panel -- the
+			// case that has to be visible in the log rather than guessed at.
+			static bool warned;
+			if (!warned) {
+				fprintf(stderr, "power: no framebuffer descriptor: the panel cannot be powered %s\n",
+						on ? "on" : "down");
+				warned = true;
+			}
 			return;
 		}
 		int value = on ? 0 : 1;
@@ -319,32 +328,34 @@ static bool g_screen_view_hold; // see power_hold_screen_for_view
 // page says so rather than pretending.
 // ---------------------------------------------------------------------------
 
-// How charging is stopped: one node on the charger driver.
+// How charging is stopped on this board: the AXP2101's constant charge current
+// (REG62h, bits 4..0), written through the power-supply property the vendor
+// driver maps it to.
 //
-// Despite its name -- the driver's own property is its step-charging algorithm,
-// which is what the bit belongs to -- writing 0 here clears CHG_CONFIG in the
-// MP2731's REG04h, and that disables charging while LEAVING THE INPUT PATH
-// ACTIVE. The distinction is the whole point:
+// The same PMIC has a second switch, charge_control_limit_max, whose value 100
+// clears MODULE_EN_CHARGE (REG18h bit 1) -- and, in the same write, drops the
+// input current limit to 100 mA (REG16h). That second half starves the system
+// as well as the battery, so a player held off that way can neither charge nor
+// run reliably from the cable. Writing 0 to the charge *current* instead
+// touches only what goes into the cell, and the input path stays where the
+// firmware set it (500 mA), so the player keeps running from the cable while
+// the battery is held.
 //
-//   * the input current limit (input_current_limited) starves the system as
-//     well as the battery. A flat battery behind a throttled input cannot
-//     charge AND cannot boot the player that would release it -- which is the
-//     soft-brick this replaces;
-//   * CHG_CONFIG stops only what goes into the cell. The converter keeps
-//     supplying the system from the cable, so the player always starts and
-//     mp2731_hw_init resets the charger at every boot.
+// Verified on the device (2026-10-24) through the driver's raw register node,
+// /sys/class/axp/axp_reg: 700 mA reads back REG[0x62]=0x0d, a write of 0 gives
+// REG[0x62]=0x00, restoring gives 0x0d again, and REG[0x16] does not move.
 //
-// Measured both ways on the device: with charging disabled the input still
-// carried the system (250 mA in, 0 mA into the battery, the system rail held
-// 200 mV above the cell), and with the battery physically removed the player
-// powered on from the charger alone.
-//
-// The two nodes under /sys/class/power_supply/usb/ the stock player writes are
-// not used at all: that supply is the AXP2101 PMIC, not the charger, and
-// writing them does nothing to charging.
-#define STEP_CHARGING_NODE "/sys/class/power_supply/mp2731-charger/step_charging_enabled"
+// For anyone reading the battery's current from sysfs: axp_battery's
+// current_now is the constant BAT_CURRENT_NOW from the driver (200000), not a
+// measurement, which is why it does not move with the load.
+#define CHARGE_CURRENT_NODE "/sys/class/power_supply/usb/constant_charge_current_max"
+// What to restore when the limit lets go: the firmware's own value when it can
+// be read, this when it cannot (the property's ceiling, 1000 mA, is above what
+// the stock firmware charges at).
+#define CHARGE_CURRENT_DEFAULT_MA 780
 
 static const char *g_charge_node;	 // the writable node, NULL if there is none
+static long g_charge_current = CHARGE_CURRENT_DEFAULT_MA; // mA to resume with
 static int g_charge_limit = 100;	 // 100 = charge to full
 static bool g_charging_suspended;
 
@@ -362,13 +373,21 @@ static void find_charge_node(void) {
 	}
 	searched = true;
 
-	if (access(STEP_CHARGING_NODE, W_OK) != 0) {
-		printf("power: %s is not writable; the charge limit cannot be enforced\n", STEP_CHARGING_NODE);
+	if (access(CHARGE_CURRENT_NODE, W_OK) != 0) {
+		printf("power: %s is not writable; the charge limit cannot be enforced\n", CHARGE_CURRENT_NODE);
 		return;
 	}
 
-	g_charge_node = STEP_CHARGING_NODE;
-	printf("power: charge limit will use %s\n", g_charge_node);
+	// The value to come back to. Read before the first write, and never 0: a
+	// node already at 0 means something else has charging held, and resuming
+	// into 0 would leave it held for ever.
+	long current = read_long_from_file(CHARGE_CURRENT_NODE);
+	if (current > 0) {
+		g_charge_current = current;
+	}
+
+	g_charge_node = CHARGE_CURRENT_NODE;
+	printf("power: charge limit will use %s (%ld mA to resume)\n", g_charge_node, g_charge_current);
 }
 
 bool power_charge_limit_supported(void) {
@@ -403,7 +422,7 @@ void power_set_charge_limit(int percent) {
 
 static void charger_run(bool run) {
 	if (g_charge_node) {
-		write_long_to_file(g_charge_node, run ? 1 : 0);
+		write_long_to_file(g_charge_node, run ? g_charge_current : 0);
 	}
 }
 
@@ -894,7 +913,6 @@ static bool g_rtc_alarm_armed;
 // alarm programmed is the battery's.
 static bool g_rtc_auto_off_armed;
 static bool g_rtc_battery_armed;
-static time_t g_rtc_alarm_at;
 // The same deadline on CLOCK_BOOTTIME. The wall clock is not usable for this:
 // it does not count the sleep, and clock_resync() -- the one thing that would
 // fix it -- refuses to do anything until the date has been set by hand or by
@@ -940,7 +958,10 @@ static void rtc_alarm_disarm(void) {
 // first is the one programmed.
 #define BATTERY_CHECK_LOW_S (20 * 60)	   // at 5 % or under
 #define BATTERY_CHECK_MID_S (60 * 60)	   // at 15 % or under
-#define BATTERY_CHECK_HIGH_S (4 * 60 * 60) // above
+// Above 15 % a level moves by about one percent every ten to twenty minutes of
+// standby; a check every four hours meant six full wake cycles a night, each
+// one a panel power cycle and forty seconds of a lit SoC, to learn nothing.
+#define BATTERY_CHECK_HIGH_S (12 * 60 * 60)
 // Awake for this long after such a wake, enough for lowbattery.c's readings,
 // before the device goes back to sleep.
 #define BATTERY_CHECK_AWAKE_MS 40000
@@ -989,7 +1010,6 @@ static void rtc_alarm_arm(void) {
 	g_rtc_alarm_armed = true;
 	g_rtc_auto_off_armed = auto_off_s > 0;
 	g_rtc_battery_armed = battery_first;
-	g_rtc_alarm_at = at;
 	g_rtc_alarm_boot_at = boottime_ms() + (uint32_t)auto_off_s * 1000u;
 	g_rtc_battery_boot_at = boottime_ms() + (uint32_t)battery_s * 1000u;
 	printf("power: mem: RTC wake in %ld s %s\n", remaining_s,
@@ -1042,10 +1062,11 @@ void power_shutdown(void) {
 	// the screen already off the wait is invisible.
 	power_screen_off();
 
-	// The charger back on before the power goes: the driver keeps that bit
-	// across a shutdown -- mp2731_shutdown writes it from the property it has
-	// stored -- and a device put away at its charge limit would meet the next
-	// cable with a charger that does nothing.
+	// The charger back on before the power goes. On this board the charge
+	// current lives in the PMIC and survives a shutdown, so a device put away
+	// at its limit would meet the next cable with charging still held. (The
+	// vendor driver has its own release at removal for the same reason; this is
+	// the one that runs on a clean power-off.)
 	power_charging_release();
 
 	// Last, after everything above that writes to the card: a library check
@@ -1142,6 +1163,26 @@ static void suspend_to_ram(void) {
 	// record that the suspend itself succeeded.
 	printf("power: mem: awake after %u s (fclose=%d)\n", slept_s, rc);
 	fflush(stdout);
+
+	// The kernel's own resume has just powered the panel back on. SET_SLEEP(1)
+	// left is_lcd_en == 0 and the driver's "suspended" latch set, so
+	// jzfb_resume_pm takes the "was not enabled" branch and runs lcd_power_on +
+	// set_par + enable (docs/PANEL-POWER.md, jzfb_resume). The player, though,
+	// comes back to a screen that is still meant to be dark -- it was dark when
+	// the suspend was entered -- and nothing else would take those rails down
+	// again: the next SET_SLEEP(1) only happens on a screen-off transition, and
+	// the screen never turned on. So a device woken by the RTC, or by a cable
+	// being plugged in, would sit out the whole awake window with the 3.0 V and
+	// 1.8 V rails up, the LCD clocks running and the panel scanning, at
+	// backlight nought.
+	if (rc == 0 && !g_screen_on && g_cfg.panel_sleep_ioctl) {
+		if (g_cfg.brightness_path) {
+			write_long_to_file(g_cfg.brightness_path, 0);
+		}
+		g_hw_brightness = 0;
+		screen_power(false);
+		display_panel_disarmed();
+	}
 
 	// There is no "one suspend per dark-screen spell" rule: the countdown simply
 	// starts again, like any other countdown, and the instant-wake counter below
@@ -1308,16 +1349,13 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 	// charges straight past the limit, and the release point three percent below
 	// it is never seen either. Reaching the limit does not lift this: the level
 	// falls again on its own, and only something still awake notices.
-	//
-	// With no limit set there is nothing to enforce, but the answer is the same,
-	// because a cable is the one case where sleeping saves nothing that matters.
 	if (usb_vbus_present()) {
 		mem_skip("the charger is plugged in");
 		return;
 	}
 	// And what the cable is carrying: the card exported over USB, or a computer
 	// feeding the DAC, both of which the suspend would cut. Below the cable
-	// itself now, and kept because a host can hold the port without VBUS.
+	// itself, and kept because a host can hold the port without VBUS.
 	if (usb_storage_active() || usbdac_is_active()) {
 		mem_skip("the USB cable is transferring something");
 		return;
@@ -1326,9 +1364,8 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 	// suspend as a process, but the gadget goes down with the SoC and the host
 	// loses the device: a shell left open on a desk dies at the sixty-second
 	// mark, and from the outside that is "ADB switches itself off when the
-	// screen goes dark". The cable has to be there -- ADB left on with nothing
-	// plugged in is a setting, not a connection, and must not keep a device in
-	// a pocket awake all night.
+	// screen goes dark". Unreachable while the cable itself is the reason above,
+	// and kept for the case of a host holding the port without VBUS.
 	//
 	// adb_is_running() walks /proc, so it is asked only once the cable has
 	// already answered yes.
@@ -1511,18 +1548,20 @@ void power_screen_off(void) {
 	// V3 Analog does not: the node is absent and this call is a no-op there).
 	// On a model that blanks, the driver reads the flag when the blank reaches
 	// it and chooses doze or a full power-off from it; off has to be written
-	// too, not merely left as the settings page last put it. On a model that
-	// never blanks there is no blank to read it, so the gesture wake is not
-	// available -- that is the price of keeping the panel up.
+	// too, not merely left as the settings page last put it. On a model with no
+	// blank to read it the gesture is entirely the controller's own -- the
+	// kernel's doze does it on the SET_SLEEP path, and the player only decides
+	// whether a KEY_POWER from the touch node counts (docs/PANEL-POWER.md,
+	// "Double tap to wake").
 	power_set_double_tap_wake(g_double_tap_wake);
 
 	set_indevs_enabled(false); // no touch events into LVGL while the panel is down
 	fade_to(BRIGHTNESS_MIN);   // smooth dim down
-	// The backlight goes out either way: on a model that blanks the panel, the
-	// fast window keeps it powered for a while and only the backlight is off;
-	// on one that never blanks (the V3 Analog), this is the whole of the
-	// screen-off -- the panel stays armed and keeps scanning the frame it was
-	// last given, exactly as the stock player leaves it.
+	// The backlight goes first, whichever way the panel goes: the fast window
+	// keeps the panel powered for a while and only the backlight is off, the
+	// vendor SET_SLEEP path takes the panel down immediately after this, and a
+	// model with no panel power control at all leaves it scanning its last
+	// frame with the backlight alone off.
 	if (g_cfg.brightness_path) {
 		write_long_to_file(g_cfg.brightness_path, 0); // below BRIGHTNESS_MIN: the backlight off
 	}
@@ -1530,23 +1569,11 @@ void power_screen_off(void) {
 	// The vendor sleep path has no fast window: the stock firmware takes the
 	// panel down at once, and holding the rails up to save a wake would be a
 	// different behaviour from the one measured on the device.
-	long fast_s = (!panel_blanking() || g_double_tap_wake || g_cfg.panel_sleep_ioctl)
-					  ? 0
-					  : config_get_int("power", "wake_fast_seconds", WAKE_FAST_DEFAULT_S);
-	if (fast_s > 0) {
-		g_panel_lit_dark = true;
-		g_panel_lit_until = lv_tick_get() + (uint32_t)fast_s * 1000u;
-	} else if (panel_blanking()) {
-		screen_power(false);
-		display_panel_disarmed(); // the blank took the panel's DMA down with it
-	}
-
-	// With the panel dark, draw what the next wake should open on straight
-	// into the framebuffer. Unblanking presents whatever the framebuffer
-	// already holds, and it holds the last thing drawn, so without this the
-	// page underneath flashes up before the screensaver however early the wake
-	// hook runs. Done here it costs one invisible frame and the wake shows the
-	// right thing from its very first scan-out.
+	// Whatever the wake should open on is drawn *before* the panel is taken
+	// down: the copy into the framebuffer page is the point of it, and drawing
+	// it after the sleep would mean a full-screen copy, two pans the driver
+	// refuses and a transfer poll against gated clocks -- all for a frame that
+	// stays in RAM either way.
 	if (g_wake_hook && g_wake_hook()) {
 		lv_obj_invalidate(lv_layer_top());
 		lv_obj_t *scr = lv_screen_active();
@@ -1554,6 +1581,21 @@ void power_screen_off(void) {
 			lv_obj_invalidate(scr);
 		}
 		lv_refr_now(g_disp);
+	}
+
+	long fast_s = (!panel_blanking() || g_double_tap_wake || g_cfg.panel_sleep_ioctl)
+					  ? 0
+					  : config_get_int("power", "wake_fast_seconds", WAKE_FAST_DEFAULT_S);
+	if (fast_s > 0) {
+		g_panel_lit_dark = true;
+		g_panel_lit_until = lv_tick_get() + (uint32_t)fast_s * 1000u;
+	} else if (panel_blanking()) {
+		// The flip thread may be inside FBIOPAN_DISPLAY this instant, and the
+		// driver takes no lock around its own power-down: let the pan finish
+		// first, then take the panel down.
+		display_flip_wait();
+		screen_power(false);
+		display_panel_disarmed(); // the blank took the panel's DMA down with it
 	}
 
 	// Stop rendering entirely while the panel is dark (physical buttons live
@@ -1764,7 +1806,16 @@ void power_screen_on(void) {
 	// checks that the blank left the video mode (the page-flipping display's
 	// double-height virtual resolution) alone, and puts it back if not.
 	if (!lit && panel_blanking()) {
-		display_wake_begin(g_disp);
+		if (g_cfg.panel_sleep_ioctl) {
+			// The kernel's SET_SLEEP(0) has already run lcd_power_on, the
+			// panel's own 343-entry table and DMA_EN: the mode is intact and
+			// nothing is disarmed. A pan is the whole of what is missing, and
+			// an FBIOBLANK/FBIOPUT_VSCREENINFO pair here would only re-run the
+			// panel init (~45 ms) on a panel that has just had one.
+			display_wake_repan();
+		} else {
+			display_wake_begin(g_disp);
+		}
 	}
 	WAKE_STEP("fb_begin");
 	frameprof_begin(PROF_WAKE_DRAW);
@@ -1860,9 +1911,6 @@ static void power_timer_cb(lv_timer_t *timer) {
 	// screen dark must not go to sleep under it.
 	bool playing = (audio_get_status() == AUDIO_STATUS_PLAYING) || radio_is_playing() || btreceiver_is_streaming() ||
 				   metronome_running();
-	if (playing) {
-		g_last_playing_ms = now;
-	}
 
 	// 3. idle computations
 	uint32_t input_idle = input_idle_ms(now);
@@ -2048,12 +2096,6 @@ void power_set_double_tap_wake(bool enabled) {
 void power_set_screen_off_enabled(bool enabled) { g_cfg.screen_off_enabled = enabled; }
 void power_set_screen_off_timeout(uint32_t ms) { g_cfg.screen_off_timeout_ms = ms; }
 
-void power_get_config(power_config_t *out) {
-	if (out) {
-		*out = g_cfg;
-	}
-}
-
 void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	g_cfg = *cfg;
 	g_disp = disp;
@@ -2074,7 +2116,14 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 		long cur = g_cfg.brightness_path ? read_long_from_file(g_cfg.brightness_path) : -1;
 		g_cfg.brightness = cur >= BRIGHTNESS_ON_FLOOR ? cur : brightness_max();
 	}
-	if (panel_blanking()) {
+	// Only a model whose screen-off is a framebuffer blank needs a repair at
+	// start-up: the previous run may have left the panel blanked, and a blank
+	// disarms the DMA that only a fresh FBIOPUT_VSCREENINFO re-arms. The vendor
+	// SET_SLEEP model needs none of it -- a reboot re-runs the kernel's own
+	// panel init (jzfb_open), so the panel is armed before this code runs. It
+	// must not be "repaired" here either: that path is an FBIOBLANK, which this
+	// panel is documented never to take (docs/DISPLAY.md, docs/PANEL-POWER.md).
+	if (panel_blanking() && !g_cfg.panel_sleep_ioctl) {
 		screen_power(true); // make sure the panel is unblanked (in case a prior run left it off)
 		// An unblank does not arm the panel's DMA (only a fresh
 		// FBIOPUT_VSCREENINFO does), so a run that starts on a panel a previous
@@ -2082,16 +2131,11 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 		// glass. display_wake_begin is the one place that arms it and pans.
 		display_wake_begin(disp);
 	}
-	// A model that never blanks (the V3 Analog) needs none of that here: the
-	// panel was never taken down, and on a fresh boot the kernel's own first
-	// open of the framebuffer runs its resume path -- lcd_power_on, the panel's
-	// init table, and enable -- before this code ever runs.
 	backlight_write(g_cfg.brightness);
 
 
 	uint32_t now = lv_tick_get();
 	g_last_button_activity_ms = now;
-	g_last_playing_ms = now;
 	g_ignore_button_until = now;
 
 	g_last_active_boot_ms = boottime_ms(); // the wall-clock idle marker starts now
@@ -2117,12 +2161,22 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	// that has stopped showing anything without a reboot. [power] standby_mem = 0
 	// turns the deep sleep off; standby_mem_seconds sets the wait.
 	g_mem_enabled = g_cfg.power_state_path && config_get_bool("power", "standby_mem", POWER_STANDBY_MEM_DEFAULT);
-	long mem_secs = config_get_int("power", "standby_mem_seconds", 60);
+	long mem_secs = config_get_int("power", "standby_mem_seconds", POWER_STANDBY_MEM_SECONDS_DEFAULT);
 	g_mem_instant_wakes_max = (int)config_get_int("power", "standby_mem_max_instant", 2);
 	if (g_mem_instant_wakes_max < 1) {
 		g_mem_instant_wakes_max = 1;
 	}
-	power_set_standby_after(mem_secs > 0 ? (uint32_t)mem_secs : 0);
+	if (mem_secs <= 0) {
+		// 0 is "no standby", and it used to be the opposite: power_set_standby_after()
+		// clamps anything below its floor to the floor, so a hand edit meaning
+		// "never" produced the shortest wait the setting allows -- the device
+		// slept sooner than with the default. Say so and turn the feature off.
+		printf("power: standby_mem_seconds = 0: standby to RAM is off\n");
+		g_mem_enabled = false;
+		mem_secs = POWER_STANDBY_MEM_SECONDS_DEFAULT; // the log line below still reads a sane number
+	} else {
+		power_set_standby_after((uint32_t)mem_secs);
+	}
 
 	// The radios go down on their own clock, not the Standby toggle's: they are
 	// worth switching off whether or not the SoC is going to sleep.
