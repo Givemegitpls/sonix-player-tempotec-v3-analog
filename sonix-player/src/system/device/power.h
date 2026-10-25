@@ -50,13 +50,13 @@ typedef struct {
 
 } power_config_t;
 
-// Initialize the power manager and start its state-machine timer. Copies cfg
-// (does not retain the pointer) and remembers disp for inactivity tracking and
 // The default wait before suspend-to-RAM, in seconds: the stock firmware's own
 // (docs/V3-ANALOG.md, "Power"), and the first entry of the settings page's
 // table. One definition, so a change cannot leave the two disagreeing.
 #define POWER_STANDBY_MEM_SECONDS_DEFAULT 60
 
+// Initialize the power manager and start its state-machine timer. Copies cfg
+// (does not retain the pointer) and remembers disp for inactivity tracking and
 // display blanking. Call once, after lv_init() and gui_init().
 void power_init(const power_config_t *cfg, lv_display_t *disp);
 
@@ -263,7 +263,5 @@ void power_bluetooth_off(void);
 // Whether this module has switched a radio off for idleness (it switches it
 // back on itself): a radio off for that reason is not the user's choice.
 bool power_radios_parked(void);
-
-// Snapshot the live configuration (reflects any runtime changes).
 
 #endif // POWER_H

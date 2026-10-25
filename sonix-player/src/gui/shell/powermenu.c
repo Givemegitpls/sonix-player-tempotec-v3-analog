@@ -15,6 +15,7 @@
 #include "src/system/device/clock.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/core/lang.h"
+#include "src/system/core/logging.h"
 #include "src/system/device/power.h"
 #include "src/system/device/system.h"
 #include "src/system/streaming/qobuzcache.h"
@@ -121,6 +122,7 @@ static void do_reboot(void) {
 	dlna_clear_on_exit();
 	power_quiet_audio_for_shutdown(); // no pop as the amplifier goes down
 	power_screen_off(); // same instant-feedback trick as the shutdown
+	logging_flush();	// the player's queue, which sync(2) cannot reach
 	storage_release_for_shutdown();
 	sync();
 

@@ -18,6 +18,7 @@
 #include "src/gui/shell/topbar.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
+#include "src/system/core/utils.h"
 #include "src/system/device/power.h"
 
 lv_obj_t *ebookreader_screen;
@@ -1260,10 +1261,14 @@ static void count_timer_cb(lv_timer_t *timer) {
 	if (!book || turning) {
 		return;
 	}
-	uint32_t started = lv_tick_get();
+	// The raw clock, not lv_tick_get(): this runs inside lv_timer_handler, where
+	// LVGL's tick is cached for the whole pass (main.c), so an
+	// lv_tick_elaps()-based slice would never expire and the walk of a whole
+	// book would happen in one pass -- seconds of a frozen page on a big one.
+	uint32_t started = ui_tick_ms_raw();
 	do {
 		walk_page();
-	} while (!walk_done && lv_tick_elaps(started) < COUNT_SLICE_MS);
+	} while (!walk_done && ui_tick_ms_raw() - started < COUNT_SLICE_MS);
 	lv_obj_clean(count_box);
 	if (!walk_done) {
 		return;

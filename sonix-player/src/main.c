@@ -1234,16 +1234,27 @@ static void panel_size(int *width, int *height, int fb_w, int fb_h) {
 // pass lasts a few milliseconds at most, and every timer that reads it reads
 // the same instant, which is what a scheduler wants anyway: no timer can be
 // "due" later in the pass than at its start.
+//
+// A frozen tick is also a frozen `lv_tick_elaps()`, so a cooperative slice of
+// the form "do work until N ms have gone by" would never end inside a pass. Any
+// code that has to see time pass while the UI thread is in a pass asks
+// ui_tick_ms_raw() instead (system/core/utils.h) -- that one always reads the
+// clock.
 static __thread uint32_t tick_cached;
 static __thread bool tick_pass_active;
+
+// The clock itself, never the cached pass value. Exported for the slices above.
+uint32_t ui_tick_ms_raw(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
+}
 
 static uint32_t custom_tick_get(void) {
 	if (tick_pass_active) {
 		return tick_cached;
 	}
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint32_t)((ts.tv_sec * 1000) + (ts.tv_nsec / 1000000));
+	return ui_tick_ms_raw();
 }
 
 static void post_gui_popup(const char *message, void *user_data) {
@@ -1514,6 +1525,13 @@ static void pace_note(uint64_t glass_us);
 // A pan has been asked for since the last copy: the panel is about to take the
 // frame, and the page it is taking it from is the one the next copy wants.
 static bool pan_outstanding;
+
+// The flip thread is inside the pan itself -- pacing towards it, in the ioctl,
+// or polling the transfer it started. Guarded by flip_lock, and the only thing
+// that lets another thread know the panel is *really* idle: `flip_pending`
+// answers "a frame has been asked for", not "the glass is being written", and
+// it is cleared before the copy and the pan even start.
+static bool pan_in_flight;
 
 // ---------------------------------------------------------------------------
 // the panel's own transfer, read from the LCDC's registers
@@ -2090,6 +2108,9 @@ static void *flip_thread(void *arg) {
 			}
 		}
 		uint64_t pace0 = ft_now_us();
+		pthread_mutex_lock(&flip_lock);
+		pan_in_flight = true; // the panel is about to be written to
+		pthread_mutex_unlock(&flip_lock);
 		pan_pace_wait();
 		uint32_t pace_ms = (uint32_t)((ft_now_us() - pace0) / 1000u);
 		ft.pace_sum += pace_ms;
@@ -2103,6 +2124,10 @@ static void *flip_thread(void *arg) {
 		// leads to is the boundary to measure the next one from, so the phase is
 		// re-taken every frame and cannot drift away.
 		panel_watch_rise();
+		pthread_mutex_lock(&flip_lock);
+		pan_in_flight = false; // the ioctl has returned and the transfer it started is over
+		pthread_cond_broadcast(&flip_cond);
+		pthread_mutex_unlock(&flip_lock);
 
 		// The next pan goes on that grid: pan_cadence_frames panel frames after
 		// the boundary just used, which is the cadence the picture is meant to
@@ -2120,11 +2145,13 @@ static void *flip_thread(void *arg) {
 	return NULL;
 }
 
-// Returns once no flip is under way: the page off screen is then really off
-// screen, and fb_var.yoffset is the page being shown.
+// Returns once no flip is really over: nothing pending, nothing being copied,
+// nothing being panned, and the transfer the last pan started finished. Only
+// then is the page off screen really off screen, and the panel really idle --
+// which is what a caller about to power it down or touch its clocks needs.
 static void fb_flip_wait(void) {
 	pthread_mutex_lock(&flip_lock);
-	while (flip_pending) {
+	while (flip_pending || pan_in_flight) {
 		pthread_cond_wait(&flip_cond, &flip_lock);
 	}
 	pthread_mutex_unlock(&flip_lock);

@@ -50,10 +50,13 @@ static const sysinfo_model_t BOARD_MODEL = {
 	// The box's number carries the check digit the stock player computes, and on
 	// this unit the computed digit matches the box exactly.
 	.serial_check_digit = true,
-	// Charged through /sys/class/axppower and /sys/class/power_supply/usb rather
-	// than the AXP2101 over I2C: there is no /dev/i2c-0 on this board. Until that
-	// path is written the charge limit is off rather than writing nothing and
-	// saying it did.
+	// Charged by the AXP2101 alone, no MP2731. The vendor's own charge path
+	// (/sys/class/axppower, the 80 %/500 mA switches) is what this flag selects
+	// -- axpcharge.c -- and this board does not have it: there is no
+	// /dev/i2c-0. The percentage limit is enforced instead through the AXP2101's
+	// constant charge current, /sys/class/power_supply/usb/
+	// constant_charge_current_max (REG62h), which needs no I2C from here --
+	// see power.c and docs/POWER.md, item 5.
 	.pmic_charger = false,
 	// Two gauges, and the level has to come from the second. "axp_battery" is
 	// the AXP2101's own fuel gauge, left with the vendor driver's battery model

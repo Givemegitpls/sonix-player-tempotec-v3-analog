@@ -67,6 +67,12 @@ static FILE *active_stream;
 static FILE *usb_stream;
 static bool usb_was_on_sd;
 
+// What the path named when the file was opened. A log rotated out from under
+// the player -- renamed away by a diagnostic script, or replaced by a new file
+// -- leaves the open descriptor on an inode nobody can see any more, and every
+// line printed afterwards goes there (see sync_card(), which notices).
+static file_identity_t log_identity;
+
 // Held by everything that moves the log to another file, and by
 // logging_sync(): a sync still running on the card's file would keep the card
 // busy through the unmount that follows a release. Recursive because
@@ -77,16 +83,24 @@ static pthread_mutex_t log_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 static off_t synced_size = -1;
 
 const char *logging_path(void) {
+	// Under the lock: logging_attach_sd() and logging_resume_after_usb() rewrite
+	// sd_log_path under it, and this is read from the settings page while a card
+	// can be coming back. The string itself may be rewritten the moment this
+	// returns -- a caller that keeps it has to copy it.
+	pthread_mutex_lock(&log_lock);
+	const char *answer;
 	if (on_sd && sd_log_path[0]) {
-		return sd_log_path;
+		answer = sd_log_path;
+	} else if (config_get_bool("system", "log_to_sd", false)) {
+		// The setting is on but the file is not open: the card is out, or it came
+		// back read-only. Reporting that is not the same as reporting "disabled",
+		// which made a card change look like the option had turned itself off.
+		answer = tr("log_card_missing");
+	} else {
+		answer = tr("log_disabled");
 	}
-	// The setting is on but the file is not open: the card is out, or it came
-	// back read-only. Reporting that is not the same as reporting "disabled",
-	// which made a card change look like the option had turned itself off.
-	if (config_get_bool("system", "log_to_sd", false)) {
-		return tr("log_card_missing");
-	}
-	return tr("log_disabled");
+	pthread_mutex_unlock(&log_lock);
+	return answer;
 }
 
 // The switch shows the setting, not whether the file happens to be open right
@@ -97,23 +111,29 @@ bool logging_to_sd(void) { return config_get_bool("system", "log_to_sd", false);
 
 // A place to hold output that cannot go where it belongs yet: a real file on
 // tmpfs, unlinked at once so it has a name for nobody. NULL when tmpfs will
-// not take it, and the caller then falls back to /dev/null.
+// not take it, and the caller then falls back to /dev/null. `errno` of a failed
+// open is kept for the log line the attach prints later -- this is the one
+// failure that shows up as "the startup lines are simply not in the log".
+static int early_err;
 static FILE *open_held(const char *path) {
 	FILE *file = fopen(path, "w+e");
 	if (!file) {
+		early_err = errno;
 		return NULL;
 	}
 	unlink(path);
 	return file;
 }
 
-// Copies what a held stream collected into `destination` and closes it. The
-// copy goes through a small stack buffer rather than one big read: the whole
-// point of moving this out of a static array was to stop reserving 32 kB for
-// a startup that prints two.
-static void drain_held(FILE *held, FILE *destination) {
+// Copies what a held stream collected into `destination` and closes it, and
+// says how much that was: the count is the only way to tell afterwards whether
+// a log that starts at "log: writing to" lost its startup lines or never had
+// them. The copy goes through a small stack buffer rather than one big read:
+// the whole point of moving this out of a static array was to stop reserving
+// 32 kB for a startup that prints two.
+static long drain_held(FILE *held, FILE *destination) {
 	if (!held) {
-		return;
+		return 0;
 	}
 	// A line still in stdout's buffer is headed for the held file, through
 	// the descriptors that point at it: it goes in now or it is lost.
@@ -121,7 +141,7 @@ static void drain_held(FILE *held, FILE *destination) {
 	fflush(held);
 	long size = ftell(held);
 	rewind(held);
-
+	long copied = 0;
 	if (destination && size > 0) {
 		if (size > HELD_MAX) {
 			size = HELD_MAX;
@@ -136,10 +156,12 @@ static void drain_held(FILE *held, FILE *destination) {
 			}
 			fwrite(chunk, 1, got, destination);
 			left -= (long)got;
+			copied += (long)got;
 		}
 		fflush(destination);
 	}
 	fclose(held);
+	return copied;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +238,17 @@ static size_t queue_len;
 static bool queue_writing; // the writer holds bytes it has taken out
 static bool queue_running; // the writer thread exists (never in a forked child)
 static unsigned long queue_dropped;
+// A caller of logging_sync() wants the file on the card written through *now*:
+// the dump it has just printed may be the last thing before the kernel dies.
+// Wanted and in-progress are separate flags, because the writer clears the
+// request under the lock and only finishes the sync outside it.
+static bool queue_sync_wanted;
+static bool queue_syncing;
+// Something has been handed to the queue since the writer last synced. Kept so
+// the once-a-second logging_sync() costs nothing while nothing is being printed
+// -- the watchdog calls it from a thread that must not spend a second on a card
+// that has stopped answering.
+static bool log_dirty;
 
 static void ring_put(const char *data, size_t size) {
 	size_t tail = (queue_head + queue_len) % QUEUE_BYTES;
@@ -275,6 +308,7 @@ static void emit(int fd, const char *data, size_t size) {
 		data += part;
 		size -= part;
 	}
+	log_dirty = true;
 	pthread_cond_signal(&queue_filled);
 	pthread_mutex_unlock(&queue_lock);
 }
@@ -286,6 +320,7 @@ static long queue_now_ms(void) {
 }
 
 static void sync_card(void);
+static void log_reopen_if_replaced(void);
 
 // Takes out the records at the front that go to one descriptor, up to
 // QUEUE_WRITE_MAX bytes. Caller holds queue_lock and has checked queue_len.
@@ -312,6 +347,11 @@ static size_t queue_take(char *out, int *fd_out) {
 static void *queue_writer(void *arg) {
 	(void)arg;
 	prctl(PR_SET_NAME, "logwriter", 0, 0, 0);
+	// Below the interface, above SCHED_IDLE: this thread has to keep up with
+	// what is printed (the queue drops lines when it does not), and it blocks on
+	// the card for as long as the card takes. Being starved by a busy UI is
+	// fine; being starved the way an idle-class thread is, is not.
+	thread_be_low_priority("logwriter");
 	static char out[QUEUE_WRITE_MAX];
 	bool unsynced = false;
 	long synced_at = queue_now_ms();
@@ -321,6 +361,9 @@ static void *queue_writer(void *arg) {
 		while (queue_len == 0) {
 			queue_writing = false;
 			pthread_cond_broadcast(&queue_emptied);
+			if (queue_sync_wanted) {
+				break; // a caller of logging_sync(); serviced below, not waited on
+			}
 			if (!unsynced) {
 				pthread_cond_wait(&queue_filled, &queue_lock);
 				continue;
@@ -344,16 +387,42 @@ static void *queue_writer(void *arg) {
 			size = queue_take(out, &fd);
 			queue_writing = true;
 		}
+		bool sync_now = queue_sync_wanted;
+		if (sync_now) {
+			queue_sync_wanted = false;
+			queue_syncing = true;
+		}
 		pthread_mutex_unlock(&queue_lock);
 
 		if (size > 0) {
 			write_all(fd, out, size);
 			unsynced = true;
 		}
+		if (sync_now) {
+			// Whatever the caller printed has been written above, in this same
+			// iteration, so the sync that makes it survive a reset is the only
+			// thing left.
+			sync_card();
+			synced_at = queue_now_ms();
+			unsynced = false;
+			pthread_mutex_lock(&queue_lock);
+			queue_syncing = false;
+			if (queue_len == 0) {
+				log_dirty = false;
+			}
+			pthread_cond_broadcast(&queue_emptied);
+			pthread_mutex_unlock(&queue_lock);
+			continue;
+		}
 		if (unsynced && queue_now_ms() - synced_at >= QUEUE_SYNC_MS) {
 			sync_card();
 			synced_at = queue_now_ms();
 			unsynced = false;
+			pthread_mutex_lock(&queue_lock);
+			if (queue_len == 0) {
+				log_dirty = false;
+			}
+			pthread_mutex_unlock(&queue_lock);
 		}
 	}
 	return NULL;
@@ -411,6 +480,12 @@ static void queue_start(void) {
 	pthread_attr_setdetachstate(&tattr, PTHREAD_CREATE_DETACHED);
 	if (pthread_create(&thread, &tattr, queue_writer, NULL) == 0) {
 		queue_running = true;
+	} else {
+		// The failure mode is worse than "logging is slow": with no writer every
+		// print goes straight to the card's file on the printing thread, which
+		// is what this whole section exists to keep off it -- the playback
+		// thread included. Nobody would guess that from the symptom.
+		fprintf(stderr, "log: no writer thread (%s); every line now goes to the card directly\n", strerror(errno));
 	}
 	pthread_attr_destroy(&tattr);
 }
@@ -419,6 +494,32 @@ void logging_flush(void) {
 	fflush(stdout);
 	fflush(stderr);
 	queue_drain();
+}
+
+// Asks the writer to write the file through to the card, and waits for it, for
+// QUEUE_DRAIN_MS at most: the card may be the thing that is stuck.
+//
+// The request exists because the queue moved the write off the calling thread:
+// without it "the dump is on the card" would be true only up to the writer's
+// own one-second cadence, and the caller that needs it (the watchdog, just
+// before a kernel that has already failed takes the machine down) cannot wait
+// that long.
+static void queue_sync_now(void) {
+	struct timespec due;
+	clock_gettime(CLOCK_MONOTONIC, &due);
+	long ns = due.tv_nsec + (QUEUE_DRAIN_MS % 1000) * 1000000L;
+	due.tv_sec += QUEUE_DRAIN_MS / 1000 + ns / 1000000000L;
+	due.tv_nsec = ns % 1000000000L;
+
+	pthread_mutex_lock(&queue_lock);
+	queue_sync_wanted = true;
+	pthread_cond_signal(&queue_filled);
+	while (queue_sync_wanted || queue_syncing) {
+		if (pthread_cond_timedwait(&queue_emptied, &queue_lock, &due) == ETIMEDOUT) {
+			break;
+		}
+	}
+	pthread_mutex_unlock(&queue_lock);
 }
 
 // ---------------------------------------------------------------------------
@@ -541,8 +642,10 @@ static void write_stamp(int fd) {
 
 	char text[48];
 	int day = local.tm_year * 366 + local.tm_yday;
-	if (day != stamp_day) {
-		stamp_day = day;
+	// Atomic exchange, not a read and a store: stdout and stderr have their own
+	// locks, so two threads can be here at once (one printing to each) and both
+	// would otherwise decide the date line is due.
+	if (__atomic_exchange_n(&stamp_day, day, __ATOMIC_RELAXED) != day) {
 		size_t len = strftime(text, sizeof(text), "---- %Y-%m-%d ----\n", &local);
 		emit(fd, text, len);
 	}
@@ -553,6 +656,19 @@ static void write_stamp(int fd) {
 		emit(fd, text, (size_t)len);
 	}
 }
+
+// One line at a time, across both streams.
+//
+// The stamp and the text of a line are two records in the queue, and each
+// stream has only its own lock: a thread printing to stderr between another's
+// stamp and text puts its own stamp into the middle of that line -- seen in the
+// device's log as "20:40:13.117 20:40:13.118 library: ...". Taking this for the
+// whole line keeps a line's records adjacent. Cheap: emit() never blocks on
+// anything but the queue's own lock.
+//
+// Order against the others: log_lock (the file being moved) -> this -> the
+// queue. Nothing takes them the other way round.
+static pthread_mutex_t line_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Called by stdio with whatever it has buffered: usually one line, but a
 // single printf can carry several, and a full buffer can end mid-line. The
@@ -565,6 +681,7 @@ static ssize_t stamp_write(void *cookie, const char *data, size_t size) {
 		const char *start = data + done;
 		const char *newline = memchr(start, '\n', size - done);
 		size_t len = newline ? (size_t)(newline - start) + 1 : size - done;
+		pthread_mutex_lock(&line_lock);
 		if (stream->line_start && *start != '\n') {
 			write_stamp(stream->fd);
 			// Only lines that arrive whole, which with line buffering is all
@@ -575,6 +692,7 @@ static ssize_t stamp_write(void *cookie, const char *data, size_t size) {
 		}
 		emit(stream->fd, start, len);
 		stream->line_start = newline != NULL;
+		pthread_mutex_unlock(&line_lock);
 		done += len;
 	}
 	// Always all of it. A write that failed (the card pulled) must not leave
@@ -610,21 +728,18 @@ static void stamp_install(void) {
 	}
 }
 
-// Points descriptors 1 and 2 -- and so stdout and stderr, which write to them
-// -- at `stream`. Line buffered, so a crash still leaves everything up to the
-// last newline behind. Closes the stream they fed before.
+// Points descriptors 1 and 2 at `stream` and closes what they fed before, with
+// nothing flushed first. The caller decides whether the lines still buffered
+// belong to the old destination (normal move: yes) or may go to the new one (a
+// log that was rotated away: the old one has no name any more).
 //
 // False when the descriptors could not be moved, and then nothing is closed:
 // closing the previous stream after a failed dup2 would leave stdout writing
 // into a descriptor nobody owns any more.
-static bool redirect_to(FILE *stream) {
+static bool redirect_streams(FILE *stream) {
 	if (!stream) {
 		return false;
 	}
-
-	// Whatever stdout and stderr still hold belongs to the old destination.
-	logging_flush();
-
 	setvbuf(stream, NULL, _IOLBF, 0);
 	int fd = fileno(stream);
 	// The numbers and not fileno(stdout): the stamping streams have no
@@ -641,6 +756,16 @@ static bool redirect_to(FILE *stream) {
 	return true;
 }
 
+// The same, after letting go of what stdout and stderr still hold: those lines
+// were printed when the old destination was the destination.
+static bool redirect_to(FILE *stream) {
+	if (!stream) {
+		return false;
+	}
+	logging_flush();
+	return redirect_streams(stream);
+}
+
 void logging_init(void) {
 	stamp_install();
 	queue_start();
@@ -652,6 +777,7 @@ void logging_init(void) {
 		if (file && redirect_to(file)) {
 			on_sd = true;
 			snprintf(sd_log_path, sizeof(sd_log_path), "%s", override);
+			file_identity_read(sd_log_path, &log_identity);
 		} else if (file) {
 			fclose(file);
 		}
@@ -669,17 +795,18 @@ void logging_init(void) {
 }
 
 // Stops holding startup output and lets it go, either into the card's log or
-// nowhere at all.
-static void flush_early(FILE *destination) {
+// nowhere at all. Returns how many bytes went to the destination.
+static long flush_early(FILE *destination) {
 	if (!early_stream) {
-		return;
+		return 0;
 	}
 
 	if (active_stream == early_stream) {
 		active_stream = NULL; // drain_held closes it, not redirect_to
 	}
-	drain_held(early_stream, destination);
+	long copied = drain_held(early_stream, destination);
 	early_stream = NULL;
+	return copied;
 }
 
 // Opens the card's log and makes it the destination. Returns false if the card
@@ -694,15 +821,27 @@ static bool open_sd_log(void) {
 		return false;
 	}
 
-	flush_early(file);
+	long carried = flush_early(file);
 	if (!redirect_to(file)) { // closes whatever was feeding stdout, usb_stream included
 		fclose(file);
 		return false;
 	}
 	usb_stream = NULL;
 	on_sd = true;
+	file_identity_read(sd_log_path, &log_identity);
 
 	printf("log: writing to %s\n", sd_log_path);
+	// What the reader of a log that begins with the line above wants to know: is
+	// the start of this run above it, or was there nothing to carry in? Both
+	// have been true on the device.
+	if (carried > 0) {
+		printf("log: %ld bytes of startup output carried in\n", carried);
+	} else if (early_err) {
+		printf("log: no startup output was held: %s: %s\n", EARLY_HELD_PATH, strerror(early_err));
+		early_err = 0;
+	} else {
+		printf("log: no startup output to carry in\n");
+	}
 	return true;
 }
 
@@ -727,15 +866,42 @@ static void logging_attach_sd_locked(const char *sd_root) {
 		return; // an explicit path wins over everything
 	}
 
-	if (sd_root && sd_root[0]) {
-		char folder[512];
-		if (snprintf(folder, sizeof(folder), "%s/%s", sd_root, LOG_SUBDIR) < (int)sizeof(folder)) {
-			mkdir(folder, 0755);
-			if (snprintf(sd_log_path, sizeof(sd_log_path), "%s/%s", folder, LOG_FILE_NAME) >=
-				(int)sizeof(sd_log_path)) {
-				sd_log_path[0] = '\0';
+	if (!sd_root || !sd_root[0]) {
+		// The card's path is not known yet, and this call is the first one the
+		// player makes (main.c, before the card supervisor has mounted
+		// anything). Draining here would throw the startup lines away -- what
+		// has been printed is held on tmpfs for exactly this moment, and
+		// open_null_log() below would drain it into nothing. Keep holding; the
+		// call that comes with a real root puts it in the file.
+		//
+		// The switch being off is a decision already taken, though, and there is
+		// nothing to wait for: that one goes to /dev/null as before.
+		if (config_get_bool("system", "log_to_sd", false)) {
+			// Holding is bounded, because only HELD_MAX bytes of it can ever be
+			// used: a player with no card at all would otherwise grow the tmpfs
+			// file for the rest of the session on a device with 56 MB of RAM.
+			struct stat st;
+			if (early_stream && fstat(fileno(early_stream), &st) == 0 && st.st_size >= HELD_MAX) {
+				open_null_log();
 			}
+			return;
 		}
+		open_null_log();
+		return;
+	}
+
+	char folder[512];
+	if (snprintf(folder, sizeof(folder), "%s/%s", sd_root, LOG_SUBDIR) < (int)sizeof(folder)) {
+		mkdir(folder, 0755);
+		if (snprintf(sd_log_path, sizeof(sd_log_path), "%s/%s", folder, LOG_FILE_NAME) >=
+			(int)sizeof(sd_log_path)) {
+			// Silently empty was a log that went to /dev/null with the switch
+			// apparently on; say why instead.
+			fprintf(stderr, "log: the card's path is too long to hold %s; card logging stays off\n", LOG_FILE_NAME);
+			sd_log_path[0] = '\0';
+		}
+	} else {
+		fprintf(stderr, "log: the card's path is too long for %s; card logging stays off\n", LOG_SUBDIR);
 	}
 
 	// If the card has just come back, append the lines buffered while it was
@@ -817,6 +983,7 @@ static void logging_resume_after_usb_locked(void) {
 		}
 		on_sd = true;
 		usb_was_on_sd = false; // only now: the flag is spent when it has paid off
+		file_identity_read(sd_log_path, &log_identity);
 		printf("log: card log resumed\n");
 	} else {
 		// The card did not come back writable. usb_was_on_sd stays set so a
@@ -870,13 +1037,68 @@ void logging_set_to_sd(bool enabled) {
 void logging_sync(void) {
 	if (!queue_running) {
 		sync_card();
+		return;
 	}
+	// Nothing printed since the last write-through: the writer will sync on its
+	// own cadence anyway, and the caller -- the watchdog, on the second -- must
+	// not spend its time on a card that has stopped answering for nothing.
+	pthread_mutex_lock(&queue_lock);
+	bool work = log_dirty || queue_len > 0;
+	pthread_mutex_unlock(&queue_lock);
+	if (!work) {
+		return;
+	}
+	fflush(stdout);
+	fflush(stderr);
+	// The request covers both halves: the writer takes whatever is queued, writes
+	// it, and syncs before it says it is done. Bounded, so a card that has
+	// stopped answering costs the caller QUEUE_DRAIN_MS and no more.
+	queue_sync_now();
+}
+
+// The card's log file was renamed away or replaced under us: the descriptor
+// points at an inode with no name, and every line printed from now on goes
+// there. Seen for real -- a diagnostic script rotating the log while the player
+// was up -- and the player cannot be expected to be stopped for a rotation.
+//
+// Called from sync_card(), which is the writer's own once-a-second moment and
+// already holds log_lock. Not free: one stat of the path, and a reopen only
+// when the identity really changed.
+static void log_reopen_if_replaced(void) {
+	if (!on_sd || usb_stream || !sd_log_path[0]) {
+		return;
+	}
+	if (!file_identity_changed(sd_log_path, &log_identity)) {
+		return;
+	}
+
+	FILE *file = fopen(sd_log_path, "ae");
+	if (!file) {
+		return; // the card is out, or the folder went with the old file: next second
+	}
+	// redirect_streams() and not redirect_to(): the flush would wait for the
+	// queue to empty, and the caller *is* the queue's writer -- a wait that can
+	// only time out. The lines still buffered go to the new file, which is where
+	// they are read from anyway.
+	if (!redirect_streams(file)) {
+		fclose(file);
+		return;
+	}
+	usb_stream = NULL;
+	on_sd = true;
+	file_identity_read(sd_log_path, &log_identity);
+	// The new file gets its date line: the old one's is in the old file.
+	__atomic_store_n(&stamp_day, -1, __ATOMIC_RELAXED);
+	fprintf(stderr, "log: %s was replaced under the player; writing to the new one\n", sd_log_path);
 }
 
 static void sync_card(void) {
 	if (pthread_mutex_trylock(&log_lock) != 0) {
 		return; // the log is moving to another file; the next call catches up
 	}
+	// Before the sync: if the file was rotated out from under the player, the
+	// sync below (and every later write) would go to an inode nobody can read.
+	log_reopen_if_replaced();
 	if (on_sd && active_stream) {
 		int fd = fileno(active_stream);
 		struct stat st;

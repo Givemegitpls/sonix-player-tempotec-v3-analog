@@ -12,6 +12,7 @@
 #include "src/system/audio/audio.h"
 #include "src/system/device/clock.h"
 #include "src/system/core/config.h"
+#include "src/system/core/logging.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/tidalcache.h"
@@ -162,6 +163,9 @@ void firmware_update_start(void) {
 		}
 	}
 
+	// The player's own queue too: on this path the line that says what was
+	// asked for is the one someone reads after the update goes wrong.
+	logging_flush();
 	sync();
 	sleep(1);
 

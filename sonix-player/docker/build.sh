@@ -5,8 +5,12 @@
 # first run (a few minutes, once).
 #
 #   docker/build.sh              make target -j<nproc>
-#   docker/build.sh host         the SDL simulator, into build_host/
+#   docker/build.sh clean        wipe build_*, keep the toolchain and libraries
 #   docker/build.sh target -j2   anything else `make` takes, passed through
+#
+# `host` is not here: the SDL simulator needs headers this image does not carry
+# (SDL2, FreeType, opusfile, wavpack, ALSA). Build it on the machine, `make host`
+# in the tree -- see docs/BUILD.md.
 #
 # Two things make this the same build the host would do:
 #

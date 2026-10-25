@@ -69,15 +69,18 @@ void logging_resume_after_usb(void);
 // normal case. Call once, after the log is on the card.
 void logging_report_previous_run(void);
 
-// Writes the card's log through to the card if it grew since the last call.
-// Without it the last lines before a kernel crash or a hardware reset are
-// still in the page cache and are lost with it. Never blocks on the log being
-// moved; call about once a second. Once the log's own writer thread runs it
-// syncs by itself and this does nothing.
+// Writes the card's log through to the card: what the player has queued is
+// written, and the file is synced, so the lines just printed survive a reset.
+// Bounded (a second and a half): a card that has stopped answering costs the
+// caller that and no more, and nothing at all when nothing has been printed
+// since the last write-through. Call about once a second from the watchdog, and
+// immediately before a dump that has to outlive a kernel death.
 void logging_sync(void);
 
 // Waits, for a second and a half at most, until every line printed so far has
-// been handed to the log's file. Call before powering off or rebooting.
+// been handed to the log's file -- the player's own queue included. Call before
+// powering off, rebooting, or writing "mem" to /sys/power/state: the queue lives
+// in this process, so sync(2) alone cannot put it on the card.
 void logging_flush(void);
 
 // Points stdout and stderr at a pipe the player copies into the log, in place
@@ -85,6 +88,11 @@ void logging_flush(void);
 // may outlive the next move of the log (a daemon): a descriptor of its own on
 // the card's file keeps the card from being unmounted. Without logging_init()
 // it changes nothing.
+//
+// Nothing may print between fork() and this call (or the exec that follows it):
+// the child inherits both stdio streams with whatever locks another thread held
+// at the moment of the fork, and glibc does not reset them, so a printf there
+// can wait for ever for a thread that does not exist in the child.
 void logging_child_stdio(void);
 
 // Copies the kernel's warnings and errors printed since the last call into the

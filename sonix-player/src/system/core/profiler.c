@@ -1,6 +1,7 @@
 #include "profiler.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <poll.h>
 #include <stdbool.h>
 #include <pthread.h>
@@ -17,11 +18,13 @@
 
 #define PROFILE_MAX_SAMPLES 65536
 
-// How often the trigger is looked for when inotify cannot be used. The event
-// path wakes on the file being created, so this is a fallback only.
+// How often the trigger is looked for when inotify cannot be used -- which is
+// this kernel: CONFIG_INOTIFY_USER is off in it (see the thread below). One
+// stat of a name, not an open of the card.
 #define PROFILER_POLL_S 5
-// A safety net on the event path: a missed event (the card remounted, the
-// watch lost) costs one look, not a profiler that never runs.
+// A safety net on the event path: a missed event costs one look, not a
+// profiler that never runs. A watch that is *gone* is caught by the read error
+// instead, and drops the thread to the polling path above.
 #define PROFILER_WATCH_TIMEOUT_S 300
 
 typedef struct {
@@ -127,37 +130,77 @@ static void *profiler_thread(void *arg) {
 	// with the screen off and the device supposed to be idle, for a file that
 	// only ever appears when someone is profiling this very build. inotify on
 	// the directory the trigger lives in costs nothing until it is written.
+	//
+	// **Not on this kernel, though.** Measured on the V3 Analog (2026-10-25):
+	// inotify_init() and inotify_init1() both answer ENOSYS (the vendor kernel
+	// is built without CONFIG_INOTIFY_USER -- /proc/sys/fs/inotify does not
+	// exist), so what actually runs here is the fallback below. It is a stat of
+	// one name every five seconds, not an open: a missing name is usually a
+	// dentry lookup that vfat answers from cache, where an open reads the
+	// directory entry and then the file. The event path stays for the builds
+	// that do have inotify, and it has to be non-blocking for a reason of its
+	// own: the descriptor is drained in a loop, and a blocking read returns the
+	// queued events and then waits for the next one, so the loop would never
+	// come back to look at the trigger it was woken for. The drain ends on
+	// EAGAIN, which is the "nothing more queued" answer.
+	int ifd = -1;
 	char dir[600];
 	snprintf(dir, sizeof(dir), "%s", trigger_path);
 	char *slash = strrchr(dir, '/');
 	if (slash) {
 		*slash = '\0';
-	}
-	int watch = -1;
-	int ifd = inotify_init1(IN_CLOEXEC);
-	if (ifd >= 0 && slash) {
-		watch = inotify_add_watch(ifd, dir, IN_CREATE | IN_MOVED_TO | IN_CLOSE_WRITE);
-		if (watch < 0) {
+		ifd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+		if (ifd >= 0 && inotify_add_watch(ifd, dir, IN_CREATE | IN_MOVED_TO | IN_CLOSE_WRITE) < 0) {
 			close(ifd);
 			ifd = -1;
 		}
 	}
 
+	// No sleep before the first look: the trigger may already be there -- the
+	// rename above is one way it gets there -- and a watch only reports changes
+	// that happen after it is armed. It goes first either way, so a device left
+	// with a trigger on the card starts profiling at boot rather than up to a
+	// watch timeout later.
+	bool look = true;
 	for (;;) {
-		if (ifd >= 0) {
-			// Blocking: no wake-up at all until the directory changes, with a
-			// long timeout that only re-confirms the watch is alive.
-			struct pollfd p = {.fd = ifd, .events = POLLIN};
-			if (poll(&p, 1, PROFILER_WATCH_TIMEOUT_S * 1000) == 0) {
-				continue; // nothing happened; the file is still not there
+		if (!look) {
+			if (ifd >= 0) {
+				// No wake-up at all until the directory changes, with a long
+				// timeout that only re-confirms the watch is alive.
+				struct pollfd p = {.fd = ifd, .events = POLLIN};
+				if (poll(&p, 1, PROFILER_WATCH_TIMEOUT_S * 1000) == 0) {
+					continue; // nothing happened; the file is still not there
+				}
+				char events[1024];
+				for (;;) {
+					ssize_t got = read(ifd, events, sizeof(events));
+					if (got > 0) {
+						continue; // drained: one look below covers them all
+					}
+					if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+						break;
+					}
+					if (got < 0 && errno == EINTR) {
+						continue;
+					}
+					// The watch is gone (the card was remounted, or the
+					// descriptor broke): fall back to asking the card, which is
+					// cheap at this interval and cannot fail this way.
+					close(ifd);
+					ifd = -1;
+					break;
+				}
+			} else {
+				// The path that runs on this device (no inotify): one stat of
+				// the trigger's name, five seconds apart, and no open until it
+				// is there.
+				sleep(PROFILER_POLL_S);
+				if (access(trigger_path, F_OK) != 0) {
+					continue;
+				}
 			}
-			char events[1024];
-			while (read(ifd, events, sizeof(events)) > 0) {
-				// drained: one look below covers them all
-			}
-		} else {
-			sleep(PROFILER_POLL_S);
 		}
+		look = false;
 		FILE *t = fopen(trigger_path, "r");
 		if (!t) {
 			continue;

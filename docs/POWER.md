@@ -121,9 +121,9 @@ the code; the measurement column is what `powsample` recorded.
 | `lv_tick_get()` in the UI loop | ~84 `clock_gettime` per pass, 105 passes/s | 1 per pass | a real syscall here: **0.56 µs** measured on the device, not a vDSO read. Cached per pass, thread-local |
 | battery walk (`power_supply/*`) | 250 ms | 1000 ms | each pass is a sysfs walk; the icon shows whole percent |
 | `sonixlink` worker, feature off | 300 ms | waits on a condvar, 0 wake-ups | `sonixlink_set_enabled()` signals it |
-| `profiler`, trigger absent | `fopen()` on the card every 2 s | blocking `inotify` watch | falls back to 5 s polling where inotify is unavailable |
+| `profiler`, trigger absent | `fopen()` on the card every 2 s | one `stat` every 5 s; a blocking `inotify` watch where the kernel has one | this kernel has none: `CONFIG_INOTIFY_USER` is off |
 | RTC battery check, >15 % | 4 h | 12 h | item 6 |
-| suspend on a plain charger | never | allowed | item 5 |
+| suspend on a plain charger | never | never | deliberate: the limit is enforced from the tick, and nothing ticks in `mem` -- item 5 |
 
 Left as they were, deliberately:
 

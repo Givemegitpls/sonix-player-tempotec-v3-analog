@@ -47,14 +47,16 @@ bool chargescreen_mark(int mark) {
 
 #define FB_DEV "/dev/fb0"
 #define BLANK_NODE "/sys/class/graphics/fb0/blank"
-// The backlight class node is the kernel driver's name, and it is not the same
-// on every model: the HiBy boards' driver registers "backlight_pwm0", this
+// The backlight class directory is the kernel driver's name, and it is not the
+// same on every model: the HiBy boards' driver registers "backlight_pwm0", this
 // board's "pwm-backlight.0". The model's backlight_dir is the one place that
-// knows (sysinfo.h); a wrong name here is silent -- every write goes nowhere
-// and the panel stays at whatever level the last process left it.
-#define BACKLIGHT_DIR_DEFAULT "backlight_pwm0"
-static char backlight_node[256] = "/sys/class/backlight/" BACKLIGHT_DIR_DEFAULT "/brightness";
-static char backlight_max_node[256] = "/sys/class/backlight/" BACKLIGHT_DIR_DEFAULT "/max_brightness";
+// knows (sysinfo.h), and it is the **whole** path -- "/sys/class/backlight/..."
+// -- because main.c composes its own nodes from it the same way; appending the
+// directory to the class path again here is what makes every write go nowhere
+// and leaves the panel at whatever level the last process left it.
+#define BACKLIGHT_DIR_DEFAULT "/sys/class/backlight/backlight_pwm0"
+static char backlight_node[256] = BACKLIGHT_DIR_DEFAULT "/brightness";
+static char backlight_max_node[256] = BACKLIGHT_DIR_DEFAULT "/max_brightness";
 #define SUPPLY_DIR "/sys/class/power_supply"
 
 // The R3 Pro II's RGB LED takes a pattern; the R1 has a red and a blue LED of
@@ -563,12 +565,13 @@ static void panel_power(bool on) {
 }
 
 // The backlight directory, from the model: it is the kernel driver's name and
-// differs per board (see backlight_node above).
+// differs per board (see backlight_node above). The model carries the full
+// path, as main.c expects it -- not the bare driver name.
 static void model_paths(void) {
 	const sysinfo_model_t *m = sysinfo_model();
 	const char *dir = (m && m->backlight_dir && m->backlight_dir[0]) ? m->backlight_dir : BACKLIGHT_DIR_DEFAULT;
-	snprintf(backlight_node, sizeof(backlight_node), "/sys/class/backlight/%s/brightness", dir);
-	snprintf(backlight_max_node, sizeof(backlight_max_node), "/sys/class/backlight/%s/max_brightness", dir);
+	snprintf(backlight_node, sizeof(backlight_node), "%s/brightness", dir);
+	snprintf(backlight_max_node, sizeof(backlight_max_node), "%s/max_brightness", dir);
 }
 
 // The panel back from a blank, dark until backlight_on().
@@ -629,6 +632,12 @@ static void show_boot_logo(int percent) {
 }
 
 static void dark(void) {
+	// The backlight before the panel, and not left to the panel's own sleep:
+	// the vendor SET_SLEEP powers the glass down and leaves the backlight class
+	// alone (docs/PANEL-POWER.md), which on this board is a lit LED over a dead
+	// panel for as long as the charge screen sits there waiting for a key or
+	// the cable. `power_screen_off()` writes the same 0 for the same reason.
+	write_str(backlight_node, "0");
 	panel_power(false);
 	screen_on = false;
 }

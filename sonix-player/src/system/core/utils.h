@@ -96,6 +96,15 @@ void thread_signal_stack(void);
 // grow, `high` is where it started.
 bool thread_stack_bounds(uintptr_t *low, uintptr_t *high);
 
+// The wall clock behind lv_tick_get(), read for real.
+//
+// LVGL's tick is cached for the whole lv_timer_handler() pass (main.c), which
+// makes it a scheduler clock and not a stopwatch: inside a pass `lv_tick_elaps()`
+// is always zero. Anything that has to notice time passing while the interface
+// thread is in a pass -- a cooperative slice, a deadline check -- asks this
+// instead. One clock_gettime, nothing else.
+uint32_t ui_tick_ms_raw(void);
+
 // A pthread_cond_timedwait deadline `ms` from now, on CLOCK_REALTIME.
 //
 // Worth a helper because getting it wrong fails silently. This is a 32-bit

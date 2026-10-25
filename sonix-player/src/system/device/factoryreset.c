@@ -221,6 +221,9 @@ void factoryreset_run(void) {
 		printf("factoryreset: cannot write the note for the reboot\n");
 	}
 
+	// No logging_flush() here, deliberately: logging_suspend_for_usb() above has
+	// already let the card go (the unmount needs it), so from that point the log
+	// goes into the held file on tmpfs and dies with the reboot either way.
 	sync();
 	sleep(1);
 

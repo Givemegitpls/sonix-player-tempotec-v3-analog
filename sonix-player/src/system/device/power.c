@@ -1072,6 +1072,13 @@ void power_shutdown(void) {
 	// Last, after everything above that writes to the card: a library check
 	// running in the background is stopped, the databases closed and the card
 	// unmounted.
+	//
+	// The player's own log goes first, and logging_flush() rather than sync():
+	// the lines printed so far are held in this process (logging.c's queue) and
+	// sync(2) cannot reach them. Without this the last second before the power
+	// goes -- the part that says why -- is lost, and that is the part the log
+	// is read for.
+	logging_flush();
 	storage_release_for_shutdown();
 	sync();
 
@@ -1125,7 +1132,11 @@ static void suspend_to_ram(void) {
 	//    earlier on purpose -- never write `mem` with the SDIO teardown halfway.
 
 	// 4. The card loses power in suspend, so nothing may be left in flight
-	//    towards it.
+	//    towards it. The player's own log goes first: its lines sit in a queue in
+	//    this process (logging.c) that sync(2) cannot reach, and without the
+	//    flush the last line -- the one saying this suspend happened -- is
+	//    written after the resume, with a timestamp from before the sleep.
+	logging_flush();
 	sync();
 
 	// 4-ter. The RTC alarm: if the automatic shutdown deadline falls during the
@@ -1136,7 +1147,7 @@ static void suspend_to_ram(void) {
 	//    it already runs on the other side.
 	uint32_t before_wall = boottime_ms();
 	printf("power: mem: writing '%s'\n", path);
-	fflush(stdout);
+	logging_flush(); // and the report of what is about to happen reaches the card
 	headset_keys_sleep();
 	FILE *f = fopen(path, "w");
 	if (!f) {

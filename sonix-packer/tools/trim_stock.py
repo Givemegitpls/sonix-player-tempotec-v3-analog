@@ -21,6 +21,13 @@ Two things are deliberately *not* removed:
   * anything the check below finds a reference to. A library is removed only if
     no remaining ELF file mentions its soname, so a mistake here fails the build
     instead of shipping an image whose Wi-Fi does not come up.
+
+Two checks stand behind that, and both fail the build:
+
+  * no remaining ELF may name a soname that was just removed (the NEEDED entry),
+  * no symlink under usr/lib or lib may be left pointing at nothing -- the dev
+    links (`libX.so -> libX.so.1.0.0`) go with their library, and an ELF
+    reference cannot see that kind of hole.
 """
 
 from __future__ import annotations
@@ -63,6 +70,42 @@ def remove(rel: str, why: str) -> tuple[int, str]:
     return size, f"    - {rel} ({size / 1048576:.2f} MB): {why}"
 
 
+def dev_symlinks_to(name: str) -> list[Path]:
+    """The unversioned dev symlinks in usr/lib that point at `name`.
+
+    They are what the linker uses, and nothing at run time needs them, so a
+    library that goes takes its `libX.so -> libX.so.1.0.0` with it. Left behind
+    they are a dangling symlink, which is exactly the sort of thing this script
+    is not allowed to ship.
+    """
+    found: list[Path] = []
+    lib_dir = TREE / "usr/lib"
+    if not lib_dir.is_dir():
+        return found
+    for entry in lib_dir.iterdir():
+        if entry.is_symlink() and os.path.basename(os.readlink(entry)) == name:
+            found.append(entry)
+    return found
+
+
+def dangling_symlinks(tree: Path, dirs: tuple[str, ...]) -> list[str]:
+    """Symlinks under these directories whose target is not there.
+
+    The build already dies on a library that something still needs; this is the
+    other half of the same rule, for what an ELF reference cannot see: a dev
+    symlink whose library was removed, or a file that was never a NEEDED entry.
+    """
+    found: list[str] = []
+    for rel in dirs:
+        base = tree / rel
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if path.is_symlink() and not path.exists():
+                found.append(str(path.relative_to(tree)))
+    return found
+
+
 def elf_references(tree: Path, sonames: set[str]) -> list[tuple[str, str]]:
     """Every remaining ELF file that still names one of these sonames."""
     hits: list[tuple[str, str]] = []
@@ -95,7 +138,28 @@ def main() -> int:
         if line:
             freed += size
             lines.append(line)
+            # The soname, not the file name: an ELF's NEEDED entry says
+            # "libFLAC.so.8" whatever the file behind it is called, and that is
+            # what the reference check below looks for.
             removed_names.add(Path(rel).name)
+
+    # A library can be split over several files -- libFLAC.so.8 is a symlink to
+    # libFLAC.so.8.3.0 on most of them -- and DEAD names the soname. The rest of
+    # the family goes with it, or the megabytes it holds are still there.
+    soname_why = {Path(rel).name: why for rel, why in DEAD.items()}
+    lib_dir = TREE / "usr/lib"
+    if lib_dir.is_dir():
+        for entry in sorted(lib_dir.iterdir()):
+            rel_name = str(entry.relative_to(TREE))
+            if rel_name in DEAD:
+                continue
+            for soname, why in soname_why.items():
+                if entry.name.startswith(soname + "."):
+                    size, line = remove(rel_name, f"part of the family: {why}")
+                    if line:
+                        freed += size
+                        lines.append(line)
+                    break
 
     for rel, twin in DUPLICATES.items():
         if not (TREE / twin).is_file():
@@ -108,9 +172,16 @@ def main() -> int:
             # Deliberately not added to removed_names: the soname still resolves,
             # from the copy the loader finds first. Only a file with no twin at
             # all can leave a hole, and those are kept above.
+        # But the dev symlinks pointing at it have to go: the target is gone.
+        for link in dev_symlinks_to(Path(rel).name):
+            link_size, link_line = remove(str(link.relative_to(TREE)), f"dangling link to the duplicate {Path(rel).name}")
+            if link_line:
+                freed += link_size
+                lines.append(link_line)
 
     for line in lines:
         print(line)
+    sys.stdout.flush()  # the checks below write to stderr, which is unbuffered
 
     hits = elf_references(TREE, removed_names)
     if hits:
@@ -118,6 +189,14 @@ def main() -> int:
         for path, name in hits:
             print(f"    {path} -> {name}", file=sys.stderr)
         print("trim_stock: add it back to DEAD's exclusions and re-run", file=sys.stderr)
+        return 1
+
+    dangling = dangling_symlinks(TREE, ("usr/lib", "lib"))
+    if dangling:
+        print("trim_stock: these symlinks point at nothing:", file=sys.stderr)
+        for path in dangling:
+            print(f"    {path}", file=sys.stderr)
+        print("trim_stock: remove them (or the entry that removed their target) and re-run", file=sys.stderr)
         return 1
 
     print(f"    trimmed {freed / 1048576:.2f} MB of stock libraries nothing uses")
