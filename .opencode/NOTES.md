@@ -487,3 +487,33 @@ running without `sync`, the player's log on `/data/sonix_player.log`.
 - The log's stamp is a record of its own in the queue, so a line can start without one when the file
   is replaced under it, and two threads printing at once used to interleave stamps (`line_lock` now
   keeps a line's records adjacent). Cosmetic, but it is why a rotated log may open with a bare line.
+
+## Wake from `mem`: only the power key is a wake source (measured from the stock kernel)
+
+`power.c` does not decide this. The stock kernel's `gpio_keys` table has `wakeup = 1` on the power
+entry only, and `gpio_keys_suspend` calls `irq_set_irq_wake` only for buttons with that field set;
+`gpio_suspend_set` then masks every pin not in `wake_map`, so a play press in `mem` raises no bank
+IRQ at all and the event never arrives after the resume.
+
+The table (decompressed kernel, base `0x80010000`, stride 0x2c, file offset = virt − 0x80010000):
+
+| key | code | gpio | wakeup field |
+|---|---|---|---|
+| play | 164 | 99 = PD(3) | VA `0x8064cbac` |
+| next | 163 | 88 = PC(24) | `0x8064cbd8` |
+| prev | 165 | 60 = PB(28) | `0x8064cc04` |
+| power | 116 | 63 = PB(31) | `0x8064cc30` = 1 |
+| vol+ | 115 | 35 = PB(3) | `0x8064cc5c` |
+| vol− | 114 | 32 = PB(0) | `0x8064cc88` |
+
+Table starts at VA `0x8064cb98`, `gpio_keys_platform_data` at `0x8064cca0` (name
+`ingenic-v3_analog`). Only one copy, one reference. Symbols: decode `kallsyms` at
+`0x5739f0`/`0x588900`/`0x58890c` and pair `names[i]` with `addresses[i-4]` — without the 4-entry
+shift every symbol lands on its neighbour (`jzfb_set_par` reads as `jzfb_open`).
+
+The SoC side is ready: `setup_gpio_irq` wake-enables all four banks, so a patched `wakeup` word for
+a bank-B/C/D button is enough — only the PD bank surviving `mem` with its pull-up is unverified.
+`gzip -9 -n` of the patched image is 2166 bytes smaller than stock, so the packer's size limit
+holds. The player needs no change: with the screen dark a play press only calls
+`power_notify_activity()` and `gui_notify_key(PLAY_PAUSE)`, and `suspend_to_ram()` re-blanks the
+panel after a resume with `!g_screen_on`.
