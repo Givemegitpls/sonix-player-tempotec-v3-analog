@@ -171,6 +171,54 @@ adb shell 'nohup /data/powsample /data/powsample.log 20 >/dev/null 2>&1 &'
 It logs to `/data`, not to the card, so the log is readable over adb as soon as
 the cable is back; a suspend shows up as a jump in `boot - mono`.
 
+## diag_start.sh, diag_probe.sh, diag_capture.sh
+
+The last hour before the SoC stops dead. For the failure in
+[../.opencode/NOTES.md](../.opencode/NOTES.md) ("the player dies outright with the panel dark"):
+the player's own log ends mid-sentence, the kernel keeps no pstore, and a hard reset takes whatever
+was still in the page cache on the **card** -- so the record has to live on `/data` (ubifs on the
+NAND), which survives a reset.
+
+- `diag_probe.sh` samples once a second: `MemFree`/`Cached`/`Slab`/`Dirty`, `allocstall`,
+  `/sys/block/mmcblk0/stat`, load; once a minute every thread of the player with its state and
+  `wchan`, plus the mmc interrupt counters. It tails itself to 4 MB, refuses to start twice, and
+  **never syncs**: a sampler's own `sync` drags every dirty page of the system -- the library
+  database's included -- out to the card on the sampler's rhythm, which is enough to produce the
+  `jzmmc` three-second timeouts it is there to observe.
+- `diag_start.sh` runs once at boot, before the player: it rotates the probe's and the player's logs
+  of the run that just ended into `*.prev.log` (the player opens its log `"we"`, so without this a
+  hard reset costs the previous boot's tail) and starts the probe. It only rotates with the player
+  down -- run by hand while music plays, the move takes the live log out of the namespace and the
+  player keeps writing into a deleted inode.
+- `diag_capture.sh` is for the moment it hangs: per-thread states, the player's threads with their
+  kernel stacks, `meminfo`/`vmstat`, mmc and interrupt counters, `dmesg`, then
+  `echo w >/proc/sysrq-trigger` (sysrq is 1 on this build and `CONFIG_STACKTRACE` works) and a
+  `timeout 10 sync`. Run it **before** the power button, while adb still answers.
+
+Install, on the device (`/data` is the user volume, 25 MB free):
+
+```
+adb push diag_start.sh diag_probe.sh diag_capture.sh /data/
+adb shell 'chmod +x /data/diag_*.sh'
+```
+
+and patch the boot script that starts the player (`/etc/init.d/S92_03_start_music_player`) to give
+the player a log on `/data` and call the rotator first:
+
+```
+export SONIX_LOG=/data/sonix_player.log   # before the player starts
+/data/diag_start.sh                       # rotates the previous run, starts the probe
+```
+
+Two traps, both met while putting this in place:
+
+- **A backup kept next to a boot script still runs.** `rcS` executes `/etc/init.d/S??*`, so
+  `S92_03_start_music_player.stock` matches the glob too: two launchers, two players, one audio
+  device -- the second falls back to `hw:0,0`, writes `database is locked` into the library and draws
+  into the same framebuffer. Keep the stock copy out of that directory (`/data/init_backup/`).
+- With `SONIX_LOG` set, the player's log is the *file* it opens `"we"` at every start: everything
+  the previous boot wrote is gone unless `diag_start.sh` rotated it first.
+
 ## Also here, undocumented
 
 `vsynctest.c` (the panel's frame boundary), `blit_bench.c` (the RGB565-to-BGRA

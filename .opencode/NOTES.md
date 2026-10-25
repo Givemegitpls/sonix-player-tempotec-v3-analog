@@ -371,3 +371,119 @@ reporting `Charging`.
 `printk` timestamps stop during suspend while `/proc/uptime` does not, so the gap between the last
 `dmesg` timestamp and `/proc/uptime` is the accumulated `mem` time -- the cheap way to tell whether
 the device actually slept.
+
+## The player dies outright with the panel dark (open, 2026-10-25)
+
+Symptom, in the owner's words: the panel is off, music plays, the music stops abruptly, the power
+key does nothing, the LED stays lit (yellow); only a long hold of the power button and a fresh
+start bring it back. Twice today: `16:40:32` and `18:44:59`, both while playing with the panel
+dark, the second one after a track change.
+
+What the log shows and what it does not. The player's log ends on an ordinary ten-second audio
+statistics line; there is no `clock: writing ... before shutdown`, no `kernel: the kernel failed
+under the player` (the oops path in `logging.c` would have caught a die() report), no
+`watchdog: UI thread has not run`. So nothing in the player noticed: the whole SoC stops, and
+`kernel/panic` = 3 plus no pstore/ramoops/`last_kmsg` means a reset leaves no trace at all.
+
+The one stall the player did catch, `14:01:38` the same day, names the mechanism worth chasing:
+
+```
+watchdog: UI thread has not run for 5 s ... tid 152 (card supervisor) state=D wchan=sleep_on_buffer
+                                          tid 191 (queue writer)     state=D wchan=sleep_on_page
+watchdog: UI recovered after ~8 s
+jzmmc_v1.2.0: timeout 3000ms op:25 w sz:524288 ... blks:20/1024
+```
+
+Writes to `mmcblk0` do not complete inside the driver's 3 s timeout -- not even 13 KB ones -- so the
+task ends up uninterruptible on the card, and everything that waits on it (the UI included) stops.
+Free memory sits at **0.8-1.0 MB of 57 MB** (`Mlocked` 7.9 MB, `Active(anon)` 17 MB), so almost
+every allocation needs direct reclaim, and reclaim of file pages has to go through that same card.
+That is the working hypothesis: a card that stalls under writeback, at a free-memory level with no
+slack, hangs the kernel somewhere that prints nothing.
+
+The card itself is not healthy: at the `18:45` boot the FAT layer said `Volume was not properly
+unmounted`, then `fat_free_clusters: deleting FAT entry beyond EOF`, then
+`Filesystem has been set read-only` nine seconds in. With the filesystem read-only the player keeps
+writing its log into the page cache: the file reads up to the current second while its mtime and
+size stop at the moment of the remount, and a power cycle takes all of it. **Pull the log before
+touching the power button** -- that is how the `18:44` tail was saved; otherwise it is gone with the
+cache.
+
+Diagnostics now in place (2026-10-25), all on `/data` because the card cannot be trusted with them:
+
+- `/etc/init.d/S92_03_start_music_player` is hand-patched (stock copy next to it as `.stock`):
+  `SONIX_LOG=/data/sonix_player.log` before the player starts, and `/data/diag_start.sh` first.
+- `/data/diag_start.sh` rotates `probe.log` / `sonix_player.log` of the run that just ended into
+  `*.prev.log` (the player opens `SONIX_LOG` with `"we"`, i.e. truncating, so without the rotation a
+  hard reset would cost the previous boot's tail) and starts the probe.
+- `/data/diag_probe.sh` samples once a second: MemFree/Cached/Slab/Dirty, `allocstall`,
+  `/sys/block/mmcblk0/stat`, load, and once a minute every player thread with its state and wchan
+  plus the mmc interrupt counters. It tails itself to 4 MB and refuses to start twice.
+- `/data/diag_capture.sh` is for the moment it hangs: per-thread stacks, meminfo, vmstat, mmc and
+  interrupt counters, dmesg, then `echo w >/proc/sysrq-trigger` (sysrq is 1 on this build,
+  `CONFIG_STACKTRACE` works, so `/proc/<pid>/task/*/stack` is readable). Run it **before** the
+  power button: `adb shell /data/diag_capture.sh`.
+
+Two things not to conclude. `panel_blank_now()`/`suspend_if_idle()` are not the trigger while music
+plays: `power.c` keeps `g_mem_active_ms` fresh on every tick with `playing`, so the idle path never
+runs, and no such suspend is in the log either. And the `i2c-1` `ADDR_NOACK` bursts (AK4493 + sau)
+are the DAC being unpowered at boot and after resume, not a fault.
+
+### Three traps met while putting that in place (same day)
+
+1. **A backup in `/etc/init.d` is a boot script.** `rcS` runs `/etc/init.d/S??*`, so
+   `S92_03_start_music_player.stock` -- the copy made before hand-patching -- matched the glob and ran
+   too. Two `sonix_launch`, two `sonix_player`, one environment: the second instance could not open
+   `hw:1,0` (the first held it), fell back to `hw:0,0`, wrote `database is locked` into the library,
+   and drew into the same framebuffer as the first -- on the glass that reads as the interface
+   coming apart. The stock copy now lives in `/data/init_backup/`. Nothing under `/etc/init.d` may
+   start with `S` unless it is meant to run.
+2. **A sampler must not `sync`.** The first version of the probe synced every ten seconds to make
+   its own lines durable. That dragged every dirty page of the system -- the library database's
+   included -- out to the SD card on the probe's rhythm: the card went to 78% busy
+   (`ms_writing` 287 s over 370 s of uptime, 266 ms per write), `jzmmc` started timing out at 3 s,
+   the player printed `database is locked` and tracks aborted on open. With the sync removed the
+   same counters read 7 ms per write. A few hundred bytes on ubifs is nothing; ubifs commits on its
+   own, and the last seconds before a hang are what `/proc` state is for.
+3. **A pid file survives a reboot and pids get reused.** The probe's "already running" guard kept
+   the number from the previous boot, found it taken after the restart, and stayed off for the whole
+   boot. The guard now checks that `/proc/<pid>/cmdline` is really another probe.
+
+Also: `diag_start.sh` rotates the live log, so it must only move files with the player down --
+run by hand while music plays it takes `sonix_player.log` out of the namespace and the player keeps
+writing into a deleted inode.
+
+State after the fixes: one `sonix_player`, audio on `hw:1,0`, card writes ~7 ms each, the probe
+running without `sync`, the player's log on `/data/sonix_player.log`.
+
+## Three facts that cost an afternoon each
+
+- **The kernel has no inotify.** `inotify_init()` and `inotify_init1()` both answer `ENOSYS` on the
+  device; `/proc/sys/fs/inotify` does not exist (`CONFIG_INOTIFY_USER` is off). Anything that waits
+  for a file to appear has to poll, so make it a `stat`/`access` of one name and never an `open` of
+  the card. Measured 2026-10-25 with a throwaway probe.
+- **`SET_SLEEP` does not touch the backlight class.** The vendor panel power path gates the LCD
+  clocks and the rails and leaves `/sys/class/backlight/.../brightness` exactly where it was, so
+  every place that powers the panel down -- `power_screen_off()`, `chargescreen`'s `dark()` -- has to
+  write 0 itself. And `sysinfo_model_t.backlight_dir` is the **whole** path
+  (`/sys/class/backlight/pwm-backlight.0`), as `main.c` composes its nodes; appending it to
+  `/sys/class/backlight/` a second time fails silently and the screen just stays dark.
+- **LVGL's tick is cached for a whole `lv_timer_handler()` pass** (main.c), so `lv_tick_elaps()` is
+  always 0 inside a timer callback. Any cooperative slice ("work until N ms") has to use
+  `ui_tick_ms_raw()` from `system/core/utils.h`, or it never yields.
+- **The log lives in a queue in the player, so `sync(2)` does not save it.** `logging.c` hands
+  printed bytes to a 64 KB ring and a `logwriter` thread writes and `fdatasync`s them; the shutdown,
+  restart and `mem` paths call `logging_flush()` (bounded 1.5 s) for that reason. `logging_sync()`
+  is the watchdog's write-through and costs nothing when nothing was printed.
+- **The log file is reopened when the path's inode changes** (`sync_card()` →
+  `log_reopen_if_replaced()`), so rotating it with the player up is safe now: at most the ~1 s of
+  lines written before the notice goes into the old, renamed file. Replacing it more often than
+  that will still lose those lines.
+- **A 56 MB `adb push` to the card can wedge `jzmmc`**: `timeout 3000ms op:25 w sz:12288`, then
+  `/dev/mmcblk0` disappears from `/proc/partitions` and `/mnt/sd_0` turns into an empty directory on
+  the rootfs (a push "succeeding" there would fill a 100 %-full rootfs). Stop the player first
+  (`killall sonix_launch`, then `killall sonix_player`), push, verify `md5sum` on the device at once,
+  and reboot to get the card probed again.
+- The log's stamp is a record of its own in the queue, so a line can start without one when the file
+  is replaced under it, and two threads printing at once used to interleave stamps (`line_lock` now
+  keeps a line's records adjacent). Cosmetic, but it is why a rotated log may open with a bare line.
