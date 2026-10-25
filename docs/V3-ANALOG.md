@@ -240,6 +240,47 @@ or `[audio] buffer_time_ms`, which is what the two knobs exist for.
 Both names are model fields (`sysinfo.h`), so the Blaze and the HiBy boards
 keep their `hw:0` and `default` and their single-output routing.
 
+### What actually reaches the card, measured
+
+`tools/pcmtap.c` is a preload that dumps the frames a player hands the card, and
+the answer for one 24-bit / 44.1 kHz FLAC (`17 How Far？`, Gorillaz) is that the
+samples arrive **bit-identical to the file** -- no resampling, no dither, no
+attenuation, the verbatim decoded stream:
+
+| route | port | stock `hiby_player` |
+|---|---|---|
+| jack, 4.4 mm (`hw:1,0` / `pcmC1D0p`) | 22.2 s (7 831 552 B), identical | 17.09 s (753 664 frames), identical |
+| optical, nothing plugged (`hw:0,0`) | 90.37 s (3 985 408 frames), identical | node accepts writes, content is **not audio** |
+
+Three things that were not obvious and cost the measurements:
+
+- **The stock player does not use alsa-lib for playback.** It links
+  `libasound.so.2` and imports `snd_pcm_*` (that is its record path and the USB
+  DAC), but it opens `/dev/snd/pcmC%dD%dp` itself -- through `openat64`, so a
+  preload has to hook that and the `ioctl`s, not `snd_pcm_writei`. Its strings
+  are explicit: `(%d)Unable to open PCM /dev/snd/pcmC%uD%u%c.`
+- **With nothing plugged the stock feeds card 0 a stream that is not the
+  music.** Every byte lane of that dump is uniformly distributed (mean ~128,
+  sd ~127), while the same node, driven by this port, carries the track
+  bit-exactly. The card's own driver name says what it is: `SA SPDIF Dummy ...
+  spdif dump`. The audible path there goes through the vendor
+  `/dev/sa_hgl_dma` (opened with `0xf0`/`0xe3`/`0xe2`/`0x81` ioctls), which
+  takes no `write()`, no `mmap` and no per-period ioctl -- its buffer is filled
+  with plain memory stores. Plugging a jack moves the stock to card 1, where it
+  is ordinary and exact.
+- **The frame size cannot be read from the format.** `/proc/asound` on this
+  kernel has no `hw_params` (the card directory holds `id`), and the format mask
+  in `struct snd_pcm_hw_params` reports the *same* bit for a 16-bit and a 24-bit
+  stream. `period_bytes / period_size` (and the buffer pair) is the unambiguous
+  source: 4096/32768 and 16384/131072 both say 8 bytes per frame. The struct's
+  intervals are **12** bytes, not 24 -- `snd_interval` packs its flags into bit
+  fields, which is why the whole thing is 604 bytes.
+
+Volume is not in these numbers at all: on both the port and the stock the level
+of the jack route lives in the AK4493, and a capture taken with the volume left
+wherever it was is still the file. The port's software volume (`swvolume.c`)
+only ever runs on the USB-C port.
+
 ## Bluetooth: a BlueZ 5 userland on a glibc 2.16 device
 
 The port's Bluetooth layer and bluez-alsa are written against **BlueZ 5**

@@ -456,6 +456,36 @@ writing into a deleted inode.
 State after the fixes: one `sonix_player`, audio on `hw:1,0`, card writes ~7 ms each, the probe
 running without `sync`, the player's log on `/data/sonix_player.log`.
 
+## What the sound card actually receives (measured 2026-10-26)
+
+`tools/pcmtap.c` (preload, dumps the PCM frames a player hands the card) settled
+what no log could:
+
+- Both firmware players deliver the file **bit-identically** on the jack route:
+  the port through `hw:1,0`, the stock through `pcmC1D0p` (4.4 mm plugged). No
+  resample, no dither, no attenuation.
+- The port is bit-identical on the **optical** route too (`hw:0,0`, nothing
+  plugged). The stock is not: its card-0 node (`SA SPDIF Dummy`) takes
+  uniformly-random bytes -- not audio -- and the audible path there goes through
+  the vendor `/dev/sa_hgl_dma`, which takes no `write()`, no `mmap` and no
+  per-period ioctl (its buffer is filled by plain stores). Plug a jack and the
+  stock is ordinary again on card 1.
+- The stock player never uses alsa-lib for playback: it opens
+  `/dev/snd/pcmC%dD%dp` itself (`openat64`) and drives it with ioctls, so a
+  preload must hook `ioctl` (`type == 'A'`, `nr 0x50` = WRITEI_FRAMES) -- hooking
+  `snd_pcm_writei` alone sees nothing on stock.
+- Volume never appears in the samples on the jack route (the AK4493 holds the
+  level), so a capture at whatever volume was set is still the file. The port's
+  `swvolume` runs on the USB-C port only.
+- Frame size is `period_bytes / period_size`, never the format mask: on this
+  kernel the mask reports the same bit for a 16-bit and a 24-bit stream, and
+  `/proc/asound` has no `hw_params`. `struct snd_pcm_hw_params` is **604** bytes
+  here -- `snd_interval` packs flags into bit fields, so intervals are 12 bytes.
+- The stock `hiby_player.sh` reboots the device when the player exits: kill the
+  `.sh` (pid of the wrapper) before killing the player. The `azbar` image is
+  stock + `/etc/init.d/S98adb_debug`, which only keeps adb up while
+  `/mnt/sd_0/enable_adb` exists.
+
 ## Three facts that cost an afternoon each
 
 - **The kernel has no inotify.** `inotify_init()` and `inotify_init1()` both answer `ENOSYS` on the

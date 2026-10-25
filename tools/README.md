@@ -171,6 +171,49 @@ adb shell 'nohup /data/powsample /data/powsample.log 20 >/dev/null 2>&1 &'
 It logs to `/data`, not to the card, so the log is readable over adb as soon as
 the cable is back; a suspend shows up as a jump in `boot - mono`.
 
+## pcmtap
+
+The frames a player hands the sound card, dumped to a file -- the answer to "is
+what I hear the file?". One preload works for both players on this board
+because it has two layers:
+
+```
+mipsel-rockbox-linux-gnu-gcc -shared -fPIC -O2 -march=mips32r2 -o pcmtap.so pcmtap.c -ldl
+adb push pcmtap.so /data/
+adb shell 'LD_PRELOAD=/data/pcmtap.so PCMTAP_OUT=/data/tap.raw /usr/bin/sonix_player'
+```
+
+- **ALSA** (`snd_pcm_open`, `..._set_format`, `..._set_channels`,
+  `..._set_rate_near`, `snd_pcm_writei`) -- the port's path;
+- **raw** (`open`/`openat`/`openat64` of `/dev/snd/pcm*`, and `ioctl`:
+  `SNDRV_PCM_IOCTL_HW_PARAMS` for the configured geometry,
+  `SNDRV_PCM_IOCTL_WRITEI_FRAMES` for the frames) -- the stock player's path,
+  which never calls alsa-lib for playback at all.
+
+`PCMTAP_LAYER=raw|alsa|both` picks the layer (a comparison between two players
+wants the same one on each side), `PCMTAP_FRAME_BYTES` pins the stride. A
+sibling `$PCMTAP_OUT.log` gets the device names, the geometry, every distinct
+ioctl seen, and the totals; `<out>.fdN` is the per-fd dump. The shim only reads
+and copies -- nothing it does changes what the player sends.
+
+Traps that shaped it, all measured:
+
+- the frame size comes from `period_bytes / period_size`, never from the format
+  mask: on this kernel the mask reports the same bit for a 16-bit and a 24-bit
+  stream, and `/proc/asound` has no `hw_params` to ask. `struct
+  snd_pcm_hw_params` is 604 bytes here -- `snd_interval` packs its flags into bit
+  fields, so the intervals are 12 bytes, not the 24 a naive reading of
+  `sound/asound.h` gives;
+- open the log with `"a"`, not `"w"`: on the stock firmware every process
+  started with `LD_PRELOAD` in the environment has its own exit line to write,
+  and a `"w"` truncates the player's;
+- the stock player opens the node with `openat64`, which the first version did
+  not hook -- the ioctl layer recognises ALSA's requests by `type == 'A'`, so it
+  works even without knowing the fd.
+
+The result is in [../docs/V3-ANALOG.md](../docs/V3-ANALOG.md), "What actually
+reaches the card, measured".
+
 ## diag_start.sh, diag_probe.sh, diag_capture.sh
 
 The last hour before the SoC stops dead. For the failure in
