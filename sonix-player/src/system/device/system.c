@@ -92,6 +92,10 @@ static const char *storage_device_name(const char *device_path) {
 // that tells the truth about charging, and the gauge's `status` often just
 // says Unknown.
 //
+// A board with more than one gauge has to say which is the battery's own:
+// `battery_supply` in board.h names it, and it is believed even when it reads
+// 0. Everything else here is the fallback for the boards that do not name one.
+//
 //   type == "Battery"          -> capacity, and status if it is meaningful
 //   type == "Mains" or "USB"   -> online, i.e. is a charger plugged in
 // ---------------------------------------------------------------------------
@@ -185,6 +189,20 @@ static void scan_power_supplies(int *percent, bool *charging) {
 	*percent = -1;
 	*charging = false;
 
+	// The gauge the board names, taken first and taken even at 0 %: an empty
+	// battery is a reading, not a missing one. Two batteries on one bus is what
+	// this exists for -- see board.h, `battery_supply`.
+	const char *named = sysinfo_model()->battery_supply;
+	bool named_taken = false;
+	if (named) {
+		int value = read_capacity(named);
+		if (value >= 0) {
+			*percent = value;
+			named_taken = true;
+			snprintf(battery_source, sizeof(battery_source), "%s", named);
+		}
+	}
+
 	DIR *dir = opendir(POWER_SUPPLY_DIR);
 	if (!dir) {
 		return;
@@ -202,21 +220,23 @@ static void scan_power_supplies(int *percent, bool *charging) {
 		}
 
 		if (strcmp(type, "Battery") == 0) {
-			int value = read_capacity(de->d_name);
-
 			// Some kernels expose a second, useless battery node that answers
 			// every read with zero. Take the first one that reports a real
 			// level, and only fall back to a zero reading if nothing better
 			// turns up -- a player that always says 0% is worse than one that
 			// admits it does not know.
-			if (value > 0 && *percent <= 0) {
-				*percent = value;
-				snprintf(battery_source, sizeof(battery_source), "%s", de->d_name);
-			} else if (value == 0 && *percent < 0) {
-				*percent = 0;
-				snprintf(battery_source, sizeof(battery_source), "%s", de->d_name);
+			if (!named_taken && *percent <= 0) {
+				int value = read_capacity(de->d_name);
+
+				if (value > 0 || (*percent < 0 && value == 0)) {
+					*percent = value;
+					snprintf(battery_source, sizeof(battery_source), "%s", de->d_name);
+				}
 			}
 
+			// The status is asked of every battery node on purpose: on a board
+			// with two gauges the one that knows the charger is in is not
+			// necessarily the one that holds the level.
 			char status[32];
 			if (read_sysfs_line(POWER_SUPPLY_DIR, de->d_name, "status", status, sizeof(status))) {
 				if (strcmp(status, "Charging") == 0 || strcmp(status, "Full") == 0) {

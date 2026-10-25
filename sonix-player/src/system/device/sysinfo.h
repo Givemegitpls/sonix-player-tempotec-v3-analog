@@ -84,6 +84,13 @@ typedef struct {
 							   // (the V3 Analog); the stock applies it on every model, but the
 							   // other models' About pages are not ours to change unverified.
 	bool pmic_charger;		   // charged by the AXP2101 alone, no MP2731 (axpcharge.h)
+	const char *battery_supply; // /sys/class/power_supply/<this> is the battery level the
+							   // interface shows (system.c). NULL walks the supplies and takes
+							   // the first battery that reports one, which is right where the
+							   // board has a single gauge. A board with two has to name the one
+							   // to believe: the V3 Analog carries the AXP2101's own fuel gauge
+							   // ("axp_battery", whose battery model is not this pack's -- it
+							   // holds 100 % down to 4.13 V) next to the CW2015 ("battery").
 	bool cs43131;			   // one CS43131, 3.5 mm only, no HBC3000 (alsa-controls.h)
 	bool ak4493;			   // dual AK4493 behind the HBC3000: six filters, no DRE/NOS (alsa-controls.h)
 	bool remap_list;		   // no photos of this player: the remap page is a plain list (remap.c)

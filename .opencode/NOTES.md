@@ -328,3 +328,46 @@ What to look for when it happens: the last `set output to`, `jack changed`,
 `PCM open`, and the `kernel:` lines the port relays (the codec's `hbc2500_hw_enable`,
 `hbc3000 id code`, and `i2c i2c-1: transfer error, ABORT`). The I2C aborts appear on clean
 insertions too, so they are only a lead when a *new* kind of line shows up next to them.
+
+## SSH on the device: present in the image, started by nothing
+
+`/bin/sshd` (OpenSSH_7.1p1, MIPS32r2) ships in the stock rootfs together with
+`/etc/ssh/sshd_config`, host keys and `usr/libexec/sftp-server`; no `etc/init.d` script starts it.
+It runs as root with `-o UsePrivilegeSeparation=no` (there is no `/var/empty`, and the rootfs is
+full, so creating one is not free). Password login needs
+`-o PermitRootLogin=yes -o PermitEmptyPasswords=yes`: `/etc/shadow` has `root::`, and the default
+`PermitRootLogin prohibit-password` refuses it. `setsid` on this BusyBox is
+`setsid [-c] PROG` -- getopt permutes, so `setsid /bin/sshd -p 22` is parsed as *setsid* options and
+fails; sshd daemonizes on its own, so call it directly.
+
+Transport without a cable: Wi-Fi (`wlan0`, `wpa_supplicant` from `/usr/bin/wifi_on.sh`) or
+`adb forward tcp:2222 tcp:22`. Wi-Fi power save defaults to **on** and that is what makes the link
+look broken: RTT 45-210 ms and whole pings lost at -38 dBm; `iw dev wlan0 set power_save off` takes
+it to 6-9 ms. Do not conclude "Wi-Fi flaky" before checking that.
+
+The port's own power policy will kill an SSH session: `wifi_wanted()` in `power.c` does not know
+about sshd, so ~60 s after the screen goes dark and the radios fall idle, `park_wifi_now()` runs
+`wifi_set_enabled_transient(false)`. Something in `wifi_in_use()` (Wi-Fi transfer, DLNA, AirPlay,
+SonixLink, a stream, a cache download) has to be on to keep the link.
+
+## Two battery gauges, and the player reads the wrong one
+
+`/sys/class/power_supply/axp_battery` is the AXP2101's own fuel gauge (i2c 0x34, SOC in REG[0xa4]),
+`/sys/class/power_supply/battery` is the CW2015 (i2c 0x62, `capacity` + `voltage_now` only).
+`scan_power_supplies()` (`src/system/device/system.c`) takes the first `type == Battery` node that
+reports a capacity above zero, and readdir order puts `axp_battery` first -- so the icon shows the
+AXP SOC. Measured 2026-10-25: AXP says 100 % (REG[0xa4]=0x64) at VBAT 4.129 V while the CW2015 says
+87 %. The AXP's model is the vendor's fixed `axp2101_model[128]` table in `vendor-drivers/axp2101.c`
+and the board charges to 4.40 V (REG[0x64]=0x5) against a 4350 mV design maximum; the chip's own
+time-to-empty reads 83 min (REG[0xa6..0xa7]=0x0053) while claiming 100 %, i.e. the model is not this
+pack's. The real level for anything battery-related is `cat /sys/class/power_supply/battery/capacity`.
+
+Fixed 2026-10-25: the gauge is named on the board instead of guessed -- `battery_supply`
+in `sysinfo_model_t` (`board.h`, `"battery"` on this board), honoured first in
+`scan_power_supplies()` and even at 0 %, with the old walk as the fallback for boards that
+name none. Charging status is still taken from every battery node, so `axp_battery` keeps
+reporting `Charging`.
+
+`printk` timestamps stop during suspend while `/proc/uptime` does not, so the gap between the last
+`dmesg` timestamp and `/proc/uptime` is the accumulated `mem` time -- the cheap way to tell whether
+the device actually slept.

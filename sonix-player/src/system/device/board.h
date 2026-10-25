@@ -55,6 +55,13 @@ static const sysinfo_model_t BOARD_MODEL = {
 	// path is written the charge limit is off rather than writing nothing and
 	// saying it did.
 	.pmic_charger = false,
+	// Two gauges, and the level has to come from the second. "axp_battery" is
+	// the AXP2101's own fuel gauge, left with the vendor driver's battery model
+	// for another pack, and on this board it stays at 100 % with the cell down
+	// at 4.13 V (it does not even agree with its own time-to-empty: 83 minutes
+	// at "100 %"). "battery" is the CW2015 on the same I2C bus, the gauge the
+	// stock firmware's own numbers agree with: 87 % at 4.13 V, 4.14 V under it.
+	.battery_supply = "battery",
 	.cs43131 = false,
 	.ak4493 = true,
 	.remap_list = true,
