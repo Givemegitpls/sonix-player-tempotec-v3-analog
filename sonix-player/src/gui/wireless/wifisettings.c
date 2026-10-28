@@ -730,7 +730,7 @@ static void build_password_page(gui_config_t *cfg) {
 	password_title = settingsrow_title(password_screen, cfg, "");
 
 	int top = settingsrow_content_top(cfg);
-	int keyboard_h = 316; // the same keyboard the search page uses
+	int keyboard_h = SC(316); // the same keyboard the search page uses
 
 	lv_obj_t *hint = lv_label_create(password_screen);
 	lv_label_set_text(hint, tr("wifi_network_password"));

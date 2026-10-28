@@ -72,6 +72,11 @@ PIXEL_ARGS = {
     "lv_obj_set_style_max_height": (2,),
     "lv_obj_set_style_transform_width": (2,),
     "lv_obj_set_style_transform_height": (2,),
+    # Not LVGL: src/gui/shell/keyboard.c, the tray's width and height. It is the
+    # one place the interface hands a pixel size to its own code, and three pages
+    # passed 316 unscaled because the regex below knew nothing about it -- the
+    # keyboard came out a third taller than every other page's.
+    "keyboard_create": (2, 3),
 }
 
 CALL_RE = re.compile(r"\b(" + "|".join(PIXEL_ARGS) + r")\s*\(")

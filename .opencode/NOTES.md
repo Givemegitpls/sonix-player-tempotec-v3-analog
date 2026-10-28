@@ -547,3 +547,25 @@ a bank-B/C/D button is enough — only the PD bank surviving `mem` with its pull
 holds. The player needs no change: with the screen dark a play press only calls
 `power_notify_activity()` and `gui_notify_key(PLAY_PAUSE)`, and `suspend_to_ram()` re-blanks the
 panel after a resume with `!g_screen_on`.
+
+## Audio chain (vendor spec sheet, 2026-10-26)
+
+2x AK4493SEQ, one per channel (dual mono, fully separated L/R); LPF 2x OPA1652, output
+buffers 4x OPA1688. 3.5 mm SE 2 Vrms / 330 mW@32R, 4.4 mm BAL 4 Vrms / 610 mW@32R,
+SNR 124 dB, THD+N 0.0008 % (SE) / 0.0005 % (BAL), output impedance 0.29 R (SE) / 0.92 R (BAL).
+High/low gain switch; the 3.5 mm jack is also line-out and mini-Toslink.
+The firmware runs **HiBy OS** (licensed), so MSEB, HiByLink, AirPlay/DLNA and the HiBy player
+DSP are the same family as on HiBy's own DAPs — the port replaces the player, not the OS stack.
+Not in the docs: the clocking scheme (single XO vs per-family) is still unknown.
+
+## The packer packs `sonix-packer/sonix_player`, not the one you just built
+
+`SKIP_PLAYER_BUILD=1` skips `build_player()`, and `build_player()` is the only
+thing that copies `sonix-player/sonix_player` next to the packer. The copy in
+`sonix-packer/` is a snapshot from whenever the last full run happened, so a
+`SKIP_PLAYER_BUILD=1` run after a player build silently packs the old binary
+into a new rootfs (2026-10-28: `c066e453` image carried the Oct 25 player).
+Run `./v3_analog_packer.sh` without the flag -- its own build is a no-op when
+nothing changed -- and check that
+`md5sum sonix_player ../sonix-player/sonix_player build/verify/SYSTEM/usr/bin/sonix_player`
+agree before flashing.
