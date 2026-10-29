@@ -62,8 +62,10 @@ LAUNCH_BIN="$SCRIPT_DIR/sonix_launch"
 DOCKER_IMAGE="${DOCKER_IMAGE:-tempotec-fw-tools}"
 
 # What this run needs: `verify` only re-checks the image that is already on
-# disk, so it builds nothing and asks for nothing beyond docker and that image --
-# not the vendor's stock firmware, and not the player.
+# disk, so it builds nothing -- not the vendor's stock firmware, and not the
+# player. Beyond docker and that image it reads two files out of the assets,
+# `assets/V3ANALOG/usr/sbin/bluetoothd` and `.../usr/bin/bluealsa`, and checks
+# that the image carries those.
 NEED_PLAYER=1
 NEED_STOCK=1
 
@@ -75,9 +77,10 @@ NEED_STOCK=1
 STOCK_UBOOT_MD5="${STOCK_UBOOT_MD5:-1f54858d6b4e6f482a81a3378c0e5bf8}"
 
 # A kernel to install instead of the stock one. Optional: without it the stock
-# UIMAGE.BIN is carried through untouched. When it is there its size must not
-# grow past the stock image (the kernel partition is sized for the stock), and
-# UPDATE.TXT's kernel md5 is recomputed from it -- the updater checks it.
+# UIMAGE.BIN is carried through untouched. When it is there it has to be a
+# uImage (unpack_stock checks the magic), its size must not grow past the stock
+# image (the kernel partition is sized for the stock), and UPDATE.TXT's kernel
+# md5 is recomputed from it -- the updater checks it.
 KERNEL_IMAGE="${KERNEL_IMAGE:-$SCRIPT_DIR/kernel/UIMAGE.BIN}"
 
 BUILD="$SCRIPT_DIR/build"
@@ -119,6 +122,24 @@ fw() {
 # the host, so the seconds of the file's own mtime are the source.
 stamp_of() { date -r "$1" +%d%m%Y%H%M; }
 
+# Both strings are substituted into system-info.json with sed, in an expression
+# the shell itself expands (tools/install_tree.sh). A backslash, an ampersand
+# (the whole match, inside a replacement), the | both expressions use as their
+# delimiter, a double quote (it would end the JSON string), a backtick (the shell
+# would run what it holds) and a newline (which splits the rewrite in two) all
+# break it -- silently enough to leave a version the player then shows wrong.
+json_safe() {
+	case "$2" in
+	*$'\n'*)
+		die "$1 holds a newline: it is written into system-info.json with sed."
+		;;
+	esac
+	if grep -q '[\\&|"`]' <<< "$2"; then
+		die "$1 holds a backslash, &, |, a double quote or a backtick: the sed
+     that writes it into system-info.json cannot carry one."
+	fi
+}
+
 # The version the player shows in About ("Operating system version"). The base is
 # the port's own, taken from the asset's system-info.json up to the first '-' or
 # '/'; what follows the slash names the build, out of this repository:
@@ -126,8 +147,9 @@ stamp_of() { date -r "$1" +%d%m%Y%H%M; }
 #   HEAD carries a tag      -> <base>/<tag>          a release
 #   a commit without a tag  -> <base>/#<short hash>  that commit, built
 #   changes not committed   -> <base>/<8 hex>        a test build; the eight hex
-#                              are an md5 of those changes, since the image's own
-#                              md5 cannot be written inside the image. The
+#                              are an md5 of those changes -- the tracked diff
+#                              and the untracked files' names -- since the image's
+#                              own md5 cannot be written inside the image. The
 #                              artefact's name still carries it, as before.
 #
 # A release whose commit carries no tag -- because the tag lives on another
@@ -136,6 +158,7 @@ stamp_of() { date -r "$1" +%d%m%Y%H%M; }
 # instead of by git.
 os_version() {
 	if [ -n "${VERSION_OVERRIDE:-}" ]; then
+		json_safe VERSION_OVERRIDE "$VERSION_OVERRIDE"
 		printf '%s' "$VERSION_OVERRIDE"
 		return 0
 	fi
@@ -151,9 +174,16 @@ os_version() {
 		return 0
 	fi
 
-	if [ -n "$(git -C "$repo" status --porcelain --untracked-files=no)" ]; then
+	# Untracked files count as changes too: a source file outside the index is
+	# still in the build, and a version naming HEAD would claim it is that
+	# commit's. The md5 is taken over the tracked diff and the names of the
+	# untracked files, so that two test builds of different trees do not share a
+	# name; editing a file that is untracked changes the build, not the name.
+	if [ -n "$(git -C "$repo" status --porcelain --untracked-files=normal)" ]; then
 		printf '%s/%s' "$base" \
-			"$(git -C "$repo" diff HEAD --binary | md5sum | cut -c1-8)"
+			"$({ git -C "$repo" diff HEAD --binary
+			    git -C "$repo" ls-files --others --exclude-standard -z | sort -z
+			  } | md5sum | cut -c1-8)"
 		return 0
 	fi
 
@@ -224,7 +254,21 @@ check_inputs() {
 	# earlier build would otherwise be packed into an image that claims to be
 	# this commit's. SKIP_PLAYER_BUILD=1 packs what is here, for a run that only
 	# wants to repack.
-	if [ "$NEED_PLAYER" = "1" ] && [ -z "${SKIP_PLAYER_BUILD:-}" ]; then
+	#
+	# Read as a value, not as a presence: `SKIP_PLAYER_BUILD=0` used to skip the
+	# build too, which is the opposite of what it says. 0, false and no mean
+	# build, 1 and true skip it, and anything else is a typo worth stopping for
+	# -- `verify` builds nothing and ignores the value either way.
+	case "${SKIP_PLAYER_BUILD:-}" in
+	"" | 0 | false | no) skip_player_build=0 ;;
+	1 | true) skip_player_build=1 ;;
+	*)
+		die "SKIP_PLAYER_BUILD is '${SKIP_PLAYER_BUILD}': it takes 1 or true to pack
+     the binaries already here, and 0, false or no (or nothing at all) to build
+     them."
+		;;
+	esac
+	if [ "$NEED_PLAYER" = "1" ] && [ "$skip_player_build" = "0" ]; then
 		build_player
 	fi
 
@@ -295,10 +339,27 @@ unpack_stock() {
 	if [ -f "$KERNEL_IMAGE" ]; then
 		stock_size="$(stat -c%s "$ISO_DIR/UIMAGE.BIN")"
 		new_size="$(stat -c%s "$KERNEL_IMAGE")"
+		# Size is not all the bootloader asks for: UIMAGE.BIN is a uImage, a
+		# 64-byte header that starts 27 05 19 56 and then a gzip stream, and the
+		# install is a verbatim copy with no header rebuilt, so a file that does
+		# not start with that would be written to the kernel partition and never
+		# booted. An empty file passes the size comparison below.
+		[ "$new_size" -gt 0 ] ||
+			die "$KERNEL_IMAGE is empty: there is no kernel in it to install."
+		kernel_magic="$(od -An -tx1 -N4 "$KERNEL_IMAGE" | tr -d ' \n')"
+		case "$kernel_magic" in
+		27051956) ;;
+		*)
+			die "$KERNEL_IMAGE starts with $kernel_magic: not a uImage (27051956),
+     so not a kernel this device boots. Wrap a bare kernel in a uImage header
+     first: the file is copied into the image as it is."
+			;;
+		esac
 		[ "$new_size" -le "$stock_size" ] ||
 			die "kernel/UIMAGE.BIN is $new_size bytes, the stock kernel $stock_size: it may not grow past the stock image."
+		kernel_md5="$(md5sum "$KERNEL_IMAGE" | cut -d' ' -f1)"
 		cp -f "$KERNEL_IMAGE" "$ISO_DIR/UIMAGE.BIN"
-		say "    kernel: replaced with $new_size bytes (stock $stock_size)"
+		say "    kernel: replaced with $new_size bytes, a uImage, md5 $kernel_md5 (stock $stock_size)"
 	fi
 	say ""
 }
@@ -468,11 +529,15 @@ if bt_init.exists() and "brcm_patchram_plus" not in bt_init.read_text():
     problems.append("usr/bin/bt_init does not attach the controller")
 
 # bluealsa and bluetoothd have to be the ones this image carries, not the
-# stock's: the stock bluetoothd is BlueZ 4 and does not speak to bluealsa.
+# stock's: the stock bluetoothd is BlueZ 4 and does not speak to bluealsa. The
+# asset has to be there too: an absent one used to pass this check by leaving
+# nothing to compare, which reads like a verified image.
 for rel, other in (("usr/sbin/bluetoothd", "assets/V3ANALOG/usr/sbin/bluetoothd"),
                    ("usr/bin/bluealsa", "assets/V3ANALOG/usr/bin/bluealsa")):
     a, b = tree / rel, Path(other)
-    if a.exists() and b.exists() and a.read_bytes() != b.read_bytes():
+    if not b.exists():
+        problems.append(f"the assets carry no {other}, so this cannot be checked")
+    elif a.exists() and a.read_bytes() != b.read_bytes():
         problems.append(f"{rel} is not the one the assets carry")
 
 if problems:

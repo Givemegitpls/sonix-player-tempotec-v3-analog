@@ -32,6 +32,25 @@ rewrite() {
 	mv "$file.packer.tmp" "$file"
 }
 
+# The stamp and the version string go into system-info.json through rewrite(),
+# so they sit in a sed expression the shell itself expands. A backslash, an
+# ampersand (the whole match, in a replacement), the | both expressions use as
+# their delimiter, a double quote (it would end the JSON string) and a backtick
+# (the shell would run what it holds) break the rewrite, and a newline splits it
+# in two. Checked here as well as in the packer: this is where the sed runs.
+json_safe() {
+	case "$2" in
+	*$'\n'*)
+		echo "install_tree: $1 holds a newline" >&2
+		exit 1
+		;;
+	esac
+	if grep -q '[\\&|"`]' <<< "$2"; then
+		echo "install_tree: $1 holds a backslash, &, |, a double quote or a backtick" >&2
+		exit 1
+	fi
+}
+
 # ---------------------------------------------------------------------------
 # 1. The player, in the stock player's place
 # ---------------------------------------------------------------------------
@@ -84,7 +103,8 @@ echo "    $BASE: $(find "$BASE" -type f | wc -l | tr -d ' ') files, then $MODEL 
 # whose stamp does not move is an image the player will not offer as an update.
 SYSTEM_INFO_JSON="$TREE/usr/resource/sonix/components/system-info.json"
 [ -n "${BUILD_STAMP:-}" ] || { echo "install_tree: BUILD_STAMP is empty" >&2; exit 1; }
-rewrite "s/(\"build_version\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")/\\1$BUILD_STAMP\\2/" "$SYSTEM_INFO_JSON"
+json_safe BUILD_STAMP "$BUILD_STAMP"
+rewrite "s|(\"build_version\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")|\\1$BUILD_STAMP\\2|" "$SYSTEM_INFO_JSON"
 grep -q "\"$BUILD_STAMP\"" "$SYSTEM_INFO_JSON" ||
 	{ echo "install_tree: build_version was not rewritten" >&2; exit 1; }
 echo "    build_version = $BUILD_STAMP"
@@ -92,10 +112,12 @@ echo "    build_version = $BUILD_STAMP"
 # And the version string: this build's identity, computed by the packer out of
 # this repository -- a tag, a commit's short hash, or an md5 of the uncommitted
 # changes (see os_version() in v3_analog_packer.sh). It is the row the player
-# shows in About as "Operating system version". The substitution is written with
-# | rather than /, since the value itself carries a slash.
+# shows in About as "Operating system version". Both substitutions are written
+# with | rather than / as their delimiter, since the value itself carries a
+# slash.
 OS_VERSION="${OS_VERSION:-}"
 [ -n "$OS_VERSION" ] || { echo "install_tree: OS_VERSION is empty" >&2; exit 1; }
+json_safe OS_VERSION "$OS_VERSION"
 rewrite "s|(\"OS_version\"[[:space:]]*:[[:space:]]*\")[^\"]*(\")|\\1$OS_VERSION\\2|" "$SYSTEM_INFO_JSON"
 grep -q "\"$OS_VERSION\"" "$SYSTEM_INFO_JSON" ||
 	{ echo "install_tree: OS_version was not rewritten" >&2; exit 1; }

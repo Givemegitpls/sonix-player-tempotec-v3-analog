@@ -12,9 +12,9 @@
 #
 # The base is pinned by digest and ubi_reader by version, so that an image built
 # today is the same image a clone builds in a year. The rest of the list is for
-# the neighbouring work that shares this image: the kernel-only images of
-# patch/v3-kernel/ need `genisoimage`, and the analysis tools under patch/ need
-# capstone, pyelftools and lzo.
+# the neighbouring work: a kernel-only image needs `genisoimage` too (see
+# `docs/KERNEL.md` and `patch/v3-panel-blank/`), and the analysis tools under
+# `patch/` and `tools/` need capstone, pyelftools and lzo.
 FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
 
 ENV DEBIAN_FRONTEND=noninteractive

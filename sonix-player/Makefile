@@ -31,19 +31,34 @@ CROSS_CXX ?= $(ROCKBOX_TOOLCHAIN_DIR)/bin/mipsel-rockbox-linux-gnu-g++
 # lv_event_private.h, lv_roller_private.h and others) from src/.
 LVGL_VER = 9.6.0
 
+# `make clean` (and `make libs-clean`) only remove directories this file does not
+# have to read: they must work with no lvgl/ and no network to clone it, so the
+# bootstrap and the version check below are skipped when that is all that was
+# asked for.
+LVGL_GOALS := $(if $(MAKECMDGOALS),$(filter-out clean libs-clean,$(MAKECMDGOALS)),all)
+
 # Self-bootstrap: clone LVGL if it doesn't exist yet before evaluating variables
+ifneq ($(LVGL_GOALS),)
 ifeq ($(wildcard $(LVGL_DIR)),)
 $(info Cloning LVGL v$(LVGL_VER)...)
 $(shell git clone --depth 1 -b v$(LVGL_VER) https://github.com/lvgl/lvgl.git)
+endif
 endif
 
 # Read out of the headers, so a checkout with no git history still answers.
 # All three places are tried: the macros sit in lvgl.h up to 9.1, in
 # lv_version.h from 9.2 and in include/lvgl/lv_version.h from 9.6.
+#
+# No answer at all is a failure, not a pass: the clone above runs only when the
+# directory is absent, so a clone interrupted halfway leaves lvgl/ there with no
+# headers in it, and the build would go on against nothing.
 LVGL_VER_FOUND := $(shell sed -n 's/^\#define LVGL_VERSION_\(MAJOR\|MINOR\|PATCH\) *\([0-9]*\).*/\2/p' \
 					$(LVGL_DIR)/include/lvgl/lv_version.h $(LVGL_DIR)/lv_version.h $(LVGL_DIR)/lvgl.h \
 					2>/dev/null | head -3 | paste -sd. -)
-ifneq ($(LVGL_VER_FOUND),)
+ifneq ($(LVGL_GOALS),)
+ifeq ($(LVGL_VER_FOUND),)
+$(error lvgl/ holds no LVGL_VERSION, and this player needs $(LVGL_VER): remove the lvgl directory and run make again to fetch it)
+endif
 ifneq ($(LVGL_VER_FOUND),$(LVGL_VER))
 $(warning lvgl/ holds $(LVGL_VER_FOUND) and this player needs $(LVGL_VER).)
 $(warning Remove the lvgl directory and run make again to fetch the right one.)
@@ -332,6 +347,10 @@ $(TARGET_BIN): $(TARGET_OBJS)
 # and no loader, so it is built on its own: static, freestanding, non-PIC, and
 # with the loop idioms GCC would turn into memset or strlen calls left as loops.
 # The packer takes it from next to itself, like sonix_player.
+#
+# Stripped with the cross strip, and a strip that is not there is a failure here
+# too -- see "Splitting the link output in two" below: the two binaries the
+# packer takes out of this tree are treated the same way.
 # ---------------------------------------------------------------------------
 
 LAUNCH_CFLAGS = -Os -Wall -Wextra -march=mips32r2 -mno-abicalls -fno-pic -G0 -static -nostdlib \
@@ -340,7 +359,14 @@ LAUNCH_CFLAGS = -Os -Wall -Wextra -march=mips32r2 -mno-abicalls -fno-pic -G0 -st
 
 $(LAUNCH_BIN): launcher/sonix_launch.c $(CROSS_CC)
 	$(CROSS_CC) $(LAUNCH_CFLAGS) -o $@ $<
-	@if [ -x "$(CROSS_STRIP)" ]; then $(CROSS_STRIP) $@; fi
+	@if [ ! -x "$(CROSS_STRIP)" ]; then \
+		echo ""; \
+		echo "*** ERROR: $(CROSS_STRIP) is not there, so '$(LAUNCH_BIN)' would stay unstripped."; \
+		echo "*** Build the toolchain first -- 'make target' does -- it comes with the compiler."; \
+		echo ""; \
+		exit 1; \
+	fi; \
+	$(CROSS_STRIP) $@
 	@echo "sonix_launch: $$(wc -c < $@) bytes"
 
 # ---------------------------------------------------------------------------
@@ -353,6 +379,11 @@ $(LAUNCH_BIN): launcher/sonix_launch.c $(CROSS_CC)
 # The cross strip and not the host one. /usr/bin/strip is built for x86-64 and
 # answers "file format not recognized" on a MIPS binary -- and it says so on
 # stderr while exiting non-zero, which would take the whole build down.
+#
+# A strip that is not there is a failure, not "left unstripped": what stays in
+# the tree is the 40 MB binary with its symbols, and the packer packs whatever
+# is in the tree. That image does not fit in the volume, and the mkfs that says
+# so comes long after the build that could have said it.
 # ---------------------------------------------------------------------------
 
 CROSS_STRIP ?= $(ROCKBOX_TOOLCHAIN_DIR)/bin/mipsel-rockbox-linux-gnu-strip
@@ -363,8 +394,12 @@ strip-target:
 		exit 0; \
 	fi; \
 	if [ ! -x "$(CROSS_STRIP)" ]; then \
-		echo "strip-target: $(CROSS_STRIP) is not there, '$(TARGET_BIN)' left unstripped"; \
-		exit 0; \
+		echo ""; \
+		echo "*** ERROR: $(CROSS_STRIP) is not there, so '$(TARGET_BIN)' would stay unstripped."; \
+		echo "*** Build the toolchain first -- 'make target' does -- or the image"; \
+		echo "*** will not fit in the rootfs."; \
+		echo ""; \
+		exit 1; \
 	fi; \
 	cp -f $(TARGET_BIN) $(TARGET_DEBUG_BIN); \
 	$(CROSS_STRIP) $(TARGET_BIN); \
@@ -379,6 +414,10 @@ strip-target:
 # `sleep 1; reboot` as soon as the player exits.
 #
 # glibc_compat.h holds the known functions down; this catches the next ones.
+#
+# The tool it reads the binary with is not optional either: a check that skips
+# itself when readelf is missing is the same as no check, and the build that
+# linked the binary is the last place that can refuse it.
 # ---------------------------------------------------------------------------
 
 CROSS_READELF ?= $(ROCKBOX_TOOLCHAIN_DIR)/bin/mipsel-rockbox-linux-gnu-readelf
@@ -394,8 +433,12 @@ DEVICE_GLIBC_MINOR = 16
 .PHONY: check-abi
 check-abi:
 	@if [ ! -x "$(CROSS_READELF)" ]; then \
-		echo "check-abi: $(CROSS_READELF) is not there, check skipped"; \
-		exit 0; \
+		echo ""; \
+		echo "*** ERROR: $(CROSS_READELF) is not there, so the ABI check cannot run."; \
+		echo "*** It is what keeps a binary the device cannot start out of an image:"; \
+		echo "*** build the toolchain first -- 'make target' does."; \
+		echo ""; \
+		exit 1; \
 	fi; \
 	bad=$$($(CROSS_READELF) --dyn-syms -W $(TARGET_BIN) 2>/dev/null \
 		| awk '{ for (i = 1; i <= NF; i++) if (match($$i, /@GLIBC_[0-9.]+$$/)) { \
