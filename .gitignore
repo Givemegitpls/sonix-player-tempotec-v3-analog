@@ -8,6 +8,7 @@ sonix-player/sonix_launch
 sonix-player/build_target
 sonix-player/build_host
 sonix-player/build_gen
+sonix-player/addons/build
 
 # The streaming keys: in the clear, the key that seals them, and the sealed
 # file, which only a player built with that key can open.
@@ -81,10 +82,17 @@ kernel-src/
 __pycache__/
 
 # The packer's kernel slot: the kernel to install instead of the stock one, put
-# there by hand for a kernel-only image (patch/v3-kernel/FLASHING.md). A build
-# output, empty in a fresh clone -- and it must stay empty unless a kernel is
-# being tested, since the packer installs whatever it finds here.
+# there by hand for a kernel-only image (a uImage you patched or built yourself
+# -- see docs/KERNEL.md and patch/v3-panel-blank). A build output, empty in a
+# fresh clone -- and it must stay empty unless a kernel is being tested, since
+# the packer installs whatever it finds here.
 sonix-packer/kernel/UIMAGE.BIN
+
+# The patched kernel of the panel-blank attempt, and the same file once built
+# here. It is HiBy's binary with our patch in it and HiBy never published that
+# kernel's source, so it is never committed: patch/v3-panel-blank/patch_kernel.py
+# rebuilds it from the vendor .upt (see the README next to it).
+patch/v3-panel-blank/UIMAGE.BIN
 
 # The cross-compiled helpers in tools/: each has its .c beside it and is built
 # by hand (tools/README.md), so the binaries are build output, not source. They
@@ -103,3 +111,4 @@ sonix-packer/kernel/UIMAGE.BIN
 /tools/btprobe
 /tools/tprobe
 /tools/ldacdec-test
+/tools/pcmtap.so
