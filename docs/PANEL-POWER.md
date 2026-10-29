@@ -11,9 +11,12 @@ proprietary ioctl on `/dev/fb0` that the port has never issued.
 All evidence below is static: the stock player from the vendor's `v3_analog` rootfs
 (`SYSTEM/usr/bin/hiby_player`; md5 `3a5db0fa7d2536ae564841f24b5f8b54`, ELF vaddr,
 `file offset = vaddr - 0x400000`) and the stock kernel out of the same `.upt`
-(`UIMAGE.BIN`; md5 `aaa60f4fc2b4d592f92bc5a405e10695`, base `0x80010000`,
-`file offset = virt - 0x80010000`). Both were unpacked in the older working copy,
-not in this repository. Disassembly:
+(`UIMAGE.BIN`, md5 `35889275f8bed2f967a18f6a8b66495c`; its gzip payload is the raw
+`kernel.bin`, 7126564 bytes, md5 `aaa60f4fc2b4d592f92bc5a405e10695`, base
+`0x80010000`, `file offset = virt - 0x80010000`). Both come out of that `.upt`: the packer
+unpacks it on every run into `sonix-packer/build/` (`build/iso/` holds `UIMAGE.BIN` and the
+rootfs volume, `build/SYSTEM/` the extracted rootfs), and the `.upt` itself is the owner's
+vendor image, not part of this repository. Disassembly:
 `sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-objdump -D -b binary -m
 mips:isa32 -EL`, or `-D` on the ELF. No device was touched.
 
@@ -214,8 +217,8 @@ The panel rails are the AXP2101's vendor-named `LDO7` (ALDO4, enable bit `0x90` 
 voltage `0x95`) and `LDO8` (BLDO1, `0x90` bit4, `0x96`), 3.0 V and 1.8 V; `gpio16` is
 `GPIO_PA(16)` `lcd rst`, `gpio48` is `GPIO_PB(16)` `lcd rd`; `gpio89` (`GPIO_PC(25)`) is
 `BL PWR` and belongs to the backlight, not to the panel (`backlight_init`, `0x80019dc8`).
-The register map and pin names are in `patch/v3-kernel/V3-BOARD.md`, in the
-kernel working copy next to this repository (that tree is not part of this one).
+The register map and pin names are the vendor AXP2101 driver's and the X1000's GPIO naming;
+that driver is not part of this repository, and everything needed from it is quoted above.
 
 ## 3. Does the stock stop refreshing while awake?
 
@@ -290,27 +293,29 @@ is what it does now.
 
 | step | stock | port (`sonix-player`) |
 |---|---|---|
-| screen-off trigger | power key / UI handler → `0x473320` | `power_screen_off()` (`power.c:1408`) |
-| backlight | write 0 to `pwm-backlight.0/brightness` (`0x473354`) | same (`power.c:1436`, `write_long_to_file(...,0)`) |
-| panel power | `ioctl(fb0, 0x80044620, 1)` → `jzfb_suspend` → rails + reset + pinmux + touch | **nothing**: `blank_path = NULL` on this board (`board.h:141`, `main.c:3941`), and `screen_power()` returns early (`power.c:225`) |
+| screen-off trigger | power key / UI handler → `0x473320` | `power_screen_off()` (`power.c:1547`) |
+| backlight | write 0 to `pwm-backlight.0/brightness` (`0x473354`) | same (`power.c:1577`, `write_long_to_file(...,0)`) |
+| panel power | `ioctl(fb0, 0x80044620, 1)` → `jzfb_suspend` → rails + reset + pinmux + touch | **nothing**: `blank_path = NULL` on this board (`board.h:158`, `main.c:4051`), and `screen_power()` returns early (`power.c:262`) |
 | LCDC/SLCDC | `ENA = 0`, clocks gated; `DMA_EN` left as it was | `ENA = 1`, `DMA_EN = 1`, clocks running |
-| render while dark | driver refuses pans (`-EINVAL`), panel unpowered | LVGL keeps drawing; `fb_pan_show()` still pans (only the *arm* is gated by `power_screen_is_on()`, `main.c:1949`) |
+| render while dark | driver refuses pans (`-EINVAL`), panel unpowered | LVGL keeps drawing; `fb_pan_show()` still pans (only the *arm* is gated by `power_screen_is_on()`, `main.c:2000`) |
 | wake | `ioctl(fb0, 0x80044620, 0)` → rails + table + `DMA_EN` + `ENA`, pan, 100 ms, backlight | backlight ramp only; no panel init (it never went off) |
 | touch on screen-off | GT911 doze (`goodix_ts_close`) | LVGL indevs disabled only (`set_indevs_enabled(false)`) |
-| later standby | `echo mem` thread, after screen off | `echo mem` after 60 s (`power.c:1172`) — the same PM path |
+| later standby | `echo mem` thread, after screen off | `echo mem` after 60 s (`power.c:1101`) — the same PM path |
 | freeze risk | none: resume re-runs `set_par` | none today only because the panel is never disarmed |
 
 What the port already has, and can reuse:
 
-- `fb_arm()` (`main.c:1895`): `FBIOBLANK(UNBLANK)` + `FBIOPUT_VSCREENINFO(FORCE)` — the
+- `fb_arm()` (`main.c:1947`): `FBIOBLANK(UNBLANK)` + `FBIOPUT_VSCREENINFO(FORCE)` — the
   `PUT` is what runs `jzfb_set_par` (table + `DMA_EN`). This is the **manual** equivalent of
   the tail of `jzfb_resume`.
-- `fb_pan_show()` (`main.c:1925`): pan with mode re-read and a re-arm retry; already handles
+- `fb_pan_show()` (`main.c:1977`): pan with mode re-read and a re-arm retry; already handles
   a live interface with a dead panel.
-- `echo mem` standby (`power.c:1172`): the PM path that runs `jzfb_suspend`/`jzfb_resume`;
+- `echo mem` standby (`power.c:1101`): the PM path that runs `jzfb_suspend`/`jzfb_resume`;
   verified on the device.
-- `display_panel_disarmed()` / `fb_armed`: the port's own model of the panel state, which
-  would still be needed for the `FBIOBLANK` path.
+- `display_panel_disarmed()`: the port's own model of the panel state, which
+  would still be needed for the `FBIOBLANK` path (`fb_armed` is gone: `main.c`
+  keeps no such flag any more, since this board's screen-off does not disarm the
+  panel).
 
 What is missing for the stock behaviour:
 
@@ -375,9 +380,12 @@ we must never blank". That is true about `fb_blank`, but it says nothing about `
 which is a plain unlocked ioctl handler. A first call in `jzfb_blank` also ran
 `lcd_power_off` without the `jzfb_suspend` prelude (wait for DMA, disable the controller,
 gate the clocks), and `lcd_power_off`'s `goodix_ts_close()` talks i2c to the touch after the
-rails are gone; the stock path does the same thing but from a quiesced controller. The
-exact cause of that `__delay` hang is still not proven; it is not needed for the
-`SET_SLEEP` route, which is the path the stock firmware actually uses.
+rails are gone; the stock path does the same thing but from a quiesced controller. That
+`__delay` hang has a named cause in `patch/v3-panel-blank/README.md`: `goodix_ts_close()`
+talking i2c to an unpowered touch controller, which calling it first fixes; what is still
+not proven is the Oops the blank node then produced in both directions, under
+`console_lock`. Neither matters for the `SET_SLEEP` route, which is the path the stock
+firmware actually uses.
 
 ## 7. Confidence and the cheapest hardware confirmation
 
@@ -449,7 +457,8 @@ Measured on the V3 Analog (stock kernel `35889275…`, player build `21102026004
 The port implements the stock path in `power.c` / `sysinfo.h` / `board.h`:
 
 - `panel_sleep_ioctl = 0x80044620` in the V3 board profile (field of `sysinfo_model_t`,
-  copied into `power_config_t`); `blank_path` stays NULL, so `FBIOBLANK` is never used.
+  copied into `power_config_t`); `blank_path` stays NULL, so the port never blanks through
+  the framebuffer — the only `FBIOBLANK` it issues is the `UNBLANK` in `fb_arm()`.
 - `screen_power()` issues the ioctl on the framebuffer `main.c` already holds (`cfg->fb_fd`;
   a second `open()` would re-init the panel). Off happens after the backlight reaches zero,
   stock order; on is followed by the configured settle (100 ms by default on this path),

@@ -17,19 +17,21 @@ upstream Sonix release into the tree is a different job, with its own recipe:
 
 ## 0. What you need
 
-A Linux host (x86_64) with **docker**, about 6 GB of free disk, and an internet
-connection for the first build. Nothing else: both compilers the build uses live
-in images this repository carries the recipes for, so there is no list of
-packages to install.
+A Linux host (x86_64) with **docker**, `git`, the usual shell utilities the
+scripts call (`sed`, `stat`, `date`, `md5sum`, `id`), about 6 GB of free disk, and
+an internet connection for the first build. Both compilers the build uses live in
+images this repository carries the recipes for, so there is no list of packages to
+install.
 
 ```sh
 docker build -t tempotec-player-build sonix-player/docker   # builds the player
 docker build -t tempotec-fw-tools sonix-packer/docker       # packs the image
 ```
 
-Both are built from pinned bases, so the same recipe produces the same tools
-later, and neither has to be built by hand: `sonix-player/docker/build.sh` builds
-its own image on every run (docker reuses the layers of an unchanged
+Both build on a base image pinned by digest, so the OS underneath does not
+drift; what `apt-get` installs comes from the distribution's repositories at
+build time. Neither has to be built by hand: `sonix-player/docker/build.sh`
+builds its own image on every run (docker reuses the layers of an unchanged
 `Dockerfile` in a second), and the packer builds its image on the first run
 because it cannot run `7z`, `mkfs.ubifs`, `genisoimage` or `ubi_reader` without
 it — none of which a normal host has.
@@ -39,8 +41,9 @@ compiler, autotools, makeinfo and the archivers that `rockboxdev.sh` and the
 library `configure` scripts need, because the MIPS toolchain and FreeType are
 built from source; the packer's has the firmware tools.
 
-If you would rather have those packages on the machine itself, the build runs on
-the host too — see "Building on the host", at the end.
+If you would rather have the player's packages on the machine itself, it builds
+on the host too — see "Building on the host", at the end. The packer does not:
+every tool it runs goes through `docker run`, so it stops without docker.
 
 ---
 
@@ -71,8 +74,9 @@ files that matter must be these:
 
 The packer checks `UBOOT.BIN` itself and refuses to build an image whose
 bootloader is not the one above — a wrong bootloader is the one mistake on this
-device that cannot be undone from a card. `UIMAGE.BIN` is compared by size and
-digest when a kernel is installed instead (step 6).
+device that cannot be undone from a card. `UIMAGE.BIN` has no digest to be checked
+against: a kernel installed in its place (§5, step 1) has to be a uImage and no
+larger than the stock one.
 
 To look before you build:
 
@@ -152,14 +156,17 @@ them:
   `freetype-2.13.3.tar.xz` from SourceForge by hand and drop it in
   `sonix-player/` — the Makefile uses it instead of downloading.
 - LVGL is cloned from GitHub. A half-finished clone leaves `sonix-player/lvgl/`
-  behind; remove that directory before retrying.
+  behind; remove that directory before retrying. With no network at all, put a
+  `v9.6.0` checkout there by hand instead — the clone runs only when the directory
+  is absent. `make clean` needs neither the clone nor the version in it.
 
 An incremental run is not proof that the tree compiles. `make` compares mtimes
 against `build_target/`, so when the objects are newer than every source — after
 a build that already saw this tree, or a `git` operation that rewrote nothing —
-it prints `Scanning source files...`, links nothing and exits 0. Wipe the
-objects to force it; `clean` removes `build_*` and the binaries and leaves the
-toolchain, FreeType and the audio libraries where they are:
+it links nothing and exits 0. (`Scanning source files...` proves nothing either
+way: `compile_commands.json` is a `.PHONY` target, so that line prints on every
+build.) Wipe the objects to force it; `clean` removes `build_*` and the binaries
+and leaves the toolchain, FreeType and the audio libraries where they are:
 
 ```sh
 sonix-player/docker/build.sh clean
@@ -234,9 +241,10 @@ First it builds the player (step 3) and copies `sonix_player` and
    `usr/lib/libcrypto.so.1.0.0` (the copy in `/lib` is the one the loader
    finds). `libssl.so.1.0.0` stays: `wpa_supplicant`, `sshd` and `shairport`
    link against it and there is no second copy. The script fails the build if a
-   remaining ELF file still names a library it removed. The point is headroom:
-   the rootfs is exactly the volume's size and boots 100 % full, which is what
-   makes an in-place binary replacement on a test unit die halfway;
+   remaining ELF file still names a library it removed. The point is headroom: the
+   stock rootfs fills the volume exactly, and the 7.45 MB this frees is what a
+   test unit needs to replace a 7.4 MB binary in place (a build from this packer
+   measured 6.2 MB free on 2026-10-24);
 5. repacks the rootfs with `mkfs.ubifs` (`-x lzo -e 0x1F000 -c 480 -m 0x800`,
    the geometry of this device's rootfs volume — it fails loudly if the tree no
    longer fits);
@@ -260,7 +268,7 @@ Useful invocations:
 STOCK=... DOCKER_IMAGE=tempotec-fw-tools ./v3_analog_packer.sh   # the defaults
 ./v3_analog_packer.sh verify                                     # re-check out/v3_analog.upt, build nothing
 SKIP_PLAYER_BUILD=1 ./v3_analog_packer.sh                        # repack the binaries already in sonix-packer/
-KERNEL_IMAGE=/path/UIMAGE.BIN ./v3_analog_packer.sh              # install a replacement kernel
+KERNEL_IMAGE=/path/UIMAGE.BIN ./v3_analog_packer.sh              # your own verified kernel; none is supported (docs/KERNEL.md)
 VERSION_OVERRIDE=1.3.0/0.1.0 ./v3_analog_packer.sh             # name the build by hand
 ```
 

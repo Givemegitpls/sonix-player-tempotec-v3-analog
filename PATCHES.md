@@ -7,12 +7,16 @@ The TempoTec V3 Analog's image does not use them: it keeps the vendor's own 3.10
 kernel and its `gt9xx` touch driver, the V3 packer installs no `module_driver/`, and
 `sonix-packer/tools/install_tree.sh` runs neither script — so on this device the
 sections below are a record of how the family's touch panels were dealt with, not a
-step of this build.
+step of this build. The last row is this device's own kernel patch, kept the same way; its
+build output is not in git at all (it is HiBy's kernel binary with the patch written into it --
+see the README in `patch/v3-panel-blank/`), and `docs/KERNEL.md` carries its md5s so a local
+build can be recognised.
 
 | patch | script | what it fixes |
 |---|---|---|
 | Touchscreen multitouch | `sonix-player/tools/gt9xx_multitouch_patch.py` | the panel reports five fingers, the stock driver lets one out. **Not needed** with the open-source `gt9xx_touch.ko` the packer ships |
 | Touchscreen multitouch, R1 | `sonix-player/tools/cst8xx_multitouch_patch.py` | the panel reports two fingers, the stock driver lets one out. **Not needed** with the open-source `cst8xx_touch.ko` the packer ships |
+| Panel power through `fb0/blank` | `patch/v3-panel-blank/patch_kernel.py` | makes the blank level run the panel's power cycle instead of only stopping the controller. **Not shipped**: the blank node Oopses under `console_lock`, and the stock `SET_SLEEP` ioctl already does the cycle (`docs/PANEL-POWER.md`) |
 
 
 ## Touchscreen multitouch
@@ -100,12 +104,9 @@ this position it can only ever mean "one contact per frame".
 
 ## The fix
 
-Copy the two files `gt9xx_touch.ko` and `gt9xx_touch.sh` out of the firmware, put them
-beside the script, and run the python script:
-
-```bash
-python3 sonix-player/tools/gt9xx_multitouch_patch.py
-```
+Copy the two files `gt9xx_touch.ko` and `gt9xx_touch.sh` out of the firmware into a
+directory of their own, and run the python script on it — the directory is its first
+argument, and "Using it" below has the three invocations.
 
 **`gt9xx_touch.sh`** - `gtp_max_touch_number` goes from 1 to 5, so the frame
 survives and the I2C read is long enough to carry five contacts.
@@ -135,28 +136,22 @@ sequence is missing or appears more than once.
 
 ### Using it
 
-With no argument the script works on whatever sits in its own directory:
+The directory holding the two files is the first argument — the cst8xx script
+defaults to its own, this one does not, and an unpacked rootfs's `module_driver`
+works as well as any other directory:
 
 ```bash
 # report the state, change nothing
-python3 sonix-player/tools/gt9xx_multitouch_patch.py --check
+python3 sonix-player/tools/gt9xx_multitouch_patch.py rootfs/module_driver --check
 
 # apply
-python3 sonix-player/tools/gt9xx_multitouch_patch.py
+python3 sonix-player/tools/gt9xx_multitouch_patch.py rootfs/module_driver
 
 # put the stock behaviour back
-python3 sonix-player/tools/gt9xx_multitouch_patch.py --revert
+python3 sonix-player/tools/gt9xx_multitouch_patch.py rootfs/module_driver --revert
 ```
 
-A directory can be named instead, to work straight on an unpacked rootfs
-without copying anything:
-
-```bash
-python3 sonix-player/tools/gt9xx_multitouch_patch.py rootfs/module_driver
-```
-
-Either file on its own is enough to do that half of the job, and the script
-says plainly that the other half is still missing.
+Neither file can be left out: with either one missing the script stops and says which.
 
 Both files are copied to `*.orig` beside themselves before the first write, and
 running the script twice does nothing the second time.

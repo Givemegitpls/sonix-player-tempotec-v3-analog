@@ -47,8 +47,8 @@ stock firmware they are never called (lazy binding).
   the **static** `libldacBT_enc.a` (as Android.bp's `static_libs` does).
 
 The runtime also needs `libfdk-aac.so.2` (AAC) and `libopenaptx.so.0`
-(aptX/aptX-HD) — see `sonix-packer/assets/` and the chronological log
-(`NOTES.md` in the original working copy, outside this repository).
+(aptX/aptX-HD) — both are already installed under `sonix-packer/assets/`, no
+rebuild needed.
 
 ## Rebuilding the encoder from AOSP (only if ever needed)
 
@@ -59,9 +59,8 @@ included by `ldaclib.c`. Then build with the target toolchain
 and install into `sonix-packer/assets/V3ANALOG/usr/lib/`.
 
 The full recipe, including how bluealsa was configured, is in
-`docs/V3-ANALOG.md` ("The build recipe") and in the chronological log
-(`NOTES.md` in the original working copy; sections "Кодеки: LDAC/AAC/aptX
-собраны и работают" and "LDAC-приём и «транспорт за прошивкой»").
+`docs/V3-ANALOG.md` ("The build recipe"); how the two-day LDAC debugging went is in
+the session archive (`tools/history.sh grep "LDAC"`, `tools/history.sh grep "MTU"`).
 
 ## One LDAC arm, three .pc files
 

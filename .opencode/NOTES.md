@@ -5,16 +5,15 @@ rebuilding a toolchain that was already on disk.
 
 ## Where the build artifacts actually live
 
-This repository is a **worktree** of `~/Projects/own/tempotec-v3/src/sonix-blaze`
-(branch `own-kernel`). Gitignored build outputs stay in the parent, so a worktree
-looks empty while the parent has:
+A fresh clone has no build outputs: everything heavy is gitignored and lives inside
+the tree, built on first use.
 
-- `~/Projects/own/tempotec-v3/toolchain/rockbox-toolchain` — the MIPS toolchain
-  (binutils 2.38, gcc 9.5.0, glibc 2.27 `--enable-oldest-abi=2.16`), 350 MB;
-- `~/Projects/own/tempotec-v3/src/sonix-blaze/sonix-player/freetype-target/` and
-  `audio-target/` — the static libraries the player links;
-- `.../sonix-player/build_target/`, `sonix_player`, `sonix_launch`;
-- `.../sonix-packer/out/*.upt` — previously built images.
+- `sonix-player/rockbox-toolchain/` — the MIPS toolchain (binutils 2.38, gcc 9.5.0,
+  glibc 2.27 `--enable-oldest-abi=2.16`), 350 MB;
+- `sonix-player/freetype-target/` and `sonix-player/audio-target/` — the static
+  libraries the player links;
+- `sonix-player/build_target/`, `sonix-player/sonix_player`, `sonix-player/sonix_launch`;
+- `sonix-packer/out/*.upt` — previously built images.
 
 `make ROCKBOX_TOOLCHAIN_DIR=<dir> target` reuses a toolchain that already exists.
 Check there **first**; a full `make target` from scratch is 20-60 minutes and is
@@ -30,10 +29,10 @@ actually compiles, force it -- `./sonix-player/docker/build.sh clean` wipes only
 then run the build again. The link ends with `check-abi: no symbol beyond glibc
 2.16` and the stripped `sonix_player` (7.4 MB from a 40 MB debug binary).
 
-This worktree carries its own `sonix-player/rockbox-toolchain` (350 MB),
+This tree carries its own `sonix-player/rockbox-toolchain` (350 MB),
 `freetype-target/`, `audio-target/`, `build_target/` and
 `sonix-packer/v3_analog_original.upt`, so it builds and packs without borrowing
-anything from `~/Projects/own/tempotec-v3`.
+anything from outside.
 
 ## The toolchain is a build artifact, not a package
 
@@ -569,3 +568,132 @@ Run `./v3_analog_packer.sh` without the flag -- its own build is a no-op when
 nothing changed -- and check that
 `md5sum sonix_player ../sonix-player/sonix_player build/verify/SYSTEM/usr/bin/sonix_player`
 agree before flashing.
+
+## A scan holds the device out of `mem` (verified on the device 2026-10-29)
+
+`suspend_if_idle()` refuses with `power: mem deferred: a scan is writing to the card` while
+`library_scan_running()` or `audiobookdb_scan_running()` is true, and the check sits **before**
+the cable check so a bench session with adb attached still names the scan. The standby countdown
+is restarted on every tick while a scan runs (`g_mem_active_ms` in the tick), so the sixty
+seconds begin when the scan ends. The owner reproduced it on the device with a full scan and the
+screen dark: no `power: mem: writing` until the scan finished. The log line now reads
+`power: initialized (... mem=on/60s ...)`; it said `mem=TEST` when standby was on.
+
+## Pulling the card mid-scan: the card suffers, and so does the index (measured 2026-10-29)
+
+Pulling the card while a scan writes cost the card's FAT (`FAT-fs (mmcblk0p1): error,
+fat_get_cluster: invalid cluster chain` -> `Filesystem has been set read-only`, at the pull and
+on every boot after; the device cannot repair vfat, `fsck.vfat -a` on a PC can, and it reclaimed
+104 MB of orphaned clusters), a hot `library.db-journal` (truncated by that fsck; SQLite then
+opens the file as it was -- 3262 rows, `PRAGMA integrity_check` ok).
+
+On the reverted scan logic the library itself is not protected: the wipe happens before the
+walk, so an interrupted run leaves only what it had committed. Do not pull the card during a
+scan; if it happens, fsck the card before trusting the library, and expect a rescan.
+
+## Flashing: verify the name recovery will read, not the one you wrote (2026-10-29)
+
+The image must be at `<card>/v3_analog.upt`. On this card a rename may not survive the reboot that
+follows the trigger: `mv v3_analog.new.upt v3_analog.upt` looked right (`ls` showed the new file
+under the final name), recovery then read the **old** `v3_analog.upt`, and after the boot the two
+names were back as they were — the update flashed the previous build and `build_version` in
+`system-info.json` still named the old player, which is the only sign. Do `rm` of the old name,
+`mv`, `sync`, then `md5sum` **of the final name** immediately before
+`echo recovery > /proc/jz/reset/reset`, and compare it with the packer's output.
+
+A 56 MB push to the card can also wedge `jzmmc` (`/mnt/sd_0` empties, `dmesg` shows traces); a
+reboot brings the card back and the same push usually goes through on the second try. Stop the
+player first (`killall sonix_launch; killall sonix_player`), push under a temporary name,
+`md5sum` it on the device, then move it into place.
+
+## Replacing the player on the device: `adb reboot` does not work here (2026-10-29)
+`adb reboot` answers `reboot failed: Bad address` on this adbd; `adb shell 'sync; reboot'` does
+reboot (uptime resets, init starts `sonix_launch` again). If the launcher was killed and the
+reboot did not happen, the device stays up with no player: start it with
+`adb shell 'setsid /usr/bin/sonix_player.sh </dev/null >/dev/null 2>&1 &'` — but a real reboot is
+better, because a hand-started player inherits the adb shell's environment (`cwd=/`, no
+`ulimit`/`MALLOC_ARENA_MAX` from the init script unless the script itself sets them).
+
+`/data` had 25 MB free and `/` 5.7 MB free after the 2026-10-29 deploy, with `/data` otherwise
+empty — the diag scripts and logs described in the older notes are not on this unit.
+
+## The scan is upstream's, and it stays that way (2026-10-29)
+
+The scan was reworked in this session -- a sweep instead of the wipe, per-file
+`forget_file()`, folder marks that survive, logging of skips -- and then **reverted in full**
+after measuring it. Kept from that work: only the `mem` protection (below).
+
+What the code does (upstream 1.3.0, unchanged):
+
+- `full_scan_run()` runs `DELETE FROM MEDIA_TABLE/ALBUM_TABLE/.../FOLDER_TABLE/CUE_STATE`
+  **before** `scan_directory()`, then `BEGIN`, walks, `COMMIT`. A cancel, a power cut or a
+  failed `COMMIT` therefore leaves the partial index as the library, and a card pulled
+  mid-scan loses what was not written yet. That is the original behaviour and it is
+  deliberate: the alternative cost time on every scan.
+- rows are committed every 50 (`SCAN_COMMIT_EVERY`); a failed `INSERT` used to be printed and
+  counted anyway and the folder was still marked, which is how a gap became permanent. The
+  rework fixed that; it is gone with the rework, so the risk is back.
+- no library ceiling and no `LIMIT`: "All tracks" is `SELECT rowid, sortkey FROM MEDIA_TABLE
+  ORDER BY sortkey`, and the count is `COUNT(*)` of the same table.
+- the folder subset filter is `scan_folders.txt` in the player's user-data dir, not on the
+  card; top-level folders not ticked are skipped and loose root files are dropped. A complete
+  run with a subset produces the subset index.
+
+**Why it was reverted -- the measurement** (same card, same 3262 files, same database):
+
+| build | scan |
+|---|---|
+| upstream logic (`/data/sonix_player.prev`) | 17:32:34 -> 17:34:15, **101 s** |
+| rework | 17:28:22 -> 17:30:50, **148 s** |
+| rework + no per-file delete in a full scan | 17:36:52 -> 17:39:0x, **~130 s** |
+
+The per-file `forget_file()` (four `DELETE`s inside the transaction) is most of the difference;
+the rest is inserting into a populated table and the 3262-row sweep at the end. The rework was
+bought for a report ("400 of 13000 tracks") that could not be reproduced on this card and has no
+confirmed mechanism, so the scan went back to upstream's and only the `mem` rule stayed.
+
+**What is still worth knowing about scanning** (measured, unchanged behaviour): no per-file cap,
+no depth problem at 3262 files; the card is the cost (about 31 ms per file, 25-32 tracks/s);
+a scan holds the standby off (below); `dr_flac` opens FLAC in strict mode, so a file whose first
+block is not STREAMINFO/34 is indexed but will not play (`decode.c`, `dr_flac.h`).
+
+## Streaming keys: the port needs no `streaming-keys.bin` (2026-10-29)
+
+The sealed-key machinery in `streamkeys.h:20-40` / `tools/seal_streamkeys.py` /
+`Makefile:286-306` is inherited from the Blaze design; this port never shipped a
+`.bin` and does not need one:
+
+- **Qobuz** derives its application id and secret at run time from
+  `play.qobuz.com` (`qobuzkey.h`, `qobuzkey.c`) and caches them in
+  `<card>/sonix/streaming-session.json`. The file is ours: it arrived in
+  `db3cd6d` and does not exist upstream (`raw.githubusercontent.com/.../qobuzkey.c`
+  answers 404).
+- **Tidal** carries the public tidalapi client pair, base64-wrapped in
+  `tidal.c:99-105`.
+- Only **Podcast Index** and **Last.fm** still read `streamkeys_*`, and they also
+  accept a plain `streaming-keys.ini` beside where the `.bin` would be
+  (`streamkeys.h:40`). Without it those two services disable themselves and say
+  so.
+
+So "no `streaming-keys.bin`" disables two optional services, not streaming.
+`README.md:196-208` and `docs/BUILD.md` §7 already say this correctly.
+
+## Never commit the patched kernel (2026-10-29)
+
+`patch/v3-panel-blank/patch_kernel.py` writes a patched **HiBy** kernel image. HiBy never
+published that kernel's source, so the output is their code with our bytes in it and must stay
+out of git (`patch/v3-panel-blank/UIMAGE.BIN` is in `.gitignore`, and
+`sonix-packer/kernel/UIMAGE.BIN` always was). Build it locally from the vendor `.upt`; the md5s
+of the current output are recorded in that directory's README and in `docs/KERNEL.md`. The
+upstream project's `sonix-packer/kernel/xImage-R1/R3PII` are different: those are built from
+published sources, so they stay tracked.
+
+## `one_boot_logo` is inert on this tree
+
+`sysinfo_model_t.one_boot_logo` is declared (sysinfo.h:100) and set false
+(board.h:86) but read by nothing; the only gate of the whole boot-logo path is
+`boot_logo_flash` (`bootlogo_board_supports()`, bootlogo.c:57-60). README.md:95
+cites `one_boot_logo` as the reason the port does not write the logo, and says
+the picture comes from a `logo` partition, which no table in the repo shows --
+V3-ANALOG.md contradicts itself on the source (`:522` bootloader, `:676` code
+comment says kernel/initramfs).

@@ -92,8 +92,9 @@ display path, panel power, the codec's card, the Bluetooth stack, USB DAC mode
   HDB), TempoTec's default DAC filter, the analogue output muted before
   power-off and reboot, the amplifier left off until the first track.
 - The hardware buttons the right way round, the button list page. The boot
-  logo stays TempoTec's, drawn from the `logo` partition: this port does not
-  write it (`one_boot_logo = false` in `board.h`).
+  logo stays TempoTec's, drawn by the kernel before the player starts: this port
+  does not write it (`boot_logo_flash = false` in `board.h`, the only switch the
+  boot-logo path reads).
 
 **Bluetooth**
 
@@ -202,7 +203,8 @@ The accounts live on the card, not in the firmware: Qobuz and Tidal tokens go in
 application credentials are compiled in — the player derives them from Qobuz's
 web player when it first needs them and caches them in the session file; Tidal's
 client pair is built in. Podcast Index and Last.fm keys come from a sealed
-`streaming-keys.bin` in the rootfs, and this repository does not ship one.
+`streaming-keys.bin` (or a plain `streaming-keys.ini`) in the rootfs, and this
+repository ships neither.
 Without a service's credentials it disables itself and says so, instead of
 failing halfway through a login. The full picture is in
 [docs/BUILD.md](docs/BUILD.md#7-streaming-services).

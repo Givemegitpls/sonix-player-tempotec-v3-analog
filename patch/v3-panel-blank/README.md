@@ -1,9 +1,10 @@
 # V3 Analog: `fb0/blank` as a real panel power cycle
 
-## Status: not shipped (unverified, and the blank path Oopses)
+## Status: not shipped, and not usable (the blank path Oopses)
 
-This patch is kept as a documented attempt, **not** as something the port ships. What was
-learned, in order:
+This patch is kept as a documented attempt, **not** as something the port ships or recommends.
+There is no usable replacement kernel for this device: the port runs TempoTec's 3.10.14 image, and
+this directory exists so the next person does not repeat the work. What was learned, in order:
 
 1. The first iteration (calling `lcd_power_off`/`lcd_power_on` from `jzfb_blank`) hung the
    device: `lcd_power_off`'s tail call is `goodix_ts_close`, which talks i2c to the touch
@@ -34,8 +35,9 @@ Nothing here was flashed: the device was only read over adb.
 
 ## Why a binary patch (and not a kernel build)
 
-* **`XBurst/Linux-X1000` cannot reproduce this kernel.**  The clone in
-  `../../kernel-src/Linux-X1000` is *mainline Linux 5.0.0-rc1* (its `Makefile`
+* **`XBurst/Linux-X1000` cannot reproduce this kernel.**  The upstream tree at
+  `https://github.com/XBurst/Linux-X1000` (a clone of it was assessed on
+  2026-10-12) is *mainline Linux 5.0.0-rc1* (its `Makefile`
   says `VERSION = 5`, `PATCHLEVEL = 0`, `SUBLEVEL = 0`), a SoC bring-up
   skeleton: `drivers/video/fbdev/` has only `jz4740_fb.c` (the mainline driver,
   no SLCD, no board pdata, no panel init table), there is **no `ingenicfb`**
@@ -50,22 +52,22 @@ Nothing here was flashed: the device was only read over adb.
 
 ## Provenance
 
-All of the stock files below come from the vendor's `v3_analog` firmware, unpacked
-in the older working copy (`firmware/tt/...` there); they are not part of this
-repository.
+All of the stock files below come from the vendor's `v3_analog` firmware; none of
+them is part of this repository. Take `UIMAGE.BIN` out of your own vendor `.upt`
+and gunzip its payload to get `kernel.bin`.
 
-* Stock kernel: `firmware/tt/kernel.bin` (the raw image, base virtual address
+* Stock kernel: `kernel.bin` (the raw image, base virtual address
   `0x80010000`, so `file offset = virt - 0x80010000`), md5
   `aaa60f4fc2b4d592f92bc5a405e10695`.  It is byte-for-byte the gzip payload of
-  `firmware/tt/iso/UIMAGE.BIN` (md5 `35889275f8bed2f967a18f6a8b66495c`), a
+  the `.upt`'s `UIMAGE.BIN` (md5 `35889275f8bed2f967a18f6a8b66495c`), a
   u-boot uImage (`magic 0x27051956`, `load 0x80010000`, `ep 0x8051ce20`,
   `comp gzip`, name `Linux-3.10.14`).
-* Stock firmware: `firmware/tt/fw.upt`, md5 `24bb64717ec6359bf779c57ae7c149d8`.
+* Stock firmware: the vendor 1.3 `v3_analog.upt`, md5 `24bb64717ec6359bf779c57ae7c149d8`.
 * Disassembler used for every address below:
   `sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-objdump -D -b binary
   -m mips:isa32 -EL --start-address=<off> --stop-address=<off>`.
-* Kernel source reference: `https://github.com/XBurst/Linux-X1000` (cloned in the
-  older working copy's `kernel-src/`; assessed above, not used).
+* Kernel source reference: `https://github.com/XBurst/Linux-X1000` (clone it
+  yourself; assessed above, not used).
 
 ## What the stock code does (all offsets are file offsets in `kernel.bin`)
 
@@ -110,17 +112,30 @@ function itself, so the decompressed image does **not** grow:
   is now unreachable.
 
 ```
-$ python3 patch_kernel.py
+$ python3 patch_kernel.py kernel.bin UIMAGE.BIN out/UIMAGE.BIN
     stock kernel : 7126564 bytes, md5 aaa60f4fc2b4d592f92bc5a405e10695
-    patched kernel: 7126564 bytes, md5 dcf9a0ec779a80350374b6e522e90c83
-    payload      : 3234226 bytes (stock 3236378)
-    .../UIMAGE.BIN: 3234290 bytes, md5 3c0e15c26fb32636ef92ebac6a0a2ceb
+    patched kernel: 7126564 bytes, md5 c99734a4a8f30b37aa932f6940fc0767
+    payload      : 3234229 bytes (stock 3236378)
+    out/UIMAGE.BIN: 3234293 bytes, md5 f6384f647c8b2013a23a18a035933ad6
 ```
+
+These are the numbers the script in this directory produces from the stock kernel. An earlier
+revision of the script is what an older copy of this README recorded (`dcf9a0ec…` for the
+kernel, `3c0e15c2…` / 3234290 bytes for the uImage, "2152 bytes smaller"); no revision
+committed here reproduces those.
+
+**The patched image is not in git, and must not be put back.** It is HiBy's kernel binary
+with our patch written into it, and HiBy never published that kernel's source; committing it
+publishes their code. Build it locally from your own vendor `.upt` (the command above, after
+unpacking the `.upt` and gunzipping its `UIMAGE.BIN` to `kernel.bin`), keep it out of git,
+and put it in the packer's slot only for a test flash.
+`.gitignore` covers `patch/v3-panel-blank/UIMAGE.BIN` and `sonix-packer/kernel/UIMAGE.BIN`
+for that reason.
 
 The script refuses any input whose md5 is not the stock kernel.  It gzip's the
 patched image exactly like the stock uImage (`mtime=0`, OS byte 3) and rebuilds
 the uImage header with the same `load`/`ep`/name and fresh size/dcrc/hcrc.  The
-patched uImage is **2152 bytes smaller** than the stock one.
+patched uImage is **2149 bytes smaller** than the stock one.
 
 Verify with:
 ```
@@ -244,8 +259,8 @@ The port already has the machinery; it is switched off for this board:
   `35889275f8bed2f967a18f6a8b66495c`.
 * Or restore `sonix-packer/out/v3_analog-rc1-151020262247.upt`.
 * The kernel patch itself is `patch_kernel.py`; reverting it is simply not
-  running it.  The stock `firmware/tt/kernel.bin` and `firmware/tt/iso/UIMAGE.BIN`
-  (in the older working copy) are never modified in place.
+  running it.  The stock `kernel.bin` and `UIMAGE.BIN` you unpacked are never
+  modified in place.
 
 ---
 

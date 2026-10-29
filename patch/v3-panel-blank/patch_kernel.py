@@ -21,12 +21,12 @@ does not grow.  The stock kernel image (`kernel.bin`, base virtual address
 stock uImage and wrapped in a rebuilt uImage header.
 
 Usage:
-    patch_kernel.py [STOCK_KERNEL_BIN] [STOCK_UIMAGE] [OUT_UIMAGE]
+    patch_kernel.py STOCK_KERNEL_BIN STOCK_UIMAGE [OUT_UIMAGE]
 
-Defaults are the old working layout -- two directories above the tree that held the
-sources, `firmware/tt/kernel.bin` and `firmware/tt/iso/UIMAGE.BIN` -- and do not
-resolve in this repository. Pass the two stock files (and the output, if wanted)
-explicitly; see README.md here.
+The two stock files are yours to produce: take `UIMAGE.BIN` out of your own vendor
+`v3_analog.upt` (the packer does that on every run and leaves it in
+`sonix-packer/build/iso/`) and gunzip its 64-byte-headered payload to get `kernel.bin`.
+There are no defaults for them on purpose -- see README.md here.
 """
 
 from __future__ import annotations
@@ -198,9 +198,11 @@ def build_uimage(stock_uimage: bytes, payload: bytes) -> bytes:
 
 def main() -> int:
     here = Path(__file__).resolve().parent
-    root = here.parents[1]  # the repository root
-    stock_kernel = Path(sys.argv[1]) if len(sys.argv) > 1 else root / ".." / ".." / "firmware/tt/kernel.bin"
-    stock_uimage = Path(sys.argv[2]) if len(sys.argv) > 2 else root / ".." / ".." / "firmware/tt/iso/UIMAGE.BIN"
+    if len(sys.argv) < 3:
+        raise SystemExit("usage: patch_kernel.py STOCK_KERNEL_BIN STOCK_UIMAGE [OUT_UIMAGE]\n"
+                         "       (see the docstring: both come from your own vendor .upt)")
+    stock_kernel = Path(sys.argv[1])
+    stock_uimage = Path(sys.argv[2])
     out = Path(sys.argv[3]) if len(sys.argv) > 3 else here / "UIMAGE.BIN"
 
     stock_uimage = stock_uimage.resolve()

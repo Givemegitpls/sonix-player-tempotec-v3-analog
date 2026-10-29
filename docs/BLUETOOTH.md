@@ -1,8 +1,8 @@
 # Bluetooth on the V3 Analog
 
-Consolidated from the chronological log (`.opencode/NOTES.md` in the original working copy,
-outside this repository) and the session archive (`tools/history.sh`; session ids at the end).
-Read this before touching anything BT.
+Consolidated from the chronological log (`.opencode/NOTES.md`) and the session
+archive (`tools/history.sh`; session ids at the end). Read this before touching
+anything BT.
 
 ## What runs
 
@@ -28,12 +28,14 @@ Read this before touching anything BT.
 - **LDAC (decoder)**: the **stock combined `libldacBT.so`** (in the vendor rootfs,
   `SYSTEM/usr/lib/` of the stock `.upt`; not in this repository), ABI `GLIBC_2.2`, runs on the
   device's glibc 2.16 as it is.
-- **AAC**: `libfdk-aac.so.2` (Debian non-free `libfdk-aac-dev` 2.0.2, mipsel).
+- **AAC**: `libfdk-aac.so.2` (Debian non-free `libfdk-aac-dev` 2.0.1-1, mipsel).
 - **aptX / aptX-HD**: `libopenaptx.so.0` (`libopenaptx-dev` 0.2.0 — bluez-alsa 4.0.0 knows only
   `libopenaptx`, hence `--with-libopenaptx`; `libfreeaptx` is not accepted).
 - SBC is built in.
-- Build inputs for the LDAC arm are kept in **`tools/ldac/`** (header, three `.pc` files,
-  README with provenance and the two decoder prototypes that the AOSP header lacks).
+- Build inputs for the LDAC arm are saved in **`tools/ldac/`** (header, three `.pc` files,
+  README with provenance and the two decoder prototypes that the AOSP header lacks); the build
+  itself takes its `.pc` files from **`bt-src/pc/`**, hand-written to point at the combined
+  `-lldacBT` (defect 2 below).
 
 ## The defects that cost two days, and their fixes
 
@@ -74,19 +76,22 @@ The interface takes 42-48 % of the single core and bluealsa's share *falls* — 
 playback thread is `SCHED_RR 10` and the flip thread `RR 5`.
 
 - bluealsa **4.0.0 has no `--io-rt-priority`** (added in 4.2.0). Neither 4.2.0 nor 4.3.1 can be
-  built here: both require `glib-2.0 >= 2.58.2`, the device has 2.46.1.
+  built here: both require `glib-2.0 >= 2.58.2`, the device has 2.46.1. The option is backported
+  instead — `bt-src/patch/0001-io-rt-priority.patch`, built into the shipped bluealsa (the
+  device's `--help` lists it, `bt-src/verify/device-help.txt`).
 - Verified live with `chrt -f -p 8 <tid>` and `-p 12`: **both remove the stutter** (owner's
   ears), and 12 does not make the scroll sluggish — so the player's default
   `[bluetooth] io_rt_priority = 12` is the value to ship.
 - The encoder thread is **recreated per track/transport**, so `chrt` is a test tool, not a fix.
-  The fix is either a bluealsa patched to accept `--io-rt-priority` (the player already probes
-  for the option and passes the configured value) or the player raising the thread itself.
+  The player passes the configured `[bluetooth] io_rt_priority` to bluealsa when the option is
+  there, and logs that it is not when a daemon without it is in the image.
 
 ## Tools
 
 `tools/btprobe.c` (adapter + bus check), `tools/btadm.c`, `tools/hciwatch.c`,
-`tools/rxprobe.c` (receiver PCM reader), `tools/ldacdec-test.c`, and `btmon` built for
-MIPS/glibc 2.16 — the HCI/L2CAP/AVDTP decoder that found the MTU defect.
+`tools/rxprobe.c` (receiver PCM reader), `tools/ldacdec-test.c`. The HCI/L2CAP/AVDTP
+decoder that found the MTU defect was a MIPS/glibc 2.16 build of `btmon`, which is not kept
+in this repository.
 
 ## Verifying
 

@@ -30,9 +30,10 @@ itself costs nothing.
 
 Measured on the device on 2026-10-24 (build `221020260040`) unless a line says otherwise.
 `tools/powsample` (`tools/powsample.c`) is what took the readings: one line every 20 s with the
-battery current, the voltage, the level, the backlight, **both panel rails** and the
-`slcd_vsync` interrupt count. The rails and the interrupt are what make the three states
-distinguishable from outside -- the backlight alone reads 0 in all three.
+battery current (the driver's constant, not a measurement -- below), the voltage, the level, the
+backlight, **both panel rails** and the `slcd_vsync` interrupt count. The rails and the interrupt
+are what make the three states distinguishable from outside -- the backlight alone reads 0 in all
+three.
 
 ### 1. The panel was left powered after a wake from standby
 
@@ -53,7 +54,7 @@ again before anything else.
 `power_init()` gated its panel repair on `panel_blanking()`, which is true on this board
 because the model carries `panel_sleep_ioctl`. So every boot ran
 `display_wake_begin()` → `fb_arm()` → **`FBIOBLANK(UNBLANK)` + `FBIOPUT_VSCREENINFO(FORCE)`**,
-the pair `docs/DISPLAY.md` and `AGENTS.md` forbid on this panel, to repair a state a reboot
+the pair the port reserves for `fb_arm()` itself, used here to repair a state a reboot
 cannot leave behind: the kernel's own `jzfb_open` re-runs the panel init.
 
 The wake path had the same shape: `screen_power(true)` = `SET_SLEEP(0)` already runs
@@ -120,7 +121,7 @@ the code; the measurement column is what `powsample` recorded.
 |---|---|---|---|
 | `lv_tick_get()` in the UI loop | ~84 `clock_gettime` per pass, 105 passes/s | 1 per pass | a real syscall here: **0.56 µs** measured on the device, not a vDSO read. Cached per pass, thread-local |
 | battery walk (`power_supply/*`) | 250 ms | 1000 ms | each pass is a sysfs walk; the icon shows whole percent |
-| `sonixlink` worker, feature off | 300 ms | waits on a condvar, 0 wake-ups | `sonixlink_set_enabled()` signals it |
+| `sonixlink` worker, feature off | 300 ms | waits on a condvar, a 60 s timed wait as the net | `sonixlink_set_enabled()` signals it |
 | `profiler`, trigger absent | `fopen()` on the card every 2 s | one `stat` every 5 s; a blocking `inotify` watch where the kernel has one | this kernel has none: `CONFIG_INOTIFY_USER` is off |
 | RTC battery check, >15 % | 4 h | 12 h | item 6 |
 | suspend on a plain charger | never | never | deliberate: the limit is enforced from the tick, and nothing ticks in `mem` -- item 5 |
@@ -157,6 +158,14 @@ Left as they were, deliberately:
 - **AirPlay and DLNA are not persisted** and hold Wi-Fi, and block `mem`, for as long as they
   are on -- the same trade-off as SonixLink, and deliberate: they have to be found to be used.
   Not surviving a reboot is by design, not a defect.
+- **A library or audiobook scan blocks `mem` until it finishes.** The walk reads and writes the
+  card for minutes; a suspend under it leaves the walk unfinished with writes in flight, and the
+  `jzmmc` driver on this board does not come back cleanly from that (the card notes in
+  `.opencode/NOTES.md`). `suspend_if_idle()` refuses with
+  `power: mem deferred: a scan is writing to the card` -- asked before the cable, so a test
+  session with adb attached still names the scan rather than the charger. The standby countdown
+  is restarted on every tick while a scan runs (`g_mem_active_ms` in the tick), so the sixty
+  seconds begin when the scan ends instead of having already expired.
 - **A pair of headphones that is connected but silent blocks `mem`.** `bluetooth_in_use()`
   counts `bluetooth_connected_device()`, i.e. the link and not the sound, so headphones left
   connected (nothing playing) keep the device -- and the Wi-Fi radio -- awake. Deliberate:
@@ -199,8 +208,8 @@ Reading the table:
   one -- see the open question below. Only the no-jack row is a real idle figure.
 
 What the software cannot do is answer the question at all: the AXP2101 driver's
-`axp_battery/current_now` is the constant `BAT_CURRENT_NOW` (200000) from
-`patch/v3-kernel/vendor-drivers/axp2101.c`, the CW2015 gauge behind
+`axp_battery/current_now` is the constant `BAT_CURRENT_NOW` (200000) hard-coded in
+the vendor's `axp2101.c` (that driver is not part of this repository), the CW2015 gauge behind
 `/sys/class/power_supply/battery` exposes `voltage_now` and `capacity` only, and this firmware
 has no `/dev/i2c*` to ask the PMIC directly. Anything in mA has to come from a meter.
 

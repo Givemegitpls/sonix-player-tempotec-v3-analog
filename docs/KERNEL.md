@@ -1,15 +1,25 @@
 # The kernel: what it is, what is known about it, how a replacement would reach the image
 
-Consolidated from the chronological log (`.opencode/NOTES.md` in the original working copy,
-outside this repository) and the session archive (`tools/history.sh`; session ids at the end).
+Consolidated from the chronological log (`.opencode/NOTES.md`) and the session
+archive (`tools/history.sh`; session ids at the end).
 The kernel is HiBy's; the port does not ship one.
 
 ## The image and the addresses
 
 - Stock kernel: the `UIMAGE.BIN` inside the vendor's `v3_analog.upt`, md5
   `35889275f8bed2f967a18f6a8b66495c`, 3.10-era, carried into every image **untouched**.
-  The unpacked copies (`kernel.bin`, the `.upt`) are in the older working copy, not in
-  this repository.
+  The `.upt` is a gitignored file of the tree (`sonix-packer/v3_analog_original.upt`,
+  the owner's own vendor image), its `UIMAGE.BIN` is unpacked at
+  `sonix-packer/build/iso/UIMAGE.BIN` (also gitignored), and the decompressed
+  kernel (`kernel.bin`, 7126564 bytes) is not part of this project: take the
+  `UIMAGE.BIN` out of your own vendor `.upt` and `gzip -d` its payload to get it.
+- The panel-blank patch's output is `patch/v3-panel-blank/UIMAGE.BIN`: 3234293 bytes, uImage
+  md5 `f6384f647c8b2013a23a18a035933ad6`, kernel md5 `c99734a4a8f30b37aa932f6940fc0767` --
+  byte-for-byte what `patch/v3-panel-blank/patch_kernel.py` builds from the stock kernel. It is
+  **not in git** (`.gitignore`): it is HiBy's binary with our patch written into it, and their
+  kernel source was never published, so it is rebuilt locally from the vendor `.upt` and kept
+  out of git. The README records the md5s an earlier revision of the script produced
+  (`dcf9a0ec…` kernel, `3c0e15c2…` uImage, 3234290 bytes).
 - Base: virt `0x80010000`, and **file offset = virt − 0x80010000**. Everything below is quoted
   that way; disassemble with
   `sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-objdump -D -b binary -m mips:isa32 -EL --start-address=<off> --stop-address=<off>`.
@@ -31,8 +41,9 @@ The panel's init table is **343 entries of `{type, value}`** (type 0 = command, 
 2 = `udelay`) at file `0x642924`, and it is a real sequence (`B9 00 00 / BA 21 01 / B9 01 00 /
 BB 90 00 / D6 05 01 / B7 50 02 / B8 00 00 / BE 40 01 / BC 03 00 / BD 00 00`, then `F0 AA 55 52 00`,
 `11`, `FD 05`, paged writes `BF <addr> …`, gammas `E0`-`E5`, `2A 00 00 01 3F` / `2B 00 00 01 DF` /
-`2C`). U-Boot carries the same table (`mtd0_uboot.bin`, file `0x53718` in the dump kept in
-the older working copy) with different `udelay` values.
+`2C`). U-Boot carries the same table (file `0x53718` in a dump of the device's `mtd0`, taken
+with `adb shell 'dd if=/dev/mtd0 of=/data/mtd0.bin bs=1M'` + `adb pull`; the dump is not part
+of this repository) with different `udelay` values.
 
 ## The functions, by address
 
@@ -76,11 +87,12 @@ are `addrs[k] ↔ names[k+4]`.
   for that family; modules in `assets/<model>/module_driver/` are built against it.
 - **The V3 Analog packer has the mechanism, under another name.** A kernel drops in at
   `sonix-packer/kernel/UIMAGE.BIN` (or wherever `KERNEL_IMAGE=` points): `v3_analog_packer.sh`
-  refuses one larger than the stock kernel, installs it and recomputes the kernel digest in
-  `UPDATE.TXT` (`sonix-packer/tools/fix_update_md5.py` does the rootfs one). Without it the
+  refuses one that is not a uImage and one larger than the stock kernel, copies it in verbatim and
+  recomputes the kernel digest in
+  `UPDATE.TXT` (`sonix-packer/tools/fix_update_md5.py` rewrites both blocks). Without it the
   stock kernel is carried across untouched, which is the normal case -- see
-  [BUILD.md](BUILD.md) and `patch/v3-kernel/FLASHING.md` in the kernel working copy next to
-  this repository.
+  [BUILD.md](BUILD.md). The only kernel work this repository carries is the binary patch in
+  `patch/v3-panel-blank/`, which explains its own build and flash.
 - The V3 Analog's stock kernel is **3.10-era**, so the 4.4.94 tree does not fit it. The X1000
   source the owner keeps — **https://github.com/XBurst/Linux-X1000** — was assessed on 2026-10-12
   and is **not usable for this device**: it is mainline Linux 5.0.0-rc1 with `MACH_X1000`, a
@@ -89,6 +101,12 @@ are `addrs[k] ↔ names[k+4]`.
   I2C, SOUND, MTD, USB and VFAT switched off — a SoC bring-up skeleton, not this player's kernel.
   Anything kernel-side for the V3 therefore means patching the stock image, not rebuilding from
   that tree.
+- **No replacement kernel for this device is usable today.** The mechanism above exists for a
+  kernel someone built or patched and verified themselves; the port ships the stock 3.10.14 image,
+  and the one kernel experiment this repository records (`patch/v3-panel-blank/`) failed — the
+  blank node Oopses under `console_lock`, and the vendor `SET_SLEEP` ioctl already does the power
+  cycle it was written for. Treat a replacement kernel as unsupported: wrong bytes there brick the
+  device and the only way back is the Ingenic Cloner.
 
 ## Archive
 

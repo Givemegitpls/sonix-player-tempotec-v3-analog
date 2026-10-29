@@ -25,7 +25,7 @@ means, and in a conflict they are ours:
 | `sonix-player/src/system/device/sysinfo.h` | the model struct `board.h` fills in: the fields every board-specific branch reads |
 | `sonix-player/src/gui/shell/scale.h` | the interface compiles at two thirds (`SC()`) |
 | `sonix-player/src/main.c` | the 32 bpp single-page SLCD path, `FBIOPAN_DISPLAY`, the damage-pan, the frame profiler |
-| `sonix-player/src/system/device/power.c` | screen-off through the vendor `SET_SLEEP` ioctl, the wake log, no `FBIOBLANK` ever |
+| `sonix-player/src/system/device/power.c` | screen-off through the vendor `SET_SLEEP` ioctl, the wake log, no `FB_BLANK_POWERDOWN`, and its only `FBIOBLANK` is the `UNBLANK` in `fb_arm()` |
 | `sonix-player/src/system/audio/alsa-controls.c` | the AK4493 mixer on card 1, the route parked before suspend |
 | `sonix-player/src/system/device/bootlogo.c` | `bootlogo_board_supports()`: no boot-logo marker on a board whose `/dev/mtd5` is the `/data` volume |
 | `sonix-player/src/gui/shell/icons_small.c` | the icon set this panel draws (generated, see below) |
@@ -34,8 +34,9 @@ means, and in a conflict they are ours:
 The invariants that must survive any merge, because each of them is the
 difference between a player and a brick or a boot loop:
 
-- **no `FBIOBLANK`** on this panel: screen-off is the vendor `SET_SLEEP` ioctl
-  (`panel_sleep_ioctl`), and the backlight alone comes first;
+- **no `FB_BLANK_POWERDOWN`** on this panel (`blank_panel = false`): screen-off is
+  the vendor `SET_SLEEP` ioctl (`panel_sleep_ioctl`) with the backlight alone first,
+  and the only `FBIOBLANK` the port issues is the `UNBLANK` in `fb_arm()`;
 - **one framebuffer page** and the pan: a frame reaches the glass only through
   `FBIOPAN_DISPLAY`;
 - the codec is **ALSA card 1** (`hw:1` for the mixer, `hw:1,0` for the analogue
@@ -44,7 +45,8 @@ difference between a player and a brick or a boot loop:
 - **nothing newer than glibc 2.16** may leave the binary — `make check-abi`
   decides, and it is run by the target build itself;
 - **`/dev/mtd5` is the `/data` UBI volume** here, not a scratch partition;
-- Bluetooth is our **BlueZ 5** userland from `assets/BLAZE`, not the stock 4.101;
+- Bluetooth is our **BlueZ 5** userland, from `assets/BLAZE` and `assets/V3ANALOG`
+  (the daemon and `libbluetooth` are this device's), not the stock 4.101;
 - upstream's kernel and kernel modules are **not** used: TempoTec's 3.10 kernel
   stays. So `axp2101.ko`, `mp2731.ko`, `soc_fb.ko`, `soc_msc.ko`, `brcmfmac.ko`,
   zram and anything that needs them is out.
@@ -141,8 +143,10 @@ SDL_VIDEODRIVER=offscreen SONIX_SD_ROOT=/tmp/sd \
 
 - `SONIX_LANG_DIR` is not optional: without it every label shows its key
   (`date_and_time`), which reads like a broken merge and is not.
-- a fresh `SONIX_HOST_STATE_DIR` re-enters the welcome flow, which is the quick
-  way to see the first-run pages (Wi-Fi step, date and time, language).
+- a fresh state directory, `/tmp/sonix/data` (`SONIX_HOST_STATE_DIR` in `main.c`;
+  `SONIX_CONFIG` points the settings file elsewhere), re-enters the welcome flow,
+  which is the quick way to see the first-run pages (Wi-Fi step, date and time,
+  language).
 - screen captures: `touch /tmp/sonix/shot`, the PNG lands in
   `$SONIX_SD_ROOT/Screenshots/`; taps and drags: `printf 'x y' > /tmp/sonix/tap`.
 - the battery icon at a level, low and charging:
@@ -233,8 +237,8 @@ with the upstream line second.
 
 Worth a look on every merge, because the packer installs these by name:
 `assets/BLAZE/usr/resource/sonix/gui/` (file names changed?), `.../fonts/`,
-the BlueZ userland in `assets/BLAZE/usr/{bin,sbin,lib}` and the libraries in
-`assets/V3ANALOG/usr/lib`. `sonix-packer/tools/install_tree.sh` checks a list of them and
+and the BlueZ userland in `assets/BLAZE/usr/{bin,lib}` and
+`assets/V3ANALOG/usr/{bin,sbin,lib}`. `sonix-packer/tools/install_tree.sh` checks a list of them and
 fails loudly when one did not land.
 
 ## 7. Build, and prove the ABI

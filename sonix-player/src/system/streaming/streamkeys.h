@@ -7,10 +7,10 @@
 // device rather than written in here.
 //
 // Qobuz and Tidal offer no way to talk to their APIs without a pair of
-// application keys, and the ones this device has are HiBy's: they live inside
-// /usr/bin/hiby_player, Tidal's even assembled byte by byte at run time so it
-// never appears as a string. They are HiBy's keys, not this project's, and open
-// source that carries them publishes them.
+// application keys. Qobuz derives its own at run time from its web player
+// (qobuzkey.c, this project's, absent upstream) but still prefers a pair given
+// in this file; Tidal's public pair is built in (tidal.c) and a pair here
+// overrides it. Only Podcast Index and Last.fm *require* a key from this file.
 //
 // So they sit in a file on the rootfs, which whoever assembles the firmware puts
 // alongside the other resource files. It is written as an INI:
@@ -31,18 +31,20 @@
 //     api_key = ...
 //     api_secret = ...
 //
-// and shipped sealed, as /usr/resource/sonix/components/streaming-keys.bin, by
-// tools/seal_streamkeys.py. The key that opens it is not in the source: the
-// tool keeps it in streaming-keys.key, outside git, and the Makefile compiles
-// it into the player. That keeps the keys out of an unpacked image; it does not
-// keep them from whoever takes the binary apart.
+// and may be shipped sealed, as
+// /usr/resource/sonix/components/streaming-keys.bin, by tools/seal_streamkeys.py;
+// this port ships no `.bin`. The key that opens a sealed file is not in the
+// source: the tool keeps it in streaming-keys.key, outside git, and the Makefile
+// compiles it into the player. That keeps the keys out of an unpacked image; it
+// does not keep them from whoever takes the binary apart.
 //
 // A plain streaming-keys.ini next to it is still read when there is no .bin,
 // for the simulator and for builds made without a key. Which of the two a file
 // is, is decided by its first bytes, not its name.
 //
-// Without either, or without a section, the matching service disables itself
-// and its menu entry says so instead of failing halfway through a login.
+// Without either, or without a section, Podcast Index and Last.fm disable
+// themselves and their menu entry says so instead of failing halfway through a
+// login.
 //
 // The path can be changed with [streaming] keys_file in device_config.ini, to
 // keep the keys on the card instead of the read-only rootfs -- the easy path
@@ -64,8 +66,10 @@ const char *streamkeys_tidal_client_id(void);
 const char *streamkeys_tidal_client_secret(void);
 // Podcast Index. This pair identifies this player rather than a HiBy
 // application: it is requested free on podcastindex.org, and each request is
-// signed with the SHA-1 of key + secret + time. Same rule as the other two:
-// out of the source, in a file whoever assembles the firmware fills in.
+// signed with the SHA-1 of key + secret + time. Podcast Index and Last.fm are
+// the two that need a key from this file; like the others' pairs, this one is
+// kept out of the source and in the file whoever assembles the firmware fills
+// in.
 const char *streamkeys_podcast_key(void);
 const char *streamkeys_podcast_secret(void);
 // Last.fm. An API account of this player, requested on last.fm/api: it signs

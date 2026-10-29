@@ -1,8 +1,8 @@
 # The panel and the display path (V3 Analog)
 
-Consolidated from the chronological log (`.opencode/NOTES.md` in the original working copy,
-outside this repository, which has the raw measurements) and the session archive
-(`tools/history.sh`; session ids at the end).
+Consolidated from the chronological log (`.opencode/NOTES.md`, which has the raw
+measurements) and the session archive (`tools/history.sh`; session ids at the
+end).
 
 ## The panel
 
@@ -45,9 +45,10 @@ panel's grid rather than on a timer.
 `FBIOBLANK(POWERDOWN)` clears `LCDC_CTRL.ENA` **and** `SLCDC_CTRL.DMA_EN`; `UNBLANK` restores only
 `ENA`. After that a pan returns success without transferring anything (`SLCDC_STATE.BUSY` never
 ticks), and in the worst case the registers read identical to a healthy boot while the glass is
-frozen — only a cold panel init clears it. The port therefore **never uses `FBIOBLANK` on this
-panel** (`blank_panel = false` in the model); where arming is needed it is `UNBLANK` →
-`FBIOPUT_VSCREENINFO(FB_ACTIVATE_NOW|FORCE)` → pan (`set_par` is what restores `DMA_EN`).
+frozen — only a cold panel init clears it. The port therefore **never issues
+`FB_BLANK_POWERDOWN`** on this panel (`blank_panel = false` in the model); its only `FBIOBLANK`
+is the `UNBLANK` in the arm sequence — `UNBLANK` → `FBIOPUT_VSCREENINFO(FB_ACTIVATE_NOW|FORCE)`
+→ pan (`set_par` is what restores `DMA_EN`).
 Screen-off does not go through this path at all: the panel is powered down with the vendor
 `SET_SLEEP` ioctl — corrected 2026-10-20 in [PANEL-POWER.md](PANEL-POWER.md).
 
@@ -60,10 +61,10 @@ Screen-off does not go through this path at all: the panel is powered down with 
   path above.
 - **Panel power** — the AXP20x rails `LDO7 = lcd_3v3` (3.0 V) and `LDO8 = lcd_1v8` (1.8 V), plus
   `gpio16 (lcd rst)` and `gpio48 (lcd rd)`. Only `lcd_power_off`/`lcd_power_on` touch them, and
-  they are called only from `jzfb_suspend`/`jzfb_resume`. **No blank level touches them**, and
-  there is no userspace path to them either: the regulator sysfs has no enable attribute, there
-  is no `/dev/i2c*` (so the PMIC cannot be poked), and `gpio16`/`gpio48` are `gpio_request`ed by
-  the driver (`EBUSY` on export).
+  they are called only from `jzfb_suspend`/`jzfb_resume`. **No blank level touches them**, but
+  userspace does have routes: `SET_SLEEP` (below) runs that pair through the driver, and the PMIC
+  has a raw register node (`/sys/class/axp/axp_reg`). What stays closed is the direct one: no
+  `/dev/i2c*`, and `gpio16`/`gpio48` give `EBUSY` on export.
 - So **suspend-to-RAM is the only real panel power cycle**, and it is verified on the device
   (including a 598 s sleep, `suspend_stats success:3 fail:0`): the panel comes back armed and
   scanning, the touch controller alive. Standby is on by default, 60 s after the screen goes dark

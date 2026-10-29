@@ -163,9 +163,10 @@ Screen-off on this device is **two steps**, exactly as the stock player does it:
 backlight goes to 0 at `/sys/class/backlight/pwm-backlight.0/brightness`, and then the
 vendor `SET_SLEEP` ioctl (`0x80044620`) powers the panel down -- `LCDC_CTRL.ENA`, the LCD
 clocks, the AXP2101 rails `LDO7`/`LDO8`, the reset line and the touch controller's doze.
-`blank_panel = false` in the model and the ioctl is `panel_sleep_ioctl`; `FBIOBLANK` is
-never used, because the state *it* leaves behind (`ENA` back on, `DMA_EN` still down) is the
-one this panel does not come back from without a reboot. The full evidence is in
+`blank_panel = false` in the model and the ioctl is `panel_sleep_ioctl`; no
+`FB_BLANK_POWERDOWN` is ever written, because the state it leaves behind (`ENA` back on,
+`DMA_EN` still down) is the one this panel does not come back from without a reboot --
+the only `FBIOBLANK` the port issues is the `UNBLANK` in `fb_arm()`. The full evidence is in
 [PANEL-POWER.md](PANEL-POWER.md).
 
 What that means outside the panel, the wake-ups the SoC still serves, and the defects this
@@ -179,8 +180,9 @@ real, awaited stop of the audio pipeline, the radios parked, `sync()`, then
 `mem`. `[power] standby_mem = 0` turns it off and the switch on the Power
 settings page writes exactly that key; `[power] standby_mem_seconds` sets the
 wait. On the way in the kernel powers the panel down, on the way out it runs
-`lcd_power_on` and the panel's own table -- which is also the only power cycle
-left that can free a panel that has stopped showing anything.
+`lcd_power_on` and the panel's own table -- the same cycle `SET_SLEEP(0)` runs on
+screen-on, so a panel that has stopped showing anything is freed without a suspend
+too.
 
 `[power] screen_off_seconds` is what starts that countdown: 30 seconds by
 default, `0` for never, and the Screen page's slider is the same setting.
@@ -432,9 +434,8 @@ rxprobe: at 15 s: 567126 frames, 12.86 s of audio
 ```
 
 The headless stand the runs were made with (headless receiver, HCI capture,
-phone driven over adb) lived in `analysis/v3-bt-scripts/` in the older working
-copy and is not part of this repository. `tools/btadm.c`, the D-Bus tool it
-needs, is: adapters, discovery, pairing agent, connect, and a dump of
+phone driven over adb) is not part of this repository; `tools/btadm.c`, the D-Bus
+tool it needs, is: adapters, discovery, pairing agent, connect, and a dump of
 bluealsa's transports.
 
 ## The image: `v3_analog.upt`
@@ -519,8 +520,8 @@ One thing the verify step exists for, learned the hard way:
   `etc/init.d/S92_03_start_music_player` in place, and a rewrite that drops its
   mode leaves a firmware whose init skips it -- busybox init does not run a
   script without the bit. The player then never starts, and what stays on the
-  screen is the boot logo, which the bootloader draws from the `logo`
-  partition, not the player. It looks exactly like a player that hangs. The
+  screen is the boot logo, which the kernel draws before the player starts, not
+  the player. It looks exactly like a player that hangs. The
   rewrite preserves the mode and the check refuses an image where any of
   `S92_03_start_music_player`, `sonix_player`, `sonix_player.sh` or
   `sonix_launch` is not executable.
@@ -539,9 +540,8 @@ The image deliberately carries no boot-time adb script. An earlier build had
 started `adbd` whenever neither `sonix_player` nor `sonix_launch` was running --
 that is, at every boot and whenever the player was restarting -- so adb came up
 despite the switch being off, and each re-arm rebuilt the USB gadget under the
-running system (the card's mount point moving with it; see the duplicate-tracks
-item in `TODO.md` of the original working copy, outside this repository). It is
-removed, and the packer no longer expects it.
+running system (the card's mount point moving with it, which is what produced the
+duplicate library entries). It is removed, and the packer no longer expects it.
 
 What that costs: if the player cannot start at all, adb does not come up either,
 so there is nothing to look at over USB and a device stuck on the boot logo is
@@ -571,7 +571,7 @@ therefore asks for by name:
 | the player's image | `docker build -t tempotec-player-build sonix-player/docker`, or let `sonix-player/docker/build.sh` build it |
 | the stock `.upt` | the vendor's 1.3 firmware for the V3 Analog, above; not in the repository |
 | `sonix-packer/sonix_player`, `sonix_launch` | `sonix-player/docker/build.sh` (see "Building for the target") |
-| `sonix-packer/kernel/UIMAGE.BIN` | nothing: it must **not** be there. The packer installs a kernel from that slot when one is present, and only kernel work deliberately puts one there (`patch/v3-kernel/FLASHING.md` in the kernel working copy next to this repository; the mechanism is in `docs/KERNEL.md`) |
+| `sonix-packer/kernel/UIMAGE.BIN` | nothing: it must **not** be there. The packer installs a kernel from that slot when one is present, and only kernel work deliberately puts one there (a uImage you patched or built yourself; the mechanism is in `docs/KERNEL.md`, and `patch/v3-panel-blank/` is the one kernel patch this repository carries) |
 
 The packer checks each of these before it starts and says which one is missing,
 so a first run on a fresh clone is a list of what to fetch, not a stack of

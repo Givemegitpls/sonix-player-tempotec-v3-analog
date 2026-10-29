@@ -6,9 +6,9 @@ target-side tools `tools/`.
 
 ## Read the knowledge base before touching anything
 
-The chronological log lives outside this repository, in the older working copy's
-`.opencode/NOTES.md` (long, and the place where every measurement ends up). The
-consolidated documents sit next to this file:
+The chronological log is `.opencode/NOTES.md` in this repository (long, and the
+place where every measurement ends up). The consolidated documents sit next to
+this file:
 
 - `docs/V3-ANALOG.md` — what this port is, what differs from the Blaze port it came
   from, what does not work.
@@ -63,10 +63,11 @@ tools/history.sh snaps                  # file-state snapshots (unreferenced git
   percentages are not sizes.
 - The player's source follows upstream `Jepl4r/sonix-player`: an update is `git merge <tag>`,
   not a hand-applied diff. `docs/UPDATING.md` is the recipe, and the invariants it lists
-  (`SET_SLEEP` instead of `FBIOBLANK`, one framebuffer page and the pan, card 1, glibc 2.16,
-  `/dev/mtd5` is `/data`, BlueZ 5) must survive every merge.
-- Never use `FBIOBLANK` on this panel: `blank_panel = false` is deliberate, and the stock
-  screen-off is the vendor `SET_SLEEP` ioctl instead (`panel_sleep_ioctl`, `power.c`). See
-  `docs/DISPLAY.md` and `docs/PANEL-POWER.md`.
+  (`SET_SLEEP` instead of `FB_BLANK_POWERDOWN`, one framebuffer page and the pan, card 1,
+  glibc 2.16, `/dev/mtd5` is `/data`, BlueZ 5) must survive every merge.
+- Never write `FB_BLANK_POWERDOWN` on this panel: `blank_panel = false` is deliberate, the only
+  `FBIOBLANK` the port issues is the `UNBLANK` in `fb_arm()`, and the stock screen-off is the
+  vendor `SET_SLEEP` ioctl instead (`panel_sleep_ioctl`, `power.c`). See `docs/DISPLAY.md` and
+  `docs/PANEL-POWER.md`.
 - Keep the big build inputs out of git: `bt-src/sysroot/`, `bt-src/debs/`, `kernel-src/` clones.
   Their patches, pc files and READMEs belong in the repo; the tarballs and sysroots do not.
