@@ -1326,6 +1326,16 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 		mem_skip("music is playing");
 		return;
 	}
+	// A scan is reading and writing the card for minutes at a time. Suspending
+	// under it leaves the walk unfinished and the card with writes in flight,
+	// and the jzmmc driver on this board does not come back cleanly from that
+	// (see the card notes in .opencode/NOTES.md). Asked before the cable, so the
+	// log names the scan rather than the charger a test session leaves plugged.
+	// The standby wait itself restarts when the scan ends -- see the tick.
+	if (library_scan_running() || audiobookdb_scan_running()) {
+		mem_skip("a scan is writing to the card");
+		return;
+	}
 	// Pause counts as a stopped state: the PCM is already released after five
 	// seconds ("DAC powered down" in the log) and resuming always reopens the
 	// device from scratch, route included, which is the path every unpause
@@ -1933,7 +1943,13 @@ static void power_timer_cb(lv_timer_t *timer) {
 	// cannot fall in the middle of a track change.
 	bool usb_now = usb_vbus_present();
 	bool usb_changed = g_usb_present_known && usb_now != g_usb_present_last;
-	if (playing || input_idle < power_tick_ms() * 2 || usb_changed) {
+	// A scan counts as activity for the standby countdown even though the
+	// screen may be dark and nothing is playing: the wait has to start from the
+	// end of the scan, not run alongside it. suspend_if_idle() refuses a suspend
+	// while one runs; this keeps the count from being already expired the moment
+	// it ends.
+	if (playing || input_idle < power_tick_ms() * 2 || usb_changed || library_scan_running() ||
+		audiobookdb_scan_running()) {
 		g_mem_active_ms = now;
 	}
 	g_usb_present_last = usb_now;
@@ -2155,10 +2171,10 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	// exactly as the stock standby does it (its own sequence: a real, awaited
 	// stop of the audio pipeline, Wi-Fi parked, sync(), then `mem`).
 	//
-	// The stock player never puts this panel to sleep -- it has no FBIOBLANK, no
-	// FBIOPAN_DISPLAY and no FBIOPUT_VSCREENINFO at all, and dims the backlight
-	// instead -- and the port follows it there (blank_panel in board.h, the
-	// screen-off path). The deep sleep is the other way of sleeping the panel:
+	// The stock player puts this panel to sleep with the vendor SET_SLEEP ioctl,
+	// not with FBIOBLANK (docs/PANEL-POWER.md), and the port follows it there
+	// (panel_sleep_ioctl in board.h, the screen-off path). The deep sleep is the
+	// other way of sleeping the panel:
 	// the SoC suspends, the panel is powered down, and coming back means a full
 	// re-initialisation. That path used to be where this panel's wake-up
 	// troubles lived, so the default was off while the cause was unknown; it is
@@ -2202,7 +2218,7 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 
 	printf("power: initialized (max_brightness=%ld, on=%ld, screen_off=%s/%ums, mem=%s/%lus, panel_blank=%s)\n",
 		   g_max_brightness, g_cfg.brightness, g_cfg.screen_off_enabled ? "on" : "off", g_cfg.screen_off_timeout_ms,
-		   g_mem_enabled ? "TEST" : "no", (unsigned long)mem_secs, g_cfg.blank_path ? "yes" : "no");
+		   g_mem_enabled ? "on" : "off", (unsigned long)mem_secs, g_cfg.blank_path ? "yes" : "no");
 }
 
 bool power_radios_parked(void) { return g_wifi_parked || g_bt_parked; }
