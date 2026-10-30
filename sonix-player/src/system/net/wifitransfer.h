@@ -33,10 +33,12 @@
 // what /etc/thttpd.conf says.
 //
 // The CGI programs have the paths they will serve compiled into them --
-// /data/mnt/sd_0, /data/mnt/sd_1, /data/mnt/udisk_0, /data/mnt/udisk_1 -- so
-// the card has to be mounted on one of those for the page to show anything.
-// That is where this player mounts it too (system.c walks the same three names
-// for the same directory), so it lines up.
+// /mnt/sd_0, /mnt/sd_1, /mnt/udisk_0, /mnt/udisk_1 -- and check a request path
+// against them by prefix. So the card has to be mounted on one of those names
+// for the page to show anything AND for its writes to be accepted: on this
+// firmware it is /mnt/sd_0, which is one of them (system.c walks the same three
+// names for the same directory), so it lines up. On a build that mounts the card
+// under /data/mnt or /usr/data/mnt, wifitransfer binds it onto /mnt/sd_0.
 
 // True when the firmware carries the server and the page. False on the host
 // build and on a firmware without them, in which case the page says so instead

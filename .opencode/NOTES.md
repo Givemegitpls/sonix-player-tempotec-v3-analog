@@ -697,3 +697,25 @@ cites `one_boot_logo` as the reason the port does not write the logo, and says
 the picture comes from a `logo` partition, which no table in the repo shows --
 V3-ANALOG.md contradicts itself on the source (`:522` bootloader, `:676` code
 comment says kernel/initramfs).
+
+## Wi-Fi transfer: the stock CGIs check a path by prefix (2026-10-30)
+
+Read-only listing worked and every write did not: `upload.cgi`, `create.cgi`,
+`move.cgi` and `delete.cgi` compare the path they are sent against four strings
+compiled into them -- `/mnt/sd_0/`, `mnt/sd_1/`, `/mnt/udisk_0/`,
+`mnt/udisk_1/` (`.data 0x41a400` holds pointers to `.rodata 0x409f00` and
+friends) -- with a function that is `for each s: if (strcmp(s, path) <= 0)
+return 1`. That is a prefix test, not a resolution: `/data/mnt/sd_0/...` sorts
+after all four and is rejected, and `/var/log/cgic.log` says so
+(`(W) DELETE: Invalid path /data/mnt/sd_0/FSCK0000.REC`). `download.cgi` checks
+nothing, and `sonix-list` is ours, which is why reads looked fine.
+
+So the page speaks `/mnt/sd_0/` (`web/index.html`, `CARD`), `wifitransfer.c`'s
+`CGI_CARD_ROOT` is `/mnt/sd_0` so the bind mount lands on a name they accept,
+and `webcgi.c` accepts the four `/mnt` names plus `/data/mnt` for an older page.
+Permissions, ownership and the mount flags were never the problem: the card is
+`rw` and both the player and thttpd run as root.
+
+`webpage.h` and `web/build/index.html` are generated: after any `web/` change
+run `python3 sonix-player/tools/web_to_c.py` or the binary keeps serving the old
+page.

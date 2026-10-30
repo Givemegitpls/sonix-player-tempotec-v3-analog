@@ -594,12 +594,17 @@ body.dragging { outline: 3px solid var(--accent); outline-offset: -3px; }
 /* ---------------------------------------------------------------------------
    The card, and the top of everything this page can see.
 
-   The CGI programs know four paths -- /data/mnt/sd_0, sd_1, udisk_0, udisk_1 --
-   compiled in, unchangeable. This device has one card slot, and the player only
-   binds the card onto sd_0, so sd_0 is the whole world here: there is no storage
-   picker, because a list of one thing is furniture.
+   The CGI programs know four paths -- /mnt/sd_0, sd_1, udisk_0, udisk_1 --
+   compiled in, unchangeable, and they compare what they are sent against them
+   as a prefix: /data/mnt/sd_0 is the same directory and lists fine, but every
+   write (upload, create, move, delete) is refused with "Invalid path". So the
+   page must speak these names, not the /data/mnt alias.
+
+   This device has one card slot, and the player binds the card onto sd_0 if the
+   firmware mounted it somewhere else, so sd_0 is the whole world here: there is
+   no storage picker, because a list of one thing is furniture.
    --------------------------------------------------------------------------- */
-var CARD = "/data/mnt/sd_0/";
+var CARD = "/mnt/sd_0/";
 
 /* What the player can do something with. Only used to warn: the CGIs take
    anything, and a .exe on a music player is a mistake worth catching before it

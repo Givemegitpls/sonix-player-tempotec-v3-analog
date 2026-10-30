@@ -6,10 +6,36 @@
 #include <string.h>
 #include <sys/stat.h>
 
-// The root the stock CGI programs are allowed to look at, compiled into them
-// and repeated here: this answers the same URL, so it applies the same rule.
-// Nothing outside /data/mnt is any of the web page's business.
-#define CGI_ROOT "/data/mnt/"
+// The roots the CGI programs are allowed to look at. The four /mnt ones are
+// compiled into them -- /mnt/sd_0, /mnt/sd_1, /mnt/udisk_0, /mnt/udisk_1 -- and
+// they check a path by prefix, not by resolving it; /data/mnt is the alias this
+// firmware serves the same directory under, kept so an older page still lists.
+// This answers the same URL as the programs it replaces, so it applies the same
+// rule: nothing outside those is the web page's business.
+static const char *const cgi_roots[] = {"/mnt/sd_0/", "/mnt/sd_1/", "/mnt/udisk_0/",
+					"/mnt/udisk_1/", "/data/mnt/"};
+
+// True for a path inside one of cgi_roots. A root given without its trailing
+// slash ("/mnt/sd_0") is the root itself and is allowed; a path that only looks
+// like a prefix ("/mnt/sd_0x") is not.
+static bool below_web_root(const char *path) {
+	if (strstr(path, "/../") != NULL) {
+		return false;
+	}
+
+	size_t path_len = strlen(path);
+	for (unsigned i = 0; i < sizeof(cgi_roots) / sizeof(cgi_roots[0]); i++) {
+		size_t len = strlen(cgi_roots[i]);
+		if (strncmp(path, cgi_roots[i], len) == 0) {
+			return true;
+		}
+		if (path_len == len - 1 && strncmp(path, cgi_roots[i], len - 1) == 0) {
+			return true;
+		}
+	}
+
+	return false;
+}
 
 #define MAX_PATH 1024
 
@@ -153,10 +179,10 @@ int webcgi_main(void) {
 	char hidden_flag[8] = "";
 	bool hidden = query_value(query, "hidden", hidden_flag, sizeof(hidden_flag)) && hidden_flag[0] == '1';
 
-	// Same rule as the programs this stands in for: below /data/mnt, and no
-	// climbing out of it. This runs as root (thttpd's user= says so), so without
-	// the check the transfer page could ask for a listing of /etc.
-	if (strncmp(path, CGI_ROOT, strlen(CGI_ROOT)) != 0 || strstr(path, "/../") != NULL) {
+	// Same rule as the programs this stands in for: below one of the roots they
+	// know, and no climbing out of it. This runs as root (thttpd's user= says
+	// so), so without the check the transfer page could ask for a listing of /etc.
+	if (!below_web_root(path)) {
 		fail("path not allowed");
 		return 1;
 	}

@@ -57,8 +57,10 @@
 #define CONF_NAMED "/tmp/sonix-thttpd-80.conf"
 
 // Where the CGI programs look for the card. Not a choice: it is compiled into
-// all six of them, along with sd_1 and the two udisk names.
-#define CGI_CARD_ROOT "/data/mnt/sd_0"
+// all six of them, along with sd_1 and the two udisk names, and they compare a
+// request path against those strings by prefix -- any other alias of the same
+// directory, however readable, makes every write fail with "Invalid path".
+#define CGI_CARD_ROOT "/mnt/sd_0"
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static bool g_enabled;
@@ -130,15 +132,20 @@ static bool exists(const char *path) { return access(path, F_OK) == 0; }
 // ---------------------------------------------------------------------------
 // putting the card where the CGIs will find it
 //
-// The six CGI programs have their four paths compiled in -- /data/mnt/sd_0,
-// /data/mnt/sd_1, /data/mnt/udisk_0, /data/mnt/udisk_1 -- and there is no way
-// to tell them about another one.
+// The six CGI programs have their four paths compiled in -- /mnt/sd_0,
+// /mnt/sd_1, /mnt/udisk_0, /mnt/udisk_1 -- and there is no way to tell them
+// about another one. They compare the path they are sent against those strings
+// as a prefix (see _contains in upload.cgi and friends), so a second alias of
+// the same directory is not the same thing to them: /data/mnt/sd_0 lists fine
+// through our own sonix-list and download.cgi, but upload, create, move and
+// delete answer "Invalid path" and log it to /var/log/cgic.log.
 //
 // HiBy OS has three names for the same directory (/mnt, /data/mnt,
 // /usr/data/mnt) and which of them are symlinks to which differs between
 // builds. This player mounts the card on whichever of the three it finds, which
-// on this firmware is /mnt/sd_0 -- a different directory from /data/mnt/sd_0,
-// so the CGIs would read an empty one.
+// on this firmware is /mnt/sd_0 -- already the name the CGIs know. On a build
+// that parks it on /data/mnt/sd_0 or /usr/data/mnt/sd_0, the card would be in
+// the right place for us and the wrong one for them.
 //
 // Rather than guess at the symlink layout, the mount point is bound into place:
 // same directory, two names, no copying and no second mount of the card itself.
@@ -164,9 +171,7 @@ static void bind_card(void) {
 		return; // already one and the same: nothing to do
 	}
 
-	mkdir("/data", 0755);
-	mkdir("/data/mnt", 0755);
-	mkdir(CGI_CARD_ROOT, 0755);
+	mkdir(CGI_CARD_ROOT, 0755); // /mnt is part of the firmware
 
 	if (mount(root, CGI_CARD_ROOT, NULL, MS_BIND, NULL) == 0) {
 		g_card_bound = true;
