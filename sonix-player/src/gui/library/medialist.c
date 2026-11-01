@@ -1961,8 +1961,15 @@ static void thumb_timer_cb(lv_timer_t *timer) {
 // Rows are tied to their position in the list: index -> widget index % ROW_POOL,
 // so a one-step slide of the band rebinds exactly one row instead of renaming
 // all of them.
+//
+// The band starts at row_at_y() and not at scroll / ROW_PITCH: on one album's
+// tracks the rows sit head_height below the top of the page, and disc headings
+// push them further down, so dividing the scroll by the row pitch can put the
+// first visible row four or five rows past the one the viewport opens on. Those
+// rows were then bound to nothing -- hidden -- and a scrolled album showed its
+// tracks only on the lower half of the screen.
 static int band_first(panel_t *p, int scroll) {
-	int first = (scroll / ROW_PITCH) - 1;
+	int first = row_at_y(p, scroll) - 1;
 	if (first + ROW_POOL > p->count) {
 		first = p->count - ROW_POOL;
 	}
@@ -1997,7 +2004,7 @@ static void rest_cb(lv_timer_t *timer) {
 	int scroll = lv_obj_get_scroll_y(p->list);
 	int first = band_first(p, scroll < 0 ? 0 : scroll);
 	// Nearest below the screen first: that is the direction a list is read in.
-	int visible_last = ((scroll < 0 ? 0 : scroll) + lv_obj_get_height(p->list) - 1) / ROW_PITCH;
+	int visible_last = row_at_y(p, (scroll < 0 ? 0 : scroll) + lv_obj_get_height(p->list) - 1);
 	int best = -1;
 	for (int i = 0; i < ROW_POOL; i++) {
 		int index = first + i;
@@ -2105,8 +2112,8 @@ static void window_update_impl(panel_t *p, bool defer_offscreen) {
 	if (view_h <= 0) {
 		view_h = (int)lv_display_get_vertical_resolution(NULL);
 	}
-	int visible_first = scroll / ROW_PITCH;
-	int visible_last = (scroll + view_h - 1) / ROW_PITCH;
+	int visible_first = row_at_y(p, scroll);
+	int visible_last = row_at_y(p, scroll + view_h - 1);
 	bool deferred = false;
 
 	for (int i = 0; i < ROW_POOL; i++) {

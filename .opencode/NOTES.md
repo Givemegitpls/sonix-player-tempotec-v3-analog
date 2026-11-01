@@ -719,3 +719,29 @@ Permissions, ownership and the mount flags were never the problem: the card is
 `webpage.h` and `web/build/index.html` are generated: after any `web/` change
 run `python3 sonix-player/tools/web_to_c.py` or the binary keeps serving the old
 page.
+
+## medialist row windowing must go through row_at_y()
+
+`src/gui/library/medialist.c` binds a pool of 12 rows over the viewport. The
+band is derived from the scroll offset, and on one album's tracks the rows sit
+`head_height` below the top of the page (plus a `DISC_HEAD_PITCH` per disc
+heading), so `scroll / ROW_PITCH` overshoots by up to five rows: the rows the
+viewport opens on were bound to nothing and hidden, and a scrolled album showed
+its tracks only on the lower half of the screen. `band_first()`,
+`window_update_impl()`'s `visible_first/last` and `rest_cb()`'s `visible_last`
+all now use `row_at_y()`, the inverse of `row_y()`. Any new code that turns a
+scroll offset into a row index has to do the same.
+
+Reproducing it needs care: `band_first()` clamps to `count - ROW_POOL`, so an
+album of 12 tracks or fewer (and any list scrolled to its very end) binds every
+row whatever the arithmetic says. Use a record with more than 12 tracks and a
+small drag that lands mid-list.
+
+The host simulator only indexes the card if `/mnt/sd_0` exists and is writable:
+without it the log says `storage: /mnt/sd_0 is READ-ONLY`, the library holds 0
+tracks and every list is empty. `SONIX_SD_ROOT` alone is not enough.
+
+Killing a simulator by name: `pgrep -f 'sonix_player_hos[t]$'` also matches the
+shell whose command line *ends* with the binary name (e.g. a trailing
+`ls -l sonix_player_host`), so the kill takes the shell with it. Keep the
+pattern and the rest of the command line apart.
