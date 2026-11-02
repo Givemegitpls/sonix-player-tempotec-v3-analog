@@ -8,6 +8,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
+#include "src/system/device/meminfo.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -138,14 +139,9 @@ static void add_proc_row(const char *name, long rss_kb) {
 static void rebuild(void) {
 	// --- RAM ---
 	long total = meminfo_kb("MemTotal");
-	long avail = meminfo_kb("MemAvailable");
-	long freek = meminfo_kb("MemFree");
+	long avail = meminfo_available_kb();
 	if (avail < 0) {
-		// Older kernels may not have MemAvailable (the 4.4 on this device does,
-		// but not every build): fall back to free+buffers+cached.
-		long buffers = meminfo_kb("Buffers");
-		long cached = meminfo_kb("Cached");
-		avail = (freek < 0 ? 0 : freek) + (buffers < 0 ? 0 : buffers) + (cached < 0 ? 0 : cached);
+		avail = 0;
 	}
 	if (ram_label) {
 		if (total > 0) {

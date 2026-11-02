@@ -745,3 +745,19 @@ Killing a simulator by name: `pgrep -f 'sonix_player_hos[t]$'` also matches the
 shell whose command line *ends* with the binary name (e.g. a trailing
 `ls -l sonix_player_host`), so the kill takes the shell with it. Keep the
 pattern and the rest of the command line apart.
+
+The stock kernel has no `MemAvailable` in `/proc/meminfo` (3.10). Both
+`read_mem_available()` (cover.c) and the audio stats' `MemAvailable` print 0 or
+-1 as a result, which pins the cover decode budget to its 2048 KB floor and
+makes the log read `cover: 0 KB free`. The number is memory, not card space --
+do not read it as a filesystem complaint. `src/system/device/meminfo.c` now
+carries the one fallback (`MemFree + Buffers + Cached`) all four readers use.
+
+A card that comes back from the player with `FAT-fs: error, fat_get_cluster:
+invalid cluster chain` and `Filesystem has been set read-only` makes every
+sqlite write fail with `disk I/O error` and stops the scan; the library itself
+is fine (`pragma integrity_check` returns ok). Host-side check: `udiskie-mount`
+for a user mount, `pkexec fsck.vfat -n` then `-a -w`, and the read speed of this
+card in a USB reader is ~17 MB/s, so sample windows instead of a full `dd` run.
+`fsck.vfat -a` reclaims the orphaned chains into `FSCKnnnn.REC`, which keep the
+recovered FLACs intact.

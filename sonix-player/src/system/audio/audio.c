@@ -10,6 +10,7 @@
 #include "src/system/audio/eq.h"
 #include "src/system/audio/decimate.h"
 #include "src/system/core/config.h"
+#include "src/system/device/meminfo.h"
 #include "src/system/device/power.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/core/utils.h"
@@ -1931,22 +1932,6 @@ static int64_t thread_cpu_ns(void) {
 	return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }
 
-static long mem_available_kb(void) {
-	FILE *f = fopen("/proc/meminfo", "r");
-	if (!f) {
-		return -1;
-	}
-	char line[96];
-	long kb = -1;
-	while (fgets(line, sizeof(line), f)) {
-		if (sscanf(line, "MemAvailable: %ld kB", &kb) == 1) {
-			break;
-		}
-	}
-	fclose(f);
-	return kb;
-}
-
 // "cpu" line of /proc/stat: all ticks, and idle plus iowait.
 static bool system_ticks(long long *total, long long *idle) {
 	FILE *f = fopen("/proc/stat", "r");
@@ -2096,7 +2081,7 @@ static void health_tick(health_t *h, int rate, int out_rate, int bits) {
 				"audio[%ld]: %ld s at %d Hz%s / %d bit: playback thread %d.%d%% of the core (read+decode %d.%d%%, "
 				"effects %d.%d%%, ALSA write %d.%d%%), %u write recoveries, MemAvailable %ld kB\n",
 				now, span / 1000, rate, to, bits, all / 10, all % 10, rd / 10, rd % 10, fx / 10, fx % 10, wr / 10,
-				wr % 10, write_recoveries - h->recoveries, mem_available_kb());
+				wr % 10, write_recoveries - h->recoveries, meminfo_available_kb());
 
 		long long total = 0, idle = 0;
 		if (h->sys_total >= 0 && system_ticks(&total, &idle) && total > h->sys_total) {
