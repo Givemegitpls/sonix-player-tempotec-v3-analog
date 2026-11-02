@@ -811,3 +811,21 @@ blocks as soon as the socket buffer fills, which looks like the player hanging. 
 shairport` first, then inject -- and afterwards toggle AirPlay off/on to get `shairport` back under
 `sys_server`'s control. And `nc` is not in the rootfs, and a shell redirection onto a UNIX socket
 path does not work anyway (`open()` on a socket gives ENXIO), hence the small C client.
+
+## /proc/meminfo on this kernel has no MemAvailable (2026-11-02)
+
+The stock kernel is 3.10.14, and `MemAvailable` is a 3.14 addition: the line simply is not
+there. Every reader that parsed only that line therefore got 0 or -1 -- `cover: 0 KB free` in the
+scan log, `MemAvailable -1 kB` in the audio health line, an empty RAM card on the processes
+page -- numbers that read like a device in trouble and were only a missing key.
+
+`src/system/device/meminfo.{c,h}` now holds the one parser, with two entry points on purpose:
+`meminfo_kb(key)` is the honest single value (what a *sizing* decision wants, keeps its own
+floor), `meminfo_available_kb()` is MemAvailable or the `MemFree + Buffers + Cached` estimate for
+anything that *reports* memory. Do not hand the estimate to the cover decode budget: it is mostly
+page cache, the device has 56 MB and no swap, and evicting cache under one large allocation is
+how the playback thread stalls -- `cover.c` stays on `meminfo_kb("MemAvailable")` (0 here, the
+2 MB floor) on purpose, and says so.
+
+`main.c`'s two dumps used to ask for `MemAvailable:` too and never matched; they now print
+`MemFree`/`Buffers`/`Cached` instead.

@@ -13,6 +13,7 @@
 
 #include "src/system/db/sqlite3.h"
 
+#include "src/system/device/meminfo.h"
 #include "src/system/library/albumart.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/image/art_shrink.h"
@@ -109,22 +110,14 @@ static void raw_free(raw_image_t *img) {
 #define DECODE_BUDGET_RESERVE_BYTES 0
 #endif
 
+// MemAvailable and nothing else: on this kernel (3.10, no MemAvailable) this
+// returns 0 and the budget stays on its floor, which is the intended
+// behaviour. meminfo_available_kb() is deliberately not used here -- its
+// fallback is page cache, and the comment above says why that must not become
+// a decode budget.
 static size_t read_mem_available(void) {
-	FILE *f = fopen("/proc/meminfo", "r");
-	if (!f) {
-		return 0;
-	}
-
-	char line[256];
-	size_t kb = 0;
-	while (fgets(line, sizeof(line), f)) {
-		if (sscanf(line, "MemAvailable: %zu kB", &kb) == 1) {
-			break;
-		}
-	}
-
-	fclose(f);
-	return kb * 1024;
+	long kb = meminfo_kb("MemAvailable");
+	return kb > 0 ? (size_t)kb * 1024 : 0;
 }
 
 static size_t decode_budget_bytes(void) {

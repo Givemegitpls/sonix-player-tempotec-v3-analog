@@ -8,6 +8,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
+#include "src/system/device/meminfo.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -31,25 +32,6 @@ typedef struct {
 
 #define PROC_MAX 200	 // how many are collected
 #define PROC_SHOWN 60	 // how many are shown (the largest)
-
-// One line of /proc/meminfo, in kB. -1 when absent.
-static long meminfo_kb(const char *key) {
-	FILE *f = fopen("/proc/meminfo", "r");
-	if (!f) {
-		return -1;
-	}
-	char line[160];
-	size_t klen = strlen(key);
-	long val = -1;
-	while (fgets(line, sizeof(line), f)) {
-		if (strncmp(line, key, klen) == 0 && line[klen] == ':') {
-			val = atol(line + klen + 1);
-			break;
-		}
-	}
-	fclose(f);
-	return val;
-}
 
 // The process name (comm), newline stripped. False if the PID is already gone.
 static bool read_comm(const char *pid, char *out, size_t size) {
@@ -138,14 +120,12 @@ static void add_proc_row(const char *name, long rss_kb) {
 static void rebuild(void) {
 	// --- RAM ---
 	long total = meminfo_kb("MemTotal");
-	long avail = meminfo_kb("MemAvailable");
-	long freek = meminfo_kb("MemFree");
+	// meminfo_available_kb() carries the free+buffers+cached fallback itself:
+	// this kernel is 3.10 and has no MemAvailable line, so without it the card
+	// would read as "used = total".
+	long avail = meminfo_available_kb();
 	if (avail < 0) {
-		// Older kernels may not have MemAvailable (the 4.4 on this device does,
-		// but not every build): fall back to free+buffers+cached.
-		long buffers = meminfo_kb("Buffers");
-		long cached = meminfo_kb("Cached");
-		avail = (freek < 0 ? 0 : freek) + (buffers < 0 ? 0 : buffers) + (cached < 0 ? 0 : cached);
+		avail = 0;
 	}
 	if (ram_label) {
 		if (total > 0) {

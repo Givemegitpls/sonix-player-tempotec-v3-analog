@@ -605,8 +605,11 @@ static void report_memory(const char *when) {
 	if (mi) {
 		char line[128];
 		while (fgets(line, sizeof(line), mi)) {
+			// No MemAvailable on this kernel (3.10): the line does not exist,
+			// so asking for it only ever matched nothing. MemFree, Buffers and
+			// Cached are what the two sums are made of.
 			if (strncmp(line, "MemTotal:", 9) == 0 || strncmp(line, "MemFree:", 8) == 0 ||
-				strncmp(line, "MemAvailable:", 13) == 0) {
+				strncmp(line, "Cached:", 7) == 0 || strncmp(line, "Buffers:", 8) == 0) {
 				fprintf(stderr, "memory (%s): %s", when, line);
 			}
 		}
@@ -812,17 +815,20 @@ static volatile uint32_t ui_heartbeat;
 #define WATCHDOG_PLAY_STALL_MS 10000
 
 static void watchdog_dump_threads(void) {
-	// Memory first: a stall with MemAvailable on the floor is the kernel
-	// thrashing, not a bug in any one thread. Dirty and Writeback are pages
-	// waiting to reach the card, so when those are most of what is missing the
-	// card is the bottleneck and nobody has allocated anything. VmRSS answers
-	// the other half -- whether the player itself has grown.
+	// Memory first: a stall with almost nothing free is the kernel thrashing,
+	// not a bug in any one thread. The kernel here is 3.10, so there is no
+	// MemAvailable to read -- MemFree plus what Dirty and Writeback are holding
+	// is the honest picture. Dirty and Writeback are pages waiting to reach the
+	// card, so when those are most of what is missing the card is the
+	// bottleneck and nobody has allocated anything. VmRSS answers the other
+	// half -- whether the player itself has grown.
 	FILE *mi = fopen("/proc/meminfo", "r");
 	if (mi) {
 		char line[128];
 		while (fgets(line, sizeof(line), mi)) {
-			if (strncmp(line, "MemFree:", 8) == 0 || strncmp(line, "MemAvailable:", 13) == 0 ||
-				strncmp(line, "Dirty:", 6) == 0 || strncmp(line, "Writeback:", 10) == 0) {
+			if (strncmp(line, "MemFree:", 8) == 0 || strncmp(line, "Buffers:", 8) == 0 ||
+				strncmp(line, "Cached:", 7) == 0 || strncmp(line, "Dirty:", 6) == 0 ||
+				strncmp(line, "Writeback:", 10) == 0) {
 				fprintf(stderr, "watchdog:   %s", line);
 			}
 		}

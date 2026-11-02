@@ -10,6 +10,7 @@
 #include "src/system/audio/eq.h"
 #include "src/system/audio/decimate.h"
 #include "src/system/core/config.h"
+#include "src/system/device/meminfo.h"
 #include "src/system/device/power.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/core/utils.h"
@@ -1424,7 +1425,7 @@ static int open_bluetooth_at_rate(snd_pcm_t **pcm, const char *device, unsigned 
 #ifndef HOST_BUILD
 // How the kernel's free memory is split up, one line per zone: the number of
 // free blocks of 1, 2, 4, 8... pages. Written when a driver finds no memory,
-// because MemAvailable cannot say whether the memory is short or only broken
+// because a byte count cannot say whether the memory is short or only broken
 // into pieces.
 static void log_buddyinfo(const char *when) {
 	FILE *f = fopen("/proc/buddyinfo", "r");
@@ -1901,7 +1902,9 @@ static void track_started(void) {
 }
 
 // A line every HEALTH_PERIOD_MS while a track plays: the share of the core the
-// playback thread used, how many writes needed recovering, and MemAvailable.
+// playback thread used, how many writes needed recovering, and how much memory
+// was available (MemAvailable, or the free+buffers+cached estimate this kernel
+// needs -- see device/meminfo.h).
 // While a stream plays the thread runs SCHED_RR on a single core, so whatever
 // it uses is taken from the interface first.
 #define HEALTH_PERIOD_MS 10000
@@ -1929,22 +1932,6 @@ static int64_t thread_cpu_ns(void) {
 		return 0;
 	}
 	return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
-}
-
-static long mem_available_kb(void) {
-	FILE *f = fopen("/proc/meminfo", "r");
-	if (!f) {
-		return -1;
-	}
-	char line[96];
-	long kb = -1;
-	while (fgets(line, sizeof(line), f)) {
-		if (sscanf(line, "MemAvailable: %ld kB", &kb) == 1) {
-			break;
-		}
-	}
-	fclose(f);
-	return kb;
 }
 
 // "cpu" line of /proc/stat: all ticks, and idle plus iowait.
@@ -2094,9 +2081,9 @@ static void health_tick(health_t *h, int rate, int out_rate, int bits) {
 		}
 		fprintf(stderr,
 				"audio[%ld]: %ld s at %d Hz%s / %d bit: playback thread %d.%d%% of the core (read+decode %d.%d%%, "
-				"effects %d.%d%%, ALSA write %d.%d%%), %u write recoveries, MemAvailable %ld kB\n",
+				"effects %d.%d%%, ALSA write %d.%d%%), %u write recoveries, available %ld kB\n",
 				now, span / 1000, rate, to, bits, all / 10, all % 10, rd / 10, rd % 10, fx / 10, fx % 10, wr / 10,
-				wr % 10, write_recoveries - h->recoveries, mem_available_kb());
+				wr % 10, write_recoveries - h->recoveries, meminfo_available_kb());
 
 		long long total = 0, idle = 0;
 		if (h->sys_total >= 0 && system_ticks(&total, &idle) && total > h->sys_total) {

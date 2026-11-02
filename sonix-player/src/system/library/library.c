@@ -11,6 +11,7 @@
 #include "src/system/library/cardroot.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/podcastdl.h"
+#include "src/system/device/meminfo.h"
 #include "src/system/device/system.h"
 
 #include <ctype.h>
@@ -3435,24 +3436,6 @@ void library_index_close(library_index_t *ix) {
 // scanning
 // ---------------------------------------------------------------------------
 
-// Free memory, for the scan log. -1 where /proc/meminfo does not exist (the
-// simulator on a system without it).
-static long mem_available_kb(void) {
-	FILE *f = fopen("/proc/meminfo", "r");
-	if (!f) {
-		return -1;
-	}
-	char line[160];
-	long kb = -1;
-	while (fgets(line, sizeof(line), f)) {
-		if (sscanf(line, "MemAvailable: %ld kB", &kb) == 1) {
-			break;
-		}
-	}
-	fclose(f);
-	return kb;
-}
-
 // A growable list of names: what the walk holds while it reads one level (see
 // scan_directory).
 typedef struct {
@@ -4713,7 +4696,7 @@ static void scan_indexed(const char *path, const char *name, const song_metadata
 		}
 
 		if (scan_found % SCAN_LOG_EVERY == 0) {
-			long free_kb = mem_available_kb();
+			long free_kb = meminfo_available_kb();
 			printf("library: %d tracks, %s (%ld kB free)\n", scan_found, path, free_kb);
 			fflush(stdout);
 		}
