@@ -18,15 +18,21 @@
 //         "set_meta:title:<...>", "get_position_info", "set_volume@<n>"
 //                        |
 //                        v
-//                /data/dmr_streamer   <-- this process is the server
+//               <dir>/dmr_streamer   <-- this process is the server
 //                        |
 //                   the player downloads the url and plays it
 //                        |
-//                /data/dmr_control    <-- dmrd is the server
+//               <dir>/dmr_control    <-- dmrd is the server
 //                        ^
 //         "play", "pause", "stop", "next", "previous",
 //         "set_position@<pos>@<dur>", "set_duration@<dur>", "play_finish",
 //         "exit"
+//
+// <dir> is dmrd's working directory, not ours: dmrd opens both names relative
+// to it, so on a firmware whose daemon runs in /data the sockets are
+// /data/dmr_*, and on one whose init left it in / they are /dmr_*. This device
+// is the second, so this side binds its listener in both (see SOCKET_DIRS in
+// dlna.c) and sends control messages to whichever accepts.
 //
 // dmrd does not send audio: it sends a URL. The phone serves the track over its
 // own HTTP, and the player downloads and decodes it, which is why part of this
@@ -40,7 +46,7 @@
 // the device gives for itself, from /usr/resource/bt_name -- the same one
 // Bluetooth and AirPlay use.
 //
-// Two consequences worth stating. The /data/dmr_streamer socket must already be
+// Two consequences worth stating. The dmr_streamer socket must already be
 // listening when dmrd starts, because dmrd is the one connecting. And the
 // player owns the output the whole time: what arrives over DLNA is a track like
 // any other, so local playback stops -- not from a device conflict, but because

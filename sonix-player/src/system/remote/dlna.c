@@ -25,8 +25,35 @@
 #include "src/system/core/lang.h"
 
 // The two sockets, and which side listens on each. See dlna.h.
-#define STREAMER_SOCKET "/data/dmr_streamer"
-#define CONTROL_SOCKET "/data/dmr_control"
+//
+// Where they land is not this file's to choose. dmrd builds both names relative
+// to its own working directory -- the strings in the binary are "dmr_streamer"
+// and "dmr_control", with no leading slash -- so on a firmware whose daemon was
+// started from /data it opens /data/dmr_control, and on one whose init left it
+// in / it opens /dmr_control. This device is the second: dmrd has cwd "/" and
+// creates /dmr_control the moment it starts.
+//
+// With a single fixed /data here, that mismatch is silent and total: the
+// player listens where dmrd will never connect, so the renderer announces
+// itself on the network and then plays nothing, and the "exit" sent on switch
+// off goes into a socket nobody reads, so dmrd processes accumulate -- three of
+// them were running on the device this was found on.
+//
+// So both layouts are served: the listener is bound in each directory (one fd
+// apiece, both polled), and a message towards dmrd goes to the first candidate
+// that accepts a connection. The stock daemon chooses dmrd's working directory
+// and cannot be asked, which is exactly why this side must not assume one.
+#define STREAMER_NAME "dmr_streamer"
+#define CONTROL_NAME "dmr_control"
+
+static const char *const SOCKET_DIRS[] = {"/data", ""};
+#define SOCKET_DIR_COUNT ((int)(sizeof(SOCKET_DIRS) / sizeof(SOCKET_DIRS[0])))
+
+// "/data/dmr_control", "/dmr_control": the empty directory gives a leading
+// slash, so no special case is needed for the root.
+static void socket_path(char *out, size_t size, int dir, const char *name) {
+	snprintf(out, size, "%s/%s", SOCKET_DIRS[dir], name);
+}
 
 #define DMRD_BIN "/usr/bin/dmrd"
 
@@ -263,7 +290,7 @@ bool dlna_take_command(dlna_command_t *out) {
 }
 
 // ---------------------------------------------------------------------------
-// towards dmrd: /data/dmr_control
+// towards dmrd: the dmr_control socket, wherever its working directory put it
 // ---------------------------------------------------------------------------
 
 // Longest wait for dmrd to accept the connection.
@@ -305,31 +332,37 @@ static int connect_with_timeout(int fd, const struct sockaddr *addr, socklen_t l
 // and SO_SNDTIMEO does not bound it, so on the UI thread this would freeze the
 // display. Anything that is not a worker thread uses control_post() below.
 static void control_send(const char *message) {
-	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (fd < 0) {
-		return;
+	for (int dir = 0; dir < SOCKET_DIR_COUNT; dir++) {
+		int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (fd < 0) {
+			return;
+		}
+
+		struct sockaddr_un addr;
+		memset(&addr, 0, sizeof(addr));
+		addr.sun_family = AF_UNIX;
+		char path[64];
+		socket_path(path, sizeof(path), dir, CONTROL_NAME);
+		snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+
+		struct timeval tv = {.tv_sec = 1, .tv_usec = 0};
+		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+		// The bounded connect(), not the plain one: SO_SNDTIMEO does not bound
+		// it, and on a UNIX socket with a full backlog it waits forever. The
+		// heartbeat thread comes through here and service_stop() joins it, so a
+		// block here made turning DLNA off never return.
+		if (connect_with_timeout(fd, (struct sockaddr *)&addr, sizeof(addr), CONTROL_CONNECT_MS) == 0) {
+			// The NUL goes over the wire with the rest: the other side runs
+			// sscanf on a C string.
+			ssize_t ignored = send(fd, message, strlen(message) + 1, MSG_NOSIGNAL);
+			(void)ignored;
+			close(fd);
+			return;
+		}
+		close(fd);
 	}
-
-	struct sockaddr_un addr;
-	memset(&addr, 0, sizeof(addr));
-	addr.sun_family = AF_UNIX;
-	snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", CONTROL_SOCKET);
-
-	struct timeval tv = {.tv_sec = 1, .tv_usec = 0};
-	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-	// The bounded connect(), not the plain one: SO_SNDTIMEO does not bound it,
-	// and on a UNIX socket with a full backlog it waits forever. The heartbeat
-	// thread comes through here and service_stop() joins it, so a block here
-	// made turning DLNA off never return.
-	if (connect_with_timeout(fd, (struct sockaddr *)&addr, sizeof(addr), CONTROL_CONNECT_MS) == 0) {
-		// The NUL goes over the wire with the rest: the other side runs sscanf
-		// on a C string.
-		ssize_t ignored = send(fd, message, strlen(message) + 1, MSG_NOSIGNAL);
-		(void)ignored;
-	}
-	close(fd);
 }
 
 // Outbox: callers that cannot afford to block leave the message here and the
@@ -757,10 +790,14 @@ done_label:
 }
 
 // ---------------------------------------------------------------------------
-// from dmrd: /data/dmr_streamer
+// from dmrd: the dmr_streamer socket, in every directory dmrd might use
 // ---------------------------------------------------------------------------
 
-static int listen_fd = -1;
+// One listener per candidate directory: dmrd is the side that connects, and
+// which of them it opens is decided by its own working directory, so both must
+// be live before it starts. -1 means the bind failed there and only the other
+// one is served.
+static int listen_fds[SOCKET_DIR_COUNT] = {-1, -1};
 static pthread_t server_thread;
 static bool server_live;
 static volatile bool server_stopping;
@@ -996,39 +1033,62 @@ static void *server_worker(void *unused) {
 	thread_be_background("dlna server");
 
 	while (!server_stopping) {
-		struct pollfd p = {.fd = listen_fd, .events = POLLIN};
-		int ready = poll(&p, 1, 300);
+		// Whatever bound: on a firmware where /data is not writable, or where
+		// only one of the two directories is reachable, the loop serves the
+		// other one instead of dying.
+		struct pollfd p[SOCKET_DIR_COUNT];
+		int n = 0;
+		for (int i = 0; i < SOCKET_DIR_COUNT; i++) {
+			if (listen_fds[i] >= 0) {
+				p[n].fd = listen_fds[i];
+				p[n].events = POLLIN;
+				p[n].revents = 0;
+				n++;
+			}
+		}
+		if (n == 0) {
+			break;
+		}
+
+		int ready = poll(p, (nfds_t)n, 300);
 		if (ready <= 0) {
 			continue;
 		}
 
-		int client = accept(listen_fd, NULL, NULL);
-		if (client < 0) {
-			if (errno == EINTR) {
+		for (int i = 0; i < n; i++) {
+			if ((p[i].revents & POLLIN) == 0) {
 				continue;
 			}
-			break;
-		}
 
-		// One connection, one command: that is how dmrd talks.
-		//
-		// With a timeout, though: the socket is world-accessible, and anyone
-		// connecting without sending would hold this loop forever -- and with
-		// it the pthread_join in service_stop(), so DLNA could never be turned
-		// off.
-		struct timeval tv = {.tv_sec = 2, .tv_usec = 0};
-		setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-		setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+			int client = accept(p[i].fd, NULL, NULL);
+			if (client < 0) {
+				if (errno == EINTR) {
+					continue;
+				}
+				break;
+			}
 
-		char buf[COMMAND_MAX];
-		ssize_t got = recv(client, buf, sizeof(buf) - 1, 0);
-		if (got > 0) {
-			buf[got] = '\0';
-			// The sender NUL-terminates; if it did not, the line above does.
-			printf("dlna: <- %s\n", buf);
-			handle(client, buf);
+			// One connection, one command: that is how dmrd talks.
+			//
+			// With a timeout, though: the socket is world-accessible, and
+			// anyone connecting without sending would hold this loop forever --
+			// and with it the pthread_join in service_stop(), so DLNA could
+			// never be turned off.
+			struct timeval tv = {.tv_sec = 2, .tv_usec = 0};
+			setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+			setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+			char buf[COMMAND_MAX];
+			ssize_t got = recv(client, buf, sizeof(buf) - 1, 0);
+			if (got > 0) {
+				buf[got] = '\0';
+				// The sender NUL-terminates; if it did not, the line above
+				// does.
+				printf("dlna: <- %s\n", buf);
+				handle(client, buf);
+			}
+			close(client);
 		}
-		close(client);
 	}
 	return NULL;
 }
@@ -1111,9 +1171,20 @@ static void service_start(void) {
 
 	// Listening before sys_server is told to start dmrd: dmrd is the side that
 	// connects here, and a socket that does not exist yet means a renderer
-	// that announces itself on the network and then plays nothing.
-	listen_fd = make_server(STREAMER_SOCKET);
-	if (listen_fd < 0) {
+	// that announces itself on the network and then plays nothing. In every
+	// candidate directory, because which one dmrd uses is its working
+	// directory and not ours -- see SOCKET_DIRS.
+	bool any_listener = false;
+	for (int dir = 0; dir < SOCKET_DIR_COUNT; dir++) {
+		char path[64];
+		socket_path(path, sizeof(path), dir, STREAMER_NAME);
+		listen_fds[dir] = make_server(path);
+		if (listen_fds[dir] >= 0) {
+			any_listener = true;
+			printf("dlna: listening on %s\n", path);
+		}
+	}
+	if (!any_listener) {
 		set_error(tr("dlna_socket_failed"));
 		return;
 	}
@@ -1175,11 +1246,15 @@ static void service_stop(void) {
 		heartbeat_live = false;
 	}
 
-	if (listen_fd >= 0) {
-		close(listen_fd);
-		listen_fd = -1;
+	for (int dir = 0; dir < SOCKET_DIR_COUNT; dir++) {
+		if (listen_fds[dir] >= 0) {
+			close(listen_fds[dir]);
+			listen_fds[dir] = -1;
+		}
+		char path[64];
+		socket_path(path, sizeof(path), dir, STREAMER_NAME);
+		unlink(path);
 	}
-	unlink(STREAMER_SOCKET);
 
 	// Again, and not a bare queue_clear(): an abandoned download is detached
 	// and may still be between "there is enough" and its queue_push. This

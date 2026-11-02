@@ -745,3 +745,69 @@ Killing a simulator by name: `pgrep -f 'sonix_player_hos[t]$'` also matches the
 shell whose command line *ends* with the binary name (e.g. a trailing
 `ls -l sonix_player_host`), so the kill takes the shell with it. Keep the
 pattern and the rest of the command line apart.
+
+## AirPlay: the stock binaries are in /sbin on this device (2026-11-02)
+
+`airplay.c` used to answer `airplay_available()` from three hardcoded `/usr/bin` paths.
+The V3's rootfs carries `shairport`, `shairport_on.sh` and `shairport_off.sh` in **/sbin**,
+and `/usr/bin` has only `shairport_on.sh` -- put there by the shared BLAZE assets, with no
+`shairport` beside it. So the page said "not available on this firmware" on a device that has
+the whole mechanism, because `sys_server` starts it from `/sbin/shairport_on.sh` regardless of
+what the player thinks. The check now probes `/sbin` first, then `/usr/bin`, per file.
+
+With that fixed the receiver comes up as the stock one does: `shairport -a TempoTec%V3 -o ot
+-M /tmp -b 160`, both `/var/run/airplay_*` sockets created by the player before the request,
+and the advertisement on the LAN is `B7B0B0B9E889@TempoTec V3._raop._tcp.local` (checked with a
+hand-rolled mDNS query: PTR `_raop._tcp.local`, A `buildroot.local -> device ip`). It is
+**RAOP only** -- no `_airplay._tcp`, so this is legacy AirPlay audio, not AirPlay 2.
+
+## DLNA: dmrd's sockets live where its working directory is (2026-11-02)
+
+`dmrd` opens `dmr_streamer` and `dmr_control` **relative to its cwd** -- bare names in the
+binary, no `/data` prefix -- and `sys_server`, started from init without a `cd`, leaves it in
+`/`. So on this device the renderer's side of the pair is `/dmr_control` and `/dmr_streamer`,
+while `dlna.c` bound and connected to `/data/dmr_*`. The result was a renderer that appears in
+the network and plays nothing: dmrd never connects to a listener at `/data/dmr_streamer`, and
+the `exit` sent on switch-off goes into a socket nobody reads, so `dmrd` processes accumulate
+(three were running). `dlna.c` now binds a listener in **both** `/data` and `/` and sends
+control messages to whichever accepts; verified on the device -- both sockets present, one
+`dmrd`, casting plays.
+
+## Building on this machine when the docker images cannot be pulled (2026-11-02)
+
+`tempotec-player-build:latest` here is **Debian 12, glibc 2.36**, while the MIPS toolchain in
+`~/Projects/own/tempotec/tempotec-v3/toolchain/rockbox-toolchain` is linked against glibc 2.38,
+so every compile in that image dies with `version GLIBC_2.38 not found`. Rebuilding the image
+from `sonix-player/docker/Dockerfile` needs `ubuntu:24.04`, which is not local and cannot be
+pulled here. Two things make the host build work instead:
+
+- `ROCKBOX_TOOLCHAIN_DIR=<abs path> make target -j<n>` in `sonix-player/` (host glibc 2.44); the
+  tree's `rockbox-toolchain` is a **symlink outside the repository**, so a container would not
+  see it unless that path is mounted too.
+- `-v path:path:ro` on this docker (29.9.2) produced a container where the path does not exist;
+  `--mount type=bind,src=...,dst=...,readonly` works. Worth reaching for `--mount` when a mount
+  seems to vanish.
+
+Packing is unaffected: `SKIP_PLAYER_BUILD=1 ./v3_analog_packer.sh` uses the local
+`tempotec-fw-tools:latest` and touches no network.
+
+## Verifying AirPlay without an Apple device (2026-11-02)
+
+`pyatv`/`atvremote` is no help: it discovers `_airplay._tcp` only, and this receiver is RAOP-only
+(`_raop._tcp`, advertised as `B7B0B0B9E889@TempoTec V3`), so `scan` finds nothing even with
+`--scan-hosts <ip> --scan-protocols raop`, and `--protocol` accepts only `dmap`/`mrp`.
+
+What does work is feeding the player's own half: the AirPlay side of the port takes raw
+44.1 kHz/16-bit/stereo PCM on `/var/run/airplay_socket_server` and one message per connection on
+`/var/run/airplay_meta_server` (`AIRPLAY:CONNECT`, `AIRPLAY:TITLE:9:Test tone`, `AIRPLAY:ARTIST:...`;
+the number is the payload length). A ~20-line static MIPS client (`socket/connect/write` from
+stdin, built with the tree's `mipsel-rockbox-linux-gnu-gcc -static`) plus
+`ffmpeg ... -f s16le -ac 2 -ar 44100` is enough, and the tone is audible on the DAC -- verified
+2026-11-02.
+
+Two traps. `pcm_worker()` accepts **one** client and keeps it for the whole session, which is
+shairport's own behaviour ("it connects once, in init()"); a second writer sits in the backlog and
+blocks as soon as the socket buffer fills, which looks like the player hanging. So `killall
+shairport` first, then inject -- and afterwards toggle AirPlay off/on to get `shairport` back under
+`sys_server`'s control. And `nc` is not in the rootfs, and a shell redirection onto a UNIX socket
+path does not work anyway (`open()` on a socket gives ENXIO), hence the small C client.

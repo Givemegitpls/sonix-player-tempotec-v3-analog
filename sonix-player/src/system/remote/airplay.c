@@ -90,9 +90,15 @@
 #define PCM_SOCKET "/var/run/airplay_socket_server"
 #define META_SOCKET "/var/run/airplay_meta_server"
 
-#define SHAIRPORT_BIN "/usr/bin/shairport"
-#define SHAIRPORT_ON "/usr/bin/shairport_on.sh"
-#define SHAIRPORT_OFF "/usr/bin/shairport_off.sh"
+// Which directory the firmware keeps shairport and its two scripts in is a
+// property of the rootfs, not of this protocol: the Blaze images carry them in
+// /usr/bin, this device's stock tree carries them in /sbin (and ships a
+// /usr/bin/shairport_on.sh only because the shared assets put one there, with
+// no shairport next to it). The player never runs either script -- sys_server
+// does, through the path compiled into the daemon -- so these lookups exist
+// only to answer "does this firmware carry AirPlay at all".
+static const char *const SHAIRPORT_DIRS[] = {"/sbin", "/usr/bin"};
+#define SHAIRPORT_DIR_COUNT ((int)(sizeof(SHAIRPORT_DIRS) / sizeof(SHAIRPORT_DIRS[0])))
 
 // Where the firmware keeps the name the device calls itself -- one line,
 // "HiBy R3PROII". It is the Bluetooth name and the AirPlay name both; the
@@ -335,8 +341,25 @@ static void name_for_wire(char *out, size_t out_size) {
 	}
 }
 
+// True when `name` is executable in any of SHAIRPORT_DIRS.
+static bool shairport_file_exists(const char *name) {
+	char path[128];
+	for (int i = 0; i < SHAIRPORT_DIR_COUNT; i++) {
+		snprintf(path, sizeof(path), "%s/%s", SHAIRPORT_DIRS[i], name);
+		if (access(path, X_OK) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool airplay_available(void) {
-	return access(SHAIRPORT_BIN, X_OK) == 0 && access(SHAIRPORT_ON, X_OK) == 0 && access(SHAIRPORT_OFF, X_OK) == 0;
+	// All three, and not "shairport alone": a firmware with the binary but not
+	// the scripts it is started and stopped through has nothing that could
+	// switch the receiver on. The three do not have to live in the same
+	// directory -- each is looked for separately.
+	return shairport_file_exists("shairport") && shairport_file_exists("shairport_on.sh") &&
+		   shairport_file_exists("shairport_off.sh");
 }
 
 // ---------------------------------------------------------------------------
