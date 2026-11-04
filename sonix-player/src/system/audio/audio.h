@@ -61,6 +61,12 @@ bool audio_suspend_freeze(int timeout_ms);
 // and the logs.
 bool audio_playback_context_active(void);
 
+// Waits (up to timeout_ms) until play_file() has returned, which is when the
+// track's descriptor and its FILE* on the card are closed. audio_stop() is a
+// queued command: for a caller that is about to unmount the card this is the
+// difference between an unmount and a lazy detach.
+bool audio_wait_stopped(int timeout_ms);
+
 // After a suspend to memory, or an attempt at one: writes the route again,
 // which on the R3 Pro II powers the HBC3000 back up and reloads it, then puts
 // the DAC level back. On the R3 Pro II this runs on a thread of its own and
@@ -225,6 +231,17 @@ void audio_set_external_release_cb(bool (*cb)(void));
 // this one began. The metronome checks it between writes and gives the output
 // back.
 bool audio_external_wanted(void);
+
+// True while some external source holds the output: a game, the metronome, the
+// Bluetooth receiver. The player's own playback is not one of them -- it goes
+// through the transport -- so this is what the sleep timer and the power
+// manager ask when they need to know whether there is a sound on the DAC that
+// they cannot pause (see sleeptimer_kind_playing() in gui/nowplaying/player.c).
+//
+// It used to be gearboy_running(): the emulator was in the binary. It is an
+// addon now, and the DAC is the one thing an addon and the player share that
+// both of them can see.
+bool audio_external_active(void);
 
 bool audio_external_begin(int sample_rate, int channels, int bits);
 

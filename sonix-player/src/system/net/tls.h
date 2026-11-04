@@ -62,8 +62,13 @@ typedef struct tls_conn tls_conn_t;
 // player. The socket is left alone: the caller still owns and closes it.
 tls_conn_t *tls_client(int fd, const char *hostname, char *err, size_t err_size);
 
-// Same shapes as recv()/send(): >0 bytes moved, 0 for a clean end of stream,
-// -1 on error (a socket timeout included).
+// Same shapes as recv()/send(), with one addition: >0 bytes moved, 0 for the
+// end of the stream, -1 on error, and TLS_READ_AGAIN for "no data yet, ask
+// again" (OpenSSL's WANT_READ/WANT_WRITE, which is also what a socket timeout
+// looks like). The distinction matters: treating "ask again" as the end of the
+// stream truncates a body mid-document, which then looks like a server that
+// answers nonsense.
+#define TLS_READ_AGAIN (-2)
 int tls_read(tls_conn_t *c, void *buf, int len);
 int tls_write(tls_conn_t *c, const void *buf, int len);
 

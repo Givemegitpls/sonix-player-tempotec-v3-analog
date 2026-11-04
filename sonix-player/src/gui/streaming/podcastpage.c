@@ -20,7 +20,6 @@
 #include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/streaming/podcastcard.h"
 #include "src/gui/streaming/podcastopml.h"
-#include "src/gui/streaming/qobuzart.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/switcher.h"
@@ -37,6 +36,7 @@
 #include "src/system/streaming/podcaststate.h"
 #include "src/system/streaming/podcastsubs.h"
 #include "src/system/streaming/streamturn.h"
+#include "src/gui/streaming/listart.h"
 #include "src/system/device/power.h"
 #include "src/system/device/system.h"
 #include "src/system/core/utils.h"
@@ -314,7 +314,7 @@ static void build_busy_layer(void) {
 // The loader has twelve slots and there can be sixty rows: they go to the rows
 // that are VISIBLE and change hands as the list scrolls. The loader is Qobuz's
 // and suits fine -- it names its images after the MD5 of the address, so two
-// services cannot tread on each other even by accident (see qobuzart.h).
+// services cannot tread on each other even by accident (see listart.h).
 // ---------------------------------------------------------------------------
 
 #define ROW_THUMB SC(60)
@@ -385,7 +385,7 @@ static int followed_on_card[PODCASTSUBS_MAX];
 // scroll.
 static lv_obj_t *list_body;
 
-static char row_cover_url[PODCAST_MAX_HELD][QOBUZART_URL_MAX];
+static char row_cover_url[PODCAST_MAX_HELD][LISTART_URL_MAX];
 static cover_image_t row_images[PODCAST_MAX_HELD];
 static bool row_has_image[PODCAST_MAX_HELD];
 
@@ -415,8 +415,8 @@ static const char podcast_art_owner;
 
 // The last of the loader's slots is the cover at the head of a podcast's page
 // (podcastcard.c); the rows share the others.
-#define ROW_ART_SLOTS (QOBUZART_SLOTS - 1)
-#define HERO_ART_SLOT (QOBUZART_SLOTS - 1)
+#define ROW_ART_SLOTS (LISTART_SLOTS - 1)
+#define HERO_ART_SLOT (LISTART_SLOTS - 1)
 
 static int slot_owner[ROW_ART_SLOTS];
 static lv_timer_t *art_timer;
@@ -462,7 +462,7 @@ static void art_release_slot(int slot) {
 	if (slot < 0 || slot >= ROW_ART_SLOTS) {
 		return;
 	}
-	qobuzart_release(&podcast_art_owner, slot);
+	listart_release(&podcast_art_owner, slot);
 	slot_owner[slot] = -1;
 }
 
@@ -574,7 +574,7 @@ static void art_poll_cb(lv_timer_t *timer) {
 		}
 		cover_image_t image;
 		bool finished = false;
-		if (!qobuzart_take(&podcast_art_owner, slot, &image, &finished)) {
+		if (!listart_take(&podcast_art_owner, slot, &image, &finished)) {
 			if (finished) {
 				// Failed: this address is never requested again.
 				fail_cover(row);
@@ -709,7 +709,7 @@ static void art_request_visible(void) {
 
 		slot_owner[free_slot] = row;
 		art_wake();
-		qobuzart_request(&podcast_art_owner, free_slot, row_cover_url[row], ROW_THUMB);
+		listart_request(&podcast_art_owner, free_slot, row_cover_url[row], ROW_THUMB);
 	}
 }
 
@@ -2450,14 +2450,14 @@ void podcastpage_hero_request(const char *url, int size) {
 	if (!url || !url[0]) {
 		return;
 	}
-	qobuzart_request(&podcast_art_owner, HERO_ART_SLOT, url, size);
+	listart_request(&podcast_art_owner, HERO_ART_SLOT, url, size);
 }
 
 bool podcastpage_hero_take(cover_image_t *out, bool *finished) {
-	return qobuzart_take(&podcast_art_owner, HERO_ART_SLOT, out, finished);
+	return listart_take(&podcast_art_owner, HERO_ART_SLOT, out, finished);
 }
 
-void podcastpage_hero_release(void) { qobuzart_release(&podcast_art_owner, HERO_ART_SLOT); }
+void podcastpage_hero_release(void) { listart_release(&podcast_art_owner, HERO_ART_SLOT); }
 
 // ---------------------------------------------------------------------------
 // the page: pills on top, list below
@@ -4018,7 +4018,7 @@ void podcastpage_init(gui_config_t *cfg) {
 	lv_timer_pause(art_drop_timer);
 	art_timer = lv_timer_create(art_poll_cb, 120, NULL);
 	lv_timer_pause(art_timer);
-	qobuzart_set_root(storage_sd_root());
+	listart_set_root(storage_sd_root());
 
 	podcastcache_set_root(storage_sd_root());
 	podcastsubs_set_root(storage_sd_root());

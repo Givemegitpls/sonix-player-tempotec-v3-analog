@@ -3,6 +3,8 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <sys/eventfd.h>
+#include <time.h>
+#include <errno.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +25,7 @@
 #include "src/gui/settings/bootlogopage.h"
 #include "src/gui/settings/kblayoutpage.h"
 #include "src/gui/settings/screensaver.h"
+#include "src/addon/addon.h"
 #include "src/gui/library/audiobookextras.h"
 #include "src/gui/library/audiobooks.h"
 #include "src/gui/settings/devoptions.h"
@@ -35,10 +38,6 @@
 #include "src/gui/library/libraryscan.h"
 #include "src/gui/wireless/dlna.h"
 #include "src/gui/wireless/sonixlink.h"
-#include "src/gui/gearboy/gearboypage.h"
-#include "src/gui/gearboy/gearboysettings.h"
-#include "src/gui/flappybird/flappybird.h"
-#include "src/gui/gearboy/gearboyplay.h"
 #include "src/gui/shell/lowbattery.h"
 #include "src/gui/shell/main_menu.h"
 #include "src/gui/library/medialist.h"
@@ -199,6 +198,133 @@ bool gui_post(void (*cb)(void *), void *user) {
 	return queued;
 }
 
+// ---------------------------------------------------------------------------
+// gui_call: gui_post() that waits.
+//
+// Some work must have happened before the caller continues -- the card is about
+// to be unmounted, and the addons mapped from it have to be stopped and closed
+// first. Posting that and carrying on is what left a dead superblock behind a
+// live dlopen(). So: the caller blocks on a condition variable that the GUI
+// thread signals when the callback returns.
+//
+// Two ways it cannot wait, both deliberate: from the GUI thread itself it runs
+// inline (waiting on yourself is a deadlock), and the wait is bounded -- a GUI
+// thread stuck in a card operation must not wedge the storage thread, which
+// would take the interface down with it. False says the callback may not have
+// run; the caller decides what to do about that.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	void (*cb)(void *);
+	void *user;
+	pthread_mutex_t lock;
+	pthread_cond_t done;
+	bool finished;	// the callback returned
+	bool abandoned; // the caller gave up waiting: do not run it at all
+	int refs;		// the caller's and the trampoline's
+} gui_call_t;
+
+static pthread_t gui_thread_id;
+static bool gui_thread_known;
+
+void gui_note_thread(void) {
+	gui_thread_id = pthread_self();
+	gui_thread_known = true;
+}
+
+static bool on_gui_thread(void) { return gui_thread_known && pthread_equal(pthread_self(), gui_thread_id); }
+
+// Whichever side drops the last reference destroys the frame: the caller when
+// the callback has run, the trampoline when the caller timed out and left.
+static void call_release(gui_call_t *call) {
+	pthread_mutex_lock(&call->lock);
+	bool last = --call->refs == 0;
+	pthread_mutex_unlock(&call->lock);
+	if (!last) {
+		return;
+	}
+	pthread_mutex_destroy(&call->lock);
+	pthread_cond_destroy(&call->done);
+	free(call);
+}
+
+static void gui_call_trampoline(void *user) {
+	gui_call_t *call = user;
+
+	pthread_mutex_lock(&call->lock);
+	bool abandoned = call->abandoned;
+	pthread_mutex_unlock(&call->lock);
+
+	if (!abandoned) {
+		call->cb(call->user);
+	}
+
+	pthread_mutex_lock(&call->lock);
+	call->finished = true;
+	pthread_cond_signal(&call->done);
+	pthread_mutex_unlock(&call->lock);
+
+	call_release(call);
+}
+
+bool gui_call(void (*cb)(void *), void *user, int timeout_ms) {
+	if (!cb) {
+		return false;
+	}
+	if (on_gui_thread()) {
+		cb(user);
+		return true;
+	}
+
+	gui_call_t *call = calloc(1, sizeof(*call));
+	if (!call) {
+		return false;
+	}
+	call->cb = cb;
+	call->user = user;
+	call->refs = 2; // ours, and the trampoline's
+	pthread_mutex_init(&call->lock, NULL);
+	pthread_cond_init(&call->done, NULL);
+
+	if (!gui_post(gui_call_trampoline, call)) {
+		call->refs = 1;
+		call_release(call);
+		return false;
+	}
+
+	struct timespec deadline;
+	clock_gettime(CLOCK_REALTIME, &deadline);
+	deadline.tv_sec += timeout_ms / 1000;
+	deadline.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+	if (deadline.tv_nsec >= 1000000000L) {
+		deadline.tv_nsec -= 1000000000L;
+		deadline.tv_sec++;
+	}
+
+	pthread_mutex_lock(&call->lock);
+	while (!call->finished) {
+		if (pthread_cond_timedwait(&call->done, &call->lock, &deadline) == ETIMEDOUT) {
+			break;
+		}
+	}
+	bool ran = call->finished;
+	if (!ran) {
+		call->abandoned = true;
+	}
+	pthread_mutex_unlock(&call->lock);
+
+	if (!ran) {
+		// A call that is already inside the callback has started; nothing can
+		// recall it. The flag covers the far more likely case, a callback still
+		// waiting in the queue, and the sentence is what a log will show when
+		// this is the reason something later went wrong.
+		fprintf(stderr, "gui: the GUI thread did not run a posted call within %d ms\n", timeout_ms);
+	}
+
+	call_release(call);
+	return ran;
+}
+
 static void post_drain_cb(lv_timer_t *timer) {
 	(void)timer;
 
@@ -222,8 +348,37 @@ static void post_drain_cb(lv_timer_t *timer) {
 		post_count--;
 		pthread_mutex_unlock(&post_lock);
 
-		// Outside the lock: the callback may post in turn.
-		entry.cb(entry.user);
+		// Outside the lock: the callback may post in turn. NULL is a call this
+		// queue was told to forget -- the code it pointed at has been unmapped.
+		if (entry.cb) {
+			entry.cb(entry.user);
+		}
+	}
+}
+
+void gui_post_drop_range(const void *lo, const void *hi) {
+	if (!lo || !hi || (uintptr_t)hi <= (uintptr_t)lo) {
+		return;
+	}
+
+	int dropped = 0;
+	pthread_mutex_lock(&post_lock);
+	for (int i = 0; i < post_count; i++) {
+		gui_post_t *entry = &post_ring[(post_head + i) % GUI_POST_MAX];
+		uintptr_t at = (uintptr_t)(void (*)(void *))entry->cb;
+		if (at >= (uintptr_t)lo && at < (uintptr_t)hi) {
+			// Not removed from the ring: the ring is a queue and shifting it
+			// under a poster is worse than carrying a hole. The drain skips a
+			// NULL callback.
+			entry->cb = NULL;
+			entry->user = NULL;
+			dropped++;
+		}
+	}
+	pthread_mutex_unlock(&post_lock);
+
+	if (dropped) {
+		fprintf(stderr, "gui: dropped %d posted call(s) into a library that is being unloaded\n", dropped);
 	}
 }
 
@@ -577,7 +732,19 @@ static void power_menu_async_cb(void *unused) {
 void gui_notify_power_menu(void) { gui_post(power_menu_async_cb, NULL); }
 
 
+// The pages that carry addon tiles, rebuilt after the folder changed. Both
+// redraw from their own stored grid and config; before they were built the
+// pointers are NULL and the calls do nothing.
+static void addons_changed_pages(void) {
+	streaming_refresh();
+	morepage_refresh();
+}
+
 void gui_init(gui_config_t *cfg) {
+	// This thread is the one that owns LVGL: everything gui_post() hands over
+	// runs here, and gui_call() called from here must not wait on itself.
+	gui_note_thread();
+
 	// Colours first: every screen below styles itself from the active palette.
 	theme_init();
 
@@ -632,9 +799,6 @@ void gui_init(gui_config_t *cfg) {
 	filespage_screen = lv_obj_create(NULL);
 	textview_screen = lv_obj_create(NULL);
 	imageview_screen = lv_obj_create(NULL);
-	gearboypage_screen = lv_obj_create(NULL);
-	gearboyplay_screen = lv_obj_create(NULL);
-	flappybird_screen = lv_obj_create(NULL);
 	metronomepage_screen = lv_obj_create(NULL);
 
 	// Persistent topbar that stays above every screen.
@@ -642,6 +806,18 @@ void gui_init(gui_config_t *cfg) {
 
 	// Persistent back button that hides when on the main page
 	back_btn_init(cfg);
+
+	// The addons on the card, read before any page that shows their tiles is
+	// built: Streaming and More ask addon_fill_entries() for their section and
+	// get whatever was found. Nothing here touches the library, so it can go
+	// this early -- and it must, since the tiles are built further down.
+	//
+	// The hook is for the card arriving (or leaving) later: the storage layer
+	// posts, the registry re-reads the folder, and these two pages put their
+	// tiles up again. A card inserted at the main menu then shows its apps
+	// without a restart.
+	addon_set_refresh_hook(addons_changed_pages);
+	addon_scan(cfg);
 
 	// Before the settings pages: the display page draws its screensaver switch
 	// from screensaver_get_enabled(), which is only true once this has read the
@@ -678,10 +854,6 @@ void gui_init(gui_config_t *cfg) {
 	radiopage_init(cfg);
 	dacpage_init(cfg);
 	// After dacpage: the More section points at its pages.
-	gearboyplay_init(cfg);  // before the list: one of its rows leads here
-	gearboysettings_init(cfg); // before the page: its gear opens this
-	gearboypage_init(cfg);
-	flappybird_init(cfg);
 	metronomepage_init(cfg);
 	// before morepage: the books tile opens the shelf, and the shelf opens the
 	// reader.
@@ -762,7 +934,7 @@ void gui_init(gui_config_t *cfg) {
 		wifisettings_screen,
 		btsettings_screen, btaudio_screen,	 airpodspage_screen, airplay_screen,   streaming_screen,
 		radiopage_screen,  radiolist_screen, radiosearch_screen,
-		dlna_screen,	   sonixlink_screen,	 morepage_screen,	  gearboypage_screen, metronomepage_screen,
+		dlna_screen,	   sonixlink_screen,	 morepage_screen,	  metronomepage_screen,
 	};
 	for (size_t i = 0; i < sizeof(back_swipe_screens) / sizeof(back_swipe_screens[0]); i++) {
 		switcher_attach_back_gesture(back_swipe_screens[i]);

@@ -10,9 +10,8 @@
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
 #include "src/system/bluetooth/btlog.h"
-#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/service.h"
 #include "src/system/streaming/podcastcache.h"
-#include "src/system/streaming/tidalcache.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/device/sysserver.h"
 #include "src/system/device/sysinfo.h"
@@ -195,8 +194,7 @@ void factoryreset_run(void) {
 	// Streaming caches (tracks and covers) go before the card is unmounted:
 	// after unmount_card() those files are unreachable, and a factory reset
 	// must not leave streamed tracks behind.
-	qobuzcache_clear_on_exit();
-	tidalcache_clear_on_exit();
+	service_wipe_all();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
 

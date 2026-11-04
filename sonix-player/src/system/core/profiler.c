@@ -1,3 +1,9 @@
+// REG_RIP, the faulting PC in a ucontext_t on x86-64, is only declared when
+// _GNU_SOURCE is: glibc hides the whole gregs interface behind __USE_GNU. The
+// target is MIPS and never looks at that branch, but the simulator is x86-64
+// and does, and this has to come before the first system header.
+#define _GNU_SOURCE
+
 #include "profiler.h"
 
 #include <dirent.h>

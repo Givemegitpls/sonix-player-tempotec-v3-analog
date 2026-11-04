@@ -1709,7 +1709,18 @@ static void thumbs_forget(void) {
 	if (thumbs_db) {
 		sqlite3_close(thumbs_db);
 		thumbs_db = NULL;
+		thumbs_db_path[0] = '\0';
 	}
+}
+
+// The card is leaving: drop the connection now, before the mount does. The path
+// is the same when it comes back, so without clearing it thumbs_open() would
+// hand out the closed handle's predecessor -- a connection to a filesystem that
+// no longer exists.
+void sonixlink_forget_card(void) {
+	pthread_mutex_lock(&lock);
+	thumbs_forget();
+	pthread_mutex_unlock(&lock);
 }
 
 static int hex_digit(char ch) {

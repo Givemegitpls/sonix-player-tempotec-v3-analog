@@ -40,6 +40,19 @@ static void action_cb(lv_event_t *e) {
 	action();
 }
 
+// The same for a tile whose action needs to know which tile it is: the user
+// data is the caller's grid_action_t, and it is handed its own argument.
+static void action_user_cb(lv_event_t *e) {
+	if (player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active()) {
+		return; // a swipe, not a tap
+	}
+
+	const grid_action_t *action = lv_event_get_user_data(e);
+	if (action && action->fn) {
+		action->fn(action->arg);
+	}
+}
+
 // The two children add_tile() puts on every tile, in the order it makes them.
 #define TILE_ICON_CHILD 0
 #define TILE_LABEL_CHILD 1
@@ -95,12 +108,57 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 
 	if (entry->target) {
 		lv_obj_add_event_cb(tile, switch_screen_cb, LV_EVENT_CLICKED, *entry->target);
+	} else if (entry->action_user) {
+		lv_obj_add_event_cb(tile, action_user_cb, LV_EVENT_CLICKED, (void *)entry->action_user);
 	} else if (entry->action) {
 		lv_obj_add_event_cb(tile, action_cb, LV_EVENT_CLICKED, (void *)entry->action);
 	} else {
 		lv_obj_add_event_cb(tile, unavailable_cb, LV_EVENT_CLICKED, (void *)entry->label);
 		lv_obj_set_style_opa(icon, LV_OPA_40, 0);
 		lv_obj_add_style(label, &theme_style_text_dim, 0);
+	}
+}
+
+// The order the tiles go in: those that asked for a place (`grid_entry_t.order`)
+// are inserted at it, in ascending order, and the rest keep the order they were
+// given. `perm` must hold `count` ints, and `count` must fit GRID_ORDER_MAX.
+#define GRID_ORDER_MAX 32
+static void order_tiles(const grid_entry_t *entries, int count, int *perm) {
+	bool placed[GRID_ORDER_MAX] = {false};
+	int n = 0;
+
+	for (int i = 0; i < count; i++) {
+		if (entries[i].order <= 0) {
+			perm[n++] = i;
+		}
+	}
+
+	// Ascending, and for the same number in the order they were listed: an
+	// addon arriving later cannot jump over one that asked for the same place.
+	for (;;) {
+		int best = -1;
+		for (int i = 0; i < count; i++) {
+			if (placed[i] || entries[i].order <= 0) {
+				continue;
+			}
+			if (best < 0 || entries[i].order < entries[best].order) {
+				best = i;
+			}
+		}
+		if (best < 0) {
+			return;
+		}
+		placed[best] = true;
+
+		int at = entries[best].order - 1;
+		if (at > n) {
+			at = n; // past the tiles there are: the last place
+		}
+		for (int j = n; j > at; j--) {
+			perm[j] = perm[j - 1];
+		}
+		perm[at] = best;
+		n++;
 	}
 }
 
@@ -118,8 +176,17 @@ void gridpage_set_entries(lv_obj_t *grid, gui_config_t *cfg, const grid_entry_t 
 	int tile_w = (usable_w - (columns - 1) * GRID_GAP) / columns;
 	int tile_h = (usable_h - (rows - 1) * GRID_GAP) / rows;
 
+	int perm[GRID_ORDER_MAX];
+	int *order = perm;
 	for (int i = 0; i < count; i++) {
-		add_tile(grid, &entries[i], tile_w, tile_h);
+		perm[i] = i; // the identity, and what a page too big to sort keeps
+	}
+	if (count <= GRID_ORDER_MAX) {
+		order_tiles(entries, count, perm);
+	}
+
+	for (int i = 0; i < count; i++) {
+		add_tile(grid, &entries[order[i]], tile_w, tile_h);
 	}
 }
 

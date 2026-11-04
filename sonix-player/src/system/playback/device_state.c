@@ -20,9 +20,8 @@
 #include "src/system/streaming/podcast.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcaststate.h"
-#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/service.h"
 #include "src/system/streaming/radio.h"
-#include "src/system/streaming/tidalcache.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -150,8 +149,7 @@ static bool remember_enabled(void) { return config_get_int("player", "remember_t
 // A track this player must not offer to come back to: a live stream has no
 // position, and a streaming cache file will not exist at the next boot.
 static bool remember_worth_saving(const device_state_t *state) {
-	return !state->live && state->current_file[0] && !qobuzcache_owns(state->current_file) &&
-		   !tidalcache_owns(state->current_file);
+	return !state->live && state->current_file[0] && !service_owns(state->current_file);
 }
 
 void device_state_remember_restored(const char *path, double position) {
@@ -550,7 +548,7 @@ static prefetch_slot_t *prefetch_find(const char *path) {
 // Files that are still being written (a streaming cache) or that are not
 // files at all must never be read ahead of time.
 static bool prefetch_allowed(const char *path) {
-	return path[0] == '/' && !qobuzcache_owns(path) && !tidalcache_owns(path) && !podcastcache_is_episode(path);
+	return path[0] == '/' && !service_owns(path) && !podcastcache_is_episode(path);
 }
 
 static void *prefetch_thread(void *arg) {
@@ -785,7 +783,7 @@ static void queue_persist(void) {
 		// empty themselves) and the next boot would restore a queue of paths
 		// that no longer exist, mixed in with the user's own tracks. Both
 		// services, for the same reason.
-		if (qobuzcache_owns(path) || tidalcache_owns(path)) {
+		if (service_owns(path)) {
 			from_stream = true;
 			break;
 		}
@@ -837,6 +835,23 @@ void device_state_add_prepare_cb(device_state_prepare_cb cb) {
 		}
 	}
 	prepare_cbs[prepare_cb_count++] = cb;
+}
+
+void device_state_remove_prepare_cb(device_state_prepare_cb cb) {
+	if (!cb) {
+		return;
+	}
+	for (int i = 0; i < prepare_cb_count; i++) {
+		if (prepare_cbs[i] != cb) {
+			continue;
+		}
+		for (int j = i; j + 1 < prepare_cb_count; j++) {
+			prepare_cbs[j] = prepare_cbs[j + 1];
+		}
+		prepare_cb_count--;
+		prepare_cbs[prepare_cb_count] = NULL;
+		return;
+	}
 }
 
 // Defined with the rest of the scrub state further down.

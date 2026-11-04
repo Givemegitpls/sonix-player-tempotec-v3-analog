@@ -196,18 +196,20 @@ tools it runs (`7z`, `mkfs.ubifs`, `genisoimage`, `ubi_reader`), built from
 
 ## Streaming
 
-The accounts live on the card, not in the firmware: Qobuz and Tidal tokens go in
-`<card>/sonix/streaming.json`, and the player keeps what it renews in
-`<card>/sonix/streaming-session.json` next to it
-(`sonix-player/src/system/streaming/streamkeys.h`). No Qobuz
-application credentials are compiled in — the player derives them from Qobuz's
-web player when it first needs them and caches them in the session file; Tidal's
-client pair is built in. Podcast Index and Last.fm keys come from a sealed
+The services are addons: Qobuz, Tidal, Zvuk, Yandex Music and Spotify each live
+in their own folder on the card, under `<card>/Addons/<id>/`, with their own keys
+and their own session next to them, and nothing about them is compiled into this
+binary. They are built from
+[sonix-player-addons](https://github.com/Givemegitpls/sonix-player-addons), whose
+`docs/ADDONS.md` documents each of them — what it keeps on the card, how it signs
+in, and what is not verified yet.
+
+What the player itself still signs requests with is the two accounts that have no
+addon: Podcast Index and Last.fm, whose keys come from a sealed
 `streaming-keys.bin` (or a plain `streaming-keys.ini`) in the rootfs, and this
 repository ships neither.
 Without a service's credentials it disables itself and says so, instead of
-failing halfway through a login. The full picture is in
-[docs/BUILD.md](docs/BUILD.md#7-streaming-services).
+failing halfway through a login.
 
 ## License and credits
 

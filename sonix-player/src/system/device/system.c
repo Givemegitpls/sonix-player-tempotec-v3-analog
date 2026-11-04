@@ -17,8 +17,10 @@
 #include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
+#include "src/addon/addon_notify.h"
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/settings/screensaver.h"
 #include "src/gui/shell/gui.h"
@@ -28,20 +30,20 @@
 #include "src/system/bluetooth/btplayer.h"
 #include "src/system/audio/audio.h"
 #include "src/system/audio/alsa-controls.h"
+#include "src/system/audio/waveform.h"
+#include "src/system/remote/sonixlink.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/library/audiobookdb.h"
 #include "src/system/audio/eq.h"
 #include "src/system/remote/dlna.h"
-#include "src/system/gearboy/gbdb.h"
 #include "src/system/input/hookclicks.h"
 #include "src/system/input/keymap.h"
 #include "src/system/core/panel.h"
-#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/service.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
 #include "src/system/streaming/podcaststate.h"
 #include "src/system/streaming/radio.h"
-#include "src/system/streaming/tidalcache.h"
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
 #include "src/system/library/playlists.h"
@@ -753,6 +755,10 @@ static int mount_settled(const char *mount_point) {
 
 bool storage_sd_writable(void) { return sd_writable; }
 
+// The card is mounted before this thread starts, and this file is what keeps
+// that true: see card_databases_attach()/detach() and the supervisor below.
+static bool card_attached = true; // the card is mounted before this thread starts
+
 static int mount_sd(storage_config_t *storage_cfg, const system_runtime_t *runtime) {
 	(void)runtime;
 
@@ -876,7 +882,6 @@ static void check_and_mount_existing_sd(storage_config_t *storage_cfg, const sys
 // bare "mmcblk" prefix, so one card produces TWO events (the disk and its
 // partition) and each half would otherwise run twice, the second call recording
 // the state the first had already cleared.
-static bool card_attached = true; // the card is mounted before this thread starts
 
 bool storage_card_attached(void) { return card_attached; }
 
@@ -885,6 +890,20 @@ static void card_databases_detach(void) {
 		return;
 	}
 	card_attached = false;
+
+	// The addon tiles come from the card too, and they are built into a page
+	// rather than opened on demand: with the card out there is nothing to list,
+	// so the tiles go. Synchronous, and that is the point: the libraries are
+	// dlopen()ed from the card, a mapping outlives the mount, and this call
+	// returns only once every one of them has been stopped and closed. It used
+	// to be a gui_post() and the unmount below ran first.
+	addon_card_gone();
+
+	// The manifests that declared the services' card paths are on the card that
+	// is leaving: from here nothing there is ours any more. The next scan
+	// declares them again.
+	service_forget_declared();
+	service_set_root(""); // an open service must not keep answering from the old mount
 
 	// Playback first. The playback thread keeps the track's descriptor open for
 	// the whole track -- and with "remember track" a track is loaded and paused
@@ -896,7 +915,22 @@ static void card_databases_detach(void) {
 	// of play would otherwise read as "the track ended, start it again".
 	device_state_note_storage_gone();
 	audio_stop();
+	if (!audio_wait_stopped(2000)) {
+		// The unmount below will fall back to a lazy detach, and the playback
+		// thread is the reason. Say so: it is the one holder that cannot be
+		// closed from outside.
+		fprintf(stderr, "storage: the playback thread is still holding the card\n");
+	}
 	podcaststate_set_root(NULL);
+
+	// Everything else that opened a file under the card. Each of these was a
+	// "the mount will not go away" waiting to happen: a sqlite connection or a
+	// cache path on a filesystem that is no longer there blocks in the card
+	// controller for as long as it likes.
+	cover_set_cache_dir(NULL); // closes the thumbnails db, falls back to /tmp
+	waveform_set_cache_dir(NULL);
+	sonixlink_forget_card(); // its thumbnails db, if sonixlink ever opened it
+	radio_store_close();
 
 	logging_suspend_for_usb(); // closes the on-card log file
 	btlog_card_release();
@@ -906,6 +940,14 @@ static void card_databases_detach(void) {
 }
 
 static void card_databases_attach(const char *root) {
+	// The addon tiles, which come from Addons/ on the card like the music does:
+	// the folder is only reachable now, so the pages that carry them are rebuilt
+	// (posted to the UI thread, which owns those pages). Before the early return
+	// below and not after the databases are open: a scan is idempotent, and the
+	// insert that follows a card the player never noticed leaving still has to
+	// reach the registry -- that is how the tiles used to get lost.
+	addon_card_changed(root);
+
 	if (card_attached) {
 		return;
 	}
@@ -937,13 +979,12 @@ static void card_databases_attach(const char *root) {
 	eq_presets_set_dir(root);
 	peq_presets_set_dir(root);
 	mseb_presets_set_dir(root);
-	qobuzcache_set_root(root);
-	tidalcache_set_root(root);
+	service_set_root(root);
+	radio_store_open(root); // closed on removal; favourites and recents live here
 	podcastcache_set_root(root);
 	podcastsubs_set_root(root);
 	podcaststate_set_root(root);
 	dlna_set_root(root);
-	gbdb_set_root(root);
 
 	// The log, from the setting rather than from a remembered flag: a flag does
 	// not survive two remove events, and a failed reopen consumes it for good.
@@ -994,8 +1035,22 @@ void storage_recheck_card(void) {
 
 	pthread_mutex_lock(&card_lock);
 
-	if (card_released || (sd_root[0] && is_mounted(sd_root) && mount_is_alive(sd_root))) {
+	bool alive = sd_root[0] && is_mounted(sd_root) && mount_is_alive(sd_root);
+
+	if (card_released || (alive && card_attached)) {
 		pthread_mutex_unlock(&card_lock); // nothing to do, the common case
+		return;
+	}
+
+	// The mount is there and alive, but the player thinks the card has left.
+	// That happens when the insert's uevent was missed -- a card that goes back
+	// in faster than the netlink thread notices, an export that remounted it --
+	// and returning here left the library, the log and the addons closed with a
+	// perfectly good card in the slot, permanently. The mount is the ground
+	// truth; the flag follows it.
+	if (alive) {
+		card_databases_attach(sd_root);
+		pthread_mutex_unlock(&card_lock);
 		return;
 	}
 

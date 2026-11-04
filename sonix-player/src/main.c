@@ -47,19 +47,14 @@
 #include "src/system/audio/eq.h"
 #include "src/system/audio/headset.h"
 #include "src/system/input/keymap.h"
-#include "src/system/streaming/qobuz.h"
-#include "src/system/streaming/tidal.h"
 #include "src/system/remote/dlna.h"
-#include "src/system/gearboy/gbdb.h"
-#include "src/system/gearboy/gearboy.h"
 #include "src/system/remote/sonixlink.h"
 #include "src/system/core/panel.h"
-#include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
 #include "src/system/streaming/podcaststate.h"
-#include "src/system/streaming/tidalcache.h"
 #include "src/system/streaming/streamkeys.h"
+#include "src/system/streaming/service.h"
 #include "src/system/lastfm/lastfm.h"
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
@@ -3632,8 +3627,6 @@ int main(int argc, char **argv) {
 	// the GUI builds its pages, because the Qobuz page is drawn one way or
 	// the other depending on whether the keys are there.
 	streamkeys_init();
-	qobuz_init();
-	tidal_init();
 	lastfm_init();
 
 	lv_init();
@@ -3731,12 +3724,6 @@ int main(int argc, char **argv) {
 	logging_attach_sd(storage_sd_root());
 	btlog_card_attach(storage_sd_root());
 #endif
-	// The card carries the streaming accounts (<card>/sonix/streaming.json), and
-	// the card has a mount point only now. Qobuz and Tidal pick their tokens up
-	// after this; until then they are off, not broken.
-	streamkeys_attach_card(storage_sd_root());
-	qobuz_reload_session();
-	tidal_reload_session();
 #ifndef HOST_BUILD
 	// Now that the log is on the card: whatever the kernel said about the
 	// previous run, which is the only place a SIGKILL leaves a trace.
@@ -3863,27 +3850,18 @@ int main(int argc, char **argv) {
 	// gui_cfg.sd_root_path, which on the simulator is a different folder: the
 	// cache and the code that cleans it must agree on one root.
 	const char *card_root = storage_sd_root();
-	qobuzcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
-	tidalcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
+	service_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcastcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcastsubs_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcaststate_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	// And where a track arriving over DLNA lands: same card, same reason.
 	dlna_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
-	// And where the emulator looks for Games/GB and Games/GBC. Unlike the
-	// lines above this uses gui_cfg.sd_root_path and not storage_sd_root():
-	// those write a cache, which belongs on the real card, while games are
-	// the user's own files and live where the user's music lives. On the
-	// device the two are the same (see how gui_cfg is filled in); on the
-	// simulator they are not, which is what makes the page testable without
-	// the device.
-	gbdb_set_root(gui_cfg.sd_root_path);
 
 	// Rows pointing into the stream caches are dropped once at boot: a cache
 	// file may be gone, and starring a streamed track goes to the account
 	// rather than to the local database.
-	library_forget_under(qobuzcache_dir());
-	library_forget_under(tidalcache_dir());
+	library_forget_under(service_cache_dir("qobuz"));
+	library_forget_under(service_cache_dir("tidal"));
 	// OpenSSL is loaded on a worker below the interface: the libraries and the
 	// certificate bundle take a quarter of a second on this core, and nothing
 	// needs them until a stream is opened, which waits on the loader's lock.
@@ -4173,6 +4151,14 @@ int main(int argc, char **argv) {
 		}
 	}
 
+	// The event loop was asked to stop. Which is the only way out of main(), so
+	// its presence or absence in the log is what tells a clean exit from a
+	// process that was killed: the crash handler covers the signals it can
+	// catch, SIGKILL has no handler at all, and the launcher's own line about
+	// the exit status goes to the console. A card-pull reboot leaves this line
+	// on the card; a kill does not.
+	fprintf(stderr, "*** sonix_player is exiting: the event loop was asked to stop ***\n");
+	fflush(stderr);
 	printf("\n");
 
 	return 0;

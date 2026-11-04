@@ -43,6 +43,11 @@ void streamturn_register_abandon(streamturn_abandon_fn fn);
 // Abandons everything in flight, for every service.
 void streamturn_abandon_all(void);
 
+// Takes a registration back -- an addon's library is about to be dlclose()d and
+// the function it registered is code in it. Without this the next abandon calls
+// into an unmapped page.
+void streamturn_unregister_abandon(streamturn_abandon_fn fn);
+
 // ---------------------------------------------------------------------------
 // How much is buffered before playback starts
 //

@@ -149,6 +149,11 @@ bool power_double_tap_wake_enabled(void);
 // for the life of the program.
 void power_pause_in_standby(lv_timer_t *timer);
 
+// The timer is being deleted before the program ends (an addon's library is
+// unloaded, and the player deletes the timers it created): drop the record.
+// Without this the next dark panel would touch freed LVGL memory.
+void power_forget_timer(lv_timer_t *timer);
+
 // The same, for a timer that cannot simply stop. The battery poll is the case
 // this exists for: it also drives the status LED, so stopping it in standby
 // would leave the LED lit past its twenty seconds and never turning red on the

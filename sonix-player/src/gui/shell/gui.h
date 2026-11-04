@@ -122,4 +122,22 @@ void gui_notify_power_menu(void);
 // which lv_obj_is_valid() maps to, follows obj's parent links and is not.
 bool gui_obj_alive(const lv_obj_t *obj);
 
+// gui_post() that waits for the work to have happened, for the callers that
+// cannot carry on without it -- the card being unmounted while libraries mapped
+// from it are still loaded. Runs inline when called from the GUI thread; false
+// when the call could not be queued or did not run within `timeout_ms` (the
+// caller then decides, and the queue's dropout is logged).
+bool gui_call(void (*cb)(void *), void *user, int timeout_ms);
+
+// Marks the calling thread as the GUI thread. Called once, by gui_init(): before
+// that gui_call() assumes it is on another thread and posts, which is right for
+// every caller that exists.
+void gui_note_thread(void);
+
+// Forgets every queued call whose function lies in [lo, hi). For a library that
+// is about to be dlclose()d: a worker may have posted a callback a moment
+// before it was asked to stop, and running it afterwards would jump into an
+// unmapped page. Dropped calls are skipped by the drain, not removed.
+void gui_post_drop_range(const void *lo, const void *hi);
+
 #endif /* GUI_H */

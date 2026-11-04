@@ -21,6 +21,21 @@
 
 #define DEFAULT_PLAYER "/usr/bin/sonix_player"
 
+// Where the launcher's own line about the end of a session is kept.
+//
+// It writes to fd 2, and on this device fd 2 is the console: nothing keeps it.
+// The one question after a reboot -- did the player exit, or was it killed, and
+// with which signal -- was therefore unanswerable, and a device that restarts
+// itself at night is exactly when that question is asked. /data is the only
+// place that survives a reboot (the log is on the card, which the reboot
+// unmounts), so the same sentence goes there as well.
+#define LAUNCH_LOG "/data/sonix-launch.log"
+// The MIPS values, not the x86 ones: this is raw o32, so there is no libc to
+// translate them. `asm/fcntl.h` in the toolchain's sysroot is the source.
+#define O_WRONLY 0x0001
+#define O_CREAT 0x0100
+#define O_APPEND 0x0008
+
 // o32: number in $2, arguments in $4-$7. On return $2 holds the result and $7
 // is non-zero when $2 is an errno, handed back here as a negative value.
 static long sys3(long n, long a, long b, long c) {
@@ -51,12 +66,17 @@ static long sys4(long n, long a, long b, long c, long d) {
 	return r7 && r2 > 0 ? -r2 : r2;
 }
 
+static long launch_log = -1;
+
 static void say(const char *s) {
 	long n = 0;
 	while (s[n]) {
 		n++;
 	}
 	sys3(__NR_write, 2, (long)s, n);
+	if (launch_log >= 0) {
+		sys3(__NR_write, launch_log, (long)s, n);
+	}
 }
 
 static void say_num(unsigned v) {
@@ -82,6 +102,17 @@ __attribute__((noreturn, used)) void launch_main(long *sp) {
 	static char default_player[] = DEFAULT_PLAYER;
 	static char *default_argv[] = {default_player, 0};
 	char **player_argv = argc > 1 ? argv + 1 : default_argv;
+
+	// Opened before anything is said, so the "cannot start" line is kept too.
+	// Mode 0644: root's, and readable when the card is mounted on a desk.
+	// open(2), not openat: the mode is the third argument, and this file is
+	// looked at by a person, never by the player.
+	static char launch_log_path[] = LAUNCH_LOG;
+	launch_log = sys3(__NR_open, (long)launch_log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+
+	say("sonix_launch: starting ");
+	say(player_argv[0]);
+	say("\n");
 
 	long pid = sys3(__NR_fork, 0, 0, 0);
 	if (pid == 0) {

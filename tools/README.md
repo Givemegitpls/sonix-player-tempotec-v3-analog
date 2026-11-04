@@ -271,7 +271,8 @@ copy), `panwatch.c` (one transfer, sampled from `/dev/mem`), `fbtool.c`
 throughput of a Bluetooth receiver), `keyinj.c` (drives the buttons from adb),
 `watch_wake.sh` and `profreport.py` (`.local/profile.out` to something
 readable). The icon rasteriser is the one exception: its recipe lives in
-`../sonix-player/docker/icons.Dockerfile`, not here.
+`../sonix-player/docker/icons.Dockerfile`, not here — and the tile composer for
+addons, `../sonix-player/tools/make_icon.py`, is beside it.
 
 ## The patches
 

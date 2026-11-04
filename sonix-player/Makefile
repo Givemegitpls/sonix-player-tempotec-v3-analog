@@ -104,7 +104,7 @@ BOARD_CFLAGS = -DSONIX_LAYOUT_SCALE=3
 BOARD_ICON_UNUSED = src/gui/shell/icons_small.c
 endif
 
-CFLAGS = -O3 -g -Wall -MMD -MP -D_FILE_OFFSET_BITS=64 -I. -I$(LVGL_DIR) -DLV_CONF_INCLUDE_SIMPLE=1 -DGB_CORE=1 $(BOARD_CFLAGS)
+CFLAGS = -O3 -g -Wall -MMD -MP -D_FILE_OFFSET_BITS=64 -I. -I$(LVGL_DIR) -DLV_CONF_INCLUDE_SIMPLE=1 $(BOARD_CFLAGS)
 # On the host the audio libraries are the system ones (libopusfile-dev,
 # libwavpack-dev); on the target they are the ones this Makefile builds below.
 # opusfile.h includes <opus_multistream.h> unprefixed, so the opus/ directory
@@ -166,54 +166,81 @@ TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -mno-madd4 -mplt -ffunction-sections -
 # objects matching TARGET_HOT_PATTERNS.
 TARGET_DEFAULT_OPT = -O2
 TARGET_HOT_OPT = -O3
-TARGET_HOT_PATTERNS = build_target/system/audio/% build_target/system/decode/% build_target/gb/% \
+TARGET_HOT_PATTERNS = build_target/system/audio/% build_target/system/decode/% \
 					  build_target/lvgl/src/draw/sw/% build_target/lvgl/src/misc/lv_color% \
 					  build_target/main.o build_target/system/image/% build_target/gui/nowplaying/cover.o
 TARGET_OPT = $(TARGET_DEFAULT_OPT)
 $(TARGET_HOT_PATTERNS): TARGET_OPT = $(TARGET_HOT_OPT)
 
-# The C++ in this project is the Game Boy core (src/gb, Gearboy) plus the facade
-# that makes it callable from the player, which is C.
-#
-#   -DGEARBOY_DISABLE_DISASSEMBLER  drops the disassembler and the breakpoints:
-#       they are for Gearboy's own debugger, which is not here.
-#   -fno-exceptions -fno-rtti       the core uses neither, and without them a
-#       few tables and some dead code go away.
-#   The -I are needed because Gearboy's sources include each other by short name
-#       ("Video.h"), as if they were in their own directory -- which is how they
-#       sit upstream, and they are not touched so that the next update does not
-#       have to be merged by hand.
-#   -Wno-attributes                 Gearboy declares InvalidOPCode() noinline
-#       first and inline afterwards. Upstream code, left alone on purpose (see
-#       src/gb/README.md).
-GB_CFLAGS = -DGEARBOY_DISABLE_DISASSEMBLER -fno-exceptions -fno-rtti -Wno-attributes \
-			-Isrc/gb/core -Isrc/gb/miniz
-HOST_CXXFLAGS = $(HOST_CFLAGS) $(GB_CFLAGS)
-TARGET_CXXFLAGS = $(TARGET_CFLAGS) $(GB_CFLAGS)
+# Flags for C++ translation units under src/, if the tree ever has any. They
+# used to be Gearboy's own set: the emulator, its core and its APU are an addon
+# now, and its flags went with it -- -DGEARBOY_DISASSEMBLER,
+# -fno-exceptions, -fno-rtti, the -I into the core.
+HOST_CXXFLAGS = $(HOST_CFLAGS)
+TARGET_CXXFLAGS = $(TARGET_CFLAGS)
 
 # Link flags
 #
-# -static-libstdc++ -static-libgcc are not optional on the target: the device
-# has libstdc++.so.6.0.21, that is GLIBCXX_3.4.21 (the GCC 5 ABI), and the
-# toolchain is GCC 9, which emits references up to 3.4.26. Linked dynamically
-# the binary does not start at all.
+# -static-libstdc++ -static-libgcc are not optional when the player has C++ in
+# it: the device has libstdc++.so.6.0.21, that is GLIBCXX_3.4.21 (the GCC 5 ABI),
+# and the toolchain is GCC 9, which emits references up to 3.4.26. Linked
+# dynamically the binary does not start at all.
 #
 # Target only. On the host they ask for a static libstdc++ that most
 # distributions do not ship, and the link fails with "cannot find -lstdc++".
-GB_LDFLAGS = -static-libstdc++ -static-libgcc
+#
+# There is no C++ in this binary any more -- the Game Boy core that used to be
+# here is the Gearboy addon, in the addons' repository -- so this is empty, and the link
+# goes through the C driver. It comes back by itself if something under src/
+# turns out to be a .cpp (see APP_CXX_SRCS).
+CXX_LDFLAGS = $(if $(APP_CXX_SRCS),-static-libstdc++ -static-libgcc)
 # Every interface timer runs through src/gui/shell/timerprof.c, and in a
 # profiled run every event callback through eventprof.c, so a slow-pass report
 # (frameprof.c) can name the callback the time went to.
 TIMER_WRAP = -Wl,--wrap=lv_timer_create -Wl,--wrap=lv_timer_set_cb -Wl,--wrap=lv_obj_add_event_cb \
 			 -Wl,--wrap=lv_obj_remove_event_cb
+# -rdynamic on the host only: the simulator dlopen()s the same addons the device
+# does, and its symbols have to be in .dynsym for them. The target build uses
+# --dynamic-list instead (see ADDON_DYN_LIST) because the extra megabytes of
+# exported symbols would not fit in the device's rootfs volume.
 HOST_LDFLAGS = $(TIMER_WRAP) $(shell sdl2-config --libs) -lpthread -lm -ldl -lasound $(shell pkg-config --libs freetype2) \
-			   $(shell pkg-config --libs opusfile wavpack)
+			   $(shell pkg-config --libs opusfile wavpack) -rdynamic
 #
 # --gc-sections: the other half of -ffunction-sections (see TARGET_CFLAGS).
 # -lrt: the V3 Analog's glibc 2.16 has clock_gettime in librt, not in libc
 # (it moved in 2.17). glibc_compat.h asks for it by its librt name.
+# ---------------------------------------------------------------------------
+# What the addons may call
+#
+# Two mechanisms want to be used here, and only one of them is affordable.
+#
+# -rdynamic would export every global symbol the player has (six thousand of
+# them) and, because an exported symbol counts as a root for --gc-sections,
+# would also keep every function nothing calls: the binary grew from 7.3 MB to
+# 8.9 MB, and the rootfs volume has about two megabytes of room left.
+#
+# --dynamic-list exports the names an addon actually asks for and nothing else.
+# Everything else stays collected, and the binary stays the size it was.
+#
+# The list is checked in at src/addon/exports.list and lives here rather than
+# with the addons, because the player links with it whether or not the addons'
+# repository is checked out: a symbol missing from it is a dlopen() that fails on
+# the device with "undefined symbol". tools/addon_exports.sh regenerates it from
+# the player's objects plus src/addon/exports.addons, after `make target` and
+# only when the interface modules change -- the addons' docs, "What an addon may
+# call", has the rest.
+# ---------------------------------------------------------------------------
+ADDON_EXPORTS := $(CURDIR)/src/addon/exports.list
+
+# The one comma this makefile needs to get into a linker option: function
+# arguments are split at commas before they are expanded, so the option is
+# assembled from a variable rather than written out.
+comma := ,
+ADDON_DYN_LIST = $(if $(wildcard $(ADDON_EXPORTS)),-Wl$(comma)--dynamic-list=$(ADDON_EXPORTS))
+
 TARGET_LDFLAGS = $(TIMER_WRAP) $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS) -lpthread -lm -ldl -lasound -lrt \
-				 $(GB_LDFLAGS) -Wl,--gc-sections
+				 $(CXX_LDFLAGS) -Wl,--gc-sections \
+				 $(ADDON_DYN_LIST)
 
 # FreeType for the target, built static: the rootfs has no libfreetype.so. The
 # host uses the system one. The device's fonts are plain OTF/TTF, so zlib,
@@ -269,17 +296,18 @@ WAVPACK_LIB = $(AUDIO_PREFIX)/lib/libwavpack.a
 AUDIO_LIBS = $(OPUSFILE_LIB) $(OPUS_LIB) $(OGG_LIB) $(WAVPACK_LIB)
 
 
-# Source files. src/gb holds a .c as well (the miniz shell) alongside the C++
-# core, so both searches reach into it.
+# Source files. Nothing under src/ is C++ today: the Game Boy core was the last
+# of it and is an addon (see APP_CXX_SRCS below).
 APP_SRCS := $(filter-out $(BOARD_ICON_UNUSED),$(shell find src -name '*.c'))
 LVGL_SRCS = $(shell find $(LVGL_DIR)/src -type f -name '*.c')
 
-# The C++ here is the Game Boy core under src/gb/core plus its facade. Separate
-# list because it takes different flags, and the link goes through the C++
-# compiler so that libstdc++ comes along.
-APP_CXX_SRCS := $(shell find src/gb -name '*.cpp')
-HOST_LD = $(CXX)
-TARGET_LD = $(CROSS_CXX)
+# C++ in the player, if any. The Game Boy core was the last of it and is an
+# addon now (sonix-player-addons). Kept as a search rather
+# than a fixed list so that the day something under src/ is C++ again, it is
+# compiled with the C++ flags and the link brings libstdc++ along by itself.
+APP_CXX_SRCS := $(shell find src -name '*.cpp')
+HOST_LD = $(if $(APP_CXX_SRCS),$(CXX),$(CC))
+TARGET_LD = $(if $(APP_CXX_SRCS),$(CROSS_CXX),$(CROSS_CC))
 
 # Object files
 HOST_OBJS = $(APP_SRCS:src/%.c=build_host/%.o) $(APP_CXX_SRCS:src/%.cpp=build_host/%.opp) \
@@ -333,7 +361,7 @@ build_host/lvgl/%.o: $(LVGL_DIR)/%.c
 
 target: $(TARGET_BIN) $(LAUNCH_BIN) compile_commands.json
 
-$(TARGET_BIN): $(TARGET_OBJS)
+$(TARGET_BIN): $(TARGET_OBJS) $(ADDON_EXPORTS)
 	$(TARGET_LD) -o $@ $(TARGET_OBJS) $(TARGET_LDFLAGS)
 	@$(MAKE) --no-print-directory check-abi
 	@$(MAKE) --no-print-directory strip-target
@@ -498,6 +526,26 @@ libs-clean:
 # objects with it.
 $(TARGET_OBJS): $(CROSS_CC) $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS)
 $(TARGET_BIN): $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS)
+
+# ---------------------------------------------------------------------------
+# The addons on the card
+#
+# Not built here any more: they are their own repository, sonix-player-addons
+# (github.com/Givemegitpls/sonix-player-addons), which carries the player as a
+# submodule and builds against exactly the headers and the ABI in this tree. The
+# documentation -- the interface, the card layout, the thread rules, one section
+# per addon -- is docs/ADDONS.md there, kept in one copy.
+#
+# What this repository still owes them is src/addon/exports.list: `make target`
+# links with it, and tools/addon_exports.sh regenerates it.
+# ---------------------------------------------------------------------------
+.PHONY: addons
+addons:
+	@echo "*** The addons are their own repository and are built there:"
+	@echo "***   git clone https://github.com/Givemegitpls/sonix-player-addons"
+	@echo "***   cd sonix-player-addons && git submodule update --init && make"
+	@echo "*** docs/ADDONS.md in that repository is the documentation."
+	@exit 1
 
 # The rule above is a file target, and the compiler binary it produces exists
 # before the C library the compiler links against does. An interrupted

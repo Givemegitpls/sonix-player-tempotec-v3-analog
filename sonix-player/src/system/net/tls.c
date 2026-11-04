@@ -449,6 +449,12 @@ int tls_read(tls_conn_t *c, void *buf, int len) {
 	if (code == SSL_ERROR_SYSCALL && errno == 0) {
 		return 0;
 	}
+	// "Nothing arrived yet": a non-blocking BIO, or the receive timeout
+	// expiring. The caller decides whether to wait; a body reader that took
+	// this for the end of the stream stopped halfway through a document.
+	if (code == SSL_ERROR_WANT_READ || code == SSL_ERROR_WANT_WRITE) {
+		return TLS_READ_AGAIN;
+	}
 	return -1;
 }
 

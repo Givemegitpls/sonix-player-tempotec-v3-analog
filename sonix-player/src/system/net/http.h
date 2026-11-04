@@ -141,6 +141,23 @@ typedef struct {
 	// for a radio station, and almost never for a downloaded file.
 	long content_length;
 
+	// Transfer-Encoding: chunked. A file or API server behind a proxy may
+	// chunk the body, and a chunk header is framing, not audio: without this
+	// the decoder is handed "1f4\r\n" as if it were the start of an MPEG frame.
+	//
+	// Chunking and ICY metadata never occur together -- ICY is what a radio
+	// station sends, chunking is what a file server does. Should a server
+	// claim both, http_stream_read() follows the chunk framing, because that
+	// is the one that says where the bytes end, and ignores ICY.
+	bool chunked;
+
+	// The two pieces of state that path needs: how many bytes of the current
+	// chunk are still to come, and whether the CRLF that closes it is still on
+	// the wire (it belongs to the framing, so it must be eaten rather than
+	// handed back as audio). Only meaningful while `chunked`.
+	long chunk_left;
+	bool chunk_crlf;
+
 	// Body bytes already read while parsing the headers. The first read has
 	// to hand these back before touching the socket again.
 	//

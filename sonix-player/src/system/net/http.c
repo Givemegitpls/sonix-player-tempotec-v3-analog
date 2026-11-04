@@ -20,6 +20,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 // ---------------------------------------------------------------------------
@@ -251,12 +252,51 @@ typedef struct {
 	tls_conn_t *tls; // NULL on a plain http:// connection
 } conn_t;
 
+// How long a body read keeps asking when the transport says "nothing yet"
+// before it calls the stream finished. Short on purpose: a server that goes
+// quiet mid-document for seconds is a reconnect, not something to wait out, and
+// the radio's own timeouts are on top of this.
+#define READ_AGAIN_TOTAL_MS 3000
+#define READ_AGAIN_STEP_MS 5
+
+static long long now_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// One read, with "ask again" answered here rather than by every caller.
+//
+// OpenSSL reports WANT_READ when no data has arrived yet -- which on a blocking
+// socket with SO_RCVTIMEO is what a timeout looks like, and on a non-blocking
+// one is the normal state between records. Returning that as end-of-stream is
+// how a 12 KB JSON body arrived as 1798 bytes and was then reported as "the
+// server answered 200".
 static int conn_read(conn_t *c, void *buf, size_t len) {
-	if (c->tls) {
-		return tls_read(c->tls, buf, (int)len);
+	long long deadline = now_ms() + READ_AGAIN_TOTAL_MS;
+	for (;;) {
+		int n;
+		if (c->tls) {
+			n = tls_read(c->tls, buf, (int)len);
+		} else {
+			ssize_t got = recv(c->fd, buf, len, 0);
+			if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+				n = TLS_READ_AGAIN;
+			} else {
+				n = got < 0 ? -1 : (int)got;
+			}
+		}
+		if (n != TLS_READ_AGAIN) {
+			return n;
+		}
+		if (now_ms() >= deadline) {
+			// Silence for long enough that it is not "yet". One line, because
+			// this is the shape of the fault that arrived as a truncated body.
+			fprintf(stderr, "http: no data for %d ms, giving up on this read\n", READ_AGAIN_TOTAL_MS);
+			return -1;
+		}
+		usleep(READ_AGAIN_STEP_MS * 1000);
 	}
-	ssize_t n = recv(c->fd, buf, len, 0);
-	return n < 0 ? -1 : (int)n;
 }
 
 static bool conn_write_all(conn_t *c, const char *data, size_t len) {
@@ -458,7 +498,7 @@ static bool body_append(body_t *b, const char *data, size_t len) {
 }
 
 // Reads the rest of the body when the server framed it by closing the
-// connection (HTTP/1.0, or Connection: close with no length).
+// connection: Connection: close with neither Content-Length nor chunking.
 static void read_until_close(conn_t *c, body_t *b) {
 	char buf[8192];
 	for (;;) {
@@ -634,9 +674,17 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 		return false;
 	}
 
-	// HTTP/1.0: a 1.0 request may not be answered with a chunked body, so the
-	// common case stays simple. Chunked is handled below anyway, because
-	// "may not" and "does not" are different things once a proxy is involved.
+	// HTTP/1.1, because a growing number of servers refuse a 1.0 request
+	// outright: Navidrome behind a proxy answers "426 Upgrade Required" to
+	// "GET ... HTTP/1.0" and the API is then unreachable no matter what the
+	// caller sends. Asking for 1.1 is what every other client does.
+	//
+	// Connection: close keeps the rest of this file's job small. With it there
+	// is no keep-alive to track, no pipelining, and a body that carries neither
+	// Content-Length nor Transfer-Encoding is still framed by the close, exactly
+	// as before. Chunked is understood below in both cases, since 1.1 servers
+	// and proxies use it whether or not a length is also present.
+	//
 	// The extra headers are for Qobuz, which wants the app credentials there.
 	// They arrive already CRLF-terminated, one per line.
 	char host_header[300];
@@ -644,7 +692,7 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 
 	// A body needs two more headers. Content-Length always, even at zero:
 	// without it a server expecting a body waits until its own timeout, and
-	// this is HTTP/1.0 where there is no other way to say where the body ends.
+	// nothing else here says where the body ends.
 	char body_headers[128];
 	body_headers[0] = '\0';
 	if (req->body) {
@@ -656,7 +704,7 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 
 	char request[4096];
 	int n = snprintf(request, sizeof(request),
-					 "%s %s HTTP/1.0\r\n"
+					 "%s %s HTTP/1.1\r\n"
 					 "Host: %s\r\n"
 					 "User-Agent: " HTTP_USER_AGENT "\r\n"
 					 "Accept: */*\r\n"
@@ -892,11 +940,12 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 
 	char request[2600];
 	int n = snprintf(request, sizeof(request),
-					 "GET %s HTTP/1.0\r\n" // 1.0: no chunking, no keep-alive to argue about
+					 "GET %s HTTP/1.1\r\n" // 1.1: a server behind a proxy may refuse 1.0 with 426
 					 "Host: %s\r\n"
 					 "User-Agent: " HTTP_USER_AGENT "\r\n"
 					 "Icy-MetaData: 1\r\n"
 					 "Accept: */*\r\n"
+					 "Connection: close\r\n" // no keep-alive: the body is framed by close when unchunked
 					 "\r\n",
 					 u.path, host_header);
 	// As above: snprintf returns what it would have written, not what it did.
@@ -945,6 +994,20 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 		}
 	}
 	st->meta_countdown = st->icy_metaint;
+
+	// How this body is framed. A radio station sends neither of these and is
+	// framed by the connection closing; a downloaded file states a length; and
+	// a proxy in front of a file or API server may chunk instead, in which case
+	// http_stream_read() has to strip the chunk headers -- they are framing,
+	// not audio, and handing them to the decoder is how a stream that looks
+	// fine delivers nothing.
+	//
+	// Set on every hop: a redirect is a new response and may frame differently.
+	char encoding[64];
+	st->chunked = header_value(headers, "Transfer-Encoding", encoding, sizeof(encoding)) &&
+				  strcasestr(encoding, "chunked") != NULL;
+	st->chunk_left = 0;
+	st->chunk_crlf = false;
 
 	return true;
 }
@@ -1009,6 +1072,118 @@ static bool read_raw(http_stream_t *st, char *buf, int len) {
 		got += n;
 	}
 	return true;
+}
+
+// A short read: the lead buffer first, then the socket. Unlike read_raw() this
+// does not insist on the whole length -- on a stream a short read is normal,
+// and the chunked path asks for exactly what the current chunk still owes.
+// Returns what arrived, 0 at end of stream, -1 on error.
+static int stream_read_some(http_stream_t *st, char *buf, int len) {
+	if (st->lead_pos < st->lead_len) {
+		int take = st->lead_len - st->lead_pos;
+		if (take > len) {
+			take = len;
+		}
+		memcpy(buf, st->lead + st->lead_pos, (size_t)take);
+		st->lead_pos += take;
+		return take;
+	}
+
+	conn_t c = stream_conn(st);
+	return conn_read(&c, buf, (size_t)len);
+}
+
+// One chunk header: a hex length, optional ";extensions", then CRLF. Fills in
+// st->chunk_left. Returns false when the stream ended or the header is not one.
+static bool stream_chunk_header(http_stream_t *st) {
+	// Long enough for any plausible length; anything past it is not a chunk
+	// header, and is dropped rather than allowed to write past the buffer.
+	char line[32];
+	int n = 0;
+	bool overflow = false;
+	for (;;) {
+		char c;
+		if (!read_raw(st, &c, 1)) {
+			return false;
+		}
+		if (c == '\n') {
+			break;
+		}
+		if (c == '\r') {
+			continue; // the terminator is CRLF; the LF above ends the line
+		}
+		if (n < (int)sizeof(line) - 1) {
+			line[n++] = c;
+		} else {
+			overflow = true;
+		}
+	}
+	line[n] = '\0';
+
+	if (overflow) {
+		return false;
+	}
+
+	// Chunk extensions (";name=value") say nothing a player needs.
+	char *semi = strchr(line, ';');
+	if (semi) {
+		*semi = '\0';
+	}
+
+	char *end = NULL;
+	long len = strtol(line, &end, 16);
+	if (end == line || len < 0) {
+		return false;
+	}
+	st->chunk_left = len;
+	return true;
+}
+
+// Transfer-Encoding: chunked on the streaming path. Each chunk is a hex length,
+// CRLF, that many bytes, CRLF; a zero-length chunk ends the body. The decoded
+// bytes go to the caller as if the server had sent Content-Length, so a file
+// server behind a proxy that chunks plays and downloads like any other.
+//
+// This is checked before ICY, and that order is the answer to "what if both
+// flags are set": they never occur together in practice -- ICY belongs to a
+// radio station, chunking to a file or API server -- and where a server claims
+// both, the framing that says where the body ends is the one that is true.
+static int stream_read_chunked(http_stream_t *st, char *buf, int len) {
+	// The CRLF that closes the previous chunk belongs to the framing, not to
+	// the audio, and is eaten before anything else is handed out.
+	if (st->chunk_crlf) {
+		char crlf[2];
+		if (!read_raw(st, crlf, 2)) {
+			return 0;
+		}
+		st->chunk_crlf = false;
+	}
+
+	// After the last CRLF the next thing owed is a chunk header.
+	if (st->chunk_left == 0) {
+		if (!stream_chunk_header(st)) {
+			return 0;
+		}
+		if (st->chunk_left == 0) {
+			return 0; // the zero-length chunk: the body ends here
+		}
+	}
+
+	int want = len;
+	if ((long)want > st->chunk_left) {
+		want = (int)st->chunk_left;
+	}
+
+	int got = stream_read_some(st, buf, want);
+	if (got <= 0) {
+		return got;
+	}
+
+	st->chunk_left -= got;
+	if (st->chunk_left == 0) {
+		st->chunk_crlf = true;
+	}
+	return got;
 }
 
 // One ICY metadata block: a length byte (in sixteens) then that many bytes of
@@ -1077,19 +1252,16 @@ int http_stream_read(http_stream_t *st, void *buf, int len) {
 		return -1;
 	}
 
+	// Chunked before ICY: see stream_read_chunked() for why that order is the
+	// answer when a server claims both. A chunked body has to be unpacked
+	// whatever else the response said, or the headers end up in the decoder.
+	if (st->chunked) {
+		return stream_read_chunked(st, buf, len);
+	}
+
 	// Without ICY metadata every byte on the socket is audio.
 	if (st->icy_metaint <= 0) {
-		if (st->lead_pos < st->lead_len) {
-			int take = st->lead_len - st->lead_pos;
-			if (take > len) {
-				take = len;
-			}
-			memcpy(buf, st->lead + st->lead_pos, (size_t)take);
-			st->lead_pos += take;
-			return take;
-		}
-		conn_t c = stream_conn(st);
-		int n = conn_read(&c, buf, (size_t)len);
+		int n = stream_read_some(st, buf, len);
 		return n < 0 ? -1 : n;
 	}
 
@@ -1103,25 +1275,13 @@ int http_stream_read(http_stream_t *st, void *buf, int len) {
 
 	int want = len < st->meta_countdown ? len : st->meta_countdown;
 
-	int got = 0;
-	if (st->lead_pos < st->lead_len) {
-		got = st->lead_len - st->lead_pos;
-		if (got > want) {
-			got = want;
-		}
-		memcpy(buf, st->lead + st->lead_pos, (size_t)got);
-		st->lead_pos += got;
-	} else {
-		conn_t c = stream_conn(st);
-		int n = conn_read(&c, buf, (size_t)want);
-		if (n <= 0) {
-			return n == 0 ? 0 : -1;
-		}
-		got = n;
+	int n = stream_read_some(st, buf, want);
+	if (n <= 0) {
+		return n == 0 ? 0 : -1;
 	}
 
-	st->meta_countdown -= got;
-	return got;
+	st->meta_countdown -= n;
+	return n;
 }
 
 void http_stream_wake(http_stream_t *st) {

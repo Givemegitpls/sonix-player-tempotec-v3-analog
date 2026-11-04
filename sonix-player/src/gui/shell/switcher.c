@@ -795,3 +795,49 @@ void back_btn_init(gui_config_t *cfg) {
 	lv_obj_add_style(back_btn_icon, &theme_style_icon, 0);
 	lv_obj_center(back_btn_icon);
 }
+
+// Forgets one screen that is about to be deleted, and everything newer.
+//
+// The player builds its pages once and never destroys one, so until the addons
+// no code had a screen that could go away. An addon's screen can: the library
+// is unloaded when the card leaves or when its files change. Every raw pointer
+// to it that survives is a dereference of freed memory on the next chevron
+// press, so this clears all of them: the back-stack from that screen on, the
+// back guard (code in the library, which is about to be unmapped), the
+// chevron's tint and hide records, the player-return record. Loading is the
+// caller's job and happens first -- this only forgets.
+void switcher_forget_screen(lv_obj_t *screen) {
+	if (!screen) {
+		return;
+	}
+
+	// From the first mention on: what came after it was reached through it and
+	// would walk back into a deleted page.
+	for (int i = 0; i < screen_history_len; i++) {
+		if (screen_history[i] == screen) {
+			screen_history_len = i;
+			break;
+		}
+	}
+
+	for (int i = 0; i < BACK_GUARDS_MAX; i++) {
+		if (back_guards[i].screen == screen) {
+			back_guards[i].screen = NULL;
+			back_guards[i].handler = NULL;
+			back_guards[i].peek = NULL;
+		}
+	}
+
+	if (player_return_screen == screen) {
+		player_return_screen = NULL;
+	}
+	if (chevron_tint_screen == screen) {
+		chevron_tint_screen = NULL;
+	}
+	if (chevron_hidden_on == screen) {
+		chevron_hidden_on = NULL;
+	}
+	if (chevron_page == screen) {
+		chevron_page = NULL;
+	}
+}

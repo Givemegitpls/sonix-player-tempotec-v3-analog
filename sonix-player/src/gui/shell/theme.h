@@ -52,6 +52,12 @@ extern lv_style_t theme_style_slider_track;
 typedef void (*theme_refresh_cb_t)(void);
 void theme_register_refresh(theme_refresh_cb_t cb);
 
+// The same, taken back. For an addon: the callback is code in a library that is
+// about to be dlclose()d, and a registration left behind would be called into
+// an unmapped page at the next theme switch. Removing a callback that was never
+// registered is not an error.
+void theme_unregister_refresh(theme_refresh_cb_t cb);
+
 // The ring that tells a slider's knob from what is behind it. In the dark
 // theme a hairline of black is plenty; in the light one the cards are nearly
 // white too, so a white knob needs a real grey outline not to vanish into

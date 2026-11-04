@@ -112,6 +112,11 @@ bool player_sheet_drag_active(void);
 void player_sheet_open(bool animate);
 void player_sheet_close(bool animate);
 
+// The page the sheet slid over is being deleted (an addon's screen, unloaded):
+// forget it, so closing the sheet later lands on the menu rather than switching
+// to a deleted screen. Loads nothing.
+void player_forget_screen(lv_obj_t *screen);
+
 // Makes `obj` a place the sheet can be dragged from. `opening` picks the
 // direction: true for a surface behind the sheet (drag left to bring it in),
 // false for the sheet itself (drag right to push it away).

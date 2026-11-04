@@ -1302,6 +1302,8 @@ static void release_external_output(void) {
 
 bool audio_external_wanted(void) { return external_wanted; }
 
+bool audio_external_active(void) { return external_pcm != NULL; }
+
 static void bt_seek_probe_cancel(void);
 
 // Which bluealsa plugin the ALSA loader actually mapped, said once.
@@ -4460,6 +4462,21 @@ bool audio_suspend_quiesce(int timeout_ms) {
 }
 
 bool audio_playback_context_active(void) { return playback_context_active; }
+
+bool audio_wait_stopped(int timeout_ms) {
+	// The descriptor, the decoder and the FILE* on the card are all released by
+	// play_file() returning, and that is what playback_context_active reports.
+	// audio_stop() only queues the command: the thread that owns the fd answers
+	// later, which is long enough for a card unmount to fail and take the lazy
+	// fallback.
+	for (int waited = 0; waited < timeout_ms; waited += 20) {
+		if (!playback_context_active) {
+			return true;
+		}
+		usleep(20 * 1000);
+	}
+	return !playback_context_active;
+}
 
 // The real freeze, for mem. ALSA objects are not enough: a paused track keeps
 // play_file() alive with the decoder and a FILE* open on the card, the card

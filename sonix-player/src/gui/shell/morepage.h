@@ -19,4 +19,8 @@ extern lv_obj_t *morepage_screen;
 
 void morepage_init(gui_config_t *cfg);
 
+// Puts the tiles up again, addons included. For the card arriving after the
+// player started, like streaming_refresh().
+void morepage_refresh(void);
+
 #endif /* GUI_MOREPAGE_H */

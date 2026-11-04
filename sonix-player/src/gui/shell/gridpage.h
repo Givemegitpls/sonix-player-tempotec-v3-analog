@@ -10,6 +10,14 @@
 // The tiled page layout, shared by the main menu and the Music section so the
 // two look and behave identically.
 
+// A tile's action when the tile itself is the argument: the addons on the card,
+// whose number and order are read from a folder at start-up and so cannot be a
+// function per tile (see src/addon/addon.h).
+typedef struct {
+	void (*fn)(void *);
+	void *arg;
+} grid_action_t;
+
 typedef struct {
 	const char *label;
 	const lv_image_dsc_t *icon;
@@ -24,6 +32,19 @@ typedef struct {
 	// Checked only when `target` is NULL; entries that set neither are the
 	// dimmed not-yet-available tiles.
 	void (*action)(void);
+
+	// The same for a tile that has to know which one was tapped. The callback
+	// gets `arg`; the structure itself is the caller's and has to stay alive
+	// as long as the grid does (an array next to the entries is the usual
+	// way). Checked before `action`.
+	const grid_action_t *action_user;
+
+	// Where the tile wants to sit, 1-based; 0 is "wherever the list puts me".
+	// For the addons on the card, which take a place a compiled-in tile used
+	// to have (its manifest's `order`): moving a page out of the binary then
+	// does not move the tile. Tiles without one keep their order and come
+	// first, and a number past the end of the grid means the last place.
+	int order;
 } grid_entry_t;
 
 // Fills `screen` with a `columns` x `rows` grid of tiles sized from the config.

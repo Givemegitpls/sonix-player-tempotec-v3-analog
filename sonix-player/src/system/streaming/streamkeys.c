@@ -6,7 +6,6 @@
 
 #include "build_gen/streamkeys_key.h"
 #include "src/system/core/config.h"
-#include "src/system/core/json.h"
 #include "src/system/core/sha1.h"
 
 #define STREAMKEYS_MAX_FILE 16384 // mirrored as MAX_FILE in the tool
@@ -18,10 +17,11 @@
 
 // The values stay here for the life of the program: short strings, read once,
 // and every caller expects a pointer that does not die under it.
-static char qobuz_app_id[64];
-static char qobuz_app_secret[128];
-static char tidal_client_id[64];
-static char tidal_client_secret[128];
+//
+// Only Podcast Index and Last.fm are here. The services that are addons -- Qobuz,
+// Tidal, Yandex Music, Zvuk -- keep their keys and their sessions in their own
+// folders on the card, and the player has no business knowing their names; see
+// streamkeys.h.
 static char podcast_key[64];
 static char podcast_secret[128];
 static char lastfm_key[64];
@@ -52,12 +52,16 @@ static void trim(char *s) {
 	}
 }
 
+// One key of the INI, split out of its line and handed to whoever asked for the
+// file: the two readers below are this one parser's callers, not its business.
+typedef void (*line_fn)(const char *section, const char *key, const char *value, void *user);
+
 // A tiny INI reader rather than config.c, for two reasons: this file is
 // read-only and must not join what the player rewrites, and a failure here must
 // not be able to corrupt device_config.ini.
 //
 // One line of the INI, already trimmed. `section` carries across lines.
-static void parse_line(char *line, char section[32]) {
+static void dispatch_line(char *line, char section[32], line_fn fn, void *user) {
 	if (line[0] == '\0' || line[0] == '#' || line[0] == ';') {
 		return;
 	}
@@ -88,51 +92,12 @@ static void parse_line(char *line, char section[32]) {
 		return;
 	}
 
-	char *dest = NULL;
-	size_t dest_size = 0;
-	if (strcmp(section, "qobuz") == 0) {
-		if (strcmp(key, "app_id") == 0) {
-			dest = qobuz_app_id;
-			dest_size = sizeof(qobuz_app_id);
-		} else if (strcmp(key, "app_secret") == 0) {
-			dest = qobuz_app_secret;
-			dest_size = sizeof(qobuz_app_secret);
-		}
-	} else if (strcmp(section, "podcast") == 0) {
-		if (strcmp(key, "api_key") == 0) {
-			dest = podcast_key;
-			dest_size = sizeof(podcast_key);
-		} else if (strcmp(key, "api_secret") == 0) {
-			dest = podcast_secret;
-			dest_size = sizeof(podcast_secret);
-		}
-	} else if (strcmp(section, "lastfm") == 0) {
-		if (strcmp(key, "api_key") == 0) {
-			dest = lastfm_key;
-			dest_size = sizeof(lastfm_key);
-		} else if (strcmp(key, "api_secret") == 0) {
-			dest = lastfm_secret;
-			dest_size = sizeof(lastfm_secret);
-		}
-	} else if (strcmp(section, "tidal") == 0) {
-		if (strcmp(key, "client_id") == 0) {
-			dest = tidal_client_id;
-			dest_size = sizeof(tidal_client_id);
-		} else if (strcmp(key, "client_secret") == 0) {
-			dest = tidal_client_secret;
-			dest_size = sizeof(tidal_client_secret);
-		}
-	}
-
-	if (dest) {
-		snprintf(dest, dest_size, "%s", value);
-		loaded_any = true;
-	}
+	fn(section, key, value, user);
 }
 
 // Each line is copied out and wiped after use, so the text itself is left
 // whole for the caller to wipe.
-static void parse_text(char *text, size_t len) {
+static void parse_text(char *text, size_t len, line_fn fn, void *user) {
 	char section[32] = "";
 	char *p = text;
 	char *end = text + len;
@@ -147,7 +112,7 @@ static void parse_text(char *text, size_t len) {
 		memcpy(line, p, n);
 		line[n] = '\0';
 		trim(line);
-		parse_line(line, section);
+		dispatch_line(line, section, fn, user);
 		wipe(line, sizeof(line));
 		p = stop + 1;
 	}
@@ -180,7 +145,7 @@ static void apply_keystream(const unsigned char *key, const unsigned char *nonce
 
 // The sealed form, laid out in tools/seal_streamkeys.py. False, with the reason
 // in the log, when this build cannot open it.
-static bool parse_sealed(const char *path, unsigned char *data, size_t len) {
+static bool parse_sealed(const char *path, unsigned char *data, size_t len, line_fn fn, void *user) {
 #if STREAMKEYS_KEY_LEN == SEAL_KEY_LEN
 	const size_t head = SEAL_MAGIC_LEN + SEAL_NONCE_LEN + SHA1_DIGEST_LEN;
 	if (len < head) {
@@ -210,18 +175,21 @@ static bool parse_sealed(const char *path, unsigned char *data, size_t len) {
 		printf("streamkeys: %s was sealed with a key this build does not have\n", path);
 		return false;
 	}
-	parse_text((char *)text, text_len);
+	parse_text((char *)text, text_len, fn, user);
 	return true;
 #else
 	(void)data;
 	(void)len;
+	(void)fn;
+	(void)user;
 	printf("streamkeys: %s is sealed and this build has no key to open it\n", path);
 	return false;
 #endif
 }
 
-// Reads `path`, sealed or plain. False when it is not there.
-static bool load(const char *path) {
+// Reads `path`, sealed or plain, and hands every key to `fn`. False when the
+// file is not there.
+static bool scan(const char *path, line_fn fn, void *user) {
 	FILE *f = fopen(path, "rb");
 	if (!f) {
 		return false;
@@ -240,50 +208,89 @@ static bool load(const char *path) {
 	}
 
 	if (len >= SEAL_MAGIC_LEN && memcmp(data, SEAL_MAGIC, SEAL_MAGIC_LEN) == 0) {
-		parse_sealed(path, data, len);
+		parse_sealed(path, data, len, fn, user);
 	} else {
-		parse_text((char *)data, len);
+		parse_text((char *)data, len, fn, user);
 	}
 	wipe(data, len);
 	free(data);
 	return true;
 }
 
-void streamkeys_init(void) {
+// The file to read: the one the configuration names, else the sealed one, else
+// the plain one. NULL when none of them is there.
+static const char *find_path(void) {
 	const char *configured = config_get("streaming", "keys_file", NULL);
-	const char *path = NULL;
 	if (configured && configured[0]) {
-		path = load(configured) ? configured : NULL;
-	} else if (load(STREAMKEYS_PATH)) {
-		path = STREAMKEYS_PATH;
-	} else if (load(STREAMKEYS_PLAIN_PATH)) {
-		path = STREAMKEYS_PLAIN_PATH;
+		FILE *f = fopen(configured, "rb");
+		if (f) {
+			fclose(f);
+			return configured;
+		}
+	}
+	FILE *f = fopen(STREAMKEYS_PATH, "rb");
+	if (f) {
+		fclose(f);
+		return STREAMKEYS_PATH;
+	}
+	f = fopen(STREAMKEYS_PLAIN_PATH, "rb");
+	if (f) {
+		fclose(f);
+		return STREAMKEYS_PLAIN_PATH;
+	}
+	return NULL;
+}
+
+// The two values this file still holds, by section and key.
+static void take_value(const char *section, const char *key, const char *value, void *user) {
+	(void)user;
+	char *dest = NULL;
+	size_t dest_size = 0;
+	if (strcmp(section, "podcast") == 0) {
+		if (strcmp(key, "api_key") == 0) {
+			dest = podcast_key;
+			dest_size = sizeof(podcast_key);
+		} else if (strcmp(key, "api_secret") == 0) {
+			dest = podcast_secret;
+			dest_size = sizeof(podcast_secret);
+		}
+	} else if (strcmp(section, "lastfm") == 0) {
+		if (strcmp(key, "api_key") == 0) {
+			dest = lastfm_key;
+			dest_size = sizeof(lastfm_key);
+		} else if (strcmp(key, "api_secret") == 0) {
+			dest = lastfm_secret;
+			dest_size = sizeof(lastfm_secret);
+		}
 	}
 
+	if (dest) {
+		snprintf(dest, dest_size, "%s", value);
+		loaded_any = true;
+	}
+}
+
+void streamkeys_init(void) {
+	const char *configured = config_get("streaming", "keys_file", NULL);
+	const char *path = find_path();
 	if (!path) {
-		printf("streamkeys: no %s, Tidal, Qobuz, podcasts and Last.fm stay off\n",
+		printf("streamkeys: no %s, podcasts and Last.fm stay off\n",
 			   configured && configured[0] ? configured : STREAMKEYS_PATH);
 		return;
 	}
 
 	snprintf(source_path, sizeof(source_path), "%s", path);
+	scan(path, take_value, NULL);
 
 	// The log records that the keys are present, never their values: the log
 	// lands on the card and from there goes to whoever asks for it about any
 	// problem at all.
-	printf("streamkeys: from %s -- Qobuz %s, Tidal %s, Podcast %s, Last.fm %s\n", path,
-		   qobuz_app_id[0] && qobuz_app_secret[0] ? "yes" : "no",
-		   tidal_client_id[0] && tidal_client_secret[0] ? "yes" : "no",
+	printf("streamkeys: from %s -- Podcast %s, Last.fm %s\n", path,
 		   podcast_key[0] && podcast_secret[0] ? "yes" : "no",
 		   lastfm_key[0] && lastfm_secret[0] ? "yes" : "no");
 }
 
 static const char *or_null(const char *s) { return s[0] ? s : NULL; }
-
-const char *streamkeys_qobuz_app_id(void) { return or_null(qobuz_app_id); }
-const char *streamkeys_qobuz_app_secret(void) { return or_null(qobuz_app_secret); }
-const char *streamkeys_tidal_client_id(void) { return or_null(tidal_client_id); }
-const char *streamkeys_tidal_client_secret(void) { return or_null(tidal_client_secret); }
 
 const char *streamkeys_podcast_key(void) { return or_null(podcast_key); }
 const char *streamkeys_podcast_secret(void) { return or_null(podcast_secret); }
@@ -294,203 +301,53 @@ const char *streamkeys_lastfm_secret(void) { return or_null(lastfm_secret); }
 const char *streamkeys_source(void) { return loaded_any ? source_path : NULL; }
 
 // ---------------------------------------------------------------------------
-// The card's streaming.json, and the session file the player writes beside it
+// TEMPORARY: one service's key, for the addon's migration (see streamkeys.h)
 // ---------------------------------------------------------------------------
 
-#define CARD_DIR_NAME "sonix"
-#define CARD_USER_FILE "streaming.json"
-#define CARD_SESSION_FILE "streaming-session.json"
-#define CARD_JSON_MAX 16384
+typedef struct {
+	const char *section;
+	const char *key;
+	char *out;
+	size_t size;
+	bool found;
+} legacy_want_t;
 
-// Sized for Tidal's tokens, which are eight-to-nine hundred characters each.
-#define CARD_TOKEN_MAX 2048
-#define CARD_NAME_MAX 128
-
-static char card_user_path[512];
-static char card_session_path[512];
-static char qobuz_token[CARD_TOKEN_MAX];
-static char qobuz_token_user[CARD_NAME_MAX];
-static char tidal_access[CARD_TOKEN_MAX];
-static char tidal_refresh[CARD_TOKEN_MAX];
-static long tidal_expires;
-// Derived from the web player, kept in the session file (qobuzkey.h).
-static char cached_app_id[64];
-static char cached_app_secret[128];
-static long cached_creds_at;
-
-const char *streamkeys_card_json_path(void) { return card_user_path[0] ? card_user_path : NULL; }
-const char *streamkeys_session_json_path(void) { return card_session_path[0] ? card_session_path : NULL; }
-
-const char *streamkeys_qobuz_token(void) { return or_null(qobuz_token); }
-const char *streamkeys_qobuz_token_user(void) { return or_null(qobuz_token_user); }
-const char *streamkeys_tidal_access_token(void) { return or_null(tidal_access); }
-const char *streamkeys_tidal_refresh_token(void) { return or_null(tidal_refresh); }
-long streamkeys_tidal_expires_at(void) { return tidal_expires; }
-
-const char *streamkeys_qobuz_cached_app_id(void) { return or_null(cached_app_id); }
-const char *streamkeys_qobuz_cached_app_secret(void) { return or_null(cached_app_secret); }
-long streamkeys_qobuz_creds_at(void) { return cached_creds_at; }
-
-// Copies a JSON string field out, and wipes whatever was there before: a token
-// left behind in a buffer after it was replaced is a token still in memory.
-static void take_str(const json_doc_t *doc, int obj, const char *key, char *out, size_t size) {
-	char value[512];
-	value[0] = '\0';
-	if (obj < 0 || !json_obj_str(doc, obj, key, value, sizeof(value))) {
+static void legacy_value(const char *section, const char *key, const char *value, void *user) {
+	legacy_want_t *want = user;
+	if (want->found) {
 		return;
 	}
-	snprintf(out, size, "%s", value);
-	wipe(value, sizeof(value));
+	if (strcmp(section, want->section) != 0 || strcmp(key, want->key) != 0) {
+		return;
+	}
+	snprintf(want->out, want->size, "%s", value);
+	want->found = true;
 }
 
-// One file: `{"qobuz": {...}, "tidal": {...}}`. Unknown keys are ignored, and a
-// field that is not there leaves the value it was given by the other file.
-static bool read_card_json(const char *path, bool session) {
-	FILE *f = fopen(path, "r");
-	if (!f) {
+bool streamkeys_legacy_get(const char *section, const char *key, char *out, size_t size) {
+	if (!section || !section[0] || !key || !key[0] || !out || size == 0) {
 		return false;
 	}
-	char *text = malloc(CARD_JSON_MAX + 1);
-	if (!text) {
-		fclose(f);
+	out[0] = '\0';
+
+	// The file was read at startup; the path is kept so that this does not have
+	// to guess between the configured, the sealed and the plain one again. A
+	// build where startup found nothing tries once more, because an addon is
+	// opened long after it and the card may have been written in between.
+	const char *path = source_path[0] ? source_path : find_path();
+	if (!path) {
 		return false;
 	}
-	size_t len = fread(text, 1, CARD_JSON_MAX + 1, f);
-	fclose(f);
-	if (len > CARD_JSON_MAX) {
-		printf("streamkeys: %s is over %d bytes, ignored\n", path, CARD_JSON_MAX);
-		free(text);
-		return true;
-	}
-	text[len] = '\0';
 
-	json_doc_t doc;
-	if (!json_parse(text, &doc)) {
-		printf("streamkeys: %s is not valid JSON, ignored\n", path);
-		free(text);
-		return true;
-	}
-
-	int root = json_root(&doc);
-	int qobuz = json_get(&doc, root, "qobuz");
-	int tidal = json_get(&doc, root, "tidal");
-
-	take_str(&doc, qobuz, "token", qobuz_token, sizeof(qobuz_token));
-	take_str(&doc, qobuz, "user", qobuz_token_user, sizeof(qobuz_token_user));
-	if (session) {
-		// Derived from the web player the last time, not the user's to write.
-		take_str(&doc, qobuz, "app_id", cached_app_id, sizeof(cached_app_id));
-		take_str(&doc, qobuz, "app_secret", cached_app_secret, sizeof(cached_app_secret));
-		long at = json_obj_long(&doc, qobuz, "creds_at", -1);
-		if (at >= 0) {
-			cached_creds_at = at;
-		}
-	} else {
-		// The user's file may name the application itself; the service derives
-		// them from the web player when it does not.
-		take_str(&doc, qobuz, "app_id", qobuz_app_id, sizeof(qobuz_app_id));
-		take_str(&doc, qobuz, "app_secret", qobuz_app_secret, sizeof(qobuz_app_secret));
-	}
-
-	take_str(&doc, tidal, "access_token", tidal_access, sizeof(tidal_access));
-	take_str(&doc, tidal, "refresh_token", tidal_refresh, sizeof(tidal_refresh));
-	long expires = json_obj_long(&doc, tidal, "expires_at", -1);
-	if (expires >= 0) {
-		tidal_expires = expires;
-	}
-	if (!session) {
-		take_str(&doc, tidal, "client_id", tidal_client_id, sizeof(tidal_client_id));
-		take_str(&doc, tidal, "client_secret", tidal_client_secret, sizeof(tidal_client_secret));
-	}
-
-	json_free(&doc);
-	wipe(text, len);
-	free(text);
-	printf("streamkeys: %s read (%s)\n", path, session ? "the player's session" : "the user's tokens");
-	return true;
+	legacy_want_t want = {
+		.section = section,
+		.key = key,
+		.out = out,
+		.size = size,
+		.found = false,
+	};
+	scan(path, legacy_value, &want);
+	return want.found;
 }
 
-void streamkeys_attach_card(const char *sd_root) {
-	if (!sd_root || !sd_root[0]) {
-		printf("streamkeys: no card, the streaming accounts stay off\n");
-		return;
-	}
-	snprintf(card_user_path, sizeof(card_user_path), "%s/%s/%s", sd_root, CARD_DIR_NAME, CARD_USER_FILE);
-	snprintf(card_session_path, sizeof(card_session_path), "%s/%s/%s", sd_root, CARD_DIR_NAME,
-			 CARD_SESSION_FILE);
 
-	// The user's file first, the player's session over it: what the player saved
-	// after a renewal is newer than what the user wrote by hand.
-	read_card_json(card_user_path, false);
-	read_card_json(card_session_path, true);
-
-	printf("streamkeys: card -- Qobuz %s, Tidal %s\n", qobuz_token[0] ? "token" : "no token",
-		   tidal_refresh[0] ? "token" : "no token");
-}
-
-static void write_escaped(FILE *f, const char *s) {
-	for (const char *p = s; *p; p++) {
-		if (*p == '"' || *p == '\\') {
-			fputc('\\', f);
-		}
-		if ((unsigned char)*p < 0x20) {
-			continue; // control characters have no place in a token
-		}
-		fputc(*p, f);
-	}
-}
-
-static void write_session(void) {
-	if (!card_session_path[0]) {
-		return;
-	}
-	char tmp[560];
-	snprintf(tmp, sizeof(tmp), "%s.tmp", card_session_path);
-
-	FILE *f = fopen(tmp, "w");
-	if (!f) {
-		fprintf(stderr, "streamkeys: cannot write %s\n", tmp);
-		return;
-	}
-	fprintf(f, "{\n");
-	fprintf(f, "    \"qobuz\": {\"token\": \"");
-	write_escaped(f, qobuz_token);
-	fprintf(f, "\", \"user\": \"");
-	write_escaped(f, qobuz_token_user);
-	fprintf(f, "\", \"app_id\": \"");
-	write_escaped(f, cached_app_id);
-	fprintf(f, "\", \"app_secret\": \"");
-	write_escaped(f, cached_app_secret);
-	fprintf(f, "\", \"creds_at\": %ld},\n", cached_creds_at);
-	fprintf(f, "    \"tidal\": {\"access_token\": \"");
-	write_escaped(f, tidal_access);
-	fprintf(f, "\", \"refresh_token\": \"");
-	write_escaped(f, tidal_refresh);
-	fprintf(f, "\", \"expires_at\": %ld}\n", tidal_expires);
-	fprintf(f, "}\n");
-	bool ok = fclose(f) == 0;
-	if (!ok || rename(tmp, card_session_path) != 0) {
-		fprintf(stderr, "streamkeys: the session was not saved\n");
-		remove(tmp);
-	}
-}
-
-void streamkeys_save_qobuz_session(const char *token, const char *user) {
-	snprintf(qobuz_token, sizeof(qobuz_token), "%s", token ? token : "");
-	snprintf(qobuz_token_user, sizeof(qobuz_token_user), "%s", user ? user : "");
-	write_session();
-}
-
-void streamkeys_save_qobuz_creds(const char *app_id, const char *app_secret, long at) {
-	snprintf(cached_app_id, sizeof(cached_app_id), "%s", app_id ? app_id : "");
-	snprintf(cached_app_secret, sizeof(cached_app_secret), "%s", app_secret ? app_secret : "");
-	cached_creds_at = at;
-	write_session();
-}
-
-void streamkeys_save_tidal_session(const char *access_token, const char *refresh_token, long expires_at) {
-	snprintf(tidal_access, sizeof(tidal_access), "%s", access_token ? access_token : "");
-	snprintf(tidal_refresh, sizeof(tidal_refresh), "%s", refresh_token ? refresh_token : "");
-	tidal_expires = expires_at;
-	write_session();
-}

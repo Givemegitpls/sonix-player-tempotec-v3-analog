@@ -1,5 +1,6 @@
 #include "keyboard.h"
 
+#include "src/gui/shell/gui.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/shell/shown.h"
 #include "src/system/input/kblayout.h"
@@ -1210,10 +1211,46 @@ static void kb_refr_start_cb(lv_event_t *e) {
 	}
 }
 
+// The tray is going away with its parent screen: this keyboard leaves the list.
+//
+// Without it the chain outlives the tray, and the display's REFR_START handler
+// and the theme refresh both walk it -- writing styles into freed widgets, which
+// is exactly what an addon tearing its page down would trigger on the next
+// frame. There is no keyboard_destroy(): deleting the parent screen has to be
+// enough, and this is what makes it enough.
+static void kb_deleted_cb(lv_event_t *e) {
+	keyboard_t *kb = lv_event_get_user_data(e);
+	if (!kb) {
+		return;
+	}
+
+	if (!kb->built) {
+		kb_unbuilt--;
+	}
+
+	for (keyboard_t **link = &kb_list; *link; link = &(*link)->next) {
+		if (*link != kb) {
+			continue;
+		}
+		*link = kb->next;
+		break;
+	}
+
+	// The bubble and the accent strip are placed on the parent, not on the tray:
+	// deleting the tray does not take them with it.
+	if (kb->preview && gui_obj_alive(kb->preview)) {
+		lv_obj_delete(kb->preview);
+	}
+	if (kb->variants && gui_obj_alive(kb->variants)) {
+		lv_obj_delete(kb->variants);
+	}
+
+	free(kb);
+}
+
 keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *field,
 							const lv_image_dsc_t *accept_icon, const char *accept_text, lv_event_cb_t on_accept,
-							void *user) {
-	keyboard_t *kb = calloc(1, sizeof(*kb));
+							void *user) {	keyboard_t *kb = calloc(1, sizeof(*kb));
 	if (!kb) {
 		return NULL;
 	}
@@ -1242,6 +1279,7 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 
 	kb->next = kb_list;
 	kb_list = kb;
+	lv_obj_add_event_cb(kb->tray, kb_deleted_cb, LV_EVENT_DELETE, kb);
 	kb_register_refresh();
 	kb->layout = kblayout_default();
 

@@ -9,6 +9,12 @@ void screen_history_reset(void); // forget the back-stack (back goes to the menu
 void switch_screen_no_history(lv_obj_t *target_screen); // load without recording
 void switch_screen_return_to(lv_obj_t *target_screen); // discard newer history and load
 
+// Forgets a screen that is about to be deleted: drops it (and everything newer)
+// from the back-stack, its back guard, the chevron's tint/hide records and the
+// player-return record. Call after moving away from it and before deleting it --
+// it loads nothing itself. For an addon's screen, whose library is going away.
+void switcher_forget_screen(lv_obj_t *screen);
+
 // Attach the iOS-style interactive swipe-back to a page surface (a screen or
 // a scrollable list/container that swallows presses): the page follows the
 // finger rightward, showing the previous page underneath.

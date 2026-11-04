@@ -118,6 +118,16 @@ builds with two jobs, `build.sh clean` wipes the objects. Not `host`, though:
 the image carries no SDL, FreeType, opusfile, wavpack or ALSA headers, so the
 simulator is a build on the machine and nothing to do with this image (below).
 
+The addons that live on the card (`Addons/*.so`) are **not built here**: they are
+their own repository, [sonix-player-addons](https://github.com/Givemegitpls/sonix-player-addons),
+which carries this tree as a submodule and builds against these headers and this
+ABI. What this tree keeps is the published surface they link against,
+`src/addon/exports.list`: `make target` links with it, and
+`tools/addon_exports.sh` regenerates it from the objects plus
+`src/addon/exports.addons` when the interface modules change. The addons'
+documentation is `docs/ADDONS.md` in that repository — the interface, the card
+layout, the thread rules, the build, and one section per addon.
+
 The **first** run does four things by itself and takes a while (20–60 minutes
 on a laptop), all of it inside the container:
 
@@ -301,32 +311,24 @@ Going back is the same procedure with the vendor's own `v3_analog.upt`.
 
 ## 7. Streaming services
 
-Qobuz, Tidal, Podcast Index and Last.fm need an account, and no application
-credentials are compiled into the image. They go on the **card**:
+Qobuz, Tidal, Zvuk, Yandex Music and Spotify are **addons**, not part of the
+image: each one is a folder on the card, `<card>/Addons/<id>/`, with its own
+`addon.json`, its `addon.so` and whatever it keeps — application keys, the
+account's session, a cache. The build is in another repository,
+[sonix-player-addons](https://github.com/Givemegitpls/sonix-player-addons)
+(`make pack` there produces the folder), and its `docs/ADDONS.md` has the card
+layout, the sign-in for each service, and what is not verified yet.
 
-```
-<card>/sonix/streaming.json
-```
+Podcast Index and Last.fm are the two accounts the player itself still signs
+requests with, and no keys for them are in this repository: they come from a
+sealed `streaming-keys.bin` (or a plain `streaming-keys.ini`) that the packer
+places in the rootfs — `streaming-keys.ini.example` has the shape.
 
-```json
-{
-  "qobuz": {"token": "…"},
-  "tidal": {"access_token": "…", "refresh_token": "…"}
-}
-```
-
-What the player does on its own: it takes Qobuz's application id and secret
-from Qobuz's web player when it first needs them (the same derivation the
-open-source downloaders use), keeps them in `sonix/streaming-session.json` on
-the card, and fetches them again if Qobuz changes them. Nothing of that is in
-the image, so a rotation costs a fetch, not a new firmware.
-
-Tidal's application `client_id`/`client_secret` are public and are built in;
-they can be overridden in the same file (`"client_id"`, `"client_secret"`).
-
-The Qobuz token is the one the web player keeps in local storage: sign in at
-`play.qobuz.com`, then **F12 → Application → Local Storage → localuser →
-token**.
+A card written before the addons existed keeps working: on its first run each
+addon reads the old `<card>/sonix/streaming.json` and
+`sonix/streaming-session.json`, takes what it finds there for its own service,
+and writes its own files. Nothing in `sonix/` is deleted, so a card that goes
+back to an older build still finds what it had.
 
 ---
 

@@ -1,10 +1,19 @@
-[qobuz]
-app_id = 
-app_secret = 
-
-[tidal]
-client_id = 
-client_secret = 
+; The keys of the two streaming services that are part of the player.
+;
+; The player reads this file (or the sealed form of it, streaming-keys.bin,
+; made by tools/seal_streamkeys.py) at startup. Which of the two a file is, is
+; decided by its first bytes, not its name; see
+; src/system/streaming/streamkeys.h.
+;
+; Qobuz, Tidal, Yandex Music and Zvuk are not here any more. They are addons,
+; and their keys and their sessions are files in their own folders on the card:
+;
+;     <card>/Addons/qobuz/settings.ini
+;     <card>/Addons/qobuz/session.ini
+;     <card>/Addons/tidal/settings.ini
+;     <card>/Addons/tidal/session.ini
+;
+; The player knows nothing about them.
 
 [podcast]
 api_key = 

@@ -381,6 +381,25 @@ void theme_register_refresh(theme_refresh_cb_t cb) {
 	refresh_cbs[refresh_cb_count++] = cb;
 }
 
+void theme_unregister_refresh(theme_refresh_cb_t cb) {
+	if (!cb) {
+		return;
+	}
+	for (int i = 0; i < refresh_cb_count; i++) {
+		if (refresh_cbs[i] != cb) {
+			continue;
+		}
+		// The order the callbacks were registered in is the order they run, and
+		// callers register in the order their widgets are built: shift rather
+		// than swap the last one into the hole.
+		for (int j = i; j + 1 < refresh_cb_count; j++) {
+			refresh_cbs[j] = refresh_cbs[j + 1];
+		}
+		refresh_cb_count--;
+		return;
+	}
+}
+
 const theme_palette_t *theme(void) { return active; }
 
 bool theme_is_dark(void) { return active->dark; }

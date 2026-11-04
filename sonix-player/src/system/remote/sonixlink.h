@@ -248,6 +248,10 @@ void sonixlink_set_card_root(const char *path);
 // out from the index the phone already has.
 void sonixlink_set_thumbs_path(const char *path);
 
+// The card is going away: closes the thumbnails database this module keeps open
+// on it. Reopened on demand from the path above; without this the connection
+// outlives the mount and blocks the unmount.
+void sonixlink_forget_card();
 // The playback queue, as much of it as the phone is shown.
 //
 // The whole queue is not published: it can be the entire library, and holding a

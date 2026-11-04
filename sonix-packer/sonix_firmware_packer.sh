@@ -499,7 +499,7 @@ build_one() {
 		warn "$MODEL_DIR/$PLAIN_KEYS is in the clear and was left out; seal it with tools/seal_streamkeys.py"
 	fi
 	if [ ! -f "$SQUASH_DIR/usr/resource/sonix/components/streaming-keys.bin" ]; then
-		warn "no streaming-keys.bin in $MODEL_DIR: Tidal, Qobuz and podcasts will be off"
+		warn "no streaming-keys.bin in $MODEL_DIR: Podcast Index, Last.fm and the old streaming accounts will be off"
 	fi
 
 	# The stock Wi-Fi/Bluetooth driver goes once bcm_wlbt_power and brcmfmac

@@ -161,7 +161,8 @@ Then put the files back in the rootfs, repack and flash.
 
 ### What the player does with it
 
-`sonix-player/src/system/gearboy/gbinput.c` is the only consumer. LVGL's evdev driver is a
+`sonix-player-addons`, `gearboy/src/system/gearboy/gbinput.c` (the Gearboy addon) is the only
+consumer. LVGL's evdev driver is a
 pointer device - one contact, one position - so while a game runs the panel
 changes owner: `panel_touch_enable(false)` parks LVGL's indev, the emulator
 opens the same node itself and reads the multitouch protocol, tracking up to

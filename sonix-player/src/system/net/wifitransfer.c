@@ -564,9 +564,35 @@ static void open_up_web_root(const char *web_root) {
 	}
 }
 
+// Serve what is shipped, and put this player's page into it. The fallback the
+// two paths below share.
+static const char *serve_in_place(void) {
+	install_page(WEB_SRC);
+	link_fonts(WEB_SRC);
+	link_self_as_cgi(WEB_SRC);
+	open_up_web_root(WEB_SRC);
+	return WEB_SRC;
+}
+
 static const char *prepare_web_root(void) {
 	if (!exists(WEB_DIR)) {
-		mkdir(WEB_PARENT, 0755);
+		// The stock script serves a *copy* of the web tree from /usr/data, which
+		// is a writable partition there. This rootfs has no /usr/data at all --
+		// the directory is not just empty, it is missing -- and the rootfs itself
+		// is at 87% with less free space than the tree's seven megabytes, so a
+		// copy either cannot be created or dies halfway and leaves a page with
+		// half its icons. Both are worse than what the shipped tree gives: the
+		// page and the CGI symlinks go into /usr/share/web, which is writable,
+		// and the rest is served from where it already is.
+		bool have_parent = exists("/usr/data") || mkdir("/usr/data", 0755) == 0;
+		if (have_parent) {
+			have_parent = mkdir(WEB_PARENT, 0755) == 0;
+		}
+
+		if (!have_parent) {
+			printf("wifitransfer: no writable web parent (%s); serving %s in place\n", WEB_PARENT, WEB_SRC);
+			return serve_in_place();
+		}
 
 		char *const argv[] = {(char *)"cp", (char *)"-a", (char *)WEB_SRC, (char *)WEB_PARENT "/", NULL};
 		int rc = run("/bin/cp", argv);
@@ -577,11 +603,7 @@ static const char *prepare_web_root(void) {
 			// still works. That is the one case where dropping web/index.html
 			// into /usr/share/web by hand is worth doing.
 			printf("wifitransfer: could not copy the web tree (cp -> %d); serving %s\n", rc, WEB_SRC);
-			install_page(WEB_SRC);
-			link_fonts(WEB_SRC);
-			link_self_as_cgi(WEB_SRC);
-			open_up_web_root(WEB_SRC);
-			return WEB_SRC;
+			return serve_in_place();
 		}
 	}
 

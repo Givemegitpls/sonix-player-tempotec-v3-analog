@@ -24,10 +24,9 @@
 #include "src/system/playback/device_state.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/remote/sonixlink.h"
-#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/service.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastdl.h"
-#include "src/system/streaming/tidalcache.h"
 #include "src/system/device/adb.h"
 #include "src/system/library/library.h"
 #include "src/system/remote/airplay.h"
@@ -43,7 +42,6 @@
 #include "src/system/device/usb.h"
 #include "src/system/audio/usbdac.h"
 #include "src/system/audio/metronome.h"
-#include "src/system/gearboy/gearboy.h"
 #include "src/system/device/led.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/device/axpcharge.h"
@@ -618,7 +616,7 @@ static bool streaming_playback_active(void) {
 	if (!path[0]) {
 		return false;
 	}
-	return qobuzcache_owns(path) || tidalcache_owns(path) || podcastcache_owns(path);
+	return service_owns(path) || podcastcache_owns(path);
 }
 
 // Whether the network is the point rather than an idle drain: an AirPlay
@@ -636,8 +634,7 @@ static bool wifi_in_use(void) {
 	// teardown it did not expect.
 	return wifi_busy() || wifi_scan_running() || streaming_playback_active() || airplay_get_enabled() ||
 		   dlna_get_enabled() || sonixlink_get_enabled() ||
-		   wifitransfer_get_enabled() || qobuzcache_downloading_id() > 0 ||
-		   qobuzcache_network_wanted() || tidalcache_downloading_id() > 0 || tidalcache_network_wanted() ||
+		   wifitransfer_get_enabled() || service_any_downloading() || service_any_network_wanted() ||
 		   podcastcache_downloading_id() > 0 || podcastcache_network_wanted() || podcastdl_busy() ||
 		   lastfm_network_wanted() || ota_busy();
 }
@@ -695,11 +692,11 @@ static bool player_is_busy(bool playing, uint32_t input_idle) {
 		   input_idle < power_tick_ms() * 4 ||	   // a key just pressed
 		   usbdac_is_active() ||				   // a computer feeding the DAC
 		   usb_storage_active() ||				   // the card exported over USB
-		   gearboy_running() ||					   // the emulator
+		   audio_external_active() ||			   // a game or the metronome, holding the DAC
 		   library_scan_running() ||			   // a scan, which is also writing to the card
 		   audiobookdb_scan_running() || wifitransfer_running() || dlna_running() || airplay_running() ||
 		   sonixlink_is_connected() || // a phone driving the player, not a switch left on
-		   qobuzcache_downloading_id() > 0 || tidalcache_downloading_id() > 0 || podcastcache_downloading_id() > 0 ||
+		   service_any_downloading() || podcastcache_downloading_id() > 0 ||
 		   ota_busy(); // a firmware update being fetched
 }
 
@@ -1048,8 +1045,7 @@ void power_shutdown(void) {
 	// Streamed and downloaded tracks are transient and must not survive a
 	// power cycle: without this the hidden folders carry a gigabyte of files
 	// the user never put there and will not listen to again.
-	qobuzcache_clear_on_exit();
-	tidalcache_clear_on_exit();
+	service_clear_on_exit_all();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
 
@@ -1472,6 +1468,30 @@ static void standby_register(lv_timer_t *timer, uint32_t slow_ms) {
 }
 
 void power_pause_in_standby(lv_timer_t *timer) { standby_register(timer, 0); }
+
+// The timer is gone (an addon's library is being unloaded): forget it. A slot
+// left behind points at freed LVGL memory, and the next dark panel would pause
+// or slow whatever happens to live there now.
+void power_forget_timer(lv_timer_t *timer) {
+	if (!timer) {
+		return;
+	}
+	for (int i = 0; i < g_standby_timer_count; i++) {
+		if (g_standby_timers[i] != timer) {
+			continue;
+		}
+		for (int j = i; j + 1 < g_standby_timer_count; j++) {
+			g_standby_timers[j] = g_standby_timers[j + 1];
+			g_standby_timer_slow_ms[j] = g_standby_timer_slow_ms[j + 1];
+			g_standby_timer_normal_ms[j] = g_standby_timer_normal_ms[j + 1];
+		}
+		g_standby_timer_count--;
+		g_standby_timers[g_standby_timer_count] = NULL;
+		g_standby_timer_slow_ms[g_standby_timer_count] = 0;
+		g_standby_timer_normal_ms[g_standby_timer_count] = 0;
+		return;
+	}
+}
 
 void power_slow_in_standby(lv_timer_t *timer, uint32_t standby_period_ms) {
 	standby_register(timer, standby_period_ms ? standby_period_ms : 1);

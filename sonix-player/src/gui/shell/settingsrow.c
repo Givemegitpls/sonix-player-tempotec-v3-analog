@@ -329,6 +329,26 @@ static lv_obj_t *make_card(lv_obj_t *parent, const char *name, lv_obj_t **value_
 static lv_obj_t *built_sliders[SETTINGSROW_MAX_SLIDERS];
 static int built_slider_count;
 
+static void settingsrow_refresh_theme(void);
+
+static void settingsrow_slider_deleted_cb(lv_event_t *e) {
+	lv_obj_t *slider = lv_event_get_target(e);
+	for (int i = 0; i < built_slider_count; i++) {
+		if (built_sliders[i] != slider) {
+			continue;
+		}
+		built_sliders[i] = built_sliders[built_slider_count - 1];
+		built_slider_count--;
+		// The ring repaint walks the whole array, so a stale pointer is a write
+		// into freed memory on the next theme change -- which is what an addon
+		// page being unloaded leaves behind.
+		if (built_slider_count == 0) {
+			theme_unregister_refresh(settingsrow_refresh_theme);
+		}
+		return;
+	}
+}
+
 static void settingsrow_refresh_theme(void) {
 	for (int i = 0; i < built_slider_count; i++) {
 		theme_apply_slider_knob(built_sliders[i]);
@@ -367,6 +387,7 @@ static lv_obj_t *make_slider(lv_obj_t *card, int steps, lv_event_cb_t cb) {
 			theme_register_refresh(settingsrow_refresh_theme);
 		}
 		built_sliders[built_slider_count++] = slider;
+		lv_obj_add_event_cb(slider, settingsrow_slider_deleted_cb, LV_EVENT_DELETE, NULL);
 	}
 	lv_obj_set_style_pad_all(slider, SC(8), LV_PART_KNOB);
 	theme_inset_slider_knob(slider); // the knob stops at the trough's end

@@ -18,9 +18,8 @@
 #include "src/system/core/logging.h"
 #include "src/system/device/power.h"
 #include "src/system/device/system.h"
-#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/service.h"
 #include "src/system/streaming/podcastcache.h"
-#include "src/system/streaming/tidalcache.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/streaming/radio.h"
 
@@ -116,8 +115,7 @@ static void do_reboot(void) {
 	device_state_remember_flush();
 	clock_shutdown();
 	radio_store_close();
-	qobuzcache_clear_on_exit();
-	tidalcache_clear_on_exit();
+	service_clear_on_exit_all();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
 	power_quiet_audio_for_shutdown(); // no pop as the amplifier goes down

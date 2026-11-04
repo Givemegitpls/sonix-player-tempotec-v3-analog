@@ -122,6 +122,9 @@ void device_state_play_list_ordered_at(const char *const *list, int count, int s
 // would mean two preparations in flight on the same path.
 typedef bool (*device_state_prepare_cb)(const char *path);
 void device_state_add_prepare_cb(device_state_prepare_cb cb);
+// The same, taken back -- an addon's library is about to be dlclose()d and the
+// callback is code in it. Removing one that was never registered does nothing.
+void device_state_remove_prepare_cb(device_state_prepare_cb cb);
 
 // Jump to entry `index` of the current queue.
 bool device_state_play_queue_index(int index);

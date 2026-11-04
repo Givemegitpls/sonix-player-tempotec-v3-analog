@@ -23,10 +23,7 @@
 #include "src/system/library/library.h"
 #include "src/system/library/playlists.h"
 #include "src/system/core/utils.h"
-#include "src/system/streaming/qobuzcache.h"
-#include "src/system/streaming/qobuzsync.h"
-#include "src/system/streaming/tidalcache.h"
-#include "src/system/streaming/tidalsync.h"
+#include "src/system/streaming/service.h"
 
 lv_obj_t *playlistpage_screen;
 
@@ -55,8 +52,11 @@ static char pending_track[512];
 // A local playlist is not an option for a streamed track: the file being played
 // lives in the cache, which empties itself, so a local playlist holding it
 // would be a list of dead paths within an afternoon.
-static long pending_qobuz_id;
-static long pending_tidal_id;
+// Where a picked track is about to be written, when it is not the card: the
+// service (from the registry) and the file, which is what the service's table
+// takes. One pair for every service there will be.
+static const sonix_addon_service_t *pending_service;
+static char pending_service_path[512];
 
 // Picker mode for a set of tracks at once (the library lists' selection): the
 // paths waiting for a playlist, owned by this page. Always local files.
@@ -542,54 +542,43 @@ static void sync_done_cb(bool ok, const char *error, void *user) {
 	// callback serves both, and saying "Qobuz" while adding a track to a Tidal
 	// playlist sends the user looking in the wrong place.
 	snprintf(sync_error, sizeof(sync_error), "%s",
-			 ok ? ""
-				: (error && error[0]        ? error
-				   : pending_tidal_id > 0 ? tr("tidal_change_refused")
-										   : tr("qobuz_change_refused")));
+			 ok ? "" : (error && error[0] ? error : tr("service_change_refused")));
 	gui_post(sync_done_async, NULL);
 }
 
 // The playlist mirror arrived; redraw if it is still what the page is showing.
-static void qobuz_playlists_ready_async(void *user) {
+static void service_playlists_ready_async(void *user) {
 	(void)user;
-	if (picking && pending_qobuz_id > 0) {
+	if (picking && pending_service) {
 		rebuild_rows();
 	}
 }
 
-static void qobuz_playlists_changed(void) { gui_post(qobuz_playlists_ready_async, NULL); }
+static void service_playlists_changed(void) { gui_post(service_playlists_ready_async, NULL); }
 
-static void qobuz_row_clicked_cb(lv_event_t *e) {
+// A row of the picker: which service it belongs to and which of its playlists.
+// The ids are text because Tidal's are UUIDs and Qobuz's are numbers, and the
+// row should not care; the array is the rows the picker can show at once.
+#define PICK_ROWS 64
+static struct {
+	const sonix_addon_service_t *service;
+	char id[64];
+} pick_rows[PICK_ROWS];
+
+static void service_row_clicked_cb(lv_event_t *e) {
 	if (player_sheet_drag_active() || switcher_back_drag_active()) {
 		return;
 	}
-	long playlist_id = (long)(intptr_t)lv_event_get_user_data(e);
-	if (playlist_id <= 0 || pending_qobuz_id <= 0) {
+	const void *user = lv_event_get_user_data(e);
+	int index = (int)(intptr_t)user;
+	if (index < 0 || index >= PICK_ROWS || !pending_service || !pick_rows[index].service) {
 		return;
 	}
-	qobuzsync_playlist_add(playlist_id, pending_qobuz_id, sync_done_cb, NULL);
-}
-
-static void tidal_row_clicked_cb(lv_event_t *e) {
-	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+	if (!pending_service->playlist_add) {
 		return;
 	}
-	const char *playlist_id = lv_event_get_user_data(e);
-	if (!playlist_id || !playlist_id[0] || pending_tidal_id <= 0) {
-		return;
-	}
-	tidalsync_playlist_add(playlist_id, pending_tidal_id, sync_done_cb, NULL);
+	pending_service->playlist_add(pick_rows[index].id, pending_service_path, sync_done_cb, NULL);
 }
-
-// The Tidal playlist mirror arrived; redraw if it is still what is shown.
-static void tidal_playlists_ready_async(void *user) {
-	(void)user;
-	if (picking && pending_tidal_id > 0) {
-		rebuild_rows();
-	}
-}
-
-static void tidal_playlists_changed(void) { gui_post(tidal_playlists_ready_async, NULL); }
 
 static bool collect_row_cb(const char *name, void *user) {
 	int *count = user;
@@ -1135,17 +1124,11 @@ static void name_accept_cb(lv_event_t *e) {
 		return;
 	}
 
-	// A Qobuz playlist is created on the account with the track in it, in one
-	// call. Nothing is written to the card.
-	if (picking && pending_qobuz_id > 0) {
+	// A service's playlist is created on the account with the track in it, in
+	// one call. Nothing is written to the card.
+	if (picking && pending_service && pending_service->playlist_create_with) {
 		name_layer_hide();
-		qobuzsync_playlist_create_with(name, pending_qobuz_id, sync_done_cb, NULL);
-		return;
-	}
-
-	if (picking && pending_tidal_id > 0) {
-		name_layer_hide();
-		tidalsync_playlist_create_with(name, pending_tidal_id, sync_done_cb, NULL);
+		pending_service->playlist_create_with(name, pending_service_path, sync_done_cb, NULL);
 		return;
 	}
 
@@ -1244,33 +1227,23 @@ static void rebuild_rows(void) {
 	lv_obj_set_style_text_color(new_label, theme()->accent, 0);
 
 	int count = 0;
-	if (picking && pending_qobuz_id > 0) {
-		qobuz_playlist_t got[QOBUZSYNC_PLAYLISTS_MAX];
-		int total = qobuzsync_playlists(got, QOBUZSYNC_PLAYLISTS_MAX);
-		for (int i = 0; i < total; i++) {
+	if (picking && pending_service && pending_service->playlists) {
+		sonix_addon_playlist_t got[PICK_ROWS];
+		int total = pending_service->playlists(got, PICK_ROWS);
+		for (int i = 0; i < total && i < PICK_ROWS; i++) {
 			char subtitle[48];
 			snprintf(subtitle, sizeof(subtitle), tr(got[i].track_count == 1 ? "playlist_track_2" : "playlist_tracks"),
 					 got[i].track_count);
-			add_row(got[i].name, subtitle, &icon_list_music, got[i].id, NULL);
+			pick_rows[i].service = pending_service;
+			snprintf(pick_rows[i].id, sizeof(pick_rows[i].id), "%s", got[i].id);
+			add_row(got[i].name, subtitle, &icon_list_music, 0, NULL);
 			count++;
 		}
 		// Nothing has arrived yet: ask for it, and the callback calls this
 		// function again once it does.
-		if (!qobuzsync_playlists_known()) {
-			qobuzsync_playlists_refresh(qobuz_playlists_changed);
-		}
-	} else if (picking && pending_tidal_id > 0) {
-		tidal_playlist_t got[TIDALSYNC_PLAYLISTS_MAX];
-		int total = tidalsync_playlists(got, TIDALSYNC_PLAYLISTS_MAX);
-		for (int i = 0; i < total; i++) {
-			char subtitle[48];
-			snprintf(subtitle, sizeof(subtitle), tr(got[i].track_count == 1 ? "playlist_track_2" : "playlist_tracks"),
-					 got[i].track_count);
-			add_row(got[i].name, subtitle, &icon_list_music, 0, got[i].id);
-			count++;
-		}
-		if (!tidalsync_playlists_known()) {
-			tidalsync_playlists_refresh(tidal_playlists_changed);
+		if (pending_service->playlists_known && !pending_service->playlists_known() &&
+			pending_service->playlists_refresh) {
+			pending_service->playlists_refresh(service_playlists_changed);
 		}
 	} else {
 		playlists_for_each(collect_row_cb, &count);
@@ -1287,8 +1260,8 @@ void playlistpage_open(void) {
 	picking = false;
 	pending_track[0] = '\0';
 	pending_many_free();
-	pending_qobuz_id = 0;
-	pending_tidal_id = 0;
+	pending_service = NULL;
+	pending_service_path[0] = '\0';
 	lv_label_set_text(title_label, tr("playlists"));
 	name_layer_hide();
 	import_layer_hide();
@@ -1304,13 +1277,12 @@ void playlistpage_add_track(const char *track_path) {
 	picking = true;
 	pending_many_free();
 	snprintf(pending_track, sizeof(pending_track), "%s", track_path);
-	pending_qobuz_id = qobuzcache_track_id(track_path);
-	pending_tidal_id = tidalcache_track_id(track_path);
+	pending_service = service_for_track(track_path);
+	snprintf(pending_service_path, sizeof(pending_service_path), "%s", pending_service ? track_path : "");
 	// The title states where the track is about to be written: an account or
-	// the card. The two caches live in different directories, so at most one of
-	// the two ids can be non-zero.
-	lv_label_set_text(title_label, pending_qobuz_id > 0   ? tr("playlist_qobuz_playlist")
-						   : pending_tidal_id > 0 ? tr("playlist_tidal_playlist")
+	// the card. A path answers yes to at most one service, so this is one
+	// question rather than one per service.
+	lv_label_set_text(title_label, pending_service ? tr("playlist_service_playlist")
 												  : tr("playlist_add_to_playlist_2"));
 	name_layer_hide();
 	import_layer_hide();
@@ -1342,8 +1314,8 @@ void playlistpage_add_tracks(const char *const *paths, int count) {
 
 	picking = true;
 	pending_track[0] = '\0';
-	pending_qobuz_id = 0;
-	pending_tidal_id = 0;
+	pending_service = NULL;
+	pending_service_path[0] = '\0';
 	lv_label_set_text(title_label, tr("playlist_add_to_playlist_2"));
 	name_layer_hide();
 	import_layer_hide();

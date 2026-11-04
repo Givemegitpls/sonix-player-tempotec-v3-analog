@@ -54,6 +54,25 @@ void streamturn_register_abandon(streamturn_abandon_fn fn) {
 	pthread_mutex_unlock(&abandon_lock);
 }
 
+void streamturn_unregister_abandon(streamturn_abandon_fn fn) {
+	if (!fn) {
+		return;
+	}
+	pthread_mutex_lock(&abandon_lock);
+	for (int i = 0; i < abandon_count; i++) {
+		if (abandon_fns[i] != fn) {
+			continue;
+		}
+		for (int j = i; j + 1 < abandon_count; j++) {
+			abandon_fns[j] = abandon_fns[j + 1];
+		}
+		abandon_count--;
+		abandon_fns[abandon_count] = NULL;
+		break;
+	}
+	pthread_mutex_unlock(&abandon_lock);
+}
+
 void streamturn_abandon_all(void) {
 	// The table is copied and the calls made outside the lock: an abandon
 	// closes a socket under a blocked recv(), and must not do that while
