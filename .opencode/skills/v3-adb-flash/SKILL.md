@@ -32,6 +32,27 @@ description: "Use when flashing/updating the TempoTec V3 Analog (or a HiBy-famil
 
    Значение — это mtime бинаря плеера на момент сборки (его печатает упаковщик).
 
+## Проверка, что на устройстве именно эта сборка
+
+adbd возвращается примерно через минуту после `echo recovery`; это ещё и recovery-среда, поэтому
+первый же `adb shell` может попасть не в загруженную систему — смотреть `/proc/uptime`.
+
+```
+md5sum sonix-player/sonix_player                                   # на хосте
+adb shell 'md5sum /usr/bin/sonix_player; cat /proc/uptime'          # совпало = прошит этот бинарь
+adb shell 'ps | grep sonix_player | grep -v grep'                   # sonix_launch + sonix_player живы
+```
+
+Аддоны (`.so` с карты) не откроются сами: `dlopen` идёт по тапу по плитке, поэтому в
+`/proc/$(pidof sonix_player)/maps` их нет, пока плитку не нажали. После тапа проверять там же:
+
+```
+adb shell 'pid=$(pidof sonix_player); grep Addons /proc/$pid/maps'
+```
+
+Пусто после тапа = библиотека отказана (номер api) или манифест не разобран; сам `addon.c` в лог
+ничего не пишет, так что других следов не будет.
+
 ## ЛОВУШКА: `/data/recovery_all` — это сброс к заводским, а не обновление
 
 Строки стокового бинаря (`echo recovery_all > /data/recovery_all`, `echo recovery_data > …`,
