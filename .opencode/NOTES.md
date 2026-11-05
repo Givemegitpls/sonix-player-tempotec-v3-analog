@@ -829,3 +829,134 @@ how the playback thread stalls -- `cover.c` stays on `meminfo_kb("MemAvailable")
 
 `main.c`'s two dumps used to ask for `MemAvailable:` too and never matched; they now print
 `MemFree`/`Buffers`/`Cached` instead.
+
+## Hidden networks and the resolver's addresses (2026-11-05)
+
+Two gaps the stock page has had since the Blaze port, both now in `main`.
+
+**A network that does not broadcast its name was unreachable, twice over.** `wifi.c` filtered
+hidden scan results out of the list (`ssid_is_hidden()`, deliberately: an entry with no name has
+nothing to tap), and nothing ever set `scan_ssid=1`, so even a profile created by hand could not
+have associated -- wpa_supplicant only matches beacons it hears and probes for a name it was told
+to probe for. `connect_direct()` now sets `scan_ssid 1` on both paths: when it creates a profile,
+and when it re-selects a saved one (a profile saved before this carries `scan_ssid=0` in
+`wpa_supplicant.conf`, and `save_config` writes the repair back). Harmless for a broadcasting
+network, which is why it is unconditional -- the same conclusion Compas OS reached.
+
+The UI is a row, not a list entry: "Hidden network" above the found networks opens the shared
+text-entry page in `src/gui/wireless/wifinet.c` (name, then passphrase, then the ordinary
+`wifi_connect()`; the passphrase page of a *visible* network still lives in `wifisettings.c`).
+The scan filter stays: a hidden network already saved shows up through `list_networks` anyway,
+because that path has the name the user typed.
+
+**DNS.** `src/system/net/netdns.c` keeps `[net] dns1/dns2` in `device_config.ini` and rewrites
+`/etc/resolv.conf`: the two addresses at the top, every other line copied through untouched.
+That split is what makes it survive a reconnect -- udhcpc's `default.script` never truncates the
+file, it only strips its own `nameserver ... # wlan0` lines and appends them again at the end, so
+ours stay first and the resolver's order keeps them. `http.c` already re-reads the file when it
+moves (`dns_follow_resolv_conf()`), so no restart is needed. Applied after every lease in the
+connect path **and** in `wifi_init()`: a radio that comes up at boot associates on its own and
+takes its lease from the init scripts, never through the connect path.
+
+`/etc/resolv.conf` is a plain file on this rootfs (`rcS` remounts `/` rw), but it may be a symlink
+into `/tmp` on other HiBy boards -- the file is written through, never replaced by rename. Under
+`HOST_BUILD` the path is `/tmp/sonix/data/resolv.conf`: without that, running the simulator would
+rewrite the developer's own resolver.
+
+Strings: `tools/lang_wifi_net.py` adds the nine tags to all twelve `.ini` files under
+`sonix-packer/assets/BLAZE/usr/resource/sonix/language/` (a tag with no line is displayed as the
+tag itself, see `lang.h`). The translations for Čeština/Chinese/Deutsch/Español/Français/
+Italiano/Japanese/Nederlands/Polski/Português/Russian went in with it; that script is the place to
+fix them, and re-running it is a no-op once the keys are there.
+
+Verified in the simulator: the row opens the entry page, the passphrase page wears the name,
+an address that is not an address keeps the page up with a toast, saving writes the file and
+clearing a slot falls back to the DHCP-provided address. Boot-time apply checked by seeding
+`[net]` in the simulator's config: `9.9.9.9` and `1.1.1.1` land above the `# wlan0` lines.
+
+**On the device (2026-11-05), with `tools/touchinj` driving the interface.** A hidden network
+entered through the page produced `scan_ssid=1` in `/data/wpa_supplicant.conf` and a connect
+through the ordinary path; a profile saved before this (`scan_ssid=0` in `get_network`) was
+repaired to 1 by tapping its row. An address typed into the DNS page landed in
+`/etc/resolv.conf` above the lease's own line, and `nslookup` answered from it
+(`Server: 8.8.4.4`); clearing the override through the config left only the `# wlan0` line. Two
+things this cost:
+
+* **Switching to the screen that is already up is not a no-op.** The hidden-network flow asks
+  two questions on one page, and the second `switch_screen(entry_screen)` left the page visible,
+  focused and completely dead to touch (back arrow included). `wifinet.c` now switches only
+  when `lv_screen_active()` is not that screen.
+* **`settingsrow_page()` does not scroll, and the Wi-Fi page is taller than 480 px** once the
+  switch, the current network, the list and a heading are on it. Two DNS rows at the bottom were
+  off the glass and unreachable. The addresses are a page of their own now, opened from a single
+  row placed directly under the switch.
+
+Device quirks worth remembering: the panel reports protocol-A touches (no `ABS_MT_SLOT`, no
+`ABS_X/ABS_Y`), so `touchinj` sends `TRACKING_ID`/`POSITION_X/Y`/`TOUCH_MAJOR`; a player started
+from an `adb shell` dies with the shell unless it is `nohup setsid`, and a dead player looks
+exactly like a live one whose touches are ignored (the framebuffer keeps the last frame); the
+screen sleeps after 30 s and a tap then only wakes it, so tests want
+`[power] screen_off_seconds = 0`.
+
+## The page that said "connected" to a switched-off access point (2026-11-05)
+
+Two defects in the Wi-Fi page, and they came from the same place: the page and `wifi.c` were
+reading a cached list where they needed the supplicant's live state.
+
+**"Connected" was a flag from the last scan, not the link.** `refresh_networks()` took `current`
+from the `[CURRENT]` column of `list_networks`, and `wifisettings.c` drew its "Current network"
+heading and the "Connected" line under a name from that flag. `[CURRENT]` means "the network
+wpa_supplicant has selected", which it keeps while it scans for an access point that has been
+switched off and drops only when it gives up, so the page went on naming the network for as long
+as the radio kept looking — and it was rebuilt on scans and commands only, so even a real
+disconnect would not have reached it.
+
+`read_link()` in `wifi.c` now reads `wpa_state` and nothing else: a network is connected when it
+says `COMPLETED` and its SSID is the row's. `refresh_networks()` recomputes every row's `current`
+from that, `poll_status()` refreshes the list on the transition in and out of
+`WIFI_STATE_CONNECTED` (a refresh forks, so transitions only), and `poll_cb()` watches the state
+too (`drawn_connected`) so the page drops the section on the next poll rather than on the next
+scan. `rebuild_list()` clears `current` on every row when the state is not connected, as a last
+guard against a stale list.
+
+**A forgotten network came straight back.** `read_saved_networks()` preferred
+`/data/wifi_network.txt`, which `sys_server` rewrites only when asked for `WIFI:LIST_NETWORK` —
+a command this player never sends. The file therefore held whatever the stock player last put
+there, and a network removed with `WIFI:REMOVE` stayed in it for good, `[CURRENT]` and all.
+`wpa_cli list_networks` now comes first and the file is the fallback for a firmware whose control
+socket cannot be reached. The empty answer deserves its own line: `wpa_cli` prints just the
+header when the list is empty (34 bytes), so `strchr(buf, '\t')` — the old test for "was there
+anything" — read a successful empty reply as a failure and fell back to the file. The exit status
+is what says whether there is a reply.
+
+`do_forget()` also had two holes. It disconnected only when the *cached* flag called the network
+current, and it never checked that the entry had actually gone. It now judges the link from
+`read_link()`, and its outcome is the live list afterwards. Which brought the second half of
+this: **`WIFI:REMOVE` is acknowledged before wpa_supplicant applies it.** 20 ms after "OK" the
+entry is still in `list_networks` (61 bytes: header plus the row) and only at ~300 ms does the
+list shrink to the 34-byte header, so the immediate check called the removal failed, the retry
+sent a second `REMOVE`, and the refresh that followed republished the row as "Saved, out of
+range", which then stayed until the next scan. `do_forget()` waits the entry out now — 250 ms
+steps, 2 s ceiling, one retry — and only then refreshes.
+
+Finally the row's tap: `LV_EVENT_CLICKED` fires on release whether or not the press was long, so
+a long press opened the menu *and* ran the tap, which on a saved row is a connect: the network was
+re-added under a new id a moment after "Forget network" removed it. The row is on
+`LV_EVENT_SHORT_CLICKED`; a plain tap still opens the password page, a long press only the menu.
+
+One more thing was asked for on the way: a way back to the router's own addresses without
+knowing that an empty field is the answer. The DNS page has a third row -- `wifi_dns_reset`,
+"Reset to the router's", a `settingsrow_action` so it carries no chevron -- which is
+`netdns_set("", "")` and a toast. Measured: `[net] dns1 = 9.9.9.9` in the config and
+`nameserver 9.9.9.9` at the top of `/etc/resolv.conf`; one tap, and the file is back to the
+`# wlan0` lines it had (`nameserver 1.2.3.4 # wlan0`, `search lan # wlan0` both kept) with the
+override gone from the config. The language tag comes from `tools/lang_wifi_net.py`, whose
+`.ini` files are pushed to `/usr/resource/sonix/language/` on the device -- a player rebuilt with
+a new tag otherwise shows the tag itself (`wifi_dns_reset` on the row).
+
+**Measured on the V3.** Connected to the hidden hotspot `GT Neo2T` (profile needs `scan_ssid=1`,
+it is never in the scan): the page showed "Current network → GT Neo2T → Connected". Hotspot off:
+on the next poll the section was gone and the network sat in "Available networks" as "Saved, out
+of range", with `wpa_state=SCANNING` and no `Connected` anywhere. Forget of a test profile:
+`list_networks` empty 0.9 s after the tap, the row gone from the page without a scan, and still
+gone after a reboot.

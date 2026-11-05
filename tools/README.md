@@ -291,3 +291,29 @@ start on the device's glibc 2.16. It defines `getrandom` (the syscall arrived
 in Linux 3.17, this device runs 3.10, so `/dev/urandom` is the way in) and
 `clock_gettime` (librt's `GLIBC_2.2` copy, where 2.16 keeps it). See
 [../docs/V3-ANALOG.md](../docs/V3-ANALOG.md) for the full recipe.
+
+## touchinj
+
+Drives the Touch panel from a script: one tap, or a press-move-release drag, written straight
+into the evdev node.
+
+```
+touchinj /dev/input/event2 92 252          a tap at (92, 252)
+touchinj /dev/input/event2 160 400 1500    the same, held for 1.5 s
+touchinj /dev/input/event2 drag 160 400 160 230 300
+```
+
+The V3's GT9XX declares the multi-touch axes only -- no `ABS_X`/`ABS_Y` -- and no
+`ABS_MT_SLOT` either, so the events are protocol A: a tracking id, the position, a touch major
+and the `-1` that lifts the finger. Written for testing the Wi-Fi page without a finger on the
+glass; pairs with `fbtool show` and a `dd` of `/dev/fb0`, which is how the screenshots in the
+session notes were taken (`yoff` picks the page being displayed).
+
+Two traps that cost an hour between them: a player started from an `adb shell` is killed with
+that shell unless it is `nohup setsid /usr/bin/sonix_player.sh`, and the panel blanks after 30 s
+of no *real* input -- injected touches do not reset that timer, so a tap after the timeout only
+wakes the screen and tests want `[power] screen_off_seconds = 0` while they run.
+
+```
+mipsel-rockbox-linux-gnu-gcc -static -O2 -o touchinj touchinj.c
+```

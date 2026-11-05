@@ -23,6 +23,7 @@
 #include "src/system/device/power.h"
 #include "src/system/device/sysserver.h"
 #include "src/system/core/utils.h"
+#include "src/system/net/netdns.h"
 
 // The interface. Both the stock scripts and sys_server hard-code it, so there
 // is nothing to discover.
@@ -86,6 +87,15 @@ void wifi_set_status_poll_slow(bool slow) { g_poll_slow = slow; }
 // which is never going to answer does not hold the page.
 #define ASSOC_TIMEOUT_MS 30000
 #define ASSOC_POLL_MS 500
+
+// How long a removed network is given to leave the list, and how often it is
+// looked for. WIFI:REMOVE is acknowledged by sys_server and carried out by
+// wpa_supplicant after it has answered, so the entry is still in
+// `list_networks` for a heartbeat or two -- long enough for a check made at
+// once to call the removal failed and for the refresh that follows to put the
+// row back on the page.
+#define FORGET_TIMEOUT_MS 2000
+#define FORGET_POLL_MS 250
 
 // How long the supplicant has to sit still before the wait gives up early.
 //
@@ -484,9 +494,12 @@ static bool parse_network_line(char *line, char *ssid, size_t ssid_size, int *id
 }
 
 // ---------------------------------------------------------------------------
-// The readers. Each prefers the file sys_server wrote, which is the stock path
-// and works even where wpa_cli's control socket cannot be opened, and falls
-// back to wpa_cli when the file is missing or stale.
+// The readers. sys_server leaves what it reads out of wpa_supplicant in three
+// files under /data; they are the stock path and work even where wpa_cli's
+// control socket cannot be opened. Which of a file and wpa_cli is fresher
+// depends on what the daemon is told to write and when, so each reader says so
+// for itself: the scan dump is fresher than wpa_cli's own copy of it, and the
+// saved-network dump is only rewritten on a command this player never sends.
 // ---------------------------------------------------------------------------
 
 static void read_scan_results(char *buf, size_t size) {
@@ -496,11 +509,25 @@ static void read_scan_results(char *buf, size_t size) {
 	wpa1("scan_results", buf, size);
 }
 
+// The saved list, live, with the daemon's dump as the fallback.
+//
+// The order is the opposite of the scan's on purpose. `/data/wifi_network.txt`
+// is written by sys_server only when it is asked for WIFI:LIST_NETWORK, and
+// this player never asks: the file holds whatever the stock player last put
+// there. A network removed with WIFI:REMOVE therefore stays in it for good, and
+// so does its [CURRENT] flag -- which is why "Forget network" used to leave the
+// row on the page, and why the page could go on naming a network as the one in
+// use long after it was gone. The file is still worth trying where wpa_cli
+// cannot reach the control socket.
 static void read_saved_networks(char *buf, size_t size) {
-	if (slurp(WIFI_NETWORK_FILE, buf, size) && strchr(buf, '\t')) {
+	int rc = wpa1("list_networks", buf, size);
+	if (rc == 0) {
+		// A reply with nothing in it is still a reply: the last network was
+		// forgotten, and the file below would put it back.
 		return;
 	}
-	wpa1("list_networks", buf, size);
+	printf("wifi: wpa_cli list_networks failed (%d); reading %s\n", rc, WIFI_NETWORK_FILE);
+	slurp(WIFI_NETWORK_FILE, buf, size);
 }
 
 static void read_status(char *buf, size_t size) {
@@ -510,6 +537,38 @@ static void read_status(char *buf, size_t size) {
 		return;
 	}
 	slurp(WIFI_STATUS_FILE, buf, size);
+}
+
+// The live link, as wpa_supplicant sees it this second.
+//
+// `list_networks` is not this: its CURRENT flag means "the network the
+// supplicant has selected", which it keeps while it scans for a way back to an
+// access point that has been switched off and drops only when it gives up. The
+// state is the authority, and a network is connected when it says COMPLETED --
+// nothing else in this file may claim a link on its own.
+typedef struct {
+	bool known;				   // the supplicant answered with a state at all
+	bool connected;			   // wpa_state=COMPLETED
+	char ssid[WIFI_SSID_MAX];  // the SSID of that link, empty otherwise
+} link_t;
+
+static void read_link(link_t *out) {
+	static char buf[2048];
+	char state[32];
+
+	memset(out, 0, sizeof(*out));
+
+	read_status(buf, sizeof(buf));
+	if (!status_field(buf, "wpa_state", state, sizeof(state))) {
+		return;
+	}
+	out->known = true;
+	if (strcmp(state, "COMPLETED") != 0) {
+		return;
+	}
+	out->connected = true;
+	status_field(buf, "ssid", out->ssid, sizeof(out->ssid));
+	ssid_unescape(out->ssid); // wpa_supplicant escapes this one too
 }
 
 // ---------------------------------------------------------------------------
@@ -647,6 +706,19 @@ static void refresh_networks(void) {
 		}
 	}
 
+	// What the radio is doing right now, which is what decides whether any row
+	// may call itself the connected one. The [CURRENT] flag above is not that
+	// answer: wpa_supplicant keeps a network selected while it hunts for an
+	// access point that has been switched off, so a list built from the flag
+	// alone says "connected" for as long as it keeps looking.
+	link_t link;
+	read_link(&link);
+	if (link.known) {
+		for (int i = 0; i < count; i++) {
+			found[i].current = link.connected && strcmp(found[i].ssid, link.ssid) == 0;
+		}
+	}
+
 	// Strongest first, with the connected network pinned to the top.
 	for (int i = 1; i < count; i++) {
 		wifi_network_t key = found[i];
@@ -697,17 +769,14 @@ static void do_scan(void) {
 
 // The id wpa_supplicant knows this SSID under, or -1.
 //
-// This one asks wpa_cli and only falls back to the file sys_server wrote, which
-// is the opposite of what the list on screen does, and deliberately. The file
-// is rewritten only when a scan is asked for, so between two scans it can name
-// networks under numbers wpa_supplicant has since given to something else --
-// and unlike a row drawn one id out of date, "WIFI:CONNECT:wlan0 3" with a
-// stale 3 joins the wrong network or nothing at all.
+// The number goes straight into "WIFI:CONNECT:wlan0 3" and "WIFI:REMOVE:wlan0
+// 3", and a stale one joins the wrong network or removes somebody else's --
+// which is why this, like the list on screen now, prefers the live answer and
+// keeps the daemon's file for a firmware whose control socket cannot be
+// reached.
 static int saved_network_id(const char *ssid) {
 	static char buf[4096];
-	if (!(wpa1("list_networks", buf, sizeof(buf)) == 0 && strchr(buf, '\t'))) {
-		read_saved_networks(buf, sizeof(buf));
-	}
+	read_saved_networks(buf, sizeof(buf));
 
 	char *save_line = NULL;
 	for (char *line = strtok_r(buf, "\n", &save_line); line; line = strtok_r(NULL, "\n", &save_line)) {
@@ -868,6 +937,15 @@ static direct_result_t connect_direct(const char *ssid, const char *psk) {
 			return DIRECT_REFUSED;
 		}
 
+		// scan_ssid=1 is what makes wpa_supplicant send an active probe naming
+		// this SSID instead of only matching a beacon it happened to hear. A
+		// network that does not broadcast its name is never heard from at all,
+		// so without this the profile above is one that can never associate --
+		// which is exactly the case the manual "hidden network" entry exists
+		// for. Harmless for a network that does broadcast, so it goes on every
+		// profile this function creates.
+		wpa4("set_network", id_text, "scan_ssid", "1", out, sizeof(out));
+
 		if (psk && psk[0]) {
 			if (!set_psk(id_text, psk)) {
 				set_fail(WIFI_FAIL_WRONG_KEY);
@@ -888,6 +966,11 @@ static direct_result_t connect_direct(const char *ssid, const char *psk) {
 			}
 			wpa4("set_network", id_text, "key_mgmt", "WPA-PSK", out, sizeof(out));
 		}
+		// The same repair as above, for a profile saved before this player
+		// set it: a hidden network joined once carries scan_ssid=0 in
+		// wpa_supplicant.conf and would never be looked for again. save_config
+		// below writes the repaired value back.
+		wpa4("set_network", id_text, "scan_ssid", "1", out, sizeof(out));
 	}
 
 	wpa2("enable_network", id_text, out, sizeof(out));
@@ -1065,6 +1148,11 @@ static void do_connect(const char *ssid, const char *psk) {
 	bool associated = wait_for_association(&handshake);
 	if (associated) {
 		request_dhcp();
+		// The lease has just rewritten /etc/resolv.conf -- the addresses the
+		// router handed out are in it, at the end, after any override the user
+		// set. Putting that override back at the top here is what keeps it in
+		// force across a reconnect rather than until the next association.
+		netdns_apply();
 	} else {
 		// The access point turned the handshake down. Two things say so, and
 		// either is enough: wpa_supplicant parks a network it cannot
@@ -1148,40 +1236,74 @@ static void do_disconnect(void) {
 	refresh_networks();
 }
 
-static void do_forget(const char *ssid) {
-	int id = saved_network_id(ssid);
-	if (id < 0) {
-		set_op(WIFI_OP_FAILED, ssid);
-		return;
-	}
+// Takes one network id out of wpa_supplicant's configuration, through the
+// daemon when there is one and by hand otherwise, and writes the result back so
+// a reboot does not resurrect it.
+static void remove_network_id(int id) {
+	char id_text[16];
+	char out[128];
 
-	bool was_current = is_current_network(ssid);
+	snprintf(id_text, sizeof(id_text), "%d", id);
 
-	bool done = false;
 	if (have_sysserver()) {
 		char command[64];
 		char reply[128];
 		snprintf(command, sizeof(command), "WIFI:REMOVE:%s %d", WIFI_IFACE, id);
-		done = sysserver_request(command, reply, sizeof(reply)) == 0;
+		if (sysserver_request(command, reply, sizeof(reply)) == 0) {
+			return;
+		}
 	}
 
-	if (!done) {
-		char id_text[16];
-		char out[128];
-		snprintf(id_text, sizeof(id_text), "%d", id);
-		done = wpa2("remove_network", id_text, out, sizeof(out)) == 0;
-		wpa1("save_config", out, sizeof(out));
+	wpa2("remove_network", id_text, out, sizeof(out));
+	wpa1("save_config", out, sizeof(out));
+}
+
+static void do_forget(const char *ssid) {
+	if (saved_network_id(ssid) < 0) {
+		set_op(WIFI_OP_FAILED, ssid);
+		refresh_networks();
+		return;
+	}
+
+	// Whether this is the link in use, judged by the supplicant rather than by
+	// the cached flag: the row the user long-pressed may have been drawn before
+	// the association moved, and the disconnect below is what makes "forget"
+	// mean what it says.
+	link_t link;
+	read_link(&link);
+	bool was_current = (link.connected && strcmp(link.ssid, ssid) == 0) || is_current_network(ssid);
+
+	// The outcome is the list afterwards, not the command's exit status: an
+	// accepted remove_network can leave the entry in place, in particular while
+	// the network is the selected one. And the entry does not go at once --
+	// sys_server answers "OK" and wpa_supplicant applies it a moment later, so
+	// a check made straight away sees the network still there, and the refresh
+	// that follows publishes it again: the row the user just forgot comes back
+	// as "Saved, out of range" and stays until the next scan. So each attempt
+	// waits the entry out, and the page is told the truth either way.
+	bool gone = false;
+	for (int attempt = 0; attempt < 2 && !gone; attempt++) {
+		int id = saved_network_id(ssid);
+		if (id < 0) {
+			gone = true;
+			break;
+		}
+		remove_network_id(id);
+		for (int wait = 0; wait < FORGET_TIMEOUT_MS / FORGET_POLL_MS && !gone; wait++) {
+			sleep_ms(FORGET_POLL_MS);
+			gone = saved_network_id(ssid) < 0;
+		}
 	}
 
 	// Removing a network does not always bring the link down with it -- the
 	// association can outlive the entry that describes it -- and a player still
 	// joined to a network it no longer knows is neither one thing nor the other.
-	if (done && was_current) {
+	if (gone && was_current) {
 		wpa1("disconnect", NULL, 0);
 		forget_link_state();
 	}
 
-	set_op(done ? WIFI_OP_OK : WIFI_OP_FAILED, ssid);
+	set_op(gone ? WIFI_OP_OK : WIFI_OP_FAILED, ssid);
 	refresh_networks();
 }
 
@@ -1237,6 +1359,7 @@ static void poll_status(void) {
 	// The switch has the last word: the poll must never report a link on a radio
 	// that has just been turned off.
 	bool was_online = g_status.state == WIFI_STATE_CONNECTED && g_status.ip[0] != '\0';
+	bool was_connected = g_status.state == WIFI_STATE_CONNECTED;
 	if (!g_enabled) {
 		memset(&g_status, 0, sizeof(g_status));
 		g_status.state = WIFI_STATE_OFF;
@@ -1244,7 +1367,19 @@ static void poll_status(void) {
 		g_status = status;
 	}
 	bool now_online = g_status.state == WIFI_STATE_CONNECTED && g_status.ip[0] != '\0';
+	bool now_connected = g_status.state == WIFI_STATE_CONNECTED;
 	pthread_mutex_unlock(&lock);
+
+	// The link went away or came up: the network list was built from the last
+	// scan, and its CURRENT flag lags behind the association on its own. The
+	// page reads that flag for its "Current network" section and for the
+	// "Connected" sentence on the row, so without this a dropped access point
+	// leaves both of them up until somebody presses search again -- which is
+	// exactly what "it says it is connected when the access point is off"
+	// looks like. Only a transition: the refresh forks.
+	if (was_connected != now_connected) {
+		refresh_networks();
+	}
 
 	// A fresh association is the moment to ask the network for the time. The
 	// stock player does the same, running ntpdate against 0.pool.ntp.org and
@@ -1376,6 +1511,12 @@ void wifi_init(void) {
 
 	g_enabled = config_get_int("wireless", "wifi", 0) != 0;
 	g_status.state = WIFI_STATE_OFF;
+
+	// A radio that comes up at boot associates on its own and takes its lease
+	// from the init scripts, not from this module, so the DNS override has to
+	// be put back here too -- the connect path below is not reached at all in
+	// that case.
+	netdns_apply();
 
 	if (pthread_create(&worker, NULL, wifi_worker, NULL) != 0) {
 		fprintf(stderr, "wifi: could not start the worker thread\n");

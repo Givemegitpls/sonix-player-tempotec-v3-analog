@@ -18,6 +18,7 @@
 #include "src/gui/shell/topbar.h"
 #include "src/system/core/lang.h"
 #include "src/system/net/wifi.h"
+#include "src/gui/wireless/wifinet.h"
 
 lv_obj_t *wifisettings_screen;
 
@@ -47,6 +48,15 @@ static bool drawn_enabled;
 // found" on screen for the whole sweep, which is exactly when the right answer
 // is "searching".
 static bool drawn_scanning;
+
+// Whether the link was up the last time the list was drawn.
+//
+// The "Current network" heading and the "Connected" line under a name come from
+// the list, and the list is refreshed on scans and commands -- not every time
+// the radio changes its mind. A link that drops on its own therefore leaves the
+// heading up over a network the player is no longer on, until somebody presses
+// search. Watching the state as well means the section goes away with the link.
+static bool drawn_connected;
 
 // Whether a sweep has been asked for since the radio came up.
 //
@@ -380,7 +390,13 @@ static void add_row(lv_obj_t *parent, const wifi_network_t *net, bool with_menu)
 					  (net->secured ? ROW_SECURED : 0u);
 	lv_obj_set_user_data(row, (void *)flags);
 
-	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, ssid_copy);
+	// SHORT_CLICKED, not CLICKED: LVGL sends the latter on release whether or
+	// not the press was long, so a long press opened the menu *and* ran the tap
+	// -- on a saved row that is a connect, which re-added the network a moment
+	// after "Forget network" removed it, with a new id, and made the row come
+	// back. The panel's long press is the only way to reach "Forget" on a row
+	// without dots, so the two have to be told apart.
+	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_SHORT_CLICKED, ssid_copy);
 	lv_obj_add_event_cb(row, row_long_pressed_cb, LV_EVENT_LONG_PRESSED, ssid_copy);
 	lv_obj_add_event_cb(row, row_free_cb, LV_EVENT_DELETE, ssid_copy);
 
@@ -477,6 +493,19 @@ static void rebuild_list(void) {
 
 	wifi_network_t networks[WIFI_MAX_NETWORKS];
 	int count = wifi_get_networks(networks, WIFI_MAX_NETWORKS);
+
+	// "Connected" is a claim about the radio, so it is only made when the radio
+	// says COMPLETED. The flag on the row comes from the last scan's list, which
+	// wpa_supplicant keeps pointing at its selected network while it looks for
+	// one that has gone away -- dropping it here is what stops the page naming
+	// an access point that is switched off.
+	wifi_status_t status;
+	wifi_get_status(&status);
+	if (status.state != WIFI_STATE_CONNECTED) {
+		for (int i = 0; i < count; i++) {
+			networks[i].current = false;
+		}
+	}
 
 	// The network in use gets a heading of its own, above the rest, rather than
 	// being left to be found among thirty others.
@@ -605,10 +634,15 @@ static void poll_cb(lv_timer_t *timer) {
 
 	uint32_t serial = wifi_networks_serial();
 	bool scanning = searching_now();
-	if (serial != drawn_serial || on != drawn_enabled || scanning != drawn_scanning) {
+	wifi_status_t status;
+	wifi_get_status(&status);
+	bool connected = status.state == WIFI_STATE_CONNECTED;
+	if (serial != drawn_serial || on != drawn_enabled || scanning != drawn_scanning ||
+		connected != drawn_connected) {
 		drawn_serial = serial;
 		drawn_enabled = on;
 		drawn_scanning = scanning;
+		drawn_connected = connected;
 		rebuild_list();
 	}
 
@@ -848,6 +882,11 @@ void wifisettings_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_hor(status_label, SC(4), 0);
 	lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
 
+	// Directly under the switch, because this page is taller than the panel
+	// and does not scroll: a row below the network list is a row nobody can
+	// reach. One row, not two -- the addresses have a page of their own.
+	wifinet_add_dns_row(container, cfg);
+
 	// Two sections, each a heading over a box of rows: the network being used,
 	// and everything else. Both boxes exist from the start and are hidden when
 	// they have nothing in them, so a refresh is one lv_obj_clean() and not a
@@ -856,6 +895,9 @@ void wifisettings_init(gui_config_t *cfg) {
 	current_list = make_rows(container);
 
 	section_label = make_heading(container, "wifi_available_networks");
+	// A network that does not broadcast its name is never in the scan, so it
+	// gets a row of its own above the list rather than a place in it.
+	wifinet_add_manual_row(container, cfg);
 	list = make_rows(container);
 
 	scan_btn = corner_button(wifisettings_screen, cfg, &icon_wifi_search, &scan_icon);
