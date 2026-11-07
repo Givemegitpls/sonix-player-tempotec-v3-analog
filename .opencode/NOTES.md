@@ -960,3 +960,31 @@ on the next poll the section was gone and the network sat in "Available networks
 of range", with `wpa_state=SCANNING` and no `Connected` anywhere. Forget of a test profile:
 `list_networks` empty 0.9 s after the tap, the row gone from the page without a scan, and still
 gone after a reboot.
+
+## Automatic shutdown does not run on the charger (2026-11-07)
+
+`power_timer_cb()` held the shutdown timer at zero for a lit screen or a busy player, and the
+cable was not on that list: with auto power-off on (15 min … 6 h), a player left plugged in went
+off on schedule. Fixed in `power.c`: the tick restamps `g_last_active_boot_ms` while
+`usb_vbus_present()`, the firing test carries `!on_charger` as a race guard, and the RTC-alarm
+branch after a `mem` wake checks the cable too. The timer therefore starts counting from the
+moment the cable comes out, not from the last time the screen was on. Rationale recorded in
+`docs/POWER.md`, item 5. Target build (`docker/build.sh`) passes; ABI check still reports nothing
+beyond glibc 2.16.
+
+### Verified on the device, 2026-11-07
+
+Flashed through recovery as `v3_analog.upt` (md5 `6f3c0bff7e6cc33078c4cbcb06f2290f`, build_version
+`071120261246`; the previous image was kept on the card as `v3_analog_20261105.upt`). Auto power-off
+set to 15 min in `/data/device_config.ini` -- note that it is the file the player reads, and that
+an unknown `screen_off_seconds` (45) is normalised to the default 30 s at startup, which is how the
+reading was confirmed.
+
+- With the cable in: `15:01:00 power: screen off`, the 15-minute deadline fell at 15:16, and the
+  device was still up and answering adb at 15:24, with no `automatic shutdown` line.
+- With the cable out (the control): `18:13:28 power: mem: RTC wake in 846 s for the automatic
+  shutdown` -> `18:27:35 power: automatic shutdown: RTC wake after mem: the idle time has run out`.
+  That is the branch carrying the new `!usb_vbus_present()`, so the gate does not disable it.
+
+adb on this port is USB only, so a cable is also VBUS: "unplugged with adb" cannot be produced, the
+control has to be done by hand.

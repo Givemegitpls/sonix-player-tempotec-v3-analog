@@ -102,6 +102,14 @@ So the cable stays a reason of its own, and the tick that watches the level alwa
 the cable is carrying (the card over USB, DAC mode, ADB) is checked as well and says so in the
 log.
 
+The automatic shutdown obeys the same rule: while VBUS is present the shutdown timer is held at
+zero, and it starts counting again from the moment the cable comes out. A player put down to
+charge is not an idle player that forgot to switch off, and powering it off under the cable
+means the display cannot be read without unplugging it and pressing power. The `mem` rule above
+is why the level still gets watched; this one is a separate line in the tick (`power.c`, step 3),
+and the RTC-alarm path after a `mem` wake checks the cable too, so an alarm armed before the
+plug came in cannot switch the device off either.
+
 One casualty of the investigation is a wrong assumption worth recording: `axp_battery`'s
 `current_now` is the constant `BAT_CURRENT_NOW` (200000) from the vendor driver, not a
 measurement -- see "What can and cannot be measured here".

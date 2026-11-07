@@ -1276,7 +1276,11 @@ static void suspend_to_ram(void) {
 	pthread_mutex_unlock(&g_lock);
 
 	bool rtc_woke_it = rc == 0 && g_rtc_alarm_armed && !user_woke_it;
-	if (rtc_woke_it && g_rtc_auto_off_armed && (int32_t)(boottime_ms() - g_rtc_alarm_boot_at) >= 0) {
+	// Nor does the automatic shutdown fire on a device that has been plugged in
+	// since the alarm was armed: the timer in the tick holds a cable at zero,
+	// and this path has to agree with it (see the tick, step 3).
+	if (rtc_woke_it && g_rtc_auto_off_armed && !usb_vbus_present() &&
+		(int32_t)(boottime_ms() - g_rtc_alarm_boot_at) >= 0) {
 		power_auto_off_now("RTC wake after mem: the idle time has run out");
 	}
 	// The battery's own wake: a few seconds of slack, as the RTC counts whole
@@ -1964,7 +1968,16 @@ static void power_timer_cb(lv_timer_t *timer) {
 	// It counts on CLOCK_BOOTTIME, which keeps running while the SoC is
 	// suspended, so a device that spends the wait asleep still switches off at
 	// the right moment.
-	if (g_screen_on || player_is_busy(playing, input_idle)) {
+	//
+	// The cable holds it at zero too. A player left on the charger is not an
+	// idle player that forgot to switch off: it is one that was deliberately
+	// put down to charge, and switching off under the cable means the display
+	// cannot be read without unplugging it and pressing power. The suspend
+	// already refuses the cable for its own reasons (see suspend_if_idle());
+	// this is the same rule for the shutdown timer, and it starts counting
+	// again from the moment the cable comes out.
+	bool on_charger = usb_now;
+	if (g_screen_on || player_is_busy(playing, input_idle) || on_charger) {
 		g_last_active_boot_ms = boottime_ms();
 	}
 	uint32_t off_idle_wall = boottime_ms() - g_last_active_boot_ms;
@@ -1985,7 +1998,11 @@ static void power_timer_cb(lv_timer_t *timer) {
 	//     suspending first would leave rtc_alarm_arm() with a
 	//     deadline already past, so it would arm nothing, that sleep would carry
 	//     no alarm and the shutdown would slip by a whole period.
-	if (g_auto_off_enabled && g_auto_off_ms > 0 && off_idle_wall >= g_auto_off_ms) {
+	//     `on_charger` is repeated here only as a guard: the marker above is
+	//     already restamped on every tick the cable is in, so this second test
+	//     never sees an expired timer on its own. It keeps a cable plugged in
+	//     exactly at the deadline from racing the restamp.
+	if (g_auto_off_enabled && g_auto_off_ms > 0 && !on_charger && off_idle_wall >= g_auto_off_ms) {
 		char why[64];
 		snprintf(why, sizeof(why), "%u minutes idle", g_auto_off_ms / 60000u);
 		power_auto_off_now(why);
