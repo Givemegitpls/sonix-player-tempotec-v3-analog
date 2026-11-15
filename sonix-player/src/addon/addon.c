@@ -172,7 +172,7 @@ static bool file_exists(const char *path) {
 //     "api": 1,
 //     "title": "Example",
 //     "titles": {"Russian": "Пример"},
-//     "section": "streaming",          // or "more"
+//     "section": "streaming",          // streaming, music, wireless or more
 //     "order": 2,                      // optional: the tile's place on the page
 //     "icon": "icon.png",              // optional; icon.png is tried anyway
 //     "version": "0.1"                 // optional, shown in the log
@@ -196,7 +196,31 @@ static bool parse_section(const char *name, addon_section_t *out) {
 		*out = ADDON_SECTION_MORE;
 		return true;
 	}
+	if (strcmp(name, "music") == 0) {
+		*out = ADDON_SECTION_MUSIC;
+		return true;
+	}
+	if (strcmp(name, "wireless") == 0) {
+		*out = ADDON_SECTION_WIRELESS;
+		return true;
+	}
 	return false;
+}
+
+// The name the manifest used, for the log: the other way round from
+// parse_section(), and the one place that has to know every value.
+static const char *section_name(addon_section_t section) {
+	switch (section) {
+	case ADDON_SECTION_MUSIC:
+		return "music";
+	case ADDON_SECTION_WIRELESS:
+		return "wireless";
+	case ADDON_SECTION_MORE:
+		return "more";
+	case ADDON_SECTION_STREAMING:
+		break;
+	}
+	return "streaming";
 }
 
 static bool manifest_read(const char *path, addon_slot_t *slot) {
@@ -686,7 +710,7 @@ static void slot_read(const char *sd_root, const char *entry_name) {
 
 	slot->present = true;
 	fprintf(stderr, "addon: %s%s '%s' (%s)\n", slot->id, slot->version[0] ? " " : "", slot->title,
-			slot->section == ADDON_SECTION_STREAMING ? "streaming" : "more");
+			section_name(slot->section));
 	slot_count++;
 }
 

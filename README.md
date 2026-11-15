@@ -202,7 +202,10 @@ and their own session next to them, and nothing about them is compiled into this
 binary. They are built from
 [sonix-player-addons](https://github.com/Givemegitpls/sonix-player-addons), whose
 `docs/ADDONS.md` documents each of them — what it keeps on the card, how it signs
-in, and what is not verified yet.
+in, and what is not verified yet. An addon's manifest also chooses the page its
+tile lands on — Streaming, Music, Wireless or More — so an app that is about the
+card's library can stand next to the library's own tiles, and one about the
+radios next to Wi-Fi and Bluetooth.
 
 What the player itself still signs requests with is the two accounts that have no
 addon: Podcast Index and Last.fm, whose keys come from a sealed

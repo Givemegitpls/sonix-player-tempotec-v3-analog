@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "src/addon/addon.h"
 #include "src/gui/library/browser.h"
 #include "src/gui/library/libraryscan.h"
 #include "src/gui/nowplaying/coverflow.h"
@@ -244,13 +245,20 @@ void music_rebuild_tiles(void) {
 		return;
 	}
 	order_load();
-	grid_entry_t entries[MUSIC_TILE_COUNT];
+	// The library's tiles first, in the user's order, and then the card's: the
+	// Music page is the one page whose arrangement is the user's, so an addon
+	// must not push one of these off it (addon.h, ADDON_SECTION_MUSIC). An
+	// addon that asks for a place with `order` still gets it -- gridpage does
+	// that after this list is handed over -- which is how an app that belongs
+	// among the index tiles can be put there on purpose.
+	grid_entry_t entries[MUSIC_TILE_COUNT + ADDON_MAX];
 	for (int i = 0; i < in_use_n; i++) {
 		entries[i] = TILES[in_use[i]].entry;
 	}
+	int count = in_use_n + addon_fill_entries(ADDON_SECTION_MUSIC, entries + in_use_n, ADDON_MAX);
 	// Tiles at the size of the other sections' six: past the third row the
 	// page scrolls.
-	gridpage_set_entries(tile_grid, grid_cfg, entries, in_use_n, 2, 3, true);
+	gridpage_set_entries(tile_grid, grid_cfg, entries, count, 2, 3, true);
 	lv_obj_scroll_to_y(tile_grid, 0, LV_ANIM_OFF);
 }
 
@@ -330,6 +338,21 @@ static void show_tiles_or_panel(void) {
 
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
+	show_tiles_or_panel();
+}
+
+// Puts the tiles up again, addons included. For the card arriving after the
+// player started: the grid is the page's, so the page is what rebuilds it, and
+// the panel that stood in for the missing card goes away with it.
+//
+// A card that came while the library is empty is the one case where the new
+// tiles are not seen: the page is saying the library needs a scan, and an app
+// that lives on the card does not change that.
+void music_refresh(void) {
+	if (!tile_grid || !grid_cfg) {
+		return; // nothing can have changed before the page was built
+	}
+	music_rebuild_tiles();
 	show_tiles_or_panel();
 }
 

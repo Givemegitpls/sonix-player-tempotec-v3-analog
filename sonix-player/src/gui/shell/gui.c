@@ -732,10 +732,12 @@ static void power_menu_async_cb(void *unused) {
 void gui_notify_power_menu(void) { gui_post(power_menu_async_cb, NULL); }
 
 
-// The pages that carry addon tiles, rebuilt after the folder changed. Both
-// redraw from their own stored grid and config; before they were built the
+// The pages that carry addon tiles, rebuilt after the folder changed. Each
+// redraws from its own stored grid and config; before they were built the
 // pointers are NULL and the calls do nothing.
 static void addons_changed_pages(void) {
+	music_refresh();
+	wireless_refresh();
 	streaming_refresh();
 	morepage_refresh();
 }
@@ -808,12 +810,13 @@ void gui_init(gui_config_t *cfg) {
 	back_btn_init(cfg);
 
 	// The addons on the card, read before any page that shows their tiles is
-	// built: Streaming and More ask addon_fill_entries() for their section and
-	// get whatever was found. Nothing here touches the library, so it can go
-	// this early -- and it must, since the tiles are built further down.
+	// built: Music, Streaming, Wireless and More ask addon_fill_entries() for
+	// their section and get whatever was found. Nothing here touches the
+	// library, so it can go this early -- and it must, since the tiles are
+	// built further down.
 	//
 	// The hook is for the card arriving (or leaving) later: the storage layer
-	// posts, the registry re-reads the folder, and these two pages put their
+	// posts, the registry re-reads the folder, and these four pages put their
 	// tiles up again. A card inserted at the main menu then shows its apps
 	// without a restart.
 	addon_set_refresh_hook(addons_changed_pages);

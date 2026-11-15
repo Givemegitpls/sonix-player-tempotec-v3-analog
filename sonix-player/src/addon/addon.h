@@ -10,10 +10,10 @@
 
 // Addons: applications that are not in the binary.
 //
-// The Streaming and More pages are tiled sections, and every tile there is a
-// compiled-in module. That is right for the things that ship with the player
-// and wrong for everything else: a service whose API changes twice a year, an
-// experiment, somebody else's app. Those live on the card instead, in
+// Music, Streaming, Wireless and More are tiled sections, and every tile there
+// is a compiled-in module. That is right for the things that ship with the
+// player and wrong for everything else: a service whose API changes twice a
+// year, an experiment, somebody else's app. Those live on the card instead, in
 //
 //     <card>/Addons/<id>/addon.json     what it is, and where its tile goes
 //     <card>/Addons/<id>/addon.so       the code, MIPS32 LE, built by us
@@ -187,13 +187,23 @@ void sonix_addon_own_screen(const char *id, lv_obj_t *screen);
 // for it.
 // ---------------------------------------------------------------------------
 
+// The pages a tile can land on. The two older ones keep their numbers: this
+// enum is written into every manifest the registry reads, and a value added in
+// the middle would move a tile from one page to another on a build update.
 typedef enum {
 	ADDON_SECTION_STREAMING = 0,
 	ADDON_SECTION_MORE = 1,
+	// The card's own apps can sit on the library's page and on the wireless
+	// one as well. On Music they come after the tiles the user arranged
+	// themselves -- that page is theirs, and a card must not push a library
+	// tile off it; on Wireless they follow the six the binary has.
+	ADDON_SECTION_MUSIC = 2,
+	ADDON_SECTION_WIRELESS = 3,
 } addon_section_t;
 
 // How many addons are read; past this the rest are ignored and the log says
-// so. Sixteen tiles is more than either section can show without scrolling.
+// so. Sixteen tiles is more than any of the four sections can show without
+// scrolling.
 #define ADDON_MAX 16
 
 typedef struct {

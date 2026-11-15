@@ -7,7 +7,8 @@
 
 // The Music page: the library's index tiles (all tracks, albums, artists,
 // album artists, genres, years), the favourites, the most played, the playlists
-// and the file browser, with music settings and search on the corner buttons.
+// and the file browser, with music settings and search on the corner buttons --
+// and, after those, the addons whose manifest says "music".
 extern lv_obj_t *music_screen;
 
 void music_init(gui_config_t *cfg);
@@ -48,5 +49,10 @@ const lv_image_dsc_t *music_tile_icon(music_tile_t tile);
 
 // The page's tiles made again from the saved order.
 void music_rebuild_tiles(void);
+
+// The same for the card arriving later: the tiles are made again with the
+// addons whose manifest says "music" after the library's own, and the page
+// decides once more between its tiles, the scan panel and the missing card.
+void music_refresh(void);
 
 #endif /* MUSIC_H */
