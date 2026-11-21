@@ -988,3 +988,46 @@ reading was confirmed.
 
 adb on this port is USB only, so a cable is also VBUS: "unplugged with adb" cannot be produced, the
 control has to be done by hand.
+
+## Two lineages, and the tags that live on both
+
+`main` and `upstream-1.3.0` carry parallel copies of the same commits: identical subject, author and
+date, different parents. The release tags up to `0.2.0-rc7` exist on both lines. The canonical ones
+are the remote's, and they are the `main` lineage (`0.1.0` = `c16e90a`); the `upstream-1.3.0` copies
+sit on the `bd5cf69` line and are only reachable through that branch.
+
+`git push --tags` therefore reports `(already exists)` for those twelve tags even when the work is
+done -- git never updates an existing tag without `--force`. `git fetch --tags --force` aligns the
+local copies with the remote, and the old-lineage commits survive through `upstream-1.3.0`. Nothing
+on the remote needs rewriting: forcing the tags would point the release links at the other lineage.
+
+## Leaving a page unloads an app addon (2026-11-21)
+
+`addon_unload_offstage()` (`src/addon/addon.c`) is called as the last statement of `load_screen()`
+(`switcher.c`) and only **queues** the work: the scan runs one LVGL cycle later from
+`lv_async_call()`, re-reads `lv_screen_active()`, and stops + `dlclose()`s the app addons whose
+manifest says `"unload": "leave"` and none of whose registered screens is active. Deferred because
+`load_screen()` runs inside a tile's event callback: deleting that page's widgets inline, and
+unmapping a library with its own code on the stack, are both the kind of thing that only breaks on
+the device.
+
+Failure policy is the soft one — `stop()` returning false leaves screens, mapping and tile exactly
+as they were (`leave_refused`, log `cannot unload on leave`), unlike the card path, which deletes
+the screens and leaks the mapping on purpose. Services never take this path even with the key.
+
+The teardown is shared, not duplicated: `slot_forget_screens()` + `slot_release(slot, safe)` are what
+`addon_unload()` walks too, so there is one order and one set of pointer rules.
+
+Device run of the same day (2026-11-21): eleven app addons with the key, every service without it.
+Each app logged `opened` then `stopped` and its `addon.so` left `/proc/<pid>/maps`; `yandex` stayed
+mapped; the store was stopped mid-download in 6 s; gravity gave its ~2 MB back (RSS 20184 -> 22148 ->
+20184 kB) and joined its game thread. Nothing logged `cannot unload on leave` or `stays loaded`.
+
+Traps met on the way, both already in `tools/README.md` and both costing an hour: injected touches do
+not reset the 30 s screen-off timer, so every test tap after the timeout only wakes the screen (set
+`[power] screen_off_seconds = 0` for the run and restore it afterwards); and the chevron is at the
+*page's* top bar, which is y≈52 on an addon screen and y≈37 on a section page. `tools/touchinj.c`
+already existed and already spoke protocol B -- read the tools before writing another one; what was
+missing was not the injector but the screen being awake. On the simulator a scripted tap written
+`"x y"` often does not register at all while `"drag x y x y"` does, and the edge swipe
+`"drag 5 240 300 240"` is the reliable way back.

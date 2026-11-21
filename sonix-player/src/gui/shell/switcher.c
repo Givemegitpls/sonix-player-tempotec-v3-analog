@@ -4,6 +4,7 @@
 
 #include "lvgl/lvgl.h"
 
+#include "src/addon/addon.h"
 #include "src/gui/library/browser.h"
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/shell/animpark.h"
@@ -527,6 +528,12 @@ static void load_screen(lv_obj_t *target_screen) {
 	theme_notify_screen_shown(target_screen);
 
 	lv_screen_load(target_screen);
+
+	// Every page change ends here, so this is where an addon whose manifest asked
+	// for it is stopped and unmapped once none of its screens is on the display
+	// (addon.h, docs/ADDON-UNLOAD.md). The call only queues the work: it runs a
+	// cycle later, off the event that left the page.
+	addon_unload_offstage();
 }
 
 // Pages that have something to say before they will let go of the chevron.

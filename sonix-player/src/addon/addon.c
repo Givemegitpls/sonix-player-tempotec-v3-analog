@@ -122,6 +122,14 @@ typedef struct {
 	// stop() said a thread is still in the library: the mapping stays and the
 	// tile will not be opened again this run.
 	bool unload_refused;
+
+	// The manifest's `unload`: "leave" asks to be stopped and unmapped as soon
+	// as none of this addon's screens is on the display (docs/ADDON-UNLOAD.md).
+	// `leave_refused` is the same answer as `unload_refused` for that path: one
+	// slow worker, one refusal, and the library stays where it is until the
+	// card leaves.
+	bool unload_on_leave;
+	bool leave_refused;
 } addon_slot_t;
 
 static addon_slot_t slots[ADDON_MAX];
@@ -175,6 +183,7 @@ static bool file_exists(const char *path) {
 //     "section": "streaming",          // streaming, music, wireless or more
 //     "order": 2,                      // optional: the tile's place on the page
 //     "icon": "icon.png",              // optional; icon.png is tried anyway
+//     "unload": "leave",               // optional: unmap when its page is left
 //     "version": "0.1"                 // optional, shown in the log
 //   }
 //
@@ -286,6 +295,14 @@ static bool manifest_read(const char *path, addon_slot_t *slot) {
 		slot->owns_paths[slot->owns_count++] = slot->owns_path + i * sizeof(prefix);
 	}
 	json_obj_str(&doc, root, "cache_path", slot->cache_path, sizeof(slot->cache_path));
+
+	// Whether the library goes when the user leaves its page. Opt-in, and only
+	// for the exact value "leave": an absent key, a value from a newer firmware
+	// and a typo all mean "stay loaded", which is the behaviour that shipped and
+	// the one an old addon expects.
+	char unload[16] = "";
+	slot->unload_on_leave =
+		json_obj_str(&doc, root, "unload", unload, sizeof(unload)) && strcmp(unload, "leave") == 0;
 
 	if (api != SONIX_ADDON_API) {
 		// Not a reason to hide the tile: the sentence the user gets when they
@@ -476,6 +493,13 @@ static void icon_load(addon_slot_t *slot, const char *name) {
 //   5. dlclose(): the mapping of a file on the card goes away, which is the
 //      point of the exercise -- a mapped .so keeps the filesystem alive after
 //      the card leaves, and every read of that dead mount blocks.
+//
+// Two callers, two failure policies. The card leaving (addon_unload) cannot keep
+// anything: a mapping pins the filesystem, so a refused stop() still costs the
+// screens and the tile, and the mapping leaks. A page the user simply walked
+// away from (addon_unload_on_leave) can: a stop() that says "not yet" changes
+// nothing at all and the library stays usable.
+//
 // ---------------------------------------------------------------------------
 
 // Where the library that owns `fn` sits in memory, from the loader's own
@@ -533,6 +557,72 @@ static void registry_clear(void) {	for (int i = 0; i < slot_count; i++) {
 	memset(info, 0, sizeof(info));
 }
 
+// 1 and 2 of the contract: away from the addon, and out of everything that still
+// remembers its screens. The first screen is init()'s and is always known; the
+// rest are whatever the addon registered as it opened them. Records are pointers,
+// not objects: forgotten whether or not the screen still exists.
+static void slot_forget_screens(addon_slot_t *slot) {
+	for (int i = 0; i < slot->screen_count; i++) {
+		lv_obj_t *s = slot->screens[i];
+		if (!s) {
+			continue;
+		}
+		if (gui_obj_alive(s) && lv_screen_active() == s) {
+			switch_screen_no_history(main_menu_screen);
+		}
+		switcher_forget_screen(s);
+		player_forget_screen(s);
+	}
+}
+
+// 4 and 5: the screens, whatever their workers posted before they were stopped,
+// and the mapping. `safe` false is stop() admitting a thread is still inside the
+// library: the screens still go -- their callbacks are code of that library --
+// and the handle is dropped without a dlclose(), which leaks the mapping on
+// purpose. The tile goes with it.
+static bool slot_release(addon_slot_t *slot, bool safe) {
+	// The screens, registered ones included. Deleted whether or not the addon
+	// already did (gui_obj_alive() answers that); LVGL drops the widget tree with
+	// them, and their event callbacks are in the library.
+	for (int i = 0; i < slot->screen_count; i++) {
+		lv_obj_t *s = slot->screens[i];
+		if (s && gui_obj_alive(s)) {
+			lv_obj_delete(s);
+		}
+		slot->screens[i] = NULL;
+	}
+	slot->screen_count = 0;
+	slot->screen = NULL;
+
+	// Anything the library's workers posted before they were stopped: those
+	// callbacks are code in the library and the next step unmaps it. Done after
+	// stop() is the only correct place -- a join may post.
+	drop_pending_calls(slot->stop_lib);
+
+	bool closed = true;
+	if (safe) {
+		if (slot->handle) {
+			if (dlclose(slot->handle) != 0) {
+				const char *why = dlerror();
+				fprintf(stderr, "addon: %s stays loaded: %s\n", slot->id, why ? why : "dlclose failed");
+				closed = false;
+			}
+		}
+	} else {
+		slot->unload_refused = true;
+	}
+
+	slot->loaded = false;
+	slot->handle = NULL;
+	slot->lib = NULL;
+	slot->stop = NULL;
+	slot->stop_lib = NULL;
+	memset(&slot->lib_copy, 0, sizeof(slot->lib_copy));
+
+	fprintf(stderr, "addon: %s stopped%s\n", slot->id, closed ? "" : " (library still mapped)");
+	return safe && closed;
+}
+
 bool addon_unload(int index) {
 	if (index < 0 || index >= slot_count) {
 		return false;
@@ -542,22 +632,7 @@ bool addon_unload(int index) {
 		return true; // never opened: nothing is mapped, nothing runs
 	}
 
-	// 1 and 2. Away from it first, and out of everything that remembers it. The
-	// first screen is init()'s and is always known; the rest are whatever the
-	// addon registered as it opened them.
-	for (int i = 0; i < slot->screen_count; i++) {
-		lv_obj_t *s = slot->screens[i];
-		if (!s) {
-			continue;
-		}
-		if (gui_obj_alive(s) && lv_screen_active() == s) {
-			switch_screen_no_history(main_menu_screen);
-		}
-		// Records are pointers, not objects: cleared whether or not the screen
-		// still exists.
-		switcher_forget_screen(s);
-		player_forget_screen(s);
-	}
+	slot_forget_screens(slot);
 
 	// 3. Its own teardown. Mandatory since the card made unloading a thing:
 	// lib_open() refuses a library with no stop hook precisely so that this
@@ -583,57 +658,91 @@ bool addon_unload(int index) {
 	// twice is nothing (the call by id is a no-op when absent).
 	service_unregister(slot->id);
 
-	// 4. The screens, registered ones included. Deleted whether or not the addon
-	// already did (gui_obj_alive() answers that); LVGL drops the widget tree with
-	// them, and their event callbacks are in the library.
-	for (int i = 0; i < slot->screen_count; i++) {
-		lv_obj_t *s = slot->screens[i];
-		if (s && gui_obj_alive(s)) {
-			lv_obj_delete(s);
-		}
-		slot->screens[i] = NULL;
+	return slot_release(slot, safe);
+}
+
+// The same, for a page the user walked away from. The order is the card's; the
+// failure policy is not. A stop() that says "not yet" leaves the slot exactly as
+// it was -- screens, widgets, mapping, tile -- and says so once; unmapping a
+// library whose worker is still running is a crash, and a tile that stops working
+// because the user changed pages is worse than the memory.
+static bool addon_unload_on_leave(int index) {
+	addon_slot_t *slot = &slots[index];
+	if (!slot->loaded) {
+		return true;
 	}
-	slot->screen_count = 0;
-	slot->screen = NULL;
 
-	// 4b. Anything the library's workers posted before they were stopped: those
-	// callbacks are code in the library and the next step unmaps it. Done after
-	// stop() is the only correct place -- a join may post.
-	drop_pending_calls(slot->stop_lib);
-
+	bool safe = slot->stop ? slot->stop() : true;
 	if (!safe) {
-		// Deliberately no dlclose(): the handle is forgotten with the rest below,
-		// which leaks the mapping on purpose. The tile goes too, so nothing can
-		// call into it again.
-		slot->unload_refused = true;
-		slot->loaded = false;
-		slot->handle = NULL;
-		slot->lib = NULL;
-		slot->stop = NULL;
-		slot->stop_lib = NULL;
-		memset(&slot->lib_copy, 0, sizeof(slot->lib_copy));
+		slot->leave_refused = true;
+		fprintf(stderr, "addon: %s cannot unload on leave; keeping it loaded\n", slot->id);
 		return false;
 	}
 
-	// 5. The library itself.
-	bool closed = true;
-	if (slot->handle) {
-		if (dlclose(slot->handle) != 0) {
-			const char *why = dlerror();
-			fprintf(stderr, "addon: %s stays loaded: %s\n", slot->id, why ? why : "dlclose failed");
-			closed = false;
+	slot_forget_screens(slot);
+	service_unregister(slot->id);
+	return slot_release(slot, true);
+}
+
+// ---------------------------------------------------------------------------
+// Leaving a page: the opt-in half
+//
+// The hook the shell calls after every page change (load_screen(), switcher.c).
+// An app addon whose manifest says "unload": "leave" is stopped and unmapped as
+// soon as none of its screens is on the display; a service is never touched, and
+// neither is anything else without the key.
+//
+// Deferred by one LVGL cycle instead of run inline, for two reasons: the hook is
+// reached from a tile's event callback, and the widgets being deleted belong to a
+// page that may still have an event in flight; and dlclose() must never run with
+// the library's own code on the stack. lv_async_call runs on the GUI thread after
+// the current event and timer cycle, which is exactly the boundary wanted.
+// ---------------------------------------------------------------------------
+
+static bool offstage_pending;
+
+static void offstage_scan(void) {
+	offstage_pending = false;
+
+	lv_obj_t *active = lv_screen_active();
+	for (int i = 0; i < slot_count; i++) {
+		addon_slot_t *slot = &slots[i];
+		if (!slot->loaded || slot->is_service || !slot->unload_on_leave || slot->leave_refused) {
+			continue;
+		}
+		// The active object, not "the page we came from": a sub-page an addon
+		// opened for itself is still the addon being on display, and the player
+		// sheet over it does not change the active screen at all.
+		bool on_display = false;
+		for (int s = 0; s < slot->screen_count; s++) {
+			if (slot->screens[s] && slot->screens[s] == active) {
+				on_display = true;
+				break;
+			}
+		}
+		if (!on_display) {
+			addon_unload_on_leave(i);
 		}
 	}
+}
 
-	slot->loaded = false;
-	slot->handle = NULL;
-	slot->lib = NULL;
-	slot->stop = NULL;
-	slot->stop_lib = NULL;
-	memset(&slot->lib_copy, 0, sizeof(slot->lib_copy));
+static void offstage_async(void *user) {
+	(void)user;
+	offstage_scan();
+}
 
-	fprintf(stderr, "addon: %s stopped%s\n", slot->id, closed ? "" : " (library still mapped)");
-	return closed;
+void addon_unload_offstage(void) {
+	// One queued scan is enough: it re-reads the active screen when it runs, so a
+	// page change in between is covered by it or by the next call.
+	if (offstage_pending) {
+		return;
+	}
+	offstage_pending = true;
+	if (lv_async_call(offstage_async, NULL) != LV_RESULT_OK) {
+		// Out of async slots: nothing is lost, the next page change asks again.
+		offstage_pending = false;
+		fprintf(stderr, "addon: no room to defer the leave scan\n");
+	}
 }
 
 // Is the file this slot was opened from still the one on the card? False when

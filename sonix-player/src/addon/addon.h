@@ -21,7 +21,10 @@
 //
 // and the shell reads the folder at start-up, puts a tile on the section the
 // manifest asks for, and does nothing more until that tile is tapped -- the
-// library is opened then, by dlopen, and stays open until the player exits.
+// library is opened then, by dlopen. It stays open until the player exits, the
+// card leaves, its files change on the card, or -- for an addon whose manifest
+// says "unload": "leave" -- the user walks off its page (addon_unload_offstage(),
+// docs/ADDON-UNLOAD.md).
 //
 // The interface between the two halves is the pair of structures below. The
 // .so exports exactly one function,
@@ -259,6 +262,19 @@ bool addon_open(int index);
 // was never opened (it just forgets the slot). False when the library could not
 // be unloaded, in which case it stays mapped and the log says why.
 bool addon_unload(int index);
+
+// Called after every page change, from load_screen() in switcher.c. Stops and
+// unmaps the app addons whose manifest asked for it ("unload": "leave") and none
+// of whose screens is on the display any more; services are never unloaded this
+// way. The teardown itself runs one LVGL cycle later, off lv_async_call(), so
+// that no widget is deleted from inside the event that left it and no library is
+// unmapped with its code on the stack.
+//
+// A stop() that returns false leaves the addon exactly as it was -- screens,
+// widgets, mapping, tile -- and it is not asked again this run; that is the soft
+// half of addon_unload()'s failure policy, and the reason the key is opt-in per
+// addon. See docs/ADDON-UNLOAD.md.
+void addon_unload_offstage(void);
 
 // The same for every open addon, for the card leaving. Waits (bounded) for the
 // GUI thread, so that the caller can unmount the card only once nothing is
