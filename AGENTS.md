@@ -23,6 +23,10 @@ this file:
 - `docs/KERNEL.md` — the stock kernel's addresses and functions, the board platform data, and how
   a replacement kernel would (and would not) reach the image.
 - `docs/BUILD.md` — the end-to-end build, from a fresh clone to `sonix-packer/out/v3_analog.upt`.
+- `docs/FIRMWARE-WEB.md` — the browser build: `web/` (the page), `sonix-packer/tools/wasm`
+  (mkfs.ubifs for wasm32), `sonix-packer/tools/make_payload.sh`, the `pages.yml` that publishes
+  them, and `sonix-packer/tools/webtest/run.mjs`, which checks a browser build against the packer's
+  own tree. The page never uploads the vendor image — that is the point of it.
 - `docs/UPDATING.md` — taking a newer upstream Sonix release: the merge, the interface scaling,
   the icons and the language files, and what is not taken from it.
 - the addons' documentation is **not here**: it is `docs/ADDONS.md` in

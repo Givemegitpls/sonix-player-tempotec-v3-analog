@@ -49,6 +49,10 @@ sonix-packer/sonix_launch
 # are the sources; these are the outputs, and the image is tens of megabytes.
 sonix-packer/v3_analog_original.upt
 sonix-packer/build/
+sonix-packer/build-wasm/
+
+# The firmware page as it is published (sonix-packer/tools/stage_site.sh).
+_site/
 sonix-packer/out/
 
 # The V3 Analog port: the simulator's own resource tree (fonts and languages,

@@ -1,0 +1,127 @@
+name: Firmware page
+
+# Builds and publishes the firmware page: the static site under web/, the wasm
+# mkfs.ubifs the page packs with, and the payload of this port's own files (the
+# player, the launcher, the asset trees) the page needs to turn the vendor's image
+# into ours in the user's browser.
+#
+# What is deliberately not here: the vendor's firmware. The page takes it from the
+# user, in their browser, and it never reaches this repository or this runner --
+# the image is a modified copy of the vendor's and the licence does not allow
+# publishing it (docs/BUILD.md, "Distributing an image"). The payload carries only
+# what this repository already publishes.
+#
+# Runs on every push to main and by hand. The first run pays for the MIPS toolchain
+# (20-60 minutes) and every later one is minutes; the cache keys are the ones
+# player-package.yml uses, so the two share their toolchain.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - web/**
+      - sonix-packer/tools/wasm/**
+      - sonix-packer/tools/make_payload.sh
+      - sonix-packer/docker/wasm/**
+      - sonix-packer/assets/**
+      - sonix-player/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a queued run replaces an older one rather than racing it.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  BOARD: tempotec_v3
+  IMAGE: tempotec-player-build
+  WASM_IMAGE: tempotec-wasm-tools
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The version string comes from `git describe --tags --exact-match`, so a
+          # shallow clone would name every build by its commit instead.
+          fetch-depth: 0
+
+      - name: Cache the toolchain and the cross-built libraries
+        uses: actions/cache@v4
+        with:
+          path: |
+            sonix-player/rockbox-toolchain
+            sonix-player/freetype-target
+            sonix-player/audio-target
+            sonix-player/lvgl
+          key: toolchain-${{ env.BOARD }}-${{ hashFiles('sonix-player/docker/Dockerfile', 'sonix-player/rockboxdev/rockboxdev.sh', 'sonix-player/Makefile') }}
+          restore-keys: |
+            toolchain-${{ env.BOARD }}-
+
+      - name: Build the build image
+        run: docker build -t "$IMAGE" sonix-player/docker
+
+      - name: Build the player
+        run: sonix-player/docker/build.sh target "BOARD=${{ env.BOARD }}" -j"$(nproc)"
+
+      - name: ABI gate (glibc 2.16)
+        run: sonix-player/docker/build.sh check-abi "BOARD=${{ env.BOARD }}"
+
+      - name: Place the binaries where the payload script looks for them
+        run: cp -p sonix-player/sonix_player sonix-player/sonix_launch sonix-packer/
+
+      - name: Cache the wasm toolchain and the downloaded sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            sonix-packer/build-wasm/dl
+            sonix-packer/build-wasm/src
+            sonix-packer/build-wasm/obj
+            sonix-packer/build-wasm/out
+          key: wasm-${{ hashFiles('sonix-packer/docker/wasm/Dockerfile', 'sonix-packer/tools/wasm/**') }}
+          restore-keys: |
+            wasm-
+
+      - name: Build mkfs.ubifs for the browser
+        run: sonix-packer/tools/wasm/build.sh
+
+      - name: Version and stamp
+        id: names
+        run: |
+          version=$(make -s -C sonix-player print-version BOARD=${{ env.BOARD }})
+          stamp=$(date -r sonix-packer/sonix_player +%d%m%Y%H%M)
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "stamp=$stamp" >>"$GITHUB_OUTPUT"
+          echo "version $version, player built $stamp"
+
+      - name: Stage the site
+        run: |
+          mkdir -p _site/wasm _site/payload
+          cp -r web/. _site/
+          cp sonix-packer/build-wasm/out/mkfs_ubifs.js \
+             sonix-packer/build-wasm/out/mkfs_ubifs.wasm _site/wasm/
+          sonix-packer/tools/make_payload.sh _site/payload/payload.tar.gz \
+             "${{ steps.names.outputs.version }}" "${{ steps.names.outputs.stamp }}"
+          ls -lR _site | head -40
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

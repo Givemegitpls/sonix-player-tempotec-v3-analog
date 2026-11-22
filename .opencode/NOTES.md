@@ -1143,3 +1143,103 @@ cannot travel as a package, because the launcher is the way back). `make_update_
 from the environment, the index carries it, and `playerupdate_install()` compares it with the running
 image's base before anything is written. Refusal, not a warning -- the card cannot install what the
 image cannot support.
+
+## The browser firmware page: what the image actually is (2026-11-22)
+
+**`SYSTEM.UBI` is a bare UBIFS image, not a UBI container.** No EC/VID headers anywhere in it; the
+packer only calls `ubireader_extract_files` because ubi_reader reads both formats. Measured on the
+stock 1.3 `.upt`: `leb_size=0x1F000`, `leb_cnt=374`, `max_leb_cnt=480`, `min_io=0x800`,
+`default_compr=lzo`; 2546 inodes (186 dirs, 2036 files totalling 69 114 927 bytes, 324 symlinks, no
+device nodes, no FIFOs, no hard-linked files, no xattr nodes); 18 060 data nodes, of which 16 485 are
+LZO and 1 575 uncompressed. So a reader needs no UBI layer at all, and a writer needs no eraseblock
+volume.
+
+Node facts the reader depends on: UBIFS data blocks are 4096 bytes (`key[1]` = `(type << 29) | block`);
+`ch.crc = crc32(node[8..len])` with a 0xFFFFFFFF seed and **no** final inversion (i.e. the raw register,
+`zlib.crc32(...) ^ 0xFFFFFFFF`); node types are 0-based (`UBIFS_INO_NODE=0`, `DATA=1`, `DENT=2`,
+`PAD=5`, `SB=6`, `MST=7`, `IDX=9`); the superblock's `padding[2]` puts `key_hash` at 26 and `leb_size`
+at 36; a dent node's fixed part is **56** bytes (ch 24 + key 16 + inum 8 + pad 2 + nlen 2 + type 1 +
+pad 3), then the name and a NUL. A linear pass over all LEBs keeping the highest `sqnum` per inode,
+per (inode, block) and per (parent, name) rebuilds the committed tree without walking the index
+B-tree -- 7 500 nodes in a few hundred milliseconds.
+
+## The browser firmware page: the wasm build (2026-11-22)
+
+`mkfs.ubifs` is compiled for wasm32 by `sonix-packer/tools/wasm/build.sh` in the image
+`sonix-packer/docker/wasm` (Ubuntu 24.04 + apt `emscripten` 3.1.6); output,
+`sonix-packer/build/wasm/out/mkfs_ubifs.{js,wasm}`, is git-ignored and served by the pages workflow.
+Sources are Ubuntu pool tarballs pinned by sha256 in `tools/wasm/inside.sh`: mtd-utils 2.2.0 (the same
+version the packer's own tools image has), lzo 2.10, zlib 1.3.2.
+
+Four things the build taught, each of which costs an hour to rediscover:
+
+- Debian's clang renames a wasm `main` to `__main_argc_argv`, so `-sEXPORTED_FUNCTIONS=_main` fails
+  with "undefined exported symbol". Build mkfs.ubifs with `-Dmain=mkfs_ubifs_main` and call it
+  through `web/lib/mkfs-ubifs.js` with argv marshalled by hand.
+- `-sENVIRONMENT=web,worker` only: emscripten 3.1.6's node loader reads `__dirname`, which an ES
+  module has not got. A Node harness passes `wasmBinary` and never hits that path.
+- mtd-utils wants `<linux/types.h>`, `<linux/fs.h>`, `<asm/byteorder.h>` and `<uuid.h>`; the first
+  three are stubs under `tools/wasm/include` (asm/byteorder.h must pull in linux/types.h -- ubi-media.h
+  names `__be32` and expects them), the last is a 20-line v4 UUID in `tools/wasm/src/uuid.c`.
+  `WITH_LZO`/`WITH_ZLIB` must be defined or `-x lzo` is "bad compressor name", and lzo needs
+  `lzo1x_9x.c` for `lzo1x_999_compress` (`favor_lzo`), not a `lzo1x_999_compress.c`.
+- emscripten's ioctl syscall **aborts** on an unknown request, and mkfs.ubifs makes exactly one kind
+  (FS_IOC_GETFLAGS). Build it with `-Dioctl=wasm_ioctl_stub`; the stub answers ENOTTY.
+
+Mounting the tree: do **not** copy it into MEMFS (69 MB of files, and modes come out of MEMFS
+defaults). `web/lib/mkfs-ubifs.js` mounts a custom read-only FS over `web/lib/vfs.js`, which serves
+`read()` from lazily decompressed nodes. Two emscripten behaviours had to be worked around there: a
+directory needs a `llseek` stream op or `getdents` fails with ESPIPE (70), and `FS.readlink` resolves
+a link against its directory while mkfs.ubifs stores the raw target -- it has to be overridden.
+
+## The browser firmware page: the ISO the updater reads (2026-11-22)
+
+The stock `.upt` is plain ISO9660 (no Rock Ridge: `_GITIGNO.;1`), one flat directory, PVD at sector 16,
+terminator at 17, path tables 18/19, root directory at 20, files from 24. The writer in
+`web/lib/iso9660.js` builds the same shape. **7-Zip refuses the whole image if the PVD's reserved byte
+882 is not zero** (`-- Cannot open the file as archive`), which wastes a while because `isoinfo` and
+the kernel's isofs are perfectly happy with a space there. The root directory's declared size must
+include the `.` and `..` records and is rounded up to a sector.
+
+## The browser firmware page: verifying it (2026-11-22)
+
+`node sonix-packer/tools/webtest/run.mjs read|write` runs the page's own modules (plain ESM over
+Uint8Array) under Node on a real image, with the wasm module loaded from `build/wasm/out`:
+
+- `read` compares the tree the page reads with `ubi_reader`'s extraction of the same file --
+  kinds, modes, sizes, symlink targets and sha256 of every file's contents (LZO included);
+- `write` then packs that tree with the wasm mkfs.ubifs, reads the image back and compares again,
+  and can write the ISO out.
+
+Both directions pass on the stock 1.3 image (2545 entries, contents hashed). The rebuilt `.upt` opens
+in 7z, extracts `UBOOT.BIN` with the stock md5 `1f54858d...`, and its `SYSTEM.UBI` extracts with
+ubi_reader. A reference tree for the *port* has ~916 entries, not 2546, and that is not a truncated
+extraction: `install_tree.sh` deletes `usr/resource/{litegui,layout,str,fonts}`, the bulk of the
+vendor image's file count. (`sonix-packer/build/verify/SYSTEM`, the packer's own extraction, is the
+tree to compare a `build` run against.)
+
+The whole page pipeline is `run.mjs build`: install + trim + mkfs + UPDATE.TXT out of
+`payload.tar.gz`, compared with `build/verify/SYSTEM` -- modes, contents and symlinks all agree
+(916 entries). `make_payload.sh` writes the payload (26 MB gzipped, 40.8 MB of files: player,
+launcher, `assets/BLAZE`, `assets/V3ANALOG`); `stage_site.sh` stages `_site/` the way
+`.github/workflows/pages.yml` deploys it. Two emscripten details that make the mount work: a
+directory needs a `llseek` stream op (else `getdents` fails with ESPIPE, error 70), and
+`FS.readlink` has to be overridden to return the raw target, because the default resolves it against
+the link's directory while mkfs.ubifs stores it verbatim.
+
+`web/lib/install.js` is a port, not a reimplementation, and one thing there is easy to get wrong:
+`updateDigests` must not treat "the text did not change" as a failure -- the stock kernel's digest is
+already correct, so its block rewrites to itself.
+
+Two more facts from the first smoke test of the page (2026-11-22): the whole build in headless
+Chromium (10 s for the stock image) produced a `.upt` **byte for byte identical** to
+`run.mjs build --payload-archive` on the same payload — sha256 `abb9d8d4…`, 55 330 816 bytes — which
+is the reproducibility claim the page makes, measured. Driving the page needs only chromium plus CDP
+over Node's global `WebSocket`: navigate, fetch the image into a `File`, put it on the hidden input
+through a `DataTransfer`, poll `#result`, click `#download` with
+`Browser.setDownloadBehavior` pointing at a temp dir.
+
+Bugs that only the browser found, both trivially cheap to avoid next time: `readFirmwareIso`'s map
+holds entry objects, so `system.data.data` is `undefined` (the Node harness had passed the entry
+along, the worker passed only the contents); and a test copy of the vendor image staged inside
+`_site/` has to be deleted afterwards, since `_site/` is a published directory.

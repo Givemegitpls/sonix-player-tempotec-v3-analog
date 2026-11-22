@@ -1,0 +1,153 @@
+:root {
+  color-scheme: dark light;
+  --fg: #e8e6e3;
+  --dim: #a0a0a0;
+  --bg: #16181b;
+  --panel: #1f2226;
+  --line: #33373c;
+  --accent: #7fc8f8;
+  --bad: #ff8a80;
+  --good: #8fd694;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+}
+
+h1 {
+  font-size: 1.6rem;
+  margin: 0 0 0.75rem;
+}
+
+h2 {
+  font-size: 1.2rem;
+  margin: 1.5rem 0 0.5rem;
+}
+
+h3 {
+  font-size: 1rem;
+  margin: 1.25rem 0 0.5rem;
+}
+
+.lead {
+  margin: 0 0 0.75rem;
+}
+
+.small {
+  font-size: 0.875rem;
+  color: var(--dim);
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875rem;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  background: var(--panel);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}
+
+.drop {
+  margin: 1.75rem 0 1rem;
+  padding: 2rem 1.5rem;
+  border: 2px dashed var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  align-items: center;
+  text-align: center;
+  cursor: pointer;
+}
+
+.drop:focus-visible,
+.drop.over {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.drop label {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.drop[aria-busy="true"] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+ol {
+  padding-left: 1.4rem;
+}
+
+#steps li {
+  color: var(--dim);
+}
+
+#steps li.active {
+  color: var(--fg);
+}
+
+#steps li.done::marker {
+  color: var(--good);
+}
+
+.bar {
+  height: 6px;
+  background: var(--panel);
+  border-radius: 3px;
+  overflow: hidden;
+  margin: 0.75rem 0 0.5rem;
+}
+
+#bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.2s linear;
+}
+
+.button {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.6rem 1.1rem;
+  background: var(--accent);
+  color: #10161a;
+  border-radius: 7px;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.error {
+  border-left: 3px solid var(--bad);
+  padding-left: 1rem;
+}
+
+.error h2 {
+  color: var(--bad);
+}
+
+footer {
+  margin-top: 3rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
