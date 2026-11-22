@@ -146,6 +146,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The tag has to be in the clone for the annotated-tag check below: a
+          # default depth-1 checkout fetches the commit, not the tag object, and
+          # every tag then looks lightweight.
+          fetch-depth: 0
 
       - name: Collect the packages
         uses: actions/download-artifact@v4
