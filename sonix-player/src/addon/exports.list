@@ -2865,6 +2865,7 @@
   peq_set_preamp;
   playcount_note_playback;
   player_backdrop_image;
+  player_board_id;
   player_cover_accent;
   player_cover_accent_set;
   player_cover_box;
@@ -2897,6 +2898,17 @@
   player_sheet_is_open;
   player_sheet_open;
   player_statusbar_always;
+  playerupdate_cancel;
+  playerupdate_find_package;
+  playerupdate_install;
+  playerupdate_mark_healthy;
+  playerupdate_progress;
+  playerupdate_remote_check;
+  playerupdate_remote_index_url;
+  playerupdate_remote_install;
+  playerupdate_should_run;
+  playerupdate_verdict_name;
+  playerupdate_verify_main;
   player_version;
   playhistory_left;
   playhistory_resumed;
@@ -3114,6 +3126,7 @@
   power_keep_animations_paused;
   powermenu_init;
   powermenu_is_open;
+  powermenu_reboot_now;
   powermenu_request_show;
   powermenu_show;
   power_notify_activity;
@@ -3661,6 +3674,10 @@
   usb_vbus_present;
   utils_isqrt32;
   utils_isqrt64;
+  version_decide;
+  version_is_dirty;
+  version_is_tag;
+  version_verdict_name;
   volume_limit;
   volume_limit_enabled;
   volume_limit_set;
