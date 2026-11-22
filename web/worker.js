@@ -14,7 +14,7 @@ import { buildIso, readFirmwareIso } from './lib/iso9660.js';
 import { installTree, trimStock, updateDigests } from './lib/install.js';
 import { firmwareMkfsArgs, makeLzoDecompress, mountTree, runMkfs } from './lib/mkfs-ubifs.js';
 import { md5 } from './lib/md5.js';
-import { loadPayload } from './lib/payload.js';
+import { loadVersion } from './lib/payload.js';
 import { UbifsVolume } from './lib/ubifs.js';
 import { Vfs } from './lib/vfs.js';
 import createMkfsUbifs from './wasm/mkfs_ubifs.js';
@@ -30,12 +30,14 @@ async function sha256(bytes) {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function build({ file, payloadUrl }) {
-  say('payload', 'Fetching the port’s binaries and assets');
-  const payload = await loadPayload(payloadUrl, {
-    onProgress: ({ loaded, total }) => progress(loaded / total / 8, total, loaded),
+async function build({ file, version }) {
+  if (!version) throw new Error('no version was selected');
+  say('payload', `Fetching the ${version.label} payload`);
+  const payload = await loadVersion(version, {
+    onProgress: ({ loaded, total }) => progress(loaded / Math.max(total, 1) / 8, total, loaded),
   });
-  const { version, build_stamp: buildStamp } = payload.meta;
+  const { build_stamp: buildStamp } = payload.meta;
+  const osVersion = payload.meta.version;
 
   say('read', 'Reading the vendor’s image');
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -74,7 +76,7 @@ async function build({ file, payloadUrl }) {
   progress(0.35);
 
   say('install', 'Installing the player, the launcher and the assets');
-  for (const line of installTree(vfs, { payload, buildStamp, osVersion: version })) {
+  for (const line of installTree(vfs, { payload, buildStamp, osVersion })) {
     self.postMessage({ type: 'log', line });
   }
   progress(0.5);
@@ -120,9 +122,9 @@ async function build({ file, payloadUrl }) {
 }
 
 self.onmessage = async (event) => {
-  const { file, payloadUrl } = event.data;
+  const task = event.data;
   try {
-    const result = await build({ file, payloadUrl });
+    const result = await build(task);
     progress(1);
     self.postMessage({ type: 'done', ...result });
   } catch (error) {

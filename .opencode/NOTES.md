@@ -1243,3 +1243,33 @@ Bugs that only the browser found, both trivially cheap to avoid next time: `read
 holds entry objects, so `system.data.data` is `undefined` (the Node harness had passed the entry
 along, the worker passed only the contents); and a test copy of the vendor image staged inside
 `_site/` has to be deleted afterwards, since `_site/` is a published directory.
+
+`sonix-player/Makefile`'s version string had a `#` that make read as a comment: off-tag builds were
+named `1.3.0/` -- no commit, and two different builds indistinguishable, which `version_decide` can
+only answer with `SAME`/`ASK`. Fixed to `\#` (2026-11-23). The three shapes now, measured in a clone
+with a tag and a modification: `1.3.0/#57b1aea` off a tag, `1.3.0/0.5.0` on one, `1.3.0/0.5.0-dirty`
+with local changes. `semver_test` has cases for the empty tail so the shape cannot come back
+silently.
+
+The page's version selector (2026-11-23): `versions.json` is generated at deploy time by
+`sonix-packer/tools/make_versions_json.sh` — **one entry**: the greatest tag version whose release
+carries a `firmware-payload-<board>.tar.gz` asset (`sort -V` over tag names, not `published_at`, so a
+republished old tag does not win). Nothing is built from the working tree: the pages workflow no
+longer compiles the player (and needs no MIPS toolchain), only the wasm mkfs.ubifs. With no such
+release, `versions.json` is written empty and the page says so; `stage_site.sh` adds a single `local`
+entry built from the tree, which never reaches the published site.
+A browser cannot fetch a release asset: `github.com/.../releases/download/...` 302s to
+`release-assets.githubusercontent.com`, which sends no `Access-Control-Allow-Origin`.
+
+So the release stays the canonical, complete archive and the site serves it in halves, split at
+deploy by `make_site_payload.sh`: `payload/<tag>.player.tar.gz` (~2.9 MB: payload.json, sonix_player,
+sonix_launch) and `payload/blobs/assets-<sha:12>.tar.gz` (~22 MB, **content-addressed**, so versions
+with unchanged assets share one blob and the browser caches it). Measured: a local stage is 26 MB (2.9 MB player + 23 MB asset blob); a second version would add
+2.9 MB. Each entry carries sha256 for both halves, checked
+before unpacking; entries with a single `url` (the pre-split layout) still load. Default selection is
+the newest release; without releases the list is just `main`, which is what `stage_site.sh` produces.
+
+The selector labels a build with the image's version, `<vendor firmware>/<port version>` — measured:
+`1.3.0/0.5.0 · 2026-11-23 · 25 MB` for a release, `1.3.0/#57b1aea-dirty · this page · 25 MB` for a
+branch build. The release tag is the port's own version (`0.5.0`); the `1.3.0` tag in this repository
+is the vendor base marker (what docs/UPDATING.md merges against) and carries no release.

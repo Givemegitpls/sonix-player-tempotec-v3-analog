@@ -93,9 +93,11 @@ jobs:
         run: |
           version=$(make -s -C sonix-player print-version BOARD=${{ matrix.board }})
           board=$(make -s -C sonix-player print-board BOARD=${{ matrix.board }})
+          stamp=$(date -r sonix-player/sonix_player +%d%m%Y%H%M)
           echo "version=$version" >>"$GITHUB_OUTPUT"
           echo "board=$board" >>"$GITHUB_OUTPUT"
-          echo "building $board, version $version"
+          echo "stamp=$stamp" >>"$GITHUB_OUTPUT"
+          echo "building $board, version $version, player built $stamp"
 
       - name: Size gate
         # The installer removes the old binary before copying the new one, so the
@@ -119,6 +121,17 @@ jobs:
             "${{ steps.names.outputs.version }}" \
             "${{ steps.names.outputs.board }}" \
             "$out"
+
+      - name: Firmware payload (what the browser page builds images from)
+        # The same binaries and asset trees, packed the way web/ needs them. It
+        # travels as a release asset, so the page can offer this version later.
+        run: |
+          out="dist/${{ steps.names.outputs.board }}"
+          cp -p sonix-player/sonix_player sonix-player/sonix_launch sonix-packer/
+          sonix-packer/tools/make_payload.sh "$out/firmware-payload-${{ steps.names.outputs.board }}.tar.gz" \
+            "${{ steps.names.outputs.version }}" "${{ steps.names.outputs.stamp }}"
+          sha256sum "$out/firmware-payload-${{ steps.names.outputs.board }}.tar.gz" | cut -d' ' -f1 \
+            >"$out/firmware-payload-${{ steps.names.outputs.board }}.tar.gz.sha256"
 
       - uses: actions/upload-artifact@v4
         with:

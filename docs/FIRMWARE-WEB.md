@@ -20,7 +20,8 @@ web/lib/ubifs.js        reads the rootfs out of SYSTEM.UBI
 web/lib/vfs.js          the tree in memory, contents unpacked on demand
 web/lib/install.js      install_tree.sh + trim_stock.py + fix_update_md5.py
 web/lib/mkfs-ubifs.js   mounts the tree into wasm, calls mkfs.ubifs, reads it back
-web/lib/payload.js      the port's own files, from payload.tar.gz
+web/lib/payload.js      the port's own files, from a payload archive
+web/lib/versions.js     the versions the selector offers (versions.json)
 web/lib/tar.js          the tar layer (gzip is the browser's DecompressionStream)
 web/lib/md5.js          UPDATE.TXT's digests; WebCrypto has no MD5
 ```
@@ -49,17 +50,72 @@ web/lib/md5.js          UPDATE.TXT's digests; WebCrypto has no MD5
 The kernel, the bootloader, `VERSION.TXT` and `_GITIGNO` are carried through
 byte for byte.
 
+## Versions
+
+The page offers **one version: the newest tag that carries a payload**. Not the tip
+of a branch, and not the newest commit — a build that was never released cannot be
+flashed with any confidence, so it is not offered.
+
+`_site/versions.json` is generated at deploy time by
+`sonix-packer/tools/make_versions_json.sh`, which:
+
+1. lists the releases through the GitHub API and keeps those with a
+   `firmware-payload-<board>.tar.gz` asset (attached by
+   `.github/workflows/player-package.yml` when a tag is pushed);
+2. takes the **greatest tag version** (`sort -V`), not the most recently published
+   one: republishing an old tag does not make it the version to build;
+3. takes that release's payload apart into the two halves the browser can fetch.
+
+The label is the image's version, `<vendor firmware>/<port version>` —
+`1.3.0/0.5.0` — because the tag alone would hide which vendor image the payload was
+built on. `0.5.0` is the port's own tag; `1.3.0` is the vendor base marker and
+carries no release.
+
+The deploy does **not** build the player. It no longer needs the MIPS toolchain:
+nothing here is built from the working tree, only the wasm `mkfs.ubifs` is, and
+that is cached. A deploy is a couple of minutes rather than the hour a player build
+costs.
+
+While no release carries a payload, `versions.json` is written with an empty list
+and the page says so — it does not offer a build it does not have.
+
+A release is where a complete payload lives; the site does not keep a copy of it.
+It cannot keep one either: a browser cannot fetch a GitHub release asset — the
+download 302s to a signed object URL (`release-assets.githubusercontent.com`) that
+answers without `Access-Control-Allow-Origin`, and `fetch()` from the page is
+refused.
+
+So the payload is served in two halves (`sonix-packer/tools/make_site_payload.sh`):
+
+| served | what | size |
+|---|---|---|
+| `payload/<tag>.player.tar.gz` | `payload.json`, `sonix_player`, `sonix_launch` | ~2.9 MB |
+| `payload/blobs/assets-<sha:12>.tar.gz` | `assets/BLAZE` + `assets/V3ANALOG` | ~22 MB, named by its content |
+
+The blob name carries its digest, so the asset tree is stored once however many
+versions use it, and the browser caches it. The whole site is ~26 MB. Every half
+carries its sha256 in `versions.json`, and both are checked before anything is
+unpacked (`sha256 mismatch` is a refusal, not a warning).
+
+`stage_site.sh` writes a single `local` entry instead (`--local`), built from the
+tree, because a local stage is for working on the page — that is the one place a
+non-released build appears, and it never reaches the published site.
+
 ## What the page fetches, and why it is not the vendor's
 
 The stock image has HiBy's player in it; the port's files are not derivable from
 it. So the page downloads **one archive** from the same origin:
 
 ```
-payload/payload.tar.gz   sonix_player, sonix_launch, assets/BLAZE, assets/V3ANALOG,
-                         payload.json (version, build stamp)
-wasm/mkfs_ubifs.js       the emscripten loader
-wasm/mkfs_ubifs.wasm     mkfs.ubifs + LZO + zlib, 152 KB
+versions.json                        one entry: the newest released tag
+payload/<tag>.player.tar.gz          payload.json, sonix_player, sonix_launch
+payload/blobs/assets-<sha:12>.tar.gz  assets/BLAZE + assets/V3ANALOG
+wasm/mkfs_ubifs.js                   the emscripten loader
+wasm/mkfs_ubifs.wasm                 mkfs.ubifs + LZO + zlib, 152 KB
 ```
+
+The complete payload (`firmware-payload-<board>.tar.gz`, ~26 MB) is what a release
+publishes; the page never sees it whole.
 
 `assets/BLAZE` and `assets/V3ANALOG` are what `v3_analog_packer.sh` installs over
 the stock rootfs; both are in this repository and are published from it already.
@@ -96,7 +152,10 @@ sonix-packer/tools/stage_site.sh
 cd _site && python3 -m http.server 8000      # open http://localhost:8000/
 ```
 
-`stage_site.sh` stages exactly what `.github/workflows/pages.yml` deploys.
+`stage_site.sh` stages exactly what `.github/workflows/pages.yml` deploys; it calls
+`make_versions_json.sh` without a repository, so a local stage offers its own build
+alone. To see the release entries locally, run that script by hand with a
+repository and a `GH_TOKEN` in the environment.
 
 Publishing: the workflow deploys on every push to `main` that touches `web/`, the
 packer's assets or the player. **Pages has to be enabled once** for the repository

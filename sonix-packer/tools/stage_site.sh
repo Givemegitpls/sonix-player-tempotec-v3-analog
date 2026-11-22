@@ -30,7 +30,15 @@ rm -rf "$SITE"
 mkdir -p "$SITE/wasm" "$SITE/payload"
 cp -r "$REPO/web/." "$SITE/"
 cp "$PACKER_DIR/build-wasm/out/mkfs_ubifs.js" "$PACKER_DIR/build-wasm/out/mkfs_ubifs.wasm" "$SITE/wasm/"
-"$SCRIPT_DIR/make_payload.sh" "$SITE/payload/payload.tar.gz" "$version" "$stamp"
+# The full archive first (what a release carries), then the two halves the page
+# fetches; the release asset is the same file the CI uploads.
+FULL="$SITE/payload/firmware-payload-v3_analog.tar.gz"
+"$SCRIPT_DIR/make_payload.sh" "$FULL" "$version" "$stamp"
+"$SCRIPT_DIR/make_site_payload.sh" "$FULL" "$SITE" local
+rm -f "$FULL"
+# `--local`: this build alone. The published site offers the newest *tag* instead
+# (make_versions_json.sh with a repository), never the tip of a branch.
+"$SCRIPT_DIR/make_versions_json.sh" "$SITE" --local local
 
 echo "stage_site: $SITE ($(du -sh "$SITE" | cut -f1)), version $version"
 echo "           cd $SITE && python3 -m http.server 8000"

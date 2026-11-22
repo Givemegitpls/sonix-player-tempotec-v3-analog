@@ -23,6 +23,16 @@
         </p>
       </header>
 
+      <section id="version-block">
+        <div id="version-picker">
+          <label class="small" for="version">Player version to build in</label>
+          <select id="version" disabled>
+            <option>loading…</option>
+          </select>
+        </div>
+        <p id="version-info" class="small mono"></p>
+      </section>
+
       <section id="drop" class="drop" tabindex="0" aria-label="Firmware image">
         <strong>Drop <code>v3_analog.upt</code></strong>
         <span>or <label for="file">choose the file</label> — it stays on this machine</span>

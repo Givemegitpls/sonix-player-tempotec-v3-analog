@@ -1,19 +1,22 @@
 name: Firmware page
 
-# Builds and publishes the firmware page: the static site under web/, the wasm
-# mkfs.ubifs the page packs with, and the payload of this port's own files (the
-# player, the launcher, the asset trees) the page needs to turn the vendor's image
-# into ours in the user's browser.
+# Publishes the firmware page: the static site under web/, the wasm mkfs.ubifs the
+# page packs with, and the payload of the **newest tag** that carries one.
 #
-# What is deliberately not here: the vendor's firmware. The page takes it from the
-# user, in their browser, and it never reaches this repository or this runner --
-# the image is a modified copy of the vendor's and the licence does not allow
-# publishing it (docs/BUILD.md, "Distributing an image"). The payload carries only
-# what this repository already publishes.
+# What is deliberately not here: building the player. The page offers released
+# versions only -- a tag, never the tip of a branch -- so the payload comes from
+# the release `.github/workflows/player-package.yml` publishes
+# (`firmware-payload-<board>.tar.gz`), not from this checkout. That also means no
+# MIPS toolchain and a deploy measured in a minute or two rather than an hour.
 #
-# Runs on every push to main and by hand. The first run pays for the MIPS toolchain
-# (20-60 minutes) and every later one is minutes; the cache keys are the ones
-# player-package.yml uses, so the two share their toolchain.
+# The release keeps the complete payload; this deployment takes it apart into the
+# player half and the content-addressed asset blob the browser can actually fetch
+# (see sonix-packer/tools/make_versions_json.sh), which is why the site is ~26 MB
+# rather than a copy of every payload.
+#
+# What is never here: the vendor's firmware. The page takes that from the user, in
+# their browser; the image is a modified copy of the vendor's and the licence does
+# not allow publishing it (docs/BUILD.md, "Distributing an image").
 
 on:
   push:
@@ -21,11 +24,14 @@ on:
     paths:
       - web/**
       - sonix-packer/tools/wasm/**
-      - sonix-packer/tools/make_payload.sh
+      - sonix-packer/tools/make_versions_json.sh
+      - sonix-packer/tools/make_site_payload.sh
       - sonix-packer/docker/wasm/**
-      - sonix-packer/assets/**
-      - sonix-player/**
       - .github/workflows/pages.yml
+  # A published release republishes the site, so the newest tag becomes the one the
+  # page offers.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -33,14 +39,11 @@ permissions:
   pages: write
   id-token: write
 
-# One deployment at a time; a queued run replaces an older one rather than racing it.
 concurrency:
   group: pages
   cancel-in-progress: true
 
 env:
-  BOARD: tempotec_v3
-  IMAGE: tempotec-player-build
   WASM_IMAGE: tempotec-wasm-tools
 
 jobs:
@@ -48,34 +51,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          # The version string comes from `git describe --tags --exact-match`, so a
-          # shallow clone would name every build by its commit instead.
-          fetch-depth: 0
-
-      - name: Cache the toolchain and the cross-built libraries
-        uses: actions/cache@v4
-        with:
-          path: |
-            sonix-player/rockbox-toolchain
-            sonix-player/freetype-target
-            sonix-player/audio-target
-            sonix-player/lvgl
-          key: toolchain-${{ env.BOARD }}-${{ hashFiles('sonix-player/docker/Dockerfile', 'sonix-player/rockboxdev/rockboxdev.sh', 'sonix-player/Makefile') }}
-          restore-keys: |
-            toolchain-${{ env.BOARD }}-
-
-      - name: Build the build image
-        run: docker build -t "$IMAGE" sonix-player/docker
-
-      - name: Build the player
-        run: sonix-player/docker/build.sh target "BOARD=${{ env.BOARD }}" -j"$(nproc)"
-
-      - name: ABI gate (glibc 2.16)
-        run: sonix-player/docker/build.sh check-abi "BOARD=${{ env.BOARD }}"
-
-      - name: Place the binaries where the payload script looks for them
-        run: cp -p sonix-player/sonix_player sonix-player/sonix_launch sonix-packer/
 
       - name: Cache the wasm toolchain and the downloaded sources
         uses: actions/cache@v4
@@ -92,24 +67,17 @@ jobs:
       - name: Build mkfs.ubifs for the browser
         run: sonix-packer/tools/wasm/build.sh
 
-      - name: Version and stamp
-        id: names
-        run: |
-          version=$(make -s -C sonix-player print-version BOARD=${{ env.BOARD }})
-          stamp=$(date -r sonix-packer/sonix_player +%d%m%Y%H%M)
-          echo "version=$version" >>"$GITHUB_OUTPUT"
-          echo "stamp=$stamp" >>"$GITHUB_OUTPUT"
-          echo "version $version, player built $stamp"
-
       - name: Stage the site
         run: |
-          mkdir -p _site/wasm _site/payload
+          mkdir -p _site/wasm
           cp -r web/. _site/
           cp sonix-packer/build-wasm/out/mkfs_ubifs.js \
              sonix-packer/build-wasm/out/mkfs_ubifs.wasm _site/wasm/
-          sonix-packer/tools/make_payload.sh _site/payload/payload.tar.gz \
-             "${{ steps.names.outputs.version }}" "${{ steps.names.outputs.stamp }}"
-          ls -lR _site | head -40
+
+      - name: The newest released payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sonix-packer/tools/make_versions_json.sh _site "${{ github.repository }}"
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

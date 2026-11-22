@@ -57,6 +57,11 @@ int main(void) {
 	expect(VERSION_ASK, "1.3.0/1.3.0.1", "1.3.0/1.3.0", "four components are not a tag");
 	expect(VERSION_ASK, "", "1.3.0/1.3.0", "an empty version asks nothing of itself");
 	expect(VERSION_ASK, "1.3.0/v1.3.0", "1.3.0/1.3.0", "a leading v is not our tag shape");
+	// What the Makefile wrote for every off-tag build while its `#` was a comment:
+	// the base and nothing else. Two such builds are indistinguishable, so no
+	// answer but "ask".
+	expect(VERSION_SAME, "1.3.0/", "1.3.0/", "a version with nothing after the slash");
+	expect(VERSION_ASK, "1.3.0/", "1.3.0/1.3.0", "and it is not a release");
 
 	printf("\n%s: %d failure%s\n", failures ? "FAILED" : "ok", failures, failures == 1 ? "" : "s");
 	return failures ? 1 : 0;

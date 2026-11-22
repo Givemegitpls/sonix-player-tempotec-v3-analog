@@ -65,7 +65,11 @@ cat > "$WORK/payload.json" <<EOF
 EOF
 
 mkdir -p "$(dirname "$OUT")"
-tar -C "$WORK" -cf - --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 . |
+# Named, not `.`: an archive made from `.` carries a `./` on every path, and
+# `tar -xzOf <archive> payload.json` -- how versions.json reads the identity back
+# out -- then has nothing at that name.
+tar -C "$WORK" -cf - --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 \
+	payload.json sonix_player sonix_launch assets |
 	gzip -9 -n > "$OUT"
 
 printf 'make_payload: %s (%s bytes), version %s, built %s\n' \

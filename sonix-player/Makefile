@@ -152,7 +152,10 @@ endif
 ifneq ($(BUILD_TAG),)
 BUILD_VERSION := $(BUILD_BASE)/$(BUILD_TAG)
 else ifneq ($(BUILD_COMMIT),)
-BUILD_VERSION := $(BUILD_BASE)/#$(BUILD_COMMIT)
+# The `\#` is a literal hash: an unescaped one starts a make comment, and the
+# whole tail -- the commit and the -dirty that follows -- disappears, leaving a
+# build called "1.3.0/" that cannot be told from any other build of that base.
+BUILD_VERSION := $(BUILD_BASE)/\#$(BUILD_COMMIT)
 else
 BUILD_VERSION := $(BUILD_BASE)/unknown
 endif
