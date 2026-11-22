@@ -10,6 +10,7 @@
 // The long-running loops post progress messages so the page can show where it is;
 // the tree never leaves this worker.
 
+import { checkImageFiles, checkRootfsIdentity, SYSTEM_INFO_PATH } from './lib/guard.js';
 import { buildIso, readFirmwareIso } from './lib/iso9660.js';
 import { installTree, trimStock, updateDigests } from './lib/install.js';
 import { firmwareMkfsArgs, makeLzoDecompress, mountTree, runMkfs } from './lib/mkfs-ubifs.js';
@@ -19,8 +20,7 @@ import { UbifsVolume } from './lib/ubifs.js';
 import { Vfs } from './lib/vfs.js';
 import createMkfsUbifs from './wasm/mkfs_ubifs.js';
 
-/** The stock bootloader's digest: the one file whose contents must be the vendor's. */
-const STOCK_UBOOT_MD5 = '1f54858d6b4e6f482a81a3378c0e5bf8';
+const decoder = new TextDecoder();
 
 const say = (step, detail) => self.postMessage({ type: 'step', step, detail });
 const progress = (fraction, total = 0, loaded = 0) => self.postMessage({ type: 'progress', fraction, total, loaded });
@@ -47,19 +47,13 @@ async function build({ file, version }) {
   } catch (error) {
     throw new Error(`this is not an ISO9660 firmware image: ${error.message}`);
   }
-  const get = (name) => {
-    const entry = iso.files.get(name);
-    if (!entry) throw new Error(`the image has no ${name}: it is not a v3_analog firmware`);
-    return entry.data;
-  };
+  // Model first, from three independent pieces of evidence inside the image
+  // (bootloader, kernel, the vendor's own name for the board): a wrong image is
+  // the one mistake this device cannot undo, and the user is not asked to pick a
+  // model -- the image says which one it is.
+  checkImageFiles(iso.files, md5);
+  const get = (name) => iso.files.get(name).data; // the guard has proved they are all there
   const uboot = get('UBOOT.BIN');
-  const ubootDigest = md5(uboot);
-  if (ubootDigest !== STOCK_UBOOT_MD5) {
-    throw new Error(
-      `this image's UBOOT.BIN is ${ubootDigest}, not the V3 Analog's stock bootloader. ` +
-        'It is another model’s firmware, or a vendor version newer than the one this port is built on.',
-    );
-  }
   const system = get('SYSTEM.UBI');
 
   say('unpack', 'Unpacking the rootfs');
@@ -73,6 +67,12 @@ async function build({ file, version }) {
   const volume = new UbifsVolume(system, { lzoDecompress: decompress });
   if (volume.badCrc !== 0) throw new Error(`${volume.badCrc} UBIFS nodes are corrupt in this image`);
   const vfs = Vfs.fromUbifs(volume);
+
+  // The other half of "the right image": the rootfs has to be the vendor's 1.3 for
+  // this device, not a sibling's or a newer base this port has never been built on.
+  // Read from the vendor's own system-info.json, which installTree() replaces a
+  // moment later -- so this is the only point where the original is still there.
+  checkRootfsIdentity(decoder.decode(vfs.require(SYSTEM_INFO_PATH).read()));
   progress(0.35);
 
   say('install', 'Installing the player, the launcher and the assets');
@@ -93,7 +93,7 @@ async function build({ file, version }) {
   progress(0.8);
 
   say('write', 'Writing the checksums and the ISO');
-  const digests = updateDigests(new TextDecoder().decode(get('UPDATE.TXT')), {
+  const digests = updateDigests(decoder.decode(get('UPDATE.TXT')), {
     'SYSTEM.UBI': image,
     'UIMAGE.BIN': get('UIMAGE.BIN'),
   });

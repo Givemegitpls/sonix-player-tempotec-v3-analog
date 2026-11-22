@@ -162,6 +162,19 @@ jobs:
             dist/*.json >dist/index.json
           cat dist/index.json
 
+      - name: Only an annotated tag makes a release
+        # The notes on the update card are the tag's message, so a lightweight tag
+        # would publish a release with an empty changelog. Refuse it here, where the
+        # sentence can be read, instead of shipping a release that says nothing.
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          type=$(git rev-parse -q --verify "refs/tags/$tag^{tag}" >/dev/null 2>&1 && echo annotated || echo lightweight)
+          if [ "$type" != annotated ]; then
+            echo "::error::tag $tag is lightweight; releases are made from annotated tags whose message is the changelog"
+            exit 1
+          fi
+          echo "tag $tag is annotated"
+
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}

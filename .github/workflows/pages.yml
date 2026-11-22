@@ -47,7 +47,18 @@ env:
   WASM_IMAGE: tempotec-wasm-tools
 
 jobs:
+  # The page's own answer to "is this the right image?", before anything is
+  # published: the guard's checks (bootloader, kernel, VERSION.TXT, the vendor base
+  # inside the rootfs) and their refusals. No wasm, no firmware fixture.
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The image guard
+        run: node sonix-packer/tools/webtest/guard.test.mjs
+
   build:
+    needs: guard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

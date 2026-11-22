@@ -26,6 +26,23 @@ web/lib/tar.js          the tar layer (gzip is the browser's DecompressionStream
 web/lib/md5.js          UPDATE.TXT's digests; WebCrypto has no MD5
 ```
 
+## Is this the right image?
+
+Never a question for the user: the page reads the answer out of the file and
+refuses with a sentence naming what it found (`web/lib/guard.js`, tested by
+`sonix-packer/tools/webtest/guard.test.mjs`, both run before a deploy).
+
+| what | evidence | why it is the one to check |
+|---|---|---|
+| the model | `UBOOT.BIN` md5 `1f54858d…` | a wrong bootloader is the only mistake this device cannot undo |
+| the model, again | `UIMAGE.BIN` md5 `35889275…` | one digest can in principle belong to more than one board; two that must both match cannot |
+| the model, a third time | `VERSION.TXT` says `name=v3_analog` | the vendor's own name for the board, and free to read |
+| the vendor base | `system-info.json` inside the rootfs: `OS_version` is `1.3…` | the `.upt` never states "1.3"; the rootfs does, and the port is built on 1.3 only |
+
+The base is compared as major.minor, so the vendor's `1.3.0` and the port's own
+`1.3.0/0.5.0` both answer 1.3 -- and a `1.4` is refused with both numbers. The
+payload is refused for another board by `web/lib/payload.js` before any of this.
+
 ## What it does, step by step
 
 1. Reads the `.upt` as ISO9660 and refuses anything whose `UBOOT.BIN` is not the
