@@ -583,8 +583,25 @@ package: strip-target
 # out of it changes it silently -- an addon then fails at dlopen() on the device
 # with "undefined symbol", which is the one failure a build here cannot see.
 # Regenerating writes the file, so the check is: regenerate, diff, put it back.
+#
+# `regen-exports` is the same script for the case where the list has to be made
+# in the container the CI uses: the list is a function of the objects, the
+# toolchain and the directory layout, and a host-side run can disagree with both
+# (it did -- 272 names differed while the totals matched).
+.PHONY: regen-exports check-exports
+
+regen-exports:
+	@tools/addon_exports.sh
+
 check-exports:
-	@tmp=$$(mktemp); \
+	@if [ ! -f /.dockerenv ]; then \
+		echo "*** check-exports belongs where the player is built: the list is a"; \
+		echo "*** function of the objects, and a host tree that has been built at"; \
+		echo "*** different times produces a different one."; \
+		echo "*** Run: sonix-player/docker/build.sh check-exports"; \
+		exit 1; \
+	fi; \
+	tmp=$$(mktemp); \
 	cp src/addon/exports.list $$tmp; \
 	tools/addon_exports.sh >/dev/null; \
 	if ! diff -q $$tmp src/addon/exports.list >/dev/null; then \
