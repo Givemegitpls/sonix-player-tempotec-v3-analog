@@ -596,9 +596,9 @@ regen-exports:
 check-exports:
 	@if [ ! -f /.dockerenv ]; then \
 		echo "*** check-exports belongs where the player is built: the list is a"; \
-		echo "*** function of the objects, and a host tree that has been built at"; \
-		echo "*** different times produces a different one."; \
-		echo "*** Run: sonix-player/docker/build.sh check-exports"; \
+		echo "*** function of the objects, and a build_target that has been built at"; \
+		echo "*** different times keeps objects of files that no longer exist."; \
+		echo "*** Run: rm -rf build_target && sonix-player/docker/build.sh check-exports"; \
 		exit 1; \
 	fi; \
 	tmp=$$(mktemp); \
