@@ -2826,6 +2826,10 @@
   mseb_set_enabled;
   mseb_set_range;
   mseb_set_value;
+  netdns_apply;
+  netdns_get;
+  netdns_is_address;
+  netdns_set;
   oggtags_key_is_picture;
   oggtags_value_read;
   oggtags_walk;
@@ -2893,6 +2897,7 @@
   player_sheet_is_open;
   player_sheet_open;
   player_statusbar_always;
+  player_version;
   playhistory_left;
   playhistory_resumed;
   playhistory_started;

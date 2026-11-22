@@ -208,7 +208,11 @@ build_player() {
 
 	step "Building the player (a no-op when nothing changed; the first run builds
      the toolchain and takes 20-60 minutes)"
-	"$wrapper"
+	# The binary carries its own version, and it has to be the image's: only the
+	# repository root is mounted into the build, so `git describe` inside it cannot
+	# see the tags and every build would call itself "unknown". The packer already
+	# knows the answer -- it is the OS_version it writes into system-info.json.
+	"$wrapper" target BUILD_VERSION_OVERRIDE="${OS_VERSION:-$(os_version)}"
 	# -p: the stamp the player shows in About is its build time, and it is read
 	# from the file's mtime.
 	cp -p "$player_dir/sonix_player" "$player_dir/sonix_launch" "$SCRIPT_DIR/"
@@ -268,6 +272,13 @@ check_inputs() {
      them."
 		;;
 	esac
+	# Named once, before anything is built: os_version() hashes the tree's changes,
+	# and a build produces untracked output of its own, so asking again afterwards
+	# would name the same commit differently -- and the binary's own version, which
+	# is compiled in, would disagree with the OS_version in system-info.json.
+	if [ "$NEED_PLAYER" = "1" ]; then
+		OS_VERSION="$(os_version)"
+	fi
 	if [ "$NEED_PLAYER" = "1" ] && [ "$skip_player_build" = "0" ]; then
 		build_player
 	fi
@@ -284,7 +295,6 @@ check_inputs() {
 		[ -d assets/V3ANALOG ] || die "assets/V3ANALOG is missing."
 
 		BUILD_STAMP="$(stamp_of "$PLAYER_BIN")"
-		OS_VERSION="$(os_version)"
 	fi
 
 	if [ "$NEED_STOCK" = "1" ]; then

@@ -340,6 +340,10 @@ bootloader. Building it for yourself is one thing; publishing it is another, and
 the vendor's licence does not allow that. Hence: this repository carries the
 sources and the scripts, not an image.
 
+What *can* be published is the player on its own, as the over-the-air package:
+`make package`, and the CI that builds it, are in
+[PLAYER-UPDATE.md](PLAYER-UPDATE.md).
+
 ---
 
 ## Building on the host

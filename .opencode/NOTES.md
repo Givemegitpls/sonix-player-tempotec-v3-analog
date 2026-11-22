@@ -1031,3 +1031,115 @@ already existed and already spoke protocol B -- read the tools before writing an
 missing was not the injector but the screen being awake. On the simulator a scripted tap written
 `"x y"` often does not register at all while `"drag x y x y"` does, and the edge swipe
 `"drag 5 240 300 240"` is the reliable way back.
+
+## Flashing the packed image from a shell (2026-11-21)
+
+`echo recovery > /proc/jz/reset/reset` from adb does work, but the update file has to be verified
+*after* it lands on the card, not just on the host. Twice in a row a `adb push` of `v3_analog.upt`
+left it 522 240 bytes short with a zeroed head, and recovery then rebooted into the old system
+without a word — the only trace was the card's file size (`55 115 776` instead of `55 638 016`).
+The sequence that worked: push under another name, compare size and md5 twice (immediately and 20 s
+later), `mv` to `v3_analog.upt`, `sync`, then the reset. Success is visible as `OS_version` in
+`/usr/resource/sonix/components/system-info.json` and `/usr/bin/strace` being back (a hand-copied
+binary leaves it missing).
+
+While driving the panel with `keyinj`, remember KEY_POWER (116) is a *toggle*: sent to a screen
+that is already on it turns the screen off, and every tap after that goes into a dark panel. Read
+the last `power: screen (on|off)` line in `/mnt/sd_0/.local/sonix_player.log` and press the key
+only when it says off.
+
+## The OTA launcher, after the first device trial (2026-11-21)
+
+`sonix_launch` now does the swap itself: pending on the card, lock in /data, a
+backup of the old binary on the card, `rm` + copy + `fsync` + `chmod`, then the
+child runs and writes `/data/update.ok` once the interface is up. Verified on the
+device (install, confirm, and the rollback when the new player exits at once) --
+the details and the trap are in `docs/PLAYER-UPDATE.md`, "What the trial showed".
+
+The trap is worth repeating here because it looked like a bug in the launcher: a
+start script that runs the new launcher **without `exec`** continues after the
+reboot request returns, starts the old launcher during shutdown, and produces a
+log in which the next boot seems to have skipped the new code entirely. Always
+`exec`, and guard the fallback with `[ -x ... ]`.
+
+## Over-the-air player updates: the decisions (2026-11-22)
+
+The point of the exercise is updating the *player* over the network, not the image. Decisions, so they are
+not re-litigated:
+
+- **Index is hardcoded** to this repository's newest release asset,
+  `https://github.com/Givemegitpls/sonix-player-tempotec-v3-analog/releases/latest/download/index.json`
+  (`PLAYERUPDATE_INDEX_URL` in `src/system/device/playerupdate.c`). One project, one place to look;
+  `[update] index_url` overrides it for a local server. No GitHub API call, no token.
+- **Trust is TLS + the sha256 in that index**; no signature yet, and the documentation says so out loud
+  (`docs/PLAYER-UPDATE.md`, "Where the index comes from"). A compromised repository is a compromised update
+  channel — accepted consciously.
+- **Notes come from the annotated tag message** (`git tag -l --format='%(contents)'`), escaped by
+  `tools/make_update_package.sh` into both the manifest and the `<board>.json` index fragment. No notes file
+  in the repository; `NOTES_FILE` exists only for test builds that have no tag yet.
+- **The package is a plain tar** (`sonix-player-update-<board>.tar`), not `.tar.gz`: the player runs with
+  about a megabyte of free RAM and inflating needs a dictionary plus a streaming state machine. 6.7 MB over
+  Wi-Fi is the cheaper side.
+- **The card is a temporary shelter**, not a home: the payload and the backup live there for the length of an
+  update. The player itself stays in the rootfs, and the launcher swaps it with the player stopped.
+- **The UI entry is the old one**: Settings → System → Update firmware → "OTA update", which checks on press
+  and says `system_update_up_to_date` when there is nothing. No background checks, no prompt at start-up, no
+  new menu row; the CLI modes (`--install-package`, `--install-update`, `--verify`, `--version-check`) are the
+  only test surface.
+- The image (`.upt`) path stays untouched and remains the way back: OTA never writes the kernel or the
+  bootloader.
+
+## OTA, the part that only the device could teach (2026-11-22)
+
+The state machine first shipped with two markers: `/data/update.lock` written by the launcher and
+`/data/update.ok` written by the player once its interface was up. It produced a rollback nobody asked
+for -- the player of update N wrote `ok`, the launcher consumed it on the *next* boot, but if a new
+update was staged before that boot, the launcher saw `ok` (old) plus `pending` (new), took the pair for
+"the last transaction finished", deleted the fresh `pending` and started the old build. Then, to patch
+it, the staging code began deleting `ok`... which left the old `lock` without its `ok`, and the launcher
+read *that* as a failed update and rolled back to `player.prev` -- on the device, the build before last.
+The cure is one marker: the launcher writes `lock` before the swap, the player deletes it when its
+interface is up, and a `lock` that survives a boot *is* the failure. `/data/update.ok` no longer exists.
+
+Two more, both from the same evening:
+
+- The packer mounts only the player tree into the build container, so `git describe` there sees no tags
+  and the binary called itself `1.3.0/unknown`. `build_player()` now passes
+  `BUILD_VERSION_OVERRIDE="$(os_version)"`, and `os_version()` is computed **once, before the build**:
+  it hashes the tree's changes, and a build produces untracked output, so a second call names the same
+  commit differently (`6263b3b9` vs `16ce836e` in one run).
+- `--install-update` / `--verify` used to run before `config_init`, so `[update] index_url` was invisible
+  and the check went to the hardcoded GitHub URL (404, since nothing is published). The hooks moved
+  after the settings are read; `SONIX_UPDATE_INDEX_URL` still overrides for tests.
+
+What the device run proved: index -> decision -> download (7 MB, streamed to the card) -> archive
+sha256 from the index -> manifest check -> `pending` -> reboot -> `sonix_launch: installed the new
+player` -> new version running. And with a payload that exits at once: installed, died, next boot
+`rolled back to the previous player`, the working build back.
+
+Still blocked on one thing: the hardcoded index URL points at a release asset that does not exist yet.
+Publishing the package and `index.json` (the CI job is written, the tag is not) is what turns this from
+a local-server test into an update path.
+
+## The stale lock across a flash (2026-11-22, on the device)
+
+Flashing rewrites the rootfs and does not touch `/data`, so an `update.lock` written before the flash
+survives it. With the one-marker state machine that is read as "the swap failed" -- and the launcher
+restored `player.prev` from the card over the freshly flashed player (70b798e7 -> 0.5.2 on the first
+boot after a flash). The lock now carries the rootfs's `build_version` (read from
+`/usr/resource/sonix/components/system-info.json` by the launcher, another small read in the
+freestanding code); a mismatch means the lock belongs to a rootfs that no longer exists, and the
+launcher drops it without restoring anything. Missing `build=` is treated the same way.
+
+## `requires_image`, and the About page's two versions (2026-11-22)
+
+The About page showed `OS_version` from `system-info.json` -- the image's version -- and after a
+player-only update it still named the rootfs, so the owner looked at the device, saw the old string
+and reasonably concluded the update had not happened. "Build number" there is now
+`player_version()` (the running player), and the image's version moved under Developer options.
+
+`requires_image` is how a package says "this needs a rootfs at least this base" (a launcher change
+cannot travel as a package, because the launcher is the way back). `make_update_package.sh` takes it
+from the environment, the index carries it, and `playerupdate_install()` compares it with the running
+image's base before anything is written. Refusal, not a warning -- the card cannot install what the
+image cannot support.

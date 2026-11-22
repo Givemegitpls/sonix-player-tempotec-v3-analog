@@ -1,0 +1,160 @@
+name: Player update package
+
+# Builds the player for every device in the matrix and packs it for the
+# over-the-air path: the binary, a manifest with its digests, one archive per
+# device and one index.json that names them all.
+#
+#   push to main / pull request   build + gates + artifact (no release)
+#   tag, any name that starts with a digit    build + release with the assets
+#   workflow_dispatch             the same, by hand
+#
+# What this deliberately does not build: the .upt image. It is a modified copy
+# of the vendor's firmware -- HiBy's binaries, Ingenic's kernel, the vendor
+# bootloader -- and the vendor's licence does not allow publishing it
+# (docs/BUILD.md, "Distributing an image"). Images stay a local build; only the
+# package below is ours to hand out.
+#
+# A second device is one line in `matrix.board` plus its case in the Makefile
+# (BOARD_ASSET / BOARD_ID) and its assets directory. Everything downstream keys
+# off the board id -- asset names, index.json entries, and the check the player
+# makes before installing anything.
+
+on:
+  push:
+    # Any branch, so a feature branch builds exactly the way main will -- the
+    # first run pays for the toolchain and every later one is minutes. Narrow this
+    # to [main] once the flow settles on pull requests.
+    branches: ['**']
+    tags: ['[0-9]*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # a tag makes a release
+
+env:
+  # The image the build runs in; its Dockerfile is what the cache key hashes, so
+  # a changed toolchain or pin invalidates the toolchain cache with it.
+  IMAGE: tempotec-player-build
+
+jobs:
+  build:
+    name: ${{ matrix.board }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [tempotec_v3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The version string comes from `git describe --tags --exact-match`, so
+          # a shallow clone would name every build by its commit instead.
+          fetch-depth: 0
+
+      - name: Cache the toolchain and the cross-built libraries
+        uses: actions/cache@v4
+        with:
+          # 20-60 minutes are those; the player itself is under two.
+          path: |
+            sonix-player/rockbox-toolchain
+            sonix-player/freetype-target
+            sonix-player/audio-target
+            sonix-player/lvgl
+          key: toolchain-${{ matrix.board }}-${{ hashFiles('sonix-player/docker/Dockerfile', 'sonix-player/rockboxdev/rockboxdev.sh', 'sonix-player/Makefile') }}
+          restore-keys: |
+            toolchain-${{ matrix.board }}-
+
+      - name: Build the build image
+        run: docker build -t "$IMAGE" sonix-player/docker
+
+      - name: Build the player
+        # docker/build.sh mounts the tree at its own path and runs as the calling
+        # user, so the objects it writes are the ones the gates below read.
+        run: sonix-player/docker/build.sh target "BOARD=${{ matrix.board }}" -j"$(nproc)"
+
+      - name: ABI gate (glibc 2.16)
+        run: sonix-player/docker/build.sh check-abi "BOARD=${{ matrix.board }}"
+
+      - name: Exports gate (addons would dlopen() this)
+        run: sonix-player/docker/build.sh check-exports "BOARD=${{ matrix.board }}"
+
+      - name: Version rule (host compiler, no toolchain)
+        # semver.c depends on libc only, so the table runs anywhere -- including
+        # here, where there is no SDL for the simulator and no MIPS to run the
+        # target binary on.
+        run: |
+          cc -O2 -Isonix-player -o /tmp/semver_test \
+            sonix-player/tools/semver_test.c sonix-player/src/system/core/semver.c
+          /tmp/semver_test
+
+      - name: Version and board
+        id: names
+        run: |
+          version=$(make -s -C sonix-player print-version BOARD=${{ matrix.board }})
+          board=$(make -s -C sonix-player print-board BOARD=${{ matrix.board }})
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "board=$board" >>"$GITHUB_OUTPUT"
+          echo "building $board, version $version"
+
+      - name: Size gate
+        # The installer removes the old binary before copying the new one, so the
+        # budget is the whole free space plus the old file -- about 13 MB today.
+        # Anything past that means the update path has to change before it ships.
+        run: |
+          size=$(wc -c <sonix-player/sonix_player | tr -d ' ')
+          limit=$((13 * 1024 * 1024))
+          echo "player: $size bytes, budget $limit"
+          if [ "$size" -gt "$limit" ]; then
+            echo "::error::sonix_player is $size bytes, past the $limit the on-device update path can take"
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          out="dist/${{ steps.names.outputs.board }}"
+          mkdir -p "$out"
+          sonix-player/tools/make_update_package.sh \
+            sonix-player/sonix_player \
+            "${{ steps.names.outputs.version }}" \
+            "${{ steps.names.outputs.board }}" \
+            "$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update-${{ steps.names.outputs.board }}
+          path: dist/${{ steps.names.outputs.board }}/*
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect the packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: index.json
+        # The device asks for the newest release and looks up its own board here.
+        # One entry per device, so a release may carry several, and an older
+        # player that only understands the archives still finds its file by name.
+        run: |
+          jq -s '{format: 1, devices: map({board, version, package, size, sha256})}' \
+            dist/*.json >dist/index.json
+          cat dist/index.json
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" dist/* \
+            --title "$tag" \
+            --generate-notes \
+            --verify-tag

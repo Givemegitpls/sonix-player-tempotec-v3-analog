@@ -112,3 +112,6 @@ patch/v3-panel-blank/UIMAGE.BIN
 /tools/tprobe
 /tools/ldacdec-test
 /tools/pcmtap.so
+
+# The over-the-air package (make package); the release carries the artifact.
+sonix-player/build_pkg/
