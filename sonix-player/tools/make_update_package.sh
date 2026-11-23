@@ -64,7 +64,9 @@ notes_from_tag() {
 	case "$tag" in
 	'#'* | *-dirty | unknown | '') return 0 ;; # no tag names this build
 	esac
-	git -C "$(dirname "$0")/../../.." tag -l --format='%(contents)' "$tag" 2>/dev/null
+	# Two levels up from tools/ is the repository root: three would be its parent,
+	# and `git tag` there finds nothing (and says nothing).
+	git -C "$(dirname "$0")/../.." tag -l --format='%(contents)' "$tag" 2>/dev/null
 }
 
 json_escape() {
