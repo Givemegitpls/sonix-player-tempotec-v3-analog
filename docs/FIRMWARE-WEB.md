@@ -175,9 +175,18 @@ alone. To see the release entries locally, run that script by hand with a
 repository and a `GH_TOKEN` in the environment.
 
 Publishing: the workflow deploys on every push to `main` that touches `web/`, the
-packer's assets or the player. **Pages has to be enabled once** for the repository
-(Settings → Pages → Source: GitHub Actions) — that is the owner's click, not
-something a workflow can do for itself.
+wasm build or the payload scripts. **Pages has to be enabled once** for the
+repository (Settings → Pages → Source: GitHub Actions) — that is the owner's click,
+not something a workflow can do for itself.
+
+Only `main` deploys. The `github-pages` environment allows deployments from the
+default branch and refuses every other ref ("Branch ... is not allowed to deploy to
+github-pages due to environment protection rules"), so the workflow does not run on
+feature branches and its `deploy` job is skipped anywhere but `main`. A published
+release does not deploy either — a release event's ref is the tag — so
+`player-package.yml` ends with `gh workflow run pages.yml --ref main`: the release
+announces itself, the deployment happens on `main`, where the environment permits
+it.
 
 ## Verifying a build without a device
 

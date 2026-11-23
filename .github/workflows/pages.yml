@@ -20,9 +20,13 @@ name: Firmware page
 
 on:
   push:
-    # feature/ota is here until the branch is merged, so the page can be published
-    # and looked at from the branch itself; drop it in the merge commit.
-    branches: [main, feature/ota]
+    # Only the default branch: the `github-pages` environment allows deployments
+    # from `main` and refuses any other ref ("Branch ... is not allowed to deploy
+    # to github-pages due to environment protection rules"), so a run from a
+    # feature branch would build the site and then fail to publish it. A release
+    # asks for a run here through `gh workflow run` instead of deploying from the
+    # tag (player-package.yml).
+    branches: [main]
     paths:
       - web/**
       - sonix-packer/tools/wasm/**
@@ -30,10 +34,8 @@ on:
       - sonix-packer/tools/make_site_payload.sh
       - sonix-packer/docker/wasm/**
       - .github/workflows/pages.yml
-  # A published release republishes the site, so the newest tag becomes the one the
-  # page offers.
-  release:
-    types: [published]
+  # No `release:` trigger: a release event's ref is the tag, which the environment
+  # does not allow to deploy. The release job dispatches this workflow on `main`.
   workflow_dispatch:
 
 permissions:
@@ -99,6 +101,9 @@ jobs:
 
   deploy:
     needs: build
+    # The environment's rule is the authority; this makes a run from anywhere else
+    # skip the deployment instead of failing it after the build.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

@@ -1273,3 +1273,18 @@ The selector labels a build with the image's version, `<vendor firmware>/<port v
 `1.3.0/0.5.0 · 2026-11-23 · 25 MB` for a release, `1.3.0/#57b1aea-dirty · this page · 25 MB` for a
 branch build. The release tag is the port's own version (`0.5.0`); the `1.3.0` tag in this repository
 is the vendor base marker (what docs/UPDATING.md merges against) and carries no release.
+
+- 2026-11-23, `carmine-bin/sonix-player-tempotec-v3-blaze` (`blaze-port`): the V3 Blaze
+  (`V3_ANALOG_2025`) runs **Linux 4.4.94**, not the Analog's 3.10.14 (`tempotec-v3-blaze-mod`,
+  `docs/evidence/bluetooth-receiver-airtime.json`). Its packer ships the stock kernel untouched
+  (`kernel/xImage-BLAZE` absent = `ota_update.in` kernel lines copied as-is) and repacks the
+  official v1.3 rootfs, so the image carries TempoTec's rootfs wholesale; the port also commits
+  prebuilt MIPS `libfdk-aac.so.2` (Fraunhofer, GPL-incompatible) and Amazon/Dalton Maag's Bookerly
+  fonts into `assets/BLAZE`.
+- 2026-11-23: the licensing work (fonts, FDK-AAC, audit) is written up as `TODO.md` in the repo
+  root, with the verified facts and code sketches. Facts worth keeping: FDK's licence allows binary
+  redistribution if the notice ships, the source is available and patents are handled separately;
+  `assets/BLAZE/.../fonts/japanese*.otf` are Fontworks FOT-RodinNTLG Pro (commercial), Bookerly is
+  Dalton Maag, MiSans (Xiaomi) allows embedding but requires attribution and forbids distributing
+  the font files on their own; `libfdk-aac.so.2` exists only in `assets/V3ANALOG` and is what
+  `bt-src/build.sh` extracts from Debian non-free into `bt-src/sysroot`.

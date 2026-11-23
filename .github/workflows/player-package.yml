@@ -31,6 +31,7 @@ on:
 
 permissions:
   contents: write # a tag makes a release
+  actions: write # and asks the firmware page to republish
 
 env:
   # The image the build runs in; its Dockerfile is what the cache key hashes, so
@@ -202,6 +203,16 @@ jobs:
           done
           [ "$empty" = 0 ] || exit 1
           echo "every package carries the tag's message as notes"
+
+      - name: Republish the firmware page
+        # The page offers the newest tag that has a payload; this release may be
+        # it, and GitHub Pages only deploys from the default branch, so ask for a
+        # run there. Not fatal: the release itself is already published, and the
+        # page picks the tag up on its next run either way.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main
 
       - name: Release
         env:
