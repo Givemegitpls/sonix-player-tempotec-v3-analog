@@ -167,18 +167,23 @@ jobs:
             dist/*.json >dist/index.json
           cat dist/index.json
 
-      - name: Only an annotated tag makes a release
-        # The notes on the update card are the tag's message, so a lightweight tag
-        # would publish a release with an empty changelog. Refuse it here, where the
-        # sentence can be read, instead of shipping a release that says nothing.
+      - name: The tag carries a changelog
+        # The update card's notes are the tag's message, so a lightweight tag
+        # publishes a release that says nothing. Asked of the package itself rather
+        # than of git: the notes are already in the fragment the build wrote, and a
+        # tag object is not something a depth-limited clone reliably has.
         run: |
-          tag="${GITHUB_REF#refs/tags/}"
-          type=$(git rev-parse -q --verify "refs/tags/$tag^{tag}" >/dev/null 2>&1 && echo annotated || echo lightweight)
-          if [ "$type" != annotated ]; then
-            echo "::error::tag $tag is lightweight; releases are made from annotated tags whose message is the changelog"
-            exit 1
-          fi
-          echo "tag $tag is annotated"
+          empty=0
+          for fragment in dist/*.json; do
+            [ "$fragment" = dist/index.json ] && continue
+            notes=$(jq -r '.notes // ""' "$fragment" | tr -d '[:space:]')
+            if [ -z "$notes" ]; then
+              echo "::error::$fragment has no notes: '${GITHUB_REF#refs/tags/}' is not an annotated tag, and a release without a changelog is worse than none"
+              empty=1
+            fi
+          done
+          [ "$empty" = 0 ] || exit 1
+          echo "every package carries the tag's message as notes"
 
       - name: Release
         env:
