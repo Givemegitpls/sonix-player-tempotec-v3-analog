@@ -20,7 +20,9 @@ name: Firmware page
 
 on:
   push:
-    branches: [main]
+    # feature/ota is here until the branch is merged, so the page can be published
+    # and looked at from the branch itself; drop it in the merge commit.
+    branches: [main, feature/ota]
     paths:
       - web/**
       - sonix-packer/tools/wasm/**
