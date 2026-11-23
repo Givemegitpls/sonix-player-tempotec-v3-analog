@@ -48,9 +48,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The version string comes from `git describe --tags --exact-match`, so
-          # a shallow clone would name every build by its commit instead.
+          # The version string comes from `git describe --tags --exact-match`, and
+          # the release notes are the *tag's message* (`git tag -l --format`), so
+          # the clone needs the history and the tag objects themselves: fetch-depth
+          # alone brings the commits and leaves every tag looking lightweight.
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Cache the toolchain and the cross-built libraries
         uses: actions/cache@v4
@@ -147,10 +150,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The tag has to be in the clone for the annotated-tag check below: a
-          # default depth-1 checkout fetches the commit, not the tag object, and
-          # every tag then looks lightweight.
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Collect the packages
         uses: actions/download-artifact@v4
@@ -178,7 +179,7 @@ jobs:
             [ "$fragment" = dist/index.json ] && continue
             notes=$(jq -r '.notes // ""' "$fragment" | tr -d '[:space:]')
             if [ -z "$notes" ]; then
-              echo "::error::$fragment has no notes: '${GITHUB_REF#refs/tags/}' is not an annotated tag, and a release without a changelog is worse than none"
+              echo "::error::$fragment has no notes: either '${GITHUB_REF#refs/tags/}' is not an annotated tag, or the build's checkout did not have the tag objects (fetch-tags). A release without a changelog is worse than none"
               empty=1
             fi
           done
