@@ -115,7 +115,21 @@ jobs:
             exit 1
           fi
 
+      - name: The tag's message, fetched on purpose
+        # `git tag -l --format=%(contents)` needs the *tag object*, and actions/checkout
+        # does not reliably leave one in the clone (fetch-tags included): the notes
+        # came out as the commit message twice. One explicit refspec, and it is there.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          git fetch --force origin "+refs/tags/$tag:refs/tags/$tag"
+          echo "tag object: $(git for-each-ref "refs/tags/$tag" --format='%(objecttype)')"
+          git tag -l --format='%(contents)' "$tag" > "$RUNNER_TEMP/notes.txt"
+          echo "notes: $(head -1 "$RUNNER_TEMP/notes.txt")"
+
       - name: Package
+        env:
+          NOTES_FILE: ${{ runner.temp }}/notes.txt
         run: |
           out="dist/${{ steps.names.outputs.board }}"
           mkdir -p "$out"
