@@ -282,7 +282,13 @@ static void build_sysinfo_page(gui_config_t *cfg) {
 	// the one that moves.
 	if (systempage_devoptions_unlocked()) {
 		lv_obj_t *os_value = NULL;
-		lv_obj_t *os_row = settingsrow_add(container, "system_operating_system_version", &os_value, NULL, NULL);
+		// "Operating system version" is the vendor's label, and it does not fit a
+		// 320-pixel row: settingsrow's fit_row_label() then steps the font down to
+		// 20 px, which is why the row looked foreign next to its neighbours at 24.
+		// There is no shorter key in the language files, so the label is ours.
+		lv_obj_t *os_row = settingsrow_add(container,
+										  strcmp(lang_current(), "Russian") == 0 ? "Версия ОС" : "OS version",
+										  &os_value, NULL, NULL);
 		const char *os = sysinfo_os_version();
 		lv_label_set_text(os_value, os[0] ? os : "\xE2\x80\x94"); // em dash
 		// The system version carries the thank-you (see easteregg.c), so it stays

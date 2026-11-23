@@ -164,7 +164,10 @@ jobs:
         # One entry per device, so a release may carry several, and an older
         # player that only understands the archives still finds its file by name.
         run: |
-          jq -s '{format: 1, devices: map({board, version, package, size, sha256})}' \
+          # Every field the device reads, and all of them: the card shows the
+          # notes, and requires_image is what sends a user to the card instead of
+          # installing a package the running rootfs cannot support.
+          jq -s '{format: 1, devices: map({board, version, requires_image, notes, package, size, sha256})}' \
             dist/*.json >dist/index.json
           cat dist/index.json
 
