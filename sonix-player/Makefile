@@ -104,7 +104,73 @@ BOARD_CFLAGS = -DSONIX_LAYOUT_SCALE=3
 BOARD_ICON_UNUSED = src/gui/shell/icons_small.c
 endif
 
-CFLAGS = -O3 -g -Wall -MMD -MP -D_FILE_OFFSET_BITS=64 -I. -I$(LVGL_DIR) -DLV_CONF_INCLUDE_SIMPLE=1 $(BOARD_CFLAGS)
+# ---------------------------------------------------------------------------
+# Which device this build packages for
+# ---------------------------------------------------------------------------
+#
+# An update package carries the device it is for, and a player refuses one that
+# names another: two boards of this family differ in the panel, the legend, the
+# update file name and half of board.h, so a package for one is a broken device
+# on the other. Three names, and they are not the same name:
+#
+#   BOARD       the make knob ("tempotec_v3"), also what picks the ICON set
+#   BOARD_ASSET the packer's rootfs asset directory ("V3ANALOG")
+#   BOARD_ID    what a package and its manifest say ("v3_analog"), the update
+#               stem of board.h: stable, lowercase, filesystem-safe
+#
+# A second device is another case here plus its assets directory; the CI matrix
+# in .github/workflows/player-package.yml is built out of these names, and
+# everything downstream (asset names, index.json, the player's own check) keys
+# off BOARD_ID.
+ifeq ($(BOARD),tempotec_v3)
+BOARD_ASSET ?= V3ANALOG
+BOARD_ID ?= v3_analog
+else
+BOARD_ASSET ?=
+BOARD_ID ?= $(BOARD)
+endif
+
+# ---------------------------------------------------------------------------
+# The build's own name
+# ---------------------------------------------------------------------------
+#
+# The binary has to know which build it is: an update package is compared
+# against it before a byte is written, and the log's first question after a
+# strange reboot is "which build was that". The string is the image packer's
+# convention -- "<base>/<tag>", or "<base>/#<commit>" off a tag, or
+# "<base>/<md5 of the changes>" on a tree that is not a commit -- where the base
+# is the vendor version the rootfs was built on. Standalone checkouts (no
+# ../sonix-packer) and non-git trees get something honest instead of nothing.
+SONIX_PACKER_ASSET := $(CURDIR)/../sonix-packer/assets/$(BOARD_ASSET)/usr/resource/sonix/components/system-info.json
+BUILD_BASE := $(if $(and $(BOARD_ASSET),$(wildcard $(SONIX_PACKER_ASSET))),$(shell sed -nE 's/.*"OS_version"[[:space:]]*:[[:space:]]*"([^"/-]*).*/\1/p' $(SONIX_PACKER_ASSET)),unknown)
+BUILD_TAG := $(shell git -C $(CURDIR) describe --tags --exact-match HEAD 2>/dev/null)
+BUILD_COMMIT := $(shell git -C $(CURDIR) rev-parse --short=7 HEAD 2>/dev/null)
+BUILD_DIRTY := $(shell git -C $(CURDIR) status --porcelain --untracked-files=normal 2>/dev/null | head -1)
+ifeq ($(strip $(BUILD_BASE)),)
+BUILD_BASE := unknown
+endif
+ifneq ($(BUILD_TAG),)
+BUILD_VERSION := $(BUILD_BASE)/$(BUILD_TAG)
+else ifneq ($(BUILD_COMMIT),)
+# The `\#` is a literal hash: an unescaped one starts a make comment, and the
+# whole tail -- the commit and the -dirty that follows -- disappears, leaving a
+# build called "1.3.0/" that cannot be told from any other build of that base.
+BUILD_VERSION := $(BUILD_BASE)/\#$(BUILD_COMMIT)
+else
+BUILD_VERSION := $(BUILD_BASE)/unknown
+endif
+ifneq ($(strip $(BUILD_DIRTY)),)
+BUILD_VERSION := $(BUILD_VERSION)-dirty
+endif
+# For a test build that must be *called* something specific: a package is refused
+# unless its version is newer than the running one, so a hand-built test binary
+# has to carry the number it was packaged under.
+ifneq ($(strip $(BUILD_VERSION_OVERRIDE)),)
+BUILD_VERSION := $(BUILD_VERSION_OVERRIDE)
+endif
+
+CFLAGS = -O3 -g -Wall -MMD -MP -D_FILE_OFFSET_BITS=64 -I. -I$(LVGL_DIR) -DLV_CONF_INCLUDE_SIMPLE=1 $(BOARD_CFLAGS) \
+		 -DSONIX_BUILD_VERSION='"$(BUILD_VERSION)"' -DSONIX_BOARD_ID='"$(BOARD_ID)"'
 # On the host the audio libraries are the system ones (libopusfile-dev,
 # libwavpack-dev); on the target they are the ones this Makefile builds below.
 # opusfile.h includes <opus_multistream.h> unprefixed, so the opus/ directory
@@ -486,6 +552,73 @@ check-abi:
 		exit 1; \
 	fi; \
 	echo "check-abi: no symbol beyond glibc $(DEVICE_GLIBC_MAJOR).$(DEVICE_GLIBC_MINOR)."
+
+# ---------------------------------------------------------------------------
+# The over-the-air package
+# ---------------------------------------------------------------------------
+#
+# Three small targets the release path asks the build about itself. The version
+# and the board id are computed here and nowhere else, so the manifest, the
+# binary's own string and the CI matrix cannot disagree:
+#
+#   make -s print-version     -> "1.3.0/1.3.0"
+#   make -s print-board       -> "v3_analog"
+#   make -s package           -> build_pkg/sonix-player-update-<board>.tar.gz
+#
+# The package holds the stripped player and a manifest with its digests. What it
+# never holds: sonix_launch, the kernel, the rootfs or the vendor's bootloader --
+# the launcher is the way back from a bad player and only an image update may
+# change it, the rest is not ours to redistribute (docs/BUILD.md, section 8).
+UPDATE_OUT ?= $(CURDIR)/build_pkg
+.PHONY: print-version print-board package
+
+print-version:
+	@echo $(BUILD_VERSION)
+
+print-board:
+	@echo $(BOARD_ID)
+
+package: strip-target
+	@tools/make_update_package.sh $(TARGET_BIN) "$(BUILD_VERSION)" "$(BOARD_ID)" "$(UPDATE_OUT)"
+
+# Does the checked-in exports list still match the player? The list decides which
+# symbols an addon can link against, and a symbol that moved into the player or
+# out of it changes it silently -- an addon then fails at dlopen() on the device
+# with "undefined symbol", which is the one failure a build here cannot see.
+# Regenerating writes the file, so the check is: regenerate, diff, put it back.
+#
+# `regen-exports` is the same script for the case where the list has to be made
+# in the container the CI uses: the list is a function of the objects, the
+# toolchain and the directory layout, and a host-side run can disagree with both
+# (it did -- 272 names differed while the totals matched).
+.PHONY: regen-exports check-exports
+
+regen-exports:
+	@tools/addon_exports.sh
+
+check-exports:
+	@if [ ! -f /.dockerenv ]; then \
+		echo "*** check-exports belongs where the player is built: the list is a"; \
+		echo "*** function of the objects, and a build_target that has been built at"; \
+		echo "*** different times keeps objects of files that no longer exist."; \
+		echo "*** Run: rm -rf build_target && sonix-player/docker/build.sh check-exports"; \
+		exit 1; \
+	fi; \
+	tmp=$$(mktemp); \
+	cp src/addon/exports.list $$tmp; \
+	tools/addon_exports.sh >/dev/null; \
+	if ! diff -q $$tmp src/addon/exports.list >/dev/null; then \
+		echo ""; \
+		echo "*** ERROR: src/addon/exports.list is stale -- an addon would fail to dlopen()."; \
+		diff $$tmp src/addon/exports.list | head -20; \
+		echo ""; \
+		echo "*** Run tools/addon_exports.sh after 'make target' and commit the result."; \
+		cp $$tmp src/addon/exports.list; \
+		rm -f $$tmp; \
+		exit 1; \
+	fi; \
+	rm -f $$tmp; \
+	echo "check-exports: the list matches the player."
 
 # The flags every target object was compiled with, the optimisation levels
 # included. Rewritten only when they differ, so a change of flags rebuilds

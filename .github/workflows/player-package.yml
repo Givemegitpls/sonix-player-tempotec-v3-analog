@@ -1,0 +1,225 @@
+name: Player update package
+
+# Builds the player for every device in the matrix and packs it for the
+# over-the-air path: the binary, a manifest with its digests, one archive per
+# device and one index.json that names them all.
+#
+#   push to main / pull request   build + gates + artifact (no release)
+#   tag, any name that starts with a digit    build + release with the assets
+#   workflow_dispatch             the same, by hand
+#
+# What this deliberately does not build: the .upt image. It is a modified copy
+# of the vendor's firmware -- HiBy's binaries, Ingenic's kernel, the vendor
+# bootloader -- and the vendor's licence does not allow publishing it
+# (docs/BUILD.md, "Distributing an image"). Images stay a local build; only the
+# package below is ours to hand out.
+#
+# A second device is one line in `matrix.board` plus its case in the Makefile
+# (BOARD_ASSET / BOARD_ID) and its assets directory. Everything downstream keys
+# off the board id -- asset names, index.json entries, and the check the player
+# makes before installing anything.
+
+on:
+  push:
+    # Any branch, so a feature branch builds exactly the way main will -- the
+    # first run pays for the toolchain and every later one is minutes. Narrow this
+    # to [main] once the flow settles on pull requests.
+    branches: ['**']
+    tags: ['[0-9]*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # a tag makes a release
+  actions: write # and asks the firmware page to republish
+
+env:
+  # The image the build runs in; its Dockerfile is what the cache key hashes, so
+  # a changed toolchain or pin invalidates the toolchain cache with it.
+  IMAGE: tempotec-player-build
+
+jobs:
+  build:
+    name: ${{ matrix.board }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [tempotec_v3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The version string comes from `git describe --tags --exact-match`, and
+          # the release notes are the *tag's message* (`git tag -l --format`), so
+          # the clone needs the history and the tag objects themselves: fetch-depth
+          # alone brings the commits and leaves every tag looking lightweight.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Cache the toolchain and the cross-built libraries
+        uses: actions/cache@v4
+        with:
+          # 20-60 minutes are those; the player itself is under two.
+          path: |
+            sonix-player/rockbox-toolchain
+            sonix-player/freetype-target
+            sonix-player/audio-target
+            sonix-player/lvgl
+          key: toolchain-${{ matrix.board }}-${{ hashFiles('sonix-player/docker/Dockerfile', 'sonix-player/rockboxdev/rockboxdev.sh', 'sonix-player/Makefile') }}
+          restore-keys: |
+            toolchain-${{ matrix.board }}-
+
+      - name: Build the build image
+        run: docker build -t "$IMAGE" sonix-player/docker
+
+      - name: Build the player
+        # docker/build.sh mounts the tree at its own path and runs as the calling
+        # user, so the objects it writes are the ones the gates below read.
+        run: sonix-player/docker/build.sh target "BOARD=${{ matrix.board }}" -j"$(nproc)"
+
+      - name: ABI gate (glibc 2.16)
+        run: sonix-player/docker/build.sh check-abi "BOARD=${{ matrix.board }}"
+
+      - name: Exports gate (addons would dlopen() this)
+        run: sonix-player/docker/build.sh check-exports "BOARD=${{ matrix.board }}"
+
+      - name: Version rule (host compiler, no toolchain)
+        # semver.c depends on libc only, so the table runs anywhere -- including
+        # here, where there is no SDL for the simulator and no MIPS to run the
+        # target binary on.
+        run: |
+          cc -O2 -Isonix-player -o /tmp/semver_test \
+            sonix-player/tools/semver_test.c sonix-player/src/system/core/semver.c
+          /tmp/semver_test
+
+      - name: Version and board
+        id: names
+        run: |
+          version=$(make -s -C sonix-player print-version BOARD=${{ matrix.board }})
+          board=$(make -s -C sonix-player print-board BOARD=${{ matrix.board }})
+          stamp=$(date -r sonix-player/sonix_player +%d%m%Y%H%M)
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "board=$board" >>"$GITHUB_OUTPUT"
+          echo "stamp=$stamp" >>"$GITHUB_OUTPUT"
+          echo "building $board, version $version, player built $stamp"
+
+      - name: Size gate
+        # The installer removes the old binary before copying the new one, so the
+        # budget is the whole free space plus the old file -- about 13 MB today.
+        # Anything past that means the update path has to change before it ships.
+        run: |
+          size=$(wc -c <sonix-player/sonix_player | tr -d ' ')
+          limit=$((13 * 1024 * 1024))
+          echo "player: $size bytes, budget $limit"
+          if [ "$size" -gt "$limit" ]; then
+            echo "::error::sonix_player is $size bytes, past the $limit the on-device update path can take"
+            exit 1
+          fi
+
+      - name: The tag's message, fetched on purpose
+        # `git tag -l --format=%(contents)` needs the *tag object*, and actions/checkout
+        # does not reliably leave one in the clone (fetch-tags included): the notes
+        # came out as the commit message twice. One explicit refspec, and it is there.
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          git fetch --force origin "+refs/tags/$tag:refs/tags/$tag"
+          echo "tag object: $(git for-each-ref "refs/tags/$tag" --format='%(objecttype)')"
+          git tag -l --format='%(contents)' "$tag" > "$RUNNER_TEMP/notes.txt"
+          echo "notes: $(head -1 "$RUNNER_TEMP/notes.txt")"
+
+      - name: Package
+        env:
+          NOTES_FILE: ${{ runner.temp }}/notes.txt
+        run: |
+          out="dist/${{ steps.names.outputs.board }}"
+          mkdir -p "$out"
+          sonix-player/tools/make_update_package.sh \
+            sonix-player/sonix_player \
+            "${{ steps.names.outputs.version }}" \
+            "${{ steps.names.outputs.board }}" \
+            "$out"
+
+      - name: Firmware payload (what the browser page builds images from)
+        # The same binaries and asset trees, packed the way web/ needs them. It
+        # travels as a release asset, so the page can offer this version later.
+        run: |
+          out="dist/${{ steps.names.outputs.board }}"
+          cp -p sonix-player/sonix_player sonix-player/sonix_launch sonix-packer/
+          sonix-packer/tools/make_payload.sh "$out/firmware-payload-${{ steps.names.outputs.board }}.tar.gz" \
+            "${{ steps.names.outputs.version }}" "${{ steps.names.outputs.stamp }}"
+          sha256sum "$out/firmware-payload-${{ steps.names.outputs.board }}.tar.gz" | cut -d' ' -f1 \
+            >"$out/firmware-payload-${{ steps.names.outputs.board }}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update-${{ steps.names.outputs.board }}
+          path: dist/${{ steps.names.outputs.board }}/*
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Collect the packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: index.json
+        # The device asks for the newest release and looks up its own board here.
+        # One entry per device, so a release may carry several, and an older
+        # player that only understands the archives still finds its file by name.
+        run: |
+          # Every field the device reads, and all of them: the card shows the
+          # notes, and requires_image is what sends a user to the card instead of
+          # installing a package the running rootfs cannot support.
+          jq -s '{format: 1, devices: map({board, version, requires_image, notes, package, size, sha256})}' \
+            dist/*.json >dist/index.json
+          cat dist/index.json
+
+      - name: The tag carries a changelog
+        # The update card's notes are the tag's message, so a lightweight tag
+        # publishes a release that says nothing. Asked of the package itself rather
+        # than of git: the notes are already in the fragment the build wrote, and a
+        # tag object is not something a depth-limited clone reliably has.
+        run: |
+          empty=0
+          for fragment in dist/*.json; do
+            [ "$fragment" = dist/index.json ] && continue
+            notes=$(jq -r '.notes // ""' "$fragment" | tr -d '[:space:]')
+            if [ -z "$notes" ]; then
+              echo "::error::$fragment has no notes: either '${GITHUB_REF#refs/tags/}' is not an annotated tag, or the build's checkout did not have the tag objects (fetch-tags). A release without a changelog is worse than none"
+              empty=1
+            fi
+          done
+          [ "$empty" = 0 ] || exit 1
+          echo "every package carries the tag's message as notes"
+
+      - name: Republish the firmware page
+        # The page offers the newest tag that has a payload; this release may be
+        # it, and GitHub Pages only deploys from the default branch, so ask for a
+        # run there. Not fatal: the release itself is already published, and the
+        # page picks the tag up on its next run either way.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" dist/* \
+            --title "$tag" \
+            --generate-notes \
+            --verify-tag

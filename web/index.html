@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sonix Player — TempoTec V3 Analog firmware</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Sonix Player for the TempoTec V3 Analog</h1>
+        <p class="lead">
+          Drop the vendor's <code>v3_analog.upt</code> here and this page builds the port's firmware
+          image out of it. Everything happens in your browser: the file is never uploaded, and
+          nothing is sent anywhere.
+        </p>
+        <p class="lead small">
+          What it does is what <code>sonix-packer/v3_analog_packer.sh</code> does — replace the stock
+          player with this one, install the interface and the Bluetooth userland, drop the stock
+          libraries nothing uses any more, repack the rootfs and write the checksums the device's
+          updater verifies. The kernel and the bootloader are carried through untouched.
+        </p>
+      </header>
+
+      <section id="version-block">
+        <div id="version-picker">
+          <label class="small" for="version">Player version to build in</label>
+          <select id="version" disabled>
+            <option>loading…</option>
+          </select>
+        </div>
+        <p id="version-info" class="small mono"></p>
+      </section>
+
+      <section id="drop" class="drop" tabindex="0" aria-label="Firmware image">
+        <strong>Drop <code>v3_analog.upt</code></strong>
+        <span>or <label for="file">choose the file</label> — it stays on this machine</span>
+        <input id="file" type="file" accept=".upt,.iso,application/octet-stream" hidden />
+      </section>
+
+      <section id="notes" hidden>
+        <p id="input-name" class="mono"></p>
+        <p id="input-detail" class="small"></p>
+      </section>
+
+      <section id="progress" hidden>
+        <ol id="steps"></ol>
+        <div class="bar"><div id="bar-fill"></div></div>
+        <p id="message" class="small"></p>
+      </section>
+
+      <section id="result" hidden>
+        <h2 id="result-title"></h2>
+        <p id="result-detail" class="small"></p>
+        <p><a id="download" class="button" download="v3_analog.upt">Download v3_analog.upt</a></p>
+        <h3>Flashing it</h3>
+        <ol class="small">
+          <li>Copy the file to the <strong>root</strong> of the microSD card, with exactly that name.</li>
+          <li>Charge the player above 30%.</li>
+          <li>
+            From this player: <strong>Settings → System → Update firmware → From SD card</strong>. From
+            the stock firmware: its firmware-update entry. Or power on with <strong>Power + Prev</strong>
+            held for recovery.
+          </li>
+          <li>The device says “Upgrading…”, then “Succeeded”, and reboots.</li>
+        </ol>
+        <p class="small">
+          The bootloader is never written by an update, so a flash that goes wrong can be undone with
+          the vendor's own <code>v3_analog.upt</code> from the card. Going back is the same procedure
+          with that file.
+        </p>
+      </section>
+
+      <section id="error" hidden class="error">
+        <h2>That did not work</h2>
+        <p id="error-text"></p>
+      </section>
+
+      <footer class="small">
+        <p>
+          The image contains the vendor's firmware: HiBy's binaries, Ingenic's kernel, the vendor
+          bootloader. That is why it is built here, on your machine, from your own copy, and why this
+          page does not offer one to download.
+        </p>
+        <p id="payload-version" class="mono"></p>
+      </footer>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

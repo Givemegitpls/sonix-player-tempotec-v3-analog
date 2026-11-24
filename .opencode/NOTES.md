@@ -1031,3 +1031,260 @@ already existed and already spoke protocol B -- read the tools before writing an
 missing was not the injector but the screen being awake. On the simulator a scripted tap written
 `"x y"` often does not register at all while `"drag x y x y"` does, and the edge swipe
 `"drag 5 240 300 240"` is the reliable way back.
+
+## Flashing the packed image from a shell (2026-11-21)
+
+`echo recovery > /proc/jz/reset/reset` from adb does work, but the update file has to be verified
+*after* it lands on the card, not just on the host. Twice in a row a `adb push` of `v3_analog.upt`
+left it 522 240 bytes short with a zeroed head, and recovery then rebooted into the old system
+without a word — the only trace was the card's file size (`55 115 776` instead of `55 638 016`).
+The sequence that worked: push under another name, compare size and md5 twice (immediately and 20 s
+later), `mv` to `v3_analog.upt`, `sync`, then the reset. Success is visible as `OS_version` in
+`/usr/resource/sonix/components/system-info.json` and `/usr/bin/strace` being back (a hand-copied
+binary leaves it missing).
+
+While driving the panel with `keyinj`, remember KEY_POWER (116) is a *toggle*: sent to a screen
+that is already on it turns the screen off, and every tap after that goes into a dark panel. Read
+the last `power: screen (on|off)` line in `/mnt/sd_0/.local/sonix_player.log` and press the key
+only when it says off.
+
+## The OTA launcher, after the first device trial (2026-11-21)
+
+`sonix_launch` now does the swap itself: pending on the card, lock in /data, a
+backup of the old binary on the card, `rm` + copy + `fsync` + `chmod`, then the
+child runs and writes `/data/update.ok` once the interface is up. Verified on the
+device (install, confirm, and the rollback when the new player exits at once) --
+the details and the trap are in `docs/PLAYER-UPDATE.md`, "What the trial showed".
+
+The trap is worth repeating here because it looked like a bug in the launcher: a
+start script that runs the new launcher **without `exec`** continues after the
+reboot request returns, starts the old launcher during shutdown, and produces a
+log in which the next boot seems to have skipped the new code entirely. Always
+`exec`, and guard the fallback with `[ -x ... ]`.
+
+## Over-the-air player updates: the decisions (2026-11-22)
+
+The point of the exercise is updating the *player* over the network, not the image. Decisions, so they are
+not re-litigated:
+
+- **Index is hardcoded** to this repository's newest release asset,
+  `https://github.com/Givemegitpls/sonix-player-tempotec-v3-analog/releases/latest/download/index.json`
+  (`PLAYERUPDATE_INDEX_URL` in `src/system/device/playerupdate.c`). One project, one place to look;
+  `[update] index_url` overrides it for a local server. No GitHub API call, no token.
+- **Trust is TLS + the sha256 in that index**; no signature yet, and the documentation says so out loud
+  (`docs/PLAYER-UPDATE.md`, "Where the index comes from"). A compromised repository is a compromised update
+  channel — accepted consciously.
+- **Notes come from the annotated tag message** (`git tag -l --format='%(contents)'`), escaped by
+  `tools/make_update_package.sh` into both the manifest and the `<board>.json` index fragment. No notes file
+  in the repository; `NOTES_FILE` exists only for test builds that have no tag yet.
+- **The package is a plain tar** (`sonix-player-update-<board>.tar`), not `.tar.gz`: the player runs with
+  about a megabyte of free RAM and inflating needs a dictionary plus a streaming state machine. 6.7 MB over
+  Wi-Fi is the cheaper side.
+- **The card is a temporary shelter**, not a home: the payload and the backup live there for the length of an
+  update. The player itself stays in the rootfs, and the launcher swaps it with the player stopped.
+- **The UI entry is the old one**: Settings → System → Update firmware → "OTA update", which checks on press
+  and says `system_update_up_to_date` when there is nothing. No background checks, no prompt at start-up, no
+  new menu row; the CLI modes (`--install-package`, `--install-update`, `--verify`, `--version-check`) are the
+  only test surface.
+- The image (`.upt`) path stays untouched and remains the way back: OTA never writes the kernel or the
+  bootloader.
+
+## OTA, the part that only the device could teach (2026-11-22)
+
+The state machine first shipped with two markers: `/data/update.lock` written by the launcher and
+`/data/update.ok` written by the player once its interface was up. It produced a rollback nobody asked
+for -- the player of update N wrote `ok`, the launcher consumed it on the *next* boot, but if a new
+update was staged before that boot, the launcher saw `ok` (old) plus `pending` (new), took the pair for
+"the last transaction finished", deleted the fresh `pending` and started the old build. Then, to patch
+it, the staging code began deleting `ok`... which left the old `lock` without its `ok`, and the launcher
+read *that* as a failed update and rolled back to `player.prev` -- on the device, the build before last.
+The cure is one marker: the launcher writes `lock` before the swap, the player deletes it when its
+interface is up, and a `lock` that survives a boot *is* the failure. `/data/update.ok` no longer exists.
+
+Two more, both from the same evening:
+
+- The packer mounts only the player tree into the build container, so `git describe` there sees no tags
+  and the binary called itself `1.3.0/unknown`. `build_player()` now passes
+  `BUILD_VERSION_OVERRIDE="$(os_version)"`, and `os_version()` is computed **once, before the build**:
+  it hashes the tree's changes, and a build produces untracked output, so a second call names the same
+  commit differently (`6263b3b9` vs `16ce836e` in one run).
+- `--install-update` / `--verify` used to run before `config_init`, so `[update] index_url` was invisible
+  and the check went to the hardcoded GitHub URL (404, since nothing is published). The hooks moved
+  after the settings are read; `SONIX_UPDATE_INDEX_URL` still overrides for tests.
+
+What the device run proved: index -> decision -> download (7 MB, streamed to the card) -> archive
+sha256 from the index -> manifest check -> `pending` -> reboot -> `sonix_launch: installed the new
+player` -> new version running. And with a payload that exits at once: installed, died, next boot
+`rolled back to the previous player`, the working build back.
+
+Still blocked on one thing: the hardcoded index URL points at a release asset that does not exist yet.
+Publishing the package and `index.json` (the CI job is written, the tag is not) is what turns this from
+a local-server test into an update path.
+
+## The stale lock across a flash (2026-11-22, on the device)
+
+Flashing rewrites the rootfs and does not touch `/data`, so an `update.lock` written before the flash
+survives it. With the one-marker state machine that is read as "the swap failed" -- and the launcher
+restored `player.prev` from the card over the freshly flashed player (70b798e7 -> 0.5.2 on the first
+boot after a flash). The lock now carries the rootfs's `build_version` (read from
+`/usr/resource/sonix/components/system-info.json` by the launcher, another small read in the
+freestanding code); a mismatch means the lock belongs to a rootfs that no longer exists, and the
+launcher drops it without restoring anything. Missing `build=` is treated the same way.
+
+## `requires_image`, and the About page's two versions (2026-11-22)
+
+The About page showed `OS_version` from `system-info.json` -- the image's version -- and after a
+player-only update it still named the rootfs, so the owner looked at the device, saw the old string
+and reasonably concluded the update had not happened. "Build number" there is now
+`player_version()` (the running player), and the image's version moved under Developer options.
+
+`requires_image` is how a package says "this needs a rootfs at least this base" (a launcher change
+cannot travel as a package, because the launcher is the way back). `make_update_package.sh` takes it
+from the environment, the index carries it, and `playerupdate_install()` compares it with the running
+image's base before anything is written. Refusal, not a warning -- the card cannot install what the
+image cannot support.
+
+## The browser firmware page: what the image actually is (2026-11-22)
+
+**`SYSTEM.UBI` is a bare UBIFS image, not a UBI container.** No EC/VID headers anywhere in it; the
+packer only calls `ubireader_extract_files` because ubi_reader reads both formats. Measured on the
+stock 1.3 `.upt`: `leb_size=0x1F000`, `leb_cnt=374`, `max_leb_cnt=480`, `min_io=0x800`,
+`default_compr=lzo`; 2546 inodes (186 dirs, 2036 files totalling 69 114 927 bytes, 324 symlinks, no
+device nodes, no FIFOs, no hard-linked files, no xattr nodes); 18 060 data nodes, of which 16 485 are
+LZO and 1 575 uncompressed. So a reader needs no UBI layer at all, and a writer needs no eraseblock
+volume.
+
+Node facts the reader depends on: UBIFS data blocks are 4096 bytes (`key[1]` = `(type << 29) | block`);
+`ch.crc = crc32(node[8..len])` with a 0xFFFFFFFF seed and **no** final inversion (i.e. the raw register,
+`zlib.crc32(...) ^ 0xFFFFFFFF`); node types are 0-based (`UBIFS_INO_NODE=0`, `DATA=1`, `DENT=2`,
+`PAD=5`, `SB=6`, `MST=7`, `IDX=9`); the superblock's `padding[2]` puts `key_hash` at 26 and `leb_size`
+at 36; a dent node's fixed part is **56** bytes (ch 24 + key 16 + inum 8 + pad 2 + nlen 2 + type 1 +
+pad 3), then the name and a NUL. A linear pass over all LEBs keeping the highest `sqnum` per inode,
+per (inode, block) and per (parent, name) rebuilds the committed tree without walking the index
+B-tree -- 7 500 nodes in a few hundred milliseconds.
+
+## The browser firmware page: the wasm build (2026-11-22)
+
+`mkfs.ubifs` is compiled for wasm32 by `sonix-packer/tools/wasm/build.sh` in the image
+`sonix-packer/docker/wasm` (Ubuntu 24.04 + apt `emscripten` 3.1.6); output,
+`sonix-packer/build/wasm/out/mkfs_ubifs.{js,wasm}`, is git-ignored and served by the pages workflow.
+Sources are Ubuntu pool tarballs pinned by sha256 in `tools/wasm/inside.sh`: mtd-utils 2.2.0 (the same
+version the packer's own tools image has), lzo 2.10, zlib 1.3.2.
+
+Four things the build taught, each of which costs an hour to rediscover:
+
+- Debian's clang renames a wasm `main` to `__main_argc_argv`, so `-sEXPORTED_FUNCTIONS=_main` fails
+  with "undefined exported symbol". Build mkfs.ubifs with `-Dmain=mkfs_ubifs_main` and call it
+  through `web/lib/mkfs-ubifs.js` with argv marshalled by hand.
+- `-sENVIRONMENT=web,worker` only: emscripten 3.1.6's node loader reads `__dirname`, which an ES
+  module has not got. A Node harness passes `wasmBinary` and never hits that path.
+- mtd-utils wants `<linux/types.h>`, `<linux/fs.h>`, `<asm/byteorder.h>` and `<uuid.h>`; the first
+  three are stubs under `tools/wasm/include` (asm/byteorder.h must pull in linux/types.h -- ubi-media.h
+  names `__be32` and expects them), the last is a 20-line v4 UUID in `tools/wasm/src/uuid.c`.
+  `WITH_LZO`/`WITH_ZLIB` must be defined or `-x lzo` is "bad compressor name", and lzo needs
+  `lzo1x_9x.c` for `lzo1x_999_compress` (`favor_lzo`), not a `lzo1x_999_compress.c`.
+- emscripten's ioctl syscall **aborts** on an unknown request, and mkfs.ubifs makes exactly one kind
+  (FS_IOC_GETFLAGS). Build it with `-Dioctl=wasm_ioctl_stub`; the stub answers ENOTTY.
+
+Mounting the tree: do **not** copy it into MEMFS (69 MB of files, and modes come out of MEMFS
+defaults). `web/lib/mkfs-ubifs.js` mounts a custom read-only FS over `web/lib/vfs.js`, which serves
+`read()` from lazily decompressed nodes. Two emscripten behaviours had to be worked around there: a
+directory needs a `llseek` stream op or `getdents` fails with ESPIPE (70), and `FS.readlink` resolves
+a link against its directory while mkfs.ubifs stores the raw target -- it has to be overridden.
+
+## The browser firmware page: the ISO the updater reads (2026-11-22)
+
+The stock `.upt` is plain ISO9660 (no Rock Ridge: `_GITIGNO.;1`), one flat directory, PVD at sector 16,
+terminator at 17, path tables 18/19, root directory at 20, files from 24. The writer in
+`web/lib/iso9660.js` builds the same shape. **7-Zip refuses the whole image if the PVD's reserved byte
+882 is not zero** (`-- Cannot open the file as archive`), which wastes a while because `isoinfo` and
+the kernel's isofs are perfectly happy with a space there. The root directory's declared size must
+include the `.` and `..` records and is rounded up to a sector.
+
+## The browser firmware page: verifying it (2026-11-22)
+
+`node sonix-packer/tools/webtest/run.mjs read|write` runs the page's own modules (plain ESM over
+Uint8Array) under Node on a real image, with the wasm module loaded from `build/wasm/out`:
+
+- `read` compares the tree the page reads with `ubi_reader`'s extraction of the same file --
+  kinds, modes, sizes, symlink targets and sha256 of every file's contents (LZO included);
+- `write` then packs that tree with the wasm mkfs.ubifs, reads the image back and compares again,
+  and can write the ISO out.
+
+Both directions pass on the stock 1.3 image (2545 entries, contents hashed). The rebuilt `.upt` opens
+in 7z, extracts `UBOOT.BIN` with the stock md5 `1f54858d...`, and its `SYSTEM.UBI` extracts with
+ubi_reader. A reference tree for the *port* has ~916 entries, not 2546, and that is not a truncated
+extraction: `install_tree.sh` deletes `usr/resource/{litegui,layout,str,fonts}`, the bulk of the
+vendor image's file count. (`sonix-packer/build/verify/SYSTEM`, the packer's own extraction, is the
+tree to compare a `build` run against.)
+
+The whole page pipeline is `run.mjs build`: install + trim + mkfs + UPDATE.TXT out of
+`payload.tar.gz`, compared with `build/verify/SYSTEM` -- modes, contents and symlinks all agree
+(916 entries). `make_payload.sh` writes the payload (26 MB gzipped, 40.8 MB of files: player,
+launcher, `assets/BLAZE`, `assets/V3ANALOG`); `stage_site.sh` stages `_site/` the way
+`.github/workflows/pages.yml` deploys it. Two emscripten details that make the mount work: a
+directory needs a `llseek` stream op (else `getdents` fails with ESPIPE, error 70), and
+`FS.readlink` has to be overridden to return the raw target, because the default resolves it against
+the link's directory while mkfs.ubifs stores it verbatim.
+
+`web/lib/install.js` is a port, not a reimplementation, and one thing there is easy to get wrong:
+`updateDigests` must not treat "the text did not change" as a failure -- the stock kernel's digest is
+already correct, so its block rewrites to itself.
+
+Two more facts from the first smoke test of the page (2026-11-22): the whole build in headless
+Chromium (10 s for the stock image) produced a `.upt` **byte for byte identical** to
+`run.mjs build --payload-archive` on the same payload — sha256 `abb9d8d4…`, 55 330 816 bytes — which
+is the reproducibility claim the page makes, measured. Driving the page needs only chromium plus CDP
+over Node's global `WebSocket`: navigate, fetch the image into a `File`, put it on the hidden input
+through a `DataTransfer`, poll `#result`, click `#download` with
+`Browser.setDownloadBehavior` pointing at a temp dir.
+
+Bugs that only the browser found, both trivially cheap to avoid next time: `readFirmwareIso`'s map
+holds entry objects, so `system.data.data` is `undefined` (the Node harness had passed the entry
+along, the worker passed only the contents); and a test copy of the vendor image staged inside
+`_site/` has to be deleted afterwards, since `_site/` is a published directory.
+
+`sonix-player/Makefile`'s version string had a `#` that make read as a comment: off-tag builds were
+named `1.3.0/` -- no commit, and two different builds indistinguishable, which `version_decide` can
+only answer with `SAME`/`ASK`. Fixed to `\#` (2026-11-23). The three shapes now, measured in a clone
+with a tag and a modification: `1.3.0/#57b1aea` off a tag, `1.3.0/0.5.0` on one, `1.3.0/0.5.0-dirty`
+with local changes. `semver_test` has cases for the empty tail so the shape cannot come back
+silently.
+
+The page's version selector (2026-11-23): `versions.json` is generated at deploy time by
+`sonix-packer/tools/make_versions_json.sh` — **one entry**: the greatest tag version whose release
+carries a `firmware-payload-<board>.tar.gz` asset (`sort -V` over tag names, not `published_at`, so a
+republished old tag does not win). Nothing is built from the working tree: the pages workflow no
+longer compiles the player (and needs no MIPS toolchain), only the wasm mkfs.ubifs. With no such
+release, `versions.json` is written empty and the page says so; `stage_site.sh` adds a single `local`
+entry built from the tree, which never reaches the published site.
+A browser cannot fetch a release asset: `github.com/.../releases/download/...` 302s to
+`release-assets.githubusercontent.com`, which sends no `Access-Control-Allow-Origin`.
+
+So the release stays the canonical, complete archive and the site serves it in halves, split at
+deploy by `make_site_payload.sh`: `payload/<tag>.player.tar.gz` (~2.9 MB: payload.json, sonix_player,
+sonix_launch) and `payload/blobs/assets-<sha:12>.tar.gz` (~22 MB, **content-addressed**, so versions
+with unchanged assets share one blob and the browser caches it). Measured: a local stage is 26 MB (2.9 MB player + 23 MB asset blob); a second version would add
+2.9 MB. Each entry carries sha256 for both halves, checked
+before unpacking; entries with a single `url` (the pre-split layout) still load. Default selection is
+the newest release; without releases the list is just `main`, which is what `stage_site.sh` produces.
+
+The selector labels a build with the image's version, `<vendor firmware>/<port version>` — measured:
+`1.3.0/0.5.0 · 2026-11-23 · 25 MB` for a release, `1.3.0/#57b1aea-dirty · this page · 25 MB` for a
+branch build. The release tag is the port's own version (`0.5.0`); the `1.3.0` tag in this repository
+is the vendor base marker (what docs/UPDATING.md merges against) and carries no release.
+
+- 2026-11-23, `carmine-bin/sonix-player-tempotec-v3-blaze` (`blaze-port`): the V3 Blaze
+  (`V3_ANALOG_2025`) runs **Linux 4.4.94**, not the Analog's 3.10.14 (`tempotec-v3-blaze-mod`,
+  `docs/evidence/bluetooth-receiver-airtime.json`). Its packer ships the stock kernel untouched
+  (`kernel/xImage-BLAZE` absent = `ota_update.in` kernel lines copied as-is) and repacks the
+  official v1.3 rootfs, so the image carries TempoTec's rootfs wholesale; the port also commits
+  prebuilt MIPS `libfdk-aac.so.2` (Fraunhofer, GPL-incompatible) and Amazon/Dalton Maag's Bookerly
+  fonts into `assets/BLAZE`.
+- 2026-11-23: the licensing work (fonts, FDK-AAC, audit) is written up as `TODO.md` in the repo
+  root, with the verified facts and code sketches. Facts worth keeping: FDK's licence allows binary
+  redistribution if the notice ships, the source is available and patents are handled separately;
+  `assets/BLAZE/.../fonts/japanese*.otf` are Fontworks FOT-RodinNTLG Pro (commercial), Bookerly is
+  Dalton Maag, MiSans (Xiaomi) allows embedding but requires attribution and forbids distributing
+  the font files on their own; `libfdk-aac.so.2` exists only in `assets/V3ANALOG` and is what
+  `bt-src/build.sh` extracts from Debian non-free into `bt-src/sysroot`.

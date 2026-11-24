@@ -138,6 +138,8 @@ static void do_reboot(void) {
 	execl("/bin/sh", "sh", "-c", "reboot", (char *)NULL);
 }
 
+void powermenu_reboot_now(void) { do_reboot(); }
+
 static void cancel_cb(lv_event_t *e) {
 	(void)e;
 	hide();

@@ -68,6 +68,8 @@
 #include "src/system/device/system.h"
 #include "src/system/device/usb.h"
 #include "src/system/core/utils.h"
+#include "src/system/core/version.h"
+#include "src/system/device/playerupdate.h"
 #include "src/system/net/webcgi.h"
 #include "src/system/net/wifi.h"
 
@@ -3524,6 +3526,11 @@ int main(int argc, char **argv) {
 	// converter's name, the serial -- is read from the same load.)
 	sysinfo_load();
 
+	// First line of substance in the log: which build this is. Every question
+	// asked after a strange reboot -- did the update land, which binary ran,
+	// is the card's package newer -- starts here.
+	printf("player: version %s\n", player_version());
+
 	// Settings live on the UBIFS partition, the one writable place that is
 	// always present: the rootfs is read-only and the card may be missing.
 	// SONIX_CONFIG points it somewhere else for the host build and for testing.
@@ -3553,6 +3560,15 @@ int main(int argc, char **argv) {
 	}
 #endif
 	config_init(config_file);
+
+	// The launcher's questions and the update's shell modes: "is this file safe to
+	// put in place", "is this package newer", "get it from the index and stage it".
+	// They run this same binary, which already carries sha256, the board id and the
+	// version, and exit before the display, the keys or the audio are touched --
+	// after the settings, though, because the index URL lives in them.
+	if (playerupdate_should_run(argc, argv)) {
+		return playerupdate_verify_main(argc, argv);
+	}
 
 	// A start by the cable is the charging screen alone, until the power key is
 	// held: before anything else opens the display, the keys or the audio.
@@ -4124,6 +4140,11 @@ int main(int argc, char **argv) {
 #ifndef HOST_BUILD
 	lock_code_start();
 #endif
+
+	// Up means "the interface is built and the loop is about to run", which is
+	// what the launcher waits for: a freshly installed player that dies before
+	// this point is a failure it has to undo.
+	playerupdate_mark_healthy();
 
 	printf("Entering main event loop...\n");
 	while (running) {

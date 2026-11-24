@@ -1,5 +1,13 @@
 #include "fwupdate.h"
 
+#include <pthread.h>
+
+#include "src/gui/shell/powermenu.h"
+#include "src/system/core/lang.h"
+#include "src/system/core/semver.h"
+#include "src/system/core/version.h"
+#include "src/system/device/playerupdate.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -46,7 +54,33 @@ static action_fn button_actions[BUTTONS];
 static lv_timer_t *poll_timer;
 static bool holding_screen;
 
-static enum { PHASE_NONE, PHASE_CHECK, PHASE_DOWNLOAD } phase;
+static enum { PHASE_NONE, PHASE_CHECK, PHASE_DOWNLOAD, PHASE_PLAYER } phase;
+
+// ---------------------------------------------------------------------------
+// The player update (docs/PLAYER-UPDATE.md)
+//
+// The same card, the same buttons and the same words the image update has always
+// used -- what changes is where the bytes come from and what happens to them: the
+// index of this repository's newest release, the package it names, and the
+// launcher doing the swap after a restart. The work runs on a worker thread and
+// the card polls it, because an HTTP request on the GUI thread would freeze the
+// interface for as long as the network felt like it.
+// ---------------------------------------------------------------------------
+
+static pthread_t player_thread;
+static volatile bool player_running;
+static enum { PLAYER_NONE, PLAYER_CHECK, PLAYER_FETCH } player_stage;
+static playerupdate_remote_t player_remote;
+static playerupdate_result_t player_result;
+static char player_why[192];
+
+// The cards and the two workers; poll_cb comes before all of them.
+static void player_check_done(void);
+static void player_install_done(void);
+static void show_player_installing(void);
+static void player_online_clicked(void);
+static void player_install_clicked(void);
+static void player_cancel_clicked(void);
 
 static char notes_line[4096];
 
@@ -473,6 +507,17 @@ static void cancel_running(void) {
 	close_card();
 }
 
+// The card's progress line, driven by whatever the worker is doing.
+static void show_progress_values(long done, long total) {
+	char got_text[32], total_text[32], text[96];
+	sysinfo_format_size((uint64_t)(done > 0 ? done : 0), got_text, sizeof(got_text));
+	sysinfo_format_size((uint64_t)(total > 0 ? total : 0), total_text, sizeof(total_text));
+	int permille = total > 0 ? (int)((long long)done * 1000 / total) : 0;
+	snprintf(text, sizeof(text), "%s / %s  (%d%%)", got_text, total_text, permille / 10);
+	lv_label_set_text(message_label, text);
+	lv_bar_set_value(bar, permille, LV_ANIM_OFF);
+}
+
 static void show_checking(void) {
 	layout(tr("system_update_firmware"), tr("system_update_checking"), false, false);
 	set_button(0, "cancel", false, cancel_running);
@@ -485,15 +530,7 @@ static void show_progress(void) {
 	if (total <= 0) {
 		total = ota_release()->size;
 	}
-
-	char got_text[32], total_text[32], text[96];
-	sysinfo_format_size((uint64_t)(done > 0 ? done : 0), got_text, sizeof(got_text));
-	sysinfo_format_size((uint64_t)(total > 0 ? total : 0), total_text, sizeof(total_text));
-	int permille = total > 0 ? (int)((long long)done * 1000 / total) : 0;
-	snprintf(text, sizeof(text), "%s / %s  (%d%%)", got_text, total_text, permille / 10);
-
-	lv_label_set_text(message_label, text);
-	lv_bar_set_value(bar, permille, LV_ANIM_OFF);
+	show_progress_values(done, total);
 }
 
 static void show_downloading(void) {
@@ -603,6 +640,23 @@ static void download_finished(ota_result_t r) {
 
 static void poll_cb(lv_timer_t *timer) {
 	(void)timer;
+	if (phase == PHASE_PLAYER) {
+		if (player_running) {
+			if (player_stage == PLAYER_FETCH) {
+				long done = 0, total = 0;
+				playerupdate_progress(&done, &total);
+				show_progress_values(done, total);
+			}
+			return;
+		}
+		if (player_stage == PLAYER_CHECK) {
+			player_check_done();
+		} else if (player_stage == PLAYER_FETCH) {
+			player_install_done();
+		}
+		player_stage = PLAYER_NONE;
+		return;
+	}
 	ota_state_t s = ota_state();
 	if (s == OTA_DOWNLOADING && phase == PHASE_DOWNLOAD) {
 		show_progress();
@@ -653,17 +707,148 @@ static void sd_clicked(void) {
 	lv_async_call(sd_run, NULL);
 }
 
+// ---------------------------------------------------------------------------
+// The player update's cards
+// ---------------------------------------------------------------------------
+
+static void player_check_done(void) {
+	player_running = false;
+	stop_polling();
+
+	version_verdict_t v = version_decide(player_remote.version, player_version());
+	if (player_result != PLAYERUPDATE_OK && player_result != PLAYERUPDATE_ASK && player_why[0]) {
+		show_notice(player_why);
+		return;
+	}
+	if (v != VERSION_NEWER && v != VERSION_ASK) {
+		// Two lines on purpose: the translated sentence with the version inside
+		// runs off a 320-pixel card ("The firmware is up to date (version …)."),
+		// and a version the user cannot read is the one thing this card is for.
+		char text[160];
+		snprintf(text, sizeof(text), "%s\n%s",
+				 strcmp(lang_current(), "Russian") == 0 ? "Установлена последняя версия"
+														: "The player is up to date",
+				 player_version()[0] ? player_version() : "?");
+		show_notice(text);
+		return;
+	}
+
+	// The same shape the image update uses: what it is, how big, what changed.
+	char size_text[32], message[128];
+	sysinfo_format_size((uint64_t)player_remote.size, size_text, sizeof(size_text));
+	snprintf(message, sizeof(message), tr("system_update_version_size"), player_remote.version, size_text);
+	layout(PRODUCT_NAME, message, true, false);
+	render_notes(player_remote.notes[0] ? player_remote.notes : tr("system_update_no_notes"));
+	fit_notes();
+	set_button(0, "system_update", true, player_install_clicked);
+	set_button(1, "cancel", false, close_card);
+	hide_buttons(2);
+}
+
+static void *player_check_thread(void *unused) {
+	(void)unused;
+	player_why[0] = 0;
+	player_result = playerupdate_remote_check(&player_remote, player_why, sizeof(player_why)) ? PLAYERUPDATE_OK
+																							: PLAYERUPDATE_NOT_A_PACKAGE;
+	// The flag is the worker's to clear: poll_cb only asks "is it done" and the
+	// card is redrawn from there. Clearing it in the completion handler, which is
+	// called *because* the flag is clear, deadlocks the card on "checking".
+	player_running = false;
+	return NULL;
+}
+
+static void player_install_done(void) {
+	player_running = false;
+	stop_polling();
+	if (player_result == PLAYERUPDATE_OK || player_result == PLAYERUPDATE_ASK) {
+		show_player_installing();
+		return;
+	}
+	if (player_result == PLAYERUPDATE_NEEDS_IMAGE) {
+		// The package is newer but needs a rootfs this device does not have: the
+		// only way forward is an image from the card, and the sentence says which.
+		show_notice(player_why[0] ? player_why : tr("system_update_check_failed"));
+		return;
+	}
+	show_notice(player_why[0] ? player_why : tr("system_update_download_failed"));
+}
+
+static void *player_fetch_thread(void *unused) {
+	(void)unused;
+	player_why[0] = 0;
+	player_result = playerupdate_remote_install(&player_remote, player_why, sizeof(player_why));
+	player_running = false;
+	return NULL;
+}
+
+static void player_start_worker(void *(*fn)(void *)) {
+	player_running = true;
+	if (pthread_create(&player_thread, NULL, fn, NULL) != 0) {
+		player_running = false;
+	}
+}
+
+static void player_online_clicked(void) {
+	player_stage = PLAYER_CHECK;
+	player_result = PLAYERUPDATE_OK;
+	player_why[0] = 0;
+	player_start_worker(player_check_thread);
+	if (!player_running) {
+		show_notice(tr("system_update_busy"));
+		return;
+	}
+	phase = PHASE_PLAYER;
+	show_checking();
+	start_polling();
+}
+
+static void player_install_clicked(void) {
+	player_stage = PLAYER_FETCH;
+	player_result = PLAYERUPDATE_OK;
+	player_why[0] = 0;
+	player_start_worker(player_fetch_thread);
+	if (!player_running) {
+		show_notice(tr("system_update_busy"));
+		return;
+	}
+	layout(PRODUCT_NAME, "", false, true);
+	lv_obj_set_hidden(message_label, false);
+	lv_bar_set_value(bar, 0, LV_ANIM_OFF);
+	show_progress_values(0, player_remote.size);
+	set_button(0, "cancel", false, player_cancel_clicked);
+	hide_buttons(1);
+	start_polling();
+}
+
+static void player_cancel_clicked(void) {
+	playerupdate_cancel();
+	close_card();
+}
+
+static void player_installing_cb(lv_timer_t *timer) {
+	(void)timer;
+	powermenu_reboot_now(); // does not return on the device
+	close_card();
+}
+
+static void show_player_installing(void) {
+	layout(PRODUCT_NAME, tr("system_update_installing"), false, false);
+	hide_buttons(0);
+	lv_timer_t *t = lv_timer_create(player_installing_cb, INSTALL_DELAY_MS, NULL);
+	lv_timer_set_repeat_count(t, 1);
+}
+
 static void show_choice(void) {
 	layout(tr("system_update_firmware"), NULL, false, false);
 	// No "ota-repo" in system-info.json, no online update: a port that nobody
 	// publishes releases for would otherwise ask the default repository, whose
 	// releases are built for other players.
-	if (!sysinfo_ota_repo()[0]) {
-		set_button(0, "system_update_from_sd", true, sd_clicked);
-		set_button(1, "cancel", false, close_card);
-		hide_buttons(2);
-		return;
-	}
+	// This build updates the player from its own repository; the image path needs
+	// no ota-repo and stays where it was.
+	set_button(0, "system_update_online", true, player_online_clicked);
+	set_button(1, "system_update_from_sd", false, sd_clicked);
+	set_button(2, "cancel", false, close_card);
+	return;
 	set_button(0, "system_update_online", true, online_clicked);
 	set_button(1, "system_update_from_sd", false, sd_clicked);
 	set_button(2, "cancel", false, close_card);

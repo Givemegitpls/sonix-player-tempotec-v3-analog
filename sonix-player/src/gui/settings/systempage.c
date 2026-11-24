@@ -1,5 +1,7 @@
 #include "systempage.h"
 
+#include "src/system/core/version.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -271,19 +273,39 @@ static void build_sysinfo_page(gui_config_t *cfg) {
 	lv_obj_set_style_radius(sd_bar, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
 	lv_obj_set_style_bg_color(sd_bar, theme()->accent, LV_PART_INDICATOR);
 
-	// --- the two versions ---
-	// The system version carries the thank-you (see easteregg.c), so it stays
-	// clickable where the rows above it are not.
-	lv_obj_t *os_value = NULL;
-	lv_obj_t *os_row = settingsrow_add(container, "system_operating_system_version", &os_value, NULL, NULL);
-	const char *os = sysinfo_os_version();
-	lv_label_set_text(os_value, os[0] ? os : "\xE2\x80\x94"); // em dash
-	easteregg_attach(os_row);
+	// --- the versions ---
+	//
+	// The image's version is a diagnostic, not something a user should compare
+	// against anything: after a player-only update it still names the rootfs it
+	// came with, which reads as "the update did not happen". It lives here only
+	// once the developer options are unlocked; the player's own version below is
+	// the one that moves.
+	if (systempage_devoptions_unlocked()) {
+		lv_obj_t *os_value = NULL;
+		// "Operating system version" is the vendor's label, and it does not fit a
+		// 320-pixel row: settingsrow's fit_row_label() then steps the font down to
+		// 20 px, which is why the row looked foreign next to its neighbours at 24.
+		// There is no shorter key in the language files, so the label is ours.
+		lv_obj_t *os_row = settingsrow_add(container,
+										  strcmp(lang_current(), "Russian") == 0 ? "Версия ОС" : "OS version",
+										  &os_value, NULL, NULL);
+		const char *os = sysinfo_os_version();
+		lv_label_set_text(os_value, os[0] ? os : "\xE2\x80\x94"); // em dash
+		// The system version carries the thank-you (see easteregg.c), so it stays
+		// clickable where the rows above it are not.
+		easteregg_attach(os_row);
+	}
 
 	// Five taps reveal the developer options.
+	//
+	// "Build number" is the *player's* own version, not the image's stamp: the
+	// player is what an over-the-air update replaces, and after one the image still
+	// says what it was built as -- which is exactly the number a user would read
+	// here and be misled by. The image's own stamp is above, as the operating
+	// system version.
 	lv_obj_t *build_value = NULL;
 	settingsrow_add(container, "system_build_number", &build_value, build_tapped_cb, NULL);
-	const char *build = sysinfo_build_version();
+	const char *build = player_version();
 	lv_label_set_text(build_value, build[0] ? build : "\xE2\x80\x94");
 
 	lv_obj_add_event_cb(sysinfo_screen, sysinfo_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
