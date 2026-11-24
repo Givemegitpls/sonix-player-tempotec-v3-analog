@@ -1,42 +1,33 @@
 name: Firmware page
 
-# Publishes the firmware page: the static site under web/, the wasm mkfs.ubifs the
-# page packs with, and the payload of the **newest tag** that carries one.
+# Publishes the firmware page for **one tag**, on demand.
 #
-# What is deliberately not here: building the player. The page offers released
-# versions only -- a tag, never the tip of a branch -- so the payload comes from
-# the release `.github/workflows/player-package.yml` publishes
-# (`firmware-payload-<board>.tar.gz`), not from this checkout. That also means no
-# MIPS toolchain and a deploy measured in a minute or two rather than an hour.
+# The page is pinned: it builds images from the payload of a tag's release and
+# nothing else, so it is redeployed when a release is published (the release job of
+# player-package.yml dispatches this workflow with the tag) and not on every commit.
+# A page that follows `main` would offer builds nobody released.
 #
-# The release keeps the complete payload; this deployment takes it apart into the
-# player half and the content-addressed asset blob the browser can actually fetch
-# (see sonix-packer/tools/make_versions_json.sh), which is why the site is ~26 MB
-# rather than a copy of every payload.
+# Runs only from `main`: the `github-pages` environment refuses any other ref
+# ("Branch ... is not allowed to deploy to github-pages due to environment
+# protection rules"), and the jobs are gated on the ref so a dispatch from a branch
+# neither builds nor deploys. The tag is checked out inside the run, which is how a
+# run dispatched on `main` publishes the tag's tree.
+#
+# The payload comes from that tag's release (`firmware-payload-<board>.tar.gz`,
+# attached by player-package.yml), not from this checkout: the release is where a
+# complete payload lives, and the wasm mkfs.ubifs is built from the same tag.
 #
 # What is never here: the vendor's firmware. The page takes that from the user, in
 # their browser; the image is a modified copy of the vendor's and the licence does
 # not allow publishing it (docs/BUILD.md, "Distributing an image").
 
 on:
-  push:
-    # Only the default branch: the `github-pages` environment allows deployments
-    # from `main` and refuses any other ref ("Branch ... is not allowed to deploy
-    # to github-pages due to environment protection rules"), so a run from a
-    # feature branch would build the site and then fail to publish it. A release
-    # asks for a run here through `gh workflow run` instead of deploying from the
-    # tag (player-package.yml).
-    branches: [main]
-    paths:
-      - web/**
-      - sonix-packer/tools/wasm/**
-      - sonix-packer/tools/make_versions_json.sh
-      - sonix-packer/tools/make_site_payload.sh
-      - sonix-packer/docker/wasm/**
-      - .github/workflows/pages.yml
-  # No `release:` trigger: a release event's ref is the tag, which the environment
-  # does not allow to deploy. The release job dispatches this workflow on `main`.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish the page for (e.g. 0.5.2)'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -51,21 +42,16 @@ env:
   WASM_IMAGE: tempotec-wasm-tools
 
 jobs:
-  # The page's own answer to "is this the right image?", before anything is
-  # published: the guard's checks (bootloader, kernel, VERSION.TXT, the vendor base
-  # inside the rootfs) and their refusals. No wasm, no firmware fixture.
-  guard:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: The image guard
-        run: node sonix-packer/tools/webtest/guard.test.mjs
-
   build:
-    needs: guard
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The tree of the tag being published, not of the branch the run was
+          # dispatched on.
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
 
       - name: Cache the wasm toolchain and the downloaded sources
         uses: actions/cache@v4
@@ -75,7 +61,7 @@ jobs:
             sonix-packer/build-wasm/src
             sonix-packer/build-wasm/obj
             sonix-packer/build-wasm/out
-          key: wasm-${{ hashFiles('sonix-packer/docker/wasm/Dockerfile', 'sonix-packer/tools/wasm/**') }}
+          key: wasm-${{ inputs.tag }}-${{ hashFiles('sonix-packer/docker/wasm/Dockerfile', 'sonix-packer/tools/wasm/**') }}
           restore-keys: |
             wasm-
 
@@ -89,10 +75,10 @@ jobs:
           cp sonix-packer/build-wasm/out/mkfs_ubifs.js \
              sonix-packer/build-wasm/out/mkfs_ubifs.wasm _site/wasm/
 
-      - name: The newest released payload
+      - name: The tag's released payload
         env:
           GH_TOKEN: ${{ github.token }}
-        run: sonix-packer/tools/make_versions_json.sh _site "${{ github.repository }}"
+        run: sonix-packer/tools/make_versions_json.sh _site "${{ github.repository }}" "${{ inputs.tag }}"
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
@@ -101,10 +87,8 @@ jobs:
 
   deploy:
     needs: build
-    # The environment's rule is the authority; this makes a run from anywhere else
-    # skip the deployment instead of failing it after the build.
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

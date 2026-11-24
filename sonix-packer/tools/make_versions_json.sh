@@ -3,13 +3,14 @@
 # Writes `<site>/versions.json` -- and, with a repository, the payload the site
 # serves.
 #
-#   make_versions_json.sh <site-dir> <owner/repo>    # the newest tag that has a payload
-#   make_versions_json.sh <site-dir> --local <name>  # this machine's build, for trying the page
+#   make_versions_json.sh <site-dir> <owner/repo> <tag>   # the tag's released payload
+#   make_versions_json.sh <site-dir> --local <name>       # this machine's build, for trying the page
 #
-# Only **the newest tag** is taken, and "newest" is by the tag's version, not by
-# when it was published: a release for an older tag published today does not
-# displace the current one, and nothing is built from a branch. A payload is
-# published by .github/workflows/player-package.yml as
+# The site is pinned to a tag: one tag, named by the caller, whose release carries
+# the payload. Nothing is taken from a branch and nothing is chosen automatically,
+# so the published page is always the build of a known tag.
+#
+# A payload is published by .github/workflows/player-package.yml as
 # `firmware-payload-<board>.tar.gz` on a release; the release keeps that complete
 # archive and remains the only place the whole thing lives.
 #
@@ -21,9 +22,8 @@
 #   payload/<tag>.player.tar.gz          payload.json, sonix_player, sonix_launch  (~2.9 MB)
 #   payload/blobs/assets-<sha:12>.tar.gz assets/BLAZE + assets/V3ANALOG            (~22 MB)
 #
-# Needs `jq`; lists and downloads through `gh` (so: `GH_TOKEN`). When no release
-# carries a payload yet, `versions` is written empty and the page says so instead of
-# offering a build it does not have.
+# Needs `jq`; lists and downloads through `gh`, which every GitHub runner has (so:
+# `GH_TOKEN`).
 set -eu
 
 SITE=${1:-}
@@ -31,7 +31,7 @@ REPO=${2:-}
 MODE=${3:-}
 
 if [ -z "$SITE" ]; then
-	echo "usage: $0 <site-dir> <owner/repo> | <site-dir> --local <name>" >&2
+	echo "usage: $0 <site-dir> <owner/repo> <tag> | <site-dir> --local <name>" >&2
 	exit 2
 fi
 
@@ -96,34 +96,36 @@ if [ "$REPO" = "--local" ]; then
 	append_entry "$MODE" "$MODE" '' false
 else
 	[ -n "$REPO" ] || { echo "make_versions_json: no repository and no --local" >&2; exit 2; }
-	if gh api "repos/$REPO/releases?per_page=100" >"$TMP/releases.json" 2>/dev/null; then
-		# The greatest tag version that carries a payload. `sort -V` is the whole
-		# point: a release is identified by its tag, not by when it was published.
-		tag=$(jq -r '
-			.[]
-			| select(any(.assets[]?; .name | test("^firmware-payload-.*[.]tar[.]gz$")))
-			| .tag_name
-		' "$TMP/releases.json" | sort -V | tail -n 1)
+	tag=$MODE
+	[ -n "$tag" ] || { echo "make_versions_json: no tag given (usage: <site> <owner/repo> <tag>)" >&2; exit 2; }
 
-		if [ -n "$tag" ]; then
-			published=$(jq -r --arg tag "$tag" '.[] | select(.tag_name == $tag) | .published_at' "$TMP/releases.json")
-			mkdir -p "$TMP/rel"
-			if gh release download "$tag" --pattern 'firmware-payload-*.tar.gz*' --dir "$TMP/rel" --clobber 2>/dev/null; then
-				for payload in "$TMP/rel"/firmware-payload-*.tar.gz; do
-					[ -f "$payload" ] || continue
-					board=$(tar -xzOf "$payload" payload.json | jq -r .board)
-					[ "$board" = "v3_analog" ] || continue
-					"$(dirname "$0")/make_site_payload.sh" "$payload" "$SITE" "$tag" >/dev/null
-					append_entry "$tag" "$tag" "$published" true
-					break
-				done
-			else
-				echo "make_versions_json: $tag has no downloadable payload" >&2
-			fi
-		else
-			echo "make_versions_json: no release carries a firmware payload yet" >&2
-		fi
+	if ! gh api "repos/$REPO/releases/tags/$tag" >"$TMP/release.json" 2>/dev/null; then
+		echo "make_versions_json: the repository has no release for tag $tag" >&2
+		exit 1
 	fi
+	published=$(jq -r '.published_at' "$TMP/release.json")
+	if ! jq -e '.assets[]? | select(.name | test("^firmware-payload-.*[.]tar[.]gz$"))' "$TMP/release.json" >/dev/null; then
+		echo "make_versions_json: release $tag carries no firmware payload" >&2
+		exit 1
+	fi
+
+	mkdir -p "$TMP/rel"
+	if ! gh release download "$tag" --pattern 'firmware-payload-*.tar.gz*' --dir "$TMP/rel" --clobber 2>/dev/null; then
+		echo "make_versions_json: cannot download the payload of $tag" >&2
+		exit 1
+	fi
+	found=0
+	for payload in "$TMP/rel"/firmware-payload-*.tar.gz; do
+		[ -f "$payload" ] || continue
+		board=$(tar -xzOf "$payload" payload.json | jq -r .board)
+		[ "$board" = "v3_analog" ] || continue
+		"$(dirname "$0")/make_site_payload.sh" "$payload" "$SITE" "$tag" >/dev/null
+		append_entry "$tag" "$tag" "$published" true
+		found=1
+		break
+	done
+	[ "$found" = 1 ] || { echo "make_versions_json: $tag's payload is not for v3_analog" >&2; exit 1; }
+	[ "$found" = 1 ] || { echo "make_versions_json: $tag's payload is not for v3_analog" >&2; exit 1; }
 fi
 
 jq -s '{format: 1, versions: .}' "$ENTRIES" >"$SITE/versions.json"

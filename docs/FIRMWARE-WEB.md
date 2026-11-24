@@ -69,32 +69,34 @@ byte for byte.
 
 ## Versions
 
-The page offers **one version: the newest tag that carries a payload**. Not the tip
-of a branch, and not the newest commit — a build that was never released cannot be
-flashed with any confidence, so it is not offered.
+The page is **pinned to a tag**. It offers that tag's payload and nothing else: not
+the tip of a branch, not the newest commit, and not even "the newest tag" — a build
+that was never released cannot be flashed with any confidence, so a page that
+followed the branch would be offering one.
 
 `_site/versions.json` is generated at deploy time by
-`sonix-packer/tools/make_versions_json.sh`, which:
+`sonix-packer/tools/make_versions_json.sh <site> <owner/repo> <tag>`, which:
 
-1. lists the releases through the GitHub API and keeps those with a
-   `firmware-payload-<board>.tar.gz` asset (attached by
-   `.github/workflows/player-package.yml` when a tag is pushed);
-2. takes the **greatest tag version** (`sort -V`), not the most recently published
-   one: republishing an old tag does not make it the version to build;
-3. takes that release's payload apart into the two halves the browser can fetch.
+1. asks the GitHub API for that tag's release and requires a
+   `firmware-payload-<board>.tar.gz` asset in it (attached by
+   `.github/workflows/player-package.yml` when the tag was pushed); no such release,
+   no such asset — the deploy fails rather than publishing a page with nothing to
+   build;
+2. takes that payload apart into the two halves the browser can fetch.
 
 The label is the image's version, `<vendor firmware>/<port version>` —
-`1.3.0/0.5.0` — because the tag alone would hide which vendor image the payload was
-built on. `0.5.0` is the port's own tag; `1.3.0` is the vendor base marker and
+`1.3.0/0.5.2` — because the tag alone would hide which vendor image the payload was
+built on. `0.5.2` is the port's own tag; `1.3.0` is the vendor base marker and
 carries no release.
 
 The deploy does **not** build the player. It no longer needs the MIPS toolchain:
-nothing here is built from the working tree, only the wasm `mkfs.ubifs` is, and
-that is cached. A deploy is a couple of minutes rather than the hour a player build
-costs.
+the payload comes from the release asset, and only the wasm `mkfs.ubifs` is built
+from the tag's tree (and cached). A deploy is a couple of minutes rather than the
+hour a player build costs.
 
-While no release carries a payload, `versions.json` is written with an empty list
-and the page says so — it does not offer a build it does not have.
+Redeploying is deliberate, not automatic: the page changes when a tag is released
+(the release job dispatches the run) or when someone runs the workflow by hand with
+a tag. A push to `main` does not touch it.
 
 A release is where a complete payload lives; the site does not keep a copy of it.
 It cannot keep one either: a browser cannot fetch a GitHub release asset — the
@@ -174,19 +176,27 @@ cd _site && python3 -m http.server 8000      # open http://localhost:8000/
 alone. To see the release entries locally, run that script by hand with a
 repository and a `GH_TOKEN` in the environment.
 
-Publishing: the workflow deploys on every push to `main` that touches `web/`, the
-wasm build or the payload scripts. **Pages has to be enabled once** for the
-repository (Settings → Pages → Source: GitHub Actions) — that is the owner's click,
-not something a workflow can do for itself.
+Publishing is one command, for one tag:
 
-Only `main` deploys. The `github-pages` environment allows deployments from the
-default branch and refuses every other ref ("Branch ... is not allowed to deploy to
-github-pages due to environment protection rules"), so the workflow does not run on
-feature branches and its `deploy` job is skipped anywhere but `main`. A published
-release does not deploy either — a release event's ref is the tag — so
-`player-package.yml` ends with `gh workflow run pages.yml --ref main`: the release
-announces itself, the deployment happens on `main`, where the environment permits
-it.
+```sh
+gh workflow run pages.yml --ref main -f tag=0.5.2
+```
+
+or Actions → "Firmware page" → Run workflow, with the tag in the box. The workflow
+checks the tag's tree out, builds the wasm from it, takes the payload from that
+tag's release and deploys. `player-package.yml` issues the same command at the end
+of a release job, so publishing a release publishes the page.
+
+Only `main` deploys: both jobs are gated on `github.ref == 'refs/heads/main'`, so a
+dispatch from any other branch neither builds nor deploys. That is not politeness —
+the `github-pages` environment refuses any other ref ("Branch ... is not allowed to
+deploy to github-pages due to environment protection rules"), and a release event's
+ref is the tag, which is why the run is dispatched on `main` with the tag as an
+input rather than triggered by the release itself.
+
+**Pages has to be enabled once** for the repository (Settings → Pages → Source:
+GitHub Actions) — that is the owner's click, not something a workflow can do for
+itself.
 
 ## Verifying a build without a device
 

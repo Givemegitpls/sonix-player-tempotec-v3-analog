@@ -1295,3 +1295,19 @@ is the vendor base marker (what docs/UPDATING.md merges against) and carries no 
   added by that branch remain. Landmine: `assets/BLAZE/.../system-info.json` still names
   `"ota-repo": "carmine-bin/sonix-player-tempotec-v3-blaze"`; our `assets/V3ANALOG` copy overrides
   it, but `verify` does not check that the built file has no `ota-repo` (`TODO.md` 15.1).
+
+The page is pinned to a tag (2026-11-24): `pages.yml` has no `push` trigger at all — only
+`workflow_dispatch` with a required `tag` input, and both jobs are gated on
+`github.ref == 'refs/heads/main'` (the `github-pages` environment refuses every other ref, and a
+release event's ref is the tag). The run checks the tag out, builds the wasm from it and asks
+`make_versions_json.sh <site> <repo> <tag>` for that tag's release payload, so the published site is
+always the build of a known tag. `player-package.yml` ends with
+`gh workflow run pages.yml --ref main -f tag=<tag>`. A missing release or a payload for another board
+is a hard failure, not an empty list.
+
+The guard bug that broke the live page: `checkRootfsIdentity` read
+`usr/resource/sonix/components/system-info.json`, which is a file the *port* installs — the stock
+rootfs has no such path, so every build stopped with ENOENT before installing anything. The vendor
+states its identity in `usr/resource/config.json` (`{"type":"product","firmware_name":"v3_analog",
+"ota_name":"TempoTec V3_ANALOG","version":"1.3",...}`), which the port never overwrites; the guard is
+`checkVendorConfig` now and `guard.test.mjs` feeds it fixtures.

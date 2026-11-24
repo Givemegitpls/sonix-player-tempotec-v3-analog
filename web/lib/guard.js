@@ -14,9 +14,12 @@
 //               in principle belong to more than one model; two that both have to
 //               match cannot.
 //   VERSION.TXT carries `name=v3_analog`, the vendor's own name for the board.
-//   system-info.json inside the rootfs names the device and the vendor version the
-//               image was built on -- the only place the "1.3" can be read from,
-//               because the .upt itself does not state it.
+//   config.json inside the rootfs is the vendor's own product description:
+//               `"firmware_name":"v3_analog"`, `"ota_name":"TempoTec V3_ANALOG"` and
+//               `"version":"1.3"`. It is the only place the vendor version is
+//               stated -- the .upt itself does not carry it -- and the port never
+//               overwrites the file, so it answers the same question in a stock
+//               image and in one of ours.
 //
 // Everything here takes its expectations as a parameter with the real values as
 // defaults, so the tests can feed their own: an MD5 that has to be *the* stock
@@ -30,7 +33,7 @@ export const BOARD_ID = 'v3_analog';
 /** The six files every .upt of this device has, and nothing else is read. */
 export const REQUIRED_FILES = ['SYSTEM.UBI', 'UBOOT.BIN', 'UIMAGE.BIN', 'UPDATE.TXT', 'VERSION.TXT', '_GITIGNO'];
 
-const SYSTEM_INFO = 'usr/resource/sonix/components/system-info.json';
+const VENDOR_CONFIG = 'usr/resource/config.json';
 
 export class GuardError extends Error {}
 
@@ -82,34 +85,46 @@ export function checkImageFiles(files, md5, expect = {}) {
 }
 
 /**
- * The vendor version, from the rootfs the image carries.
+ * The vendor version, from the product description the rootfs carries.
  *
- * `OS_version` is what the vendor wrote ("1.3.0", sometimes with a suffix); the
- * port replaces it with `<base>/<its own tag>` when it packs an image, so a stock
- * image and one of ours both answer the same question: which vendor firmware is
- * this built on.
+ * `usr/resource/config.json` is the vendor's own file: an array of records, one of
+ * them `{"type":"product","company":"TempoTec","device":"V3","version":"1.3",...}`.
+ * The port does not replace it, so a stock image and one of ours answer the same
+ * question -- which vendor firmware is this built on -- and this is the only place
+ * the answer exists: neither the `.upt` nor `VERSION.TXT` states "1.3".
  *
- * @param {string} text the contents of system-info.json
- * @param {{boardName?: string, base?: string}} [expect]
+ * `version` is "1.3" on the stock file and stays so in images this port packs; a
+ * "1.4" would be a base nobody has ported.
+ *
+ * @param {string} text the contents of `usr/resource/config.json`
+ * @param {{firmwareName?: string, otaName?: string, base?: string}} [expect]
  */
-export function checkRootfsIdentity(text, expect = {}) {
-  const boardName = expect.boardName ?? BOARD_NAME;
+export function checkVendorConfig(text, expect = {}) {
+  const firmwareName = expect.firmwareName ?? BOARD_ID;
+  const otaName = expect.otaName ?? 'TempoTec V3_ANALOG';
   const base = expect.base ?? VENDOR_BASE;
 
-  if (!text.includes(`"${boardName}"`)) {
+  let records;
+  try {
+    records = JSON.parse(text);
+  } catch {
+    throw new GuardError('this rootfs has no readable usr/resource/config.json: it is not a vendor image this port can build on.');
+  }
+  if (!Array.isArray(records)) {
+    throw new GuardError('this rootfs\'s usr/resource/config.json is not the vendor\'s product list.');
+  }
+  const product = records.find((record) => record?.type === 'product');
+  if (!product) {
+    throw new GuardError('this rootfs\'s config.json has no product record: it is not a vendor image this port can build on.');
+  }
+  if (product.firmware_name !== firmwareName || product.ota_name !== otaName) {
     throw new GuardError(
-      `this rootfs's system-info.json does not name the ${BOARD_NAME}: it is another model’s firmware.`,
+      `this image is the vendor firmware "${product.firmware_name ?? '?'}" (${product.ota_name ?? '?'}), ` +
+        `not ${firmwareName} (${otaName}): it is another model's firmware.`,
     );
   }
 
-  const match = /"OS_version"\s*:\s*"([^"]*)"/.exec(text);
-  if (!match) {
-    throw new GuardError('this rootfs has no OS_version: it is not a vendor image this port can build on.');
-  }
-  const found = match[1];
-  // The vendor writes "1.3.0" and the port writes "1.3.0/<tag>": the base is the
-  // major and minor components, which is what "1.3" means and what the port is
-  // built on. A "1.4" is a base nobody has ported; a "1.3.7" is still 1.3.
+  const found = String(product.version ?? '');
   const foundBase = found.split('/')[0].split('.').slice(0, 2).join('.');
   if (foundBase !== base) {
     throw new GuardError(
@@ -117,8 +132,8 @@ export function checkRootfsIdentity(text, expect = {}) {
         'Take the 1.3 image for this device: a newer vendor base has not been ported.',
     );
   }
-  return { boardName, base: foundBase, version: found };
+  return { firmwareName, otaName, base: foundBase, version: found };
 }
 
 /** Where the guard reads the vendor's version from, for the caller's own checks. */
-export const SYSTEM_INFO_PATH = SYSTEM_INFO;
+export const VENDOR_CONFIG_PATH = VENDOR_CONFIG;

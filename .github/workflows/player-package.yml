@@ -204,15 +204,15 @@ jobs:
           [ "$empty" = 0 ] || exit 1
           echo "every package carries the tag's message as notes"
 
-      - name: Republish the firmware page
-        # The page offers the newest tag that has a payload; this release may be
-        # it, and GitHub Pages only deploys from the default branch, so ask for a
-        # run there. Not fatal: the release itself is already published, and the
-        # page picks the tag up on its next run either way.
+      - name: Publish the firmware page for this tag
+        # The page is pinned to a tag: this release is the one it should build
+        # images from now. GitHub Pages only deploys from the default branch, so
+        # ask for a run there and hand it the tag. Not fatal: the release itself is
+        # already published, and the page can be republished by hand.
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run pages.yml --ref main
+        run: gh workflow run pages.yml --ref main -f tag="${GITHUB_REF#refs/tags/}"
 
       - name: Release
         env:

@@ -10,7 +10,7 @@
 // The long-running loops post progress messages so the page can show where it is;
 // the tree never leaves this worker.
 
-import { checkImageFiles, checkRootfsIdentity, SYSTEM_INFO_PATH } from './lib/guard.js';
+import { checkImageFiles, checkVendorConfig, VENDOR_CONFIG_PATH } from './lib/guard.js';
 import { buildIso, readFirmwareIso } from './lib/iso9660.js';
 import { installTree, trimStock, updateDigests } from './lib/install.js';
 import { firmwareMkfsArgs, makeLzoDecompress, mountTree, runMkfs } from './lib/mkfs-ubifs.js';
@@ -70,9 +70,9 @@ async function build({ file, version }) {
 
   // The other half of "the right image": the rootfs has to be the vendor's 1.3 for
   // this device, not a sibling's or a newer base this port has never been built on.
-  // Read from the vendor's own system-info.json, which installTree() replaces a
-  // moment later -- so this is the only point where the original is still there.
-  checkRootfsIdentity(decoder.decode(vfs.require(SYSTEM_INFO_PATH).read()));
+  // Read from the vendor's own usr/resource/config.json, the only file that states
+  // it; the port's own system-info.json does not exist in the stock image at all.
+  checkVendorConfig(decoder.decode(vfs.require(VENDOR_CONFIG_PATH).read()));
   progress(0.35);
 
   say('install', 'Installing the player, the launcher and the assets');

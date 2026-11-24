@@ -73,36 +73,49 @@ test('a VERSION.TXT that names another board is refused', () => {
   assert.throws(() => guard.checkImageFiles(files, md5, expect()), /does not name v3_analog/);
 });
 
-console.log('rootfs identity');
+console.log('the vendor image');
 
-const info = (version) => `{
-    "device-name": "TempoTec V3 Analog",
-    "dac-info": "AKM AK4493SEQ",
-    "OS_version": "${version}",
-    "build_version": "1234"
-}`;
+// The vendor's own usr/resource/config.json, trimmed to the product record.
+const vendorConfig = (overrides = {}) => {
+  const product = {
+    type: 'product',
+    company: 'TempoTec',
+    device: 'V3',
+    version: '1.3',
+    ota_name: 'TempoTec V3_ANALOG',
+    pid: '0xF008',
+    vid: '0x22E1',
+    firmware_name: 'v3_analog',
+    ...overrides,
+  };
+  return JSON.stringify([{ type: 'version', value: 1 }, product]);
+};
 
 test('the vendor 1.3 for this device passes', () => {
-  const result = guard.checkRootfsIdentity(info('1.3.0'));
+  const result = guard.checkVendorConfig(vendorConfig());
   assert.equal(result.base, '1.3');
-});
-
-test('a ported image ("1.3.0/0.5.0") still answers 1.3', () => {
-  assert.equal(guard.checkRootfsIdentity(info('1.3.0/0.5.0')).base, '1.3');
+  assert.equal(result.firmwareName, 'v3_analog');
 });
 
 test('a newer vendor base is refused with both numbers', () => {
-  assert.throws(() => guard.checkRootfsIdentity(info('1.4.0')), /1\.4.*1\.3/);
+  assert.throws(() => guard.checkVendorConfig(vendorConfig({ version: '1.4' })), /1\.4.*1\.3/);
 });
 
-test('an image that names another device is refused', () => {
-  const text = info('1.3.0').replace('TempoTec V3 Analog', 'Some Other Player');
-  assert.throws(() => guard.checkRootfsIdentity(text), /does not name the TempoTec V3 Analog/);
+test('another model is refused with the firmware it names', () => {
+  const text = vendorConfig({ firmware_name: 'r3proii', ota_name: 'HiBy R3 Pro II' });
+  assert.throws(() => guard.checkVendorConfig(text), /r3proii/);
 });
 
-test('an image with no OS_version is refused', () => {
-  const text = info('1.3.0').replace(/"OS_version"[^,]*,?/, '');
-  assert.throws(() => guard.checkRootfsIdentity(text), /no OS_version/);
+test('a config.json that is not the vendor list is refused', () => {
+  assert.throws(() => guard.checkVendorConfig('{"not": "a list"}'), /not the vendor's product list/);
+});
+
+test('a config.json with no product record is refused', () => {
+  assert.throws(() => guard.checkVendorConfig('[{"type":"version","value":1}]'), /no product record/);
+});
+
+test('unreadable JSON is refused without throwing a parse error at the caller', () => {
+  assert.throws(() => guard.checkVendorConfig('not json at all'), /no readable usr\/resource\/config\.json/);
 });
 
 console.log(failures === 0 ? '\nok' : `\n${failures} failure(s)`);
