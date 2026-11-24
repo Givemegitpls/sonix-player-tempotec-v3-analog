@@ -1288,3 +1288,10 @@ is the vendor base marker (what docs/UPDATING.md merges against) and carries no 
   Dalton Maag, MiSans (Xiaomi) allows embedding but requires attribution and forbids distributing
   the font files on their own; `libfdk-aac.so.2` exists only in `assets/V3ANALOG` and is what
   `bt-src/build.sh` extracts from Debian non-free into `bt-src/sysroot`.
+- 2026-11-23: this repo was forked off `carmine-bin/sonix-player-tempotec-v3-blaze` (`blaze-port`,
+  merge `218bfee` is an ancestor); `upstream` is `Jepl4r/sonix-player`, which carries only
+  `assets/R1` and `assets/R3PII`, so `assets/BLAZE` (44 files, 27 MB, mostly fonts and the 12
+  language files) is never touched by a merge and is maintained by hand. Only 14 source files
+  added by that branch remain. Landmine: `assets/BLAZE/.../system-info.json` still names
+  `"ota-repo": "carmine-bin/sonix-player-tempotec-v3-blaze"`; our `assets/V3ANALOG` copy overrides
+  it, but `verify` does not check that the built file has no `ota-repo` (`TODO.md` 15.1).

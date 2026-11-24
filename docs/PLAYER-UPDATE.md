@@ -1,17 +1,17 @@
 # Updating the player over the air
 
-Status: **the package, the CI and the launcher's half of the installer exist and
-have been run on the device; the player's staging is still to do.**
+Status: **the path is complete in the tree.** The package, the CI, the player's
+menu, download, verification and staging, and the launcher's swap all exist —
+"What exists" lists them. What has been run on the device is the package, the CI
+and the launcher's half; the player's own download-and-stage flow is the part
+that has not been exercised there yet.
 
 Implemented: the whole network path -- index, download, verification, staging --
-and its card in Settings → System → Update firmware → "OTA update", plus
+and its card in Settings → System → Update firmware → "Via internet", plus
 `make package` and the CI that builds it per device
 (`.github/workflows/player-package.yml`, section "What exists"), the version and
 the board id compiled into the binary, the `--verify` mode and the healthy mark
-in the player, and the launcher's state machine below. Still missing: the player
-finding a package by itself (menu, download), comparing versions, and writing
-`pending` -- none of which the trial needed, because the launcher does not care
-who put the file there.
+in the player, and the launcher's state machine below.
 
 ## What is updated, and what is not
 
@@ -93,7 +93,7 @@ commit differ only in the compression's own bytes.
   beside a running player.
 - **The launcher's half** (`launcher/sonix_launch.c`): the lock, the backup on the
   card, the swap with the player stopped, the rollback when the lock survives.
-- **The one way in**: Settings → System → Update firmware → "OTA update". Nothing
+- **The one way in**: Settings → System → Update firmware → "Via internet". Nothing
   at start-up, no menu row of its own -- the player looks at the network when the
   user asks and at no other time.
 

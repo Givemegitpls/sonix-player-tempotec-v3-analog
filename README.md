@@ -37,9 +37,13 @@ podcasts and Last.fm need your own account or keys; see [Streaming](#streaming).
    already has a `v3_analog.upt` (the stock OTA leaves one there), rename it
    to `v3_analog.upt.stock` and copy it to your computer as well. Remove any
    `update.upt`: the stock updater prefers it over every other name.
-3. Get `v3_analog.upt` — build it yourself as [docs/BUILD.md](docs/BUILD.md)
-   describes. It is a modified copy of the vendor's firmware and is deliberately
-   not published here, so there is nothing to download.
+3. Get `v3_analog.upt`. It is a modified copy of the vendor's firmware and is
+   deliberately not published here, so it is made on your own machine, either
+   way:
+   - build it as [docs/BUILD.md](docs/BUILD.md) describes;
+   - or let the [firmware page](https://givemegitpls.github.io/sonix-player-tempotec-v3-analog/)
+     build it in the browser out of your own copy of the vendor's `.upt`
+     ([docs/FIRMWARE-WEB.md](docs/FIRMWARE-WEB.md); nothing is uploaded).
 4. Copy it to the **root of the microSD card**, keeping the name
    `v3_analog.upt`.
 5. Start the update:
@@ -55,12 +59,19 @@ the updater take `v3_analog.upt` off the card.
 
 ## Updates
 
-This port does **not** offer updates over the internet. The update page has
-"From SD card" only: `sonix-packer/assets/V3ANALOG/usr/resource/sonix/components/system-info.json`
-carries no `ota-repo`, and `fwupdate.c` hides the online button when the key is
-absent — a port that publishes no releases would otherwise ask the default
-repository, whose releases are built for other players. A new build is flashed
-the way the first one was.
+The **player** updates itself over the internet: Settings → System → Update
+firmware → **Via internet** reads the newest release of this repository
+(`Givemegitpls/sonix-player-tempotec-v3-analog`), shows its notes, downloads
+`sonix-player-update-<board>.tar` to the card, checks it against the digest the
+release carries and stages it. The launcher swaps the binary at the next start
+and rolls back when the new one does not come up. Only the player is replaced —
+not the kernel, the rootfs, the vendor's bootloader and not the launcher itself
+([docs/PLAYER-UPDATE.md](docs/PLAYER-UPDATE.md)).
+
+The **image** is still a card affair: "From SD card", or recovery. The port
+publishes no image, and `system-info.json` carries no `ota-repo`, so the older
+route that replaced the whole image over the internet stays off: an image is
+flashed the way the first one was.
 
 ## Versions
 
@@ -134,7 +145,7 @@ display path, panel power, the codec's card, the Bluetooth stack, USB DAC mode
 
 - AMOLED theme beside Dark and Light.
 - Now playing: Show artist, beside Show album.
-- About names the DAC as the AK4493SEQ.
+- About names the DAC as the AKM AK4493SEQ.
 
 The Blaze port's own full list is the commit history of its
 [`blaze-port`](https://github.com/carmine-bin/sonix-player-tempotec-v3-blaze/commits/blaze-port)

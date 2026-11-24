@@ -165,6 +165,19 @@ Latin Extended-A, `U+2000–206F`, `U+2460–24FF`, `U+25A0–25FF`. Опции:
       `ebookfonts.c` — старые имена файлов; возвращать нельзя» — и что именно проверять
       (`tools/license_audit.py`, `docs/V3-ANALOG.md`).
 - [ ] **6.4** `README.md`: строка про лицензии образа (сейчас упоминается только GPL-3.0 кода).
+- [x] **6.5** `README.md`, раздел **Updates** — исправлен 2026-11-24: плеер обновляется по сети
+      («Via internet», релизы этого репозитория, `index.json`, пакет, sha256, подмена бинаря и
+      откат), образ — по-прежнему карта/recovery, `ota-repo` нет.
+- [x] **6.6** `README.md`: браузерный сборщик добавлен в шаг 3 Install со ссылкой на живую страницу
+      (`https://givemegitpls.github.io/sonix-player-tempotec-v3-analog/`, 200) и на
+      `docs/FIRMWARE-WEB.md`.
+- [ ] **6.7** `fwupdate.c`: после `return` в `show_choice()` осталась мёртвая ветка со старым
+      `online_clicked` — убрать вместе с самим путём обновления образа по сети (статическая
+      функция станет неиспользуемой, это каскад). Тексты README и `docs/PLAYER-UPDATE.md` уже
+      приведены к коду 2026-11-24, включая шапку **Status** и подпись пункта меню.
+- [ ] **6.8** `README.md`, Building: «the host needs docker and nothing else» перестанет быть
+      правдой после раздела 4 (FDK берётся из `bt-src/sysroot`) — дописать требование собрать
+      `bt-src` и положить `libfdk-aac-dev` из Debian non-free.
 
 ## 7. Проверка после реализации
 
@@ -377,3 +390,35 @@ docker run --rm -i -v "$SCRIPT_DIR:/packer" -v "$BT_SYSROOT:/bt-src-sysroot:ro" 
 Шрифты (файлы + код + локализация) — 2–3 ч, лицензии (тексты + копия в образ) — 1 ч,
 пакер + `install_tree` — 30 мин, аудит + CI — 1–2 ч, документация — 1 ч, проверка на устройстве —
 1 ч. Итого около одного рабочего дня. faad2 — отдельно, 1–2 дня, только по решению из раздела 8.
+
+---
+
+## 15. Зависимость от Blaze-форка (проверено 2026-11-24)
+
+Состояние: `origin` — наш репозиторий, `upstream` — `Jepl4r/sonix-player`; blaze-форка в
+ремоутах нет, обновлений из него не тянем. Но `blaze-port` — предок: merge-коммит `218bfee`
+«Merge upstream/main into blaze-port» в истории, 44 коммита carmine-bin, 220 файлов им тронуто;
+из его кода в дереве остались 14 файлов (профайлеры `frame/frameprof.c`, `profiler.c`,
+`timerprof.c`, `eventprof.c`, `glyphwarm.c`, заголовки `libjpeg9/`).
+
+`assets/BLAZE` — обязательный вход сборки: 44 файла, 27.2 MB (≈37 % распакованного дерева образа).
+Шрифты 24.4 MB, 12 языковых файлов 0.8 MB, `gui/` 0.4 MB, `components/` 1.1 MB,
+`bin/` 0.3 MB, BT-конфиги 0.2 MB. В апстриме 1.3.0 этого дерева нет вообще — только `R1` и
+`R3PII`, поэтому мержи его не обновляют: шрифты, языки, картинки, базы Gearboy и BlueZ-userland
+живут вручную.
+
+- [ ] **15.1** `v3_analog_packer.sh`, блок `verify`: добавить проверку, что в собранном
+      `system-info.json` **нет** `ota-repo`. Сейчас проверяется только `device-name`; в
+      `assets/BLAZE/.../system-info.json` лежит `"ota-repo": "carmine-bin/sonix-player-tempotec-v3-blaze"`,
+      и если порядок оверлеев сломается (BLAZE поверх V3ANALOG), плеер начнёт обновляться из
+      чужого репозитория и скачает Blaze-прошивку `v3_analog_2025.upt`.
+- [ ] **15.2** `tools/asset_overlap.py` (или шаг в `verify`): печатать карту перекрытий
+      BLAZE→V3ANALOG. Сегодня их 6: идентичны `etc/dbus-1/system.d/bluez5-agent.conf`,
+      `usr/bin/bluealsa`, `usr/lib/alsa-lib/libasound_module_pcm_bluealsa.so`; перекрыты
+      `etc/dbus-1/system.d/sonix-player.conf`, `usr/bin/sonix_player.sh`,
+      `usr/resource/sonix/components/system-info.json`. Новое перекрытие должно быть осознанным.
+- [ ] **15.3** Заголовок-маркер в `assets/BLAZE/` (например, `BLAZE-README.md`), чтобы следующий
+      читатель знал: дерево — снимок чужого порта, апстрим его не двигает, всё в нём наше.
+- [ ] **15.4** Политика расхождения с этой веткой (шрифты, локализация), когда пойдёт
+      реализация разделов 1–3: `docs/UPDATING.md` должен называть конкретные файлы, которые после
+      merge проверяются (`fonts/`, `language/`, `gui/`, `usr/{bin,lib}`).
