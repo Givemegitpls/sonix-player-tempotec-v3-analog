@@ -51,6 +51,7 @@
 #include "src/system/device/power.h"
 #include "src/system/device/screenshot.h"
 #include "src/system/device/sysserver.h"
+#include "src/system/core/config.h"
 #include "src/system/core/utils.h"
 #include "src/system/core/utils.h"
 
@@ -650,6 +651,24 @@ static bool mount_is_writable(const char *mount_point) {
 	return true;
 }
 
+// True when the filesystem reachable at `mount_point` currently refuses writes
+// at the superblock level. statvfs asks the mounted superblock and does not
+// touch the card, so this is safe to ask every few seconds.
+//
+// This is not the same question as mount_is_writable(): that one decides, once,
+// whether a card can be written to at all (a write-protect notch, an NTFS the
+// kernel mounts read-only). This one answers "has it just gone read-only", which
+// on this board is what the kernel does to a mounted card after an I/O error:
+// `fat_fs_error()` remounts the filesystem read-only, reads keep working, and
+// nothing ever remounts it. See docs/KERNEL-MMC.md.
+static bool mount_read_only_now(const char *mount_point) {
+	struct statvfs st;
+	if (statvfs(mount_point, &st) != 0) {
+		return false; // cannot tell; the alive check has its own answer
+	}
+	return (st.f_flag & ST_RDONLY) != 0;
+}
+
 // NTFS, read-write, through the userspace driver.
 //
 // The kernel's own `ntfs` module is read-only on this kernel (CONFIG_NTFS_RW is
@@ -739,10 +758,24 @@ static int mount_sd_directly(const char *device, const char *mount_point) {
 // of failing silently.
 static bool sd_writable = true;
 
+// Whether the mount was already read-only when it was established. A mount that
+// goes read-only later is the card answering badly, not a card that cannot be
+// written to; storage_recheck_card() remounts that one.
+static bool sd_ro_at_mount;
+
+// Set when a mount went read-only under the player and the supervisor is trying
+// to get it back. A remount that comes up read-only again is then still the same
+// fault, not a write-protected card, and the supervisor keeps trying (slowly).
+static bool sd_ro_suspect;
+
 // Records the writability of a mount that has just been established, and says
 // so in the log. Returns 0 so it can stand in for the `return 0` it replaces.
 static int mount_settled(const char *mount_point) {
 	sd_writable = mount_is_writable(mount_point);
+	if (sd_writable) {
+		sd_ro_suspect = false;
+	}
+	sd_ro_at_mount = !sd_writable && !sd_ro_suspect;
 	if (!sd_writable) {
 		fprintf(stderr,
 				"storage: %s is READ-ONLY. Browsing works; the log, the databases, the thumbnail cache and the "
@@ -837,6 +870,8 @@ static void unmount_sd(storage_config_t *storage_cfg) {
 	if (!storage_cfg->manage_mount || !sd_root[0]) {
 		return;
 	}
+
+	sd_ro_suspect = false; // the next mount belongs to whatever card comes next
 
 	if (sysserver_umount(sd_root) == 0 && !is_mounted(sd_root)) {
 		return;
@@ -1023,23 +1058,52 @@ static storage_config_t *g_storage_cfg;
 static system_runtime_t *g_runtime;
 static bool card_released; // under card_lock: set for the power-off, never cleared
 
-void storage_recheck_card(void) {
+// The interval the supervisor thread waits between questions. A card that has
+// stopped answering is not helped by asking every four seconds -- each attempt
+// can spend seconds inside the driver, on the very queue everything else is
+// waiting behind -- so the interval grows after the first few failures and drops
+// back the moment the card is usable again. An insert does not wait for it:
+// that arrives as a uevent.
+#define RECHECK_FAST_S 4
+#define RECHECK_SLOW_S 12
+#define RECHECK_FAST_TRIES 3
+static int recheck_interval_s = RECHECK_FAST_S;
+static int recheck_failures;
+
+// One look at the card. True when the card is mounted and usable afterwards.
+static bool storage_recheck_card_once(void) {
 	if (!g_storage_cfg || !g_storage_cfg->manage_mount || getenv("SONIX_NO_MOUNT")) {
-		return;
+		return true;
 	}
 	// A USB export has the card handed to the host on purpose. Taking it back
 	// from under a PC that is writing to it is how filesystems die.
 	if (usb_storage_active()) {
-		return;
+		return true;
 	}
 
 	pthread_mutex_lock(&card_lock);
 
+	if (card_released) {
+		pthread_mutex_unlock(&card_lock);
+		return true;
+	}
+
 	bool alive = sd_root[0] && is_mounted(sd_root) && mount_is_alive(sd_root);
 
-	if (card_released || (alive && card_attached)) {
-		pthread_mutex_unlock(&card_lock); // nothing to do, the common case
-		return;
+	// A filesystem the kernel remounted read-only after an I/O error is not
+	// alive either, even though reads still work and mount_is_alive() cannot see
+	// it: nothing can be written and the card is only usable again after a fresh
+	// mount. The read-only a card has from the start (a write-protect notch, an
+	// NTFS the kernel mounts read-only) is not this -- sd_ro_at_mount remembers
+	// it -- and such a mount is left alone rather than remounted every four
+	// seconds.
+	bool went_ro = alive && !sd_ro_at_mount && mount_read_only_now(sd_root);
+	if (went_ro) {
+		fprintf(stderr, "storage: %s went read-only under the player; that is the card failing a write, not a "
+						"write-protected card -- remounting it\n",
+				sd_root);
+		sd_ro_suspect = true; // a remount that comes up read-only is still this fault
+		alive = false;
 	}
 
 	// The mount is there and alive, but the player thinks the card has left.
@@ -1048,32 +1112,62 @@ void storage_recheck_card(void) {
 	// and returning here left the library, the log and the addons closed with a
 	// perfectly good card in the slot, permanently. The mount is the ground
 	// truth; the flag follows it.
+	if (alive && card_attached) {
+		pthread_mutex_unlock(&card_lock); // the common case
+		return true;
+	}
+
 	if (alive) {
 		card_databases_attach(sd_root);
 		pthread_mutex_unlock(&card_lock);
-		return;
+		return true;
 	}
 
 	// Is there even a card to mount? No point thrashing when the slot is empty.
 	if (!pick_sd_device(g_storage_cfg)) {
 		card_databases_detach();
 		pthread_mutex_unlock(&card_lock);
-		return;
+		return false;
 	}
 
-	fprintf(stderr, "storage: the card is not readable; putting it back\n");
+	// The block device is there and the mount is not usable. Say which of the
+	// two shapes this is, because they are different faults: a filesystem that
+	// went read-only is the card failing a transfer, a dead mount is the kernel
+	// having lost it.
+	fprintf(stderr, "storage: the card is present but its mount is %s; putting it back\n",
+			went_ro ? "read-only" : "dead");
 	card_databases_detach();
 
 	if (sd_root[0] && is_mounted(sd_root)) {
 		force_unmount(sd_root);
 	}
 
-	if (mount_sd(g_storage_cfg, g_runtime) == 0 && mount_is_alive(sd_root)) {
+	if (mount_sd(g_storage_cfg, g_runtime) == 0 && mount_is_alive(sd_root) && !mount_read_only_now(sd_root)) {
 		card_databases_attach(sd_root);
 		fprintf(stderr, "storage: the card is back on %s\n", sd_root);
+		pthread_mutex_unlock(&card_lock);
+		return true;
 	}
 
 	pthread_mutex_unlock(&card_lock);
+	return false;
+}
+
+void storage_recheck_card(void) {
+	if (storage_recheck_card_once()) {
+		recheck_failures = 0;
+		recheck_interval_s = RECHECK_FAST_S;
+		return;
+	}
+
+	if (recheck_failures < RECHECK_FAST_TRIES) {
+		recheck_failures++;
+	}
+	if (recheck_failures >= RECHECK_FAST_TRIES && recheck_interval_s != RECHECK_SLOW_S) {
+		recheck_interval_s = RECHECK_SLOW_S;
+		fprintf(stderr, "storage: the card has not come back after %d attempts; asking again every %d s\n",
+				recheck_failures, RECHECK_SLOW_S);
+	}
 }
 
 static bool path_on_card(const char *path, const char *root, size_t root_len) {
@@ -1220,7 +1314,7 @@ static void *card_supervisor_thread(void *arg) {
 	thread_be_background("card supervisor");
 
 	for (;;) {
-		sleep(4);
+		sleep((unsigned)recheck_interval_s);
 		storage_recheck_card();
 	}
 	return NULL;
@@ -2712,6 +2806,118 @@ static void start_bt_input_scanner(void) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Writeback against a card that stops answering
+//
+#ifndef HOST_BUILD // a host build must never touch its own machine's sysctls
+
+// This board has 57 MB of RAM and, in normal use, about a megabyte free: almost
+// every allocation ends up in direct reclaim. The kernel's default writeback
+// thresholds are a percentage of that RAM -- 10% background, 15% dirty, so 5.7
+// and 8.7 MB here -- and one measured write to this card costs 25 ms on average
+// and seconds when the card pauses mid-transfer. So the defaults allow a pile of
+// dirty pages whose drain takes tens of seconds, and while it drains, every
+// thread that needs memory and every write to the card queues behind it. That is
+// the shape of the reported "it hangs for a while".
+//
+// The caps below are derived from MemTotal rather than written down, and both
+// the old and the new values go into the log, so a card that behaves differently
+// on another unit can be seen rather than guessed at.
+// ---------------------------------------------------------------------------
+
+static bool sysctl_write(const char *path, const char *value) {
+	int fd = open(path, O_WRONLY | O_CLOEXEC);
+	if (fd < 0) {
+		return false;
+	}
+	ssize_t n = write(fd, value, strlen(value));
+	close(fd);
+	return n == (ssize_t)strlen(value);
+}
+
+static int read_int_file(const char *path) {
+	char buf[32];
+	FILE *f = fopen(path, "re");
+	if (!f) {
+		return -1;
+	}
+	char *got = fgets(buf, sizeof(buf), f);
+	fclose(f);
+	return got ? atoi(got) : -1;
+}
+
+// MemTotal in kB, or 0 when /proc/meminfo cannot be read.
+static long meminfo_total_kb(void) {
+	FILE *f = fopen("/proc/meminfo", "re");
+	if (!f) {
+		return 0;
+	}
+	char line[128];
+	long total = 0;
+	while (fgets(line, sizeof(line), f)) {
+		if (sscanf(line, "MemTotal: %ld kB", &total) == 1) {
+			break;
+		}
+	}
+	fclose(f);
+	return total;
+}
+
+static void tune_writeback(void) {
+	if (!config_get_int("storage", "writeback", 1)) {
+		printf("storage: writeback tuning is off ([storage] writeback = 0)\n");
+		return;
+	}
+
+	long total_kb = meminfo_total_kb();
+	if (total_kb <= 0) {
+		fprintf(stderr, "storage: writeback not tuned: /proc/meminfo has no MemTotal\n");
+		return;
+	}
+
+	// Ratios, not megabytes: the same across units with different RAM. A fortieth
+	// of RAM is background writeback (1.4 MB here), a fourteenth is the hard
+	// dirty ceiling (4.1 MB), a twenty-eighth is the reserve kswapd keeps free
+	// so allocations do not have to reclaim in the allocating thread.
+	long ghost_kb = total_kb / 40;
+	long hard_kb = total_kb / 14;
+	long free_kb = total_kb / 28;
+	char value[32];
+
+	long old_bg = read_int_file("/proc/sys/vm/dirty_background_bytes");
+	long old_hard = read_int_file("/proc/sys/vm/dirty_bytes");
+	long old_free = read_int_file("/proc/sys/vm/min_free_kbytes");
+	// A zero in either *_bytes means the kernel is still using the percentage;
+	// report the percentage then, so "0 -> 4129" never looks like "there was no
+	// limit before".
+	char before_bg[24], before_hard[24];
+	if (old_bg > 0) {
+		snprintf(before_bg, sizeof(before_bg), "%ld kB", old_bg / 1024);
+	} else {
+		snprintf(before_bg, sizeof(before_bg), "%d%%", read_int_file("/proc/sys/vm/dirty_background_ratio"));
+	}
+	if (old_hard > 0) {
+		snprintf(before_hard, sizeof(before_hard), "%ld kB", old_hard / 1024);
+	} else {
+		snprintf(before_hard, sizeof(before_hard), "%d%%", read_int_file("/proc/sys/vm/dirty_ratio"));
+	}
+
+	snprintf(value, sizeof(value), "%ld", ghost_kb * 1024);
+	sysctl_write("/proc/sys/vm/dirty_background_bytes", value);
+	snprintf(value, sizeof(value), "%ld", hard_kb * 1024);
+	sysctl_write("/proc/sys/vm/dirty_bytes", value);
+	// A page that has waited a second is written out on the next pass of the
+	// flusher instead of being allowed to age for three; the flush pass itself
+	// already runs every second (dirty_writeback_centisecs = 100 on this kernel).
+	sysctl_write("/proc/sys/vm/dirty_expire_centisecs", "100");
+	snprintf(value, sizeof(value), "%ld", free_kb);
+	sysctl_write("/proc/sys/vm/min_free_kbytes", value);
+
+	printf("storage: writeback: dirty %s -> %ld kB, background %s -> %ld kB, min_free %ld -> %ld kB\n", before_hard,
+		   hard_kb, before_bg, ghost_kb, old_free < 0 ? 0 : old_free, free_kb);
+}
+#endif // !HOST_BUILD
+
 /*
  * Starts system services including:
  *     - SD card detection + mounting
@@ -2738,6 +2944,13 @@ void system_start_services(system_config_t *cfg, system_notification_cb_t notifi
 
 	g_storage_cfg = cfg->storage_cfg;
 	g_runtime = &runtime;
+
+	// Before the card is mounted and before anything writes to it: the caps on
+	// dirty page cache decide how much write pressure can reach a card that
+	// pauses, and how long unrelated allocations wait behind it.
+#ifndef HOST_BUILD
+	tune_writeback();
+#endif
 
 	check_and_mount_existing_sd(cfg->storage_cfg, &runtime); // mount sd on startup, if it's present
 

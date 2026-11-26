@@ -22,6 +22,9 @@ this file:
   2026-10-24 and what it changed, and `tools/powsample`, the tool the numbers came from.
 - `docs/KERNEL.md` — the stock kernel's addresses and functions, the board platform data, and how
   a replacement kernel would (and would not) reach the image.
+- `docs/KERNEL-MMC.md` — the stock MMC driver as compiled: the slot's platform data, the 6 s
+  timeout that ends in `-EIO`, why the block layer cannot reset the card, what the card-detect
+  debounce is, and the patch candidates with their file offsets.
 - `docs/BUILD.md` — the end-to-end build, from a fresh clone to `sonix-packer/out/v3_analog.upt`.
 - `docs/FIRMWARE-WEB.md` — the browser build: `web/` (the page), `sonix-packer/tools/wasm`
   (mkfs.ubifs for wasm32), `sonix-packer/tools/make_payload.sh`, the `pages.yml` that publishes
@@ -63,7 +66,10 @@ tools/history.sh snaps                  # file-state snapshots (unreferenced git
   hand the command to the owner.
 - The packer's image is the deliverable, not a file on the card: `sonix-packer/out/v3_analog.upt`.
   A replacement kernel may not be larger than the stock one, and `UPDATE.TXT` carries digests for
-  both the rootfs and the kernel.
+  both the rootfs and the kernel. The kernel the image carries today is the vendor's,
+  **byte-patched**: `patch/v3-mmc/patch_kernel.py` clamps the card bus clock to 24 MHz (and can
+  widen the driver's timeout or make it retryable); `docs/KERNEL-MMC.md` says why and how it is
+  verified.
 - The panel's frame rate is the panel's own (75.57 Hz). Nothing on the SoC side changes it.
 - The interface is written at 480x720 and compiled at 320x480: every pixel size or position
   goes through `SC()` (`src/gui/shell/scale.h`, pulled in by `gui.h`). Upstream UI code arrives

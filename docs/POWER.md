@@ -145,6 +145,43 @@ Left as they were, deliberately:
 - **The audio thread's 20 Hz poll while paused with the PCM held** (`audio.c`). It exists to
   notice a jack change before the device is released; it stops when the DAC is.
 
+## The card stops answering: what the player does about it (2026-11-26)
+
+The kernel's side of this is `docs/KERNEL-MMC.md`: the driver gives a transfer 3 s, re-arms for
+another 3 s and then fails it with `-EIO`; the block layer cannot retry (`hw_reset` is NULL); the
+FAT driver remounts the filesystem read-only; the card stays wedged until it is power-cycled, which
+from userspace means a physical reinsert. Measured on the owner's unit (11.6 h, stock kernel):
+3161 write requests, 6.7 MB, **25 ms average**, and one `timeout 3000ms op:25 w sz:29696 …
+blks:19/58` 14 s after a resume from `mem` -- which completed inside the second window, i.e. the
+card was not gone, only slow. Nothing in the player could have avoided that write; what the player
+controls is what the slowdown costs.
+
+Three decisions, all in `src/system/device/system.c`:
+
+- **Writeback caps derived from MemTotal** (`tune_writeback()`, switch `[storage] writeback`, on by
+  default). 57 MB of RAM, about a megabyte free in normal use, and a card whose writes cost 25 ms
+  and sometimes seconds: the kernel's defaults (10% background, 15% dirty) allow 5.7 and 8.7 MB of
+  dirty pages, whose drain takes tens of seconds and drags every allocation that needs reclaim along
+  with it. The caps become a fortieth and a fourteenth of RAM (1.4 / 4.1 MB here), pages expire
+  after 100 cs instead of 300, and `min_free_kbytes` is a twenty-eighth of RAM (2 MB) so kswapd keeps
+  the reserve instead of allocations reclaiming in place. Both the old and the new values are logged
+  (`storage: writeback: dirty 15% -> 4129 kB, background 10% -> 1445 kB, min_free 630 -> 2064 kB`).
+- **A mount that went read-only is treated as dead** (`mount_read_only_now()`). `statvfs` says so
+  without touching the card, so the supervisor asks every few seconds; on yes it force-unmounts and
+  mounts again, which is the only userspace way back from `fat_fs_error()`. A card that is
+  read-only *from the start* (write-protect notch, NTFS) is remembered and left alone -- remounting
+  it every cycle would be a loop with no way out. A remount that comes up read-only again is still
+  counted as the same fault (`sd_ro_suspect`) and retried slowly.
+- **The supervisor backs off instead of giving up** (4 s, then 12 s after three failures). While a
+  block device for the card exists, a failed mount never becomes "the card is not inserted": the
+  interval grows, the log says which shape the fault is, and the card is picked up again as soon as
+  it answers. The insert uevent is not delayed by any of this.
+
+Not done, on purpose: the databases and the thumbnail cache stay on the card. Moving them to
+`/data` would take the index off the card's write path, but the player is useless without the card
+and `/data` has 36 MB free against 78 MB of thumbnails; that is living with the card instead of
+fixing it. The kernel patch (`patch/v3-mmc/`) is the fixing half.
+
 ## What remains, as decisions rather than code
 
 - **The Bluetooth chip is powered 24/7.** `bt_chip_by_firmware = true` on this board means the

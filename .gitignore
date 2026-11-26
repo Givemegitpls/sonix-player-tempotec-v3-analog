@@ -97,6 +97,8 @@ sonix-packer/kernel/UIMAGE.BIN
 # kernel's source, so it is never committed: patch/v3-panel-blank/patch_kernel.py
 # rebuilds it from the vendor .upt (see the README next to it).
 patch/v3-panel-blank/UIMAGE.BIN
+# The same for the card-stall patches (patch/v3-mmc): built from the vendor .upt.
+patch/v3-mmc/UIMAGE.BIN
 
 # The cross-compiled helpers in tools/: each has its .c beside it and is built
 # by hand (tools/README.md), so the binaries are build output, not source. They

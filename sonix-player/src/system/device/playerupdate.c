@@ -13,6 +13,7 @@
 #include "src/system/core/semver.h"
 #include "src/system/core/sha256.h"
 #include "src/system/core/version.h"
+#include "src/system/device/sysinfo.h"
 #include "src/system/net/http.h"
 
 // Where the launcher keeps its state. Both files are the launcher's, and this
