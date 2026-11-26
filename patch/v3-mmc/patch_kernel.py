@@ -10,12 +10,13 @@ the block layer cannot recover (`host->ops->hw_reset` is NULL, so
 docs/KERNEL-MMC.md and .opencode/NOTES.md for the disassembly behind every offset
 below.
 
-Three independent switches, each a few words in the decompressed image:
+Five switches, each a few words in the decompressed image. `--poll` is the one that answers "the
+player stopped seeing the card"; `--timeout-ms` is a fault injector, not a fix.
 
   --freq 24|48      the slot's `max_freq` in the board's platform data. 24 MHz
-                    costs half the read throughput and buys twice the timing
-                    margin -- the cheap test for "the card is marginal at 48 MHz".
-                    (E1)
+                    costs half the read throughput and halves the driver's
+                    timing margin; the A/B of 2026-11-26 says it makes stalls
+                    worse, so 48 (stock) is the default. (E1)
   --tick2-ms N      the second window of `jzmmc_request_timeout`: the delay it
                     re-arms and the number its first tick prints (both 3000).
                     A patient window means the driver's own timer never fails a
@@ -25,6 +26,19 @@ Three independent switches, each a few words in the decompressed image:
                     `mmc_blk_issue_rw_rq()` re-sends the request up to five times
                     without needing a host reset -- but only if the card answers
                     the status command, so this is the riskier of the two. (S2a)
+  --timeout-ms N    both windows of `jzmmc_request_timeout` set to N ms, the
+                    arming in `jzmmc_request` included. This is not a fix: it is
+                    a fault injector. With N=200 any pause of the card longer
+                    than 0.4 s ends the request with -EIO, i.e. exactly the
+                    chain a real stall produces ("Filesystem has been set
+                    read-only"), reproducibly and on demand. Used to verify the
+                    player's remount path on a live card. (I1)
+  --poll            MMC_CAP_NEEDS_POLL in the board's `.capacity`: mmc_rescan()
+                    then runs once a second and re-probes the card on its own.
+                    This is the one that answers "the card is in, the player
+                    says it is not": after a detect bounce the driver may power
+                    the slot down and, with no poll, nothing ever powers it up
+                    again. (P1)
 
 The stock kernel image (base virtual address 0x80010000, so file offset =
 virt - 0x80010000) is patched in place, gzip'd exactly like the stock uImage and
@@ -65,10 +79,24 @@ O_MAX_FREQ = 0x63E1F4
 FREQ_48 = 48_000_000
 FREQ_24 = 24_000_000
 
+# ...and its .capacity, which jzmmc_probe() ORs into mmc->caps:
+# MMC_CAP_4_BIT_DATA | MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SD_HIGHSPEED = 0x7.
+# MMC_CAP_NEEDS_POLL is bit 5, so 0x27 makes mmc_rescan() run once a second and
+# re-probe the card instead of waiting for a pin edge that never comes.
+O_CAPACITY = 0x63E1EC
+CAPACITY_STOCK = 0x7
+CAPACITY_POLL = 0x27
+
 # jzmmc_request_timeout (virt 0x80389444): the constant the first tick re-arms
 # the timer with, and the same constant it prints in `timeout %dms`.
 O_TICK1_PRINT_MS = 0x379498  # `li s3,3000` at virt 0x80389498
 O_TICK1_REARM_MS = 0x37957C  # `li a0,3000` at virt 0x8038957c, argument of msecs_to_jiffies
+
+# jzmmc_request (virt 0x80388bd8) arms the same timer when a request starts:
+# `li a0,3000` at virt 0x80388f30, then `sw zero,2640(s0)` clears host->timeout_cnt
+# (2640 = 0xa50) and mod_timer() is called on host+1004. Patching this one and
+# the re-arm together sets the whole window the driver gives a request.
+O_ARM_TIMEOUT_MS = 0x378F30
 
 # The second tick completes the request: data->error and cmd->error are -EIO.
 O_DATA_ERRNO = 0x379730
@@ -87,12 +115,28 @@ def li(rt_base: int, imm: int) -> int:
     return reg_i(0x09, 0, (rt_base >> 16) & 0x1F, imm)
 
 
-def build_patch(freq: int | None, tick2_ms: int | None, retry_errno: bool) -> list[tuple[int, int, str]]:
+def build_patch(
+    freq: int | None,
+    tick2_ms: int | None,
+    retry_errno: bool,
+    timeout_ms: int | None = None,
+    poll: bool = False,
+) -> list[tuple[int, int, str]]:
     """Return (file_offset, new_word, description) triples."""
     p: list[tuple[int, int, str]] = []
 
     if freq is not None:
         p.append((O_MAX_FREQ, freq, f"max_freq {freq // 1_000_000} MHz"))
+
+    if poll:
+        p.append((O_CAPACITY, CAPACITY_POLL, "capacity + MMC_CAP_NEEDS_POLL"))
+
+    if timeout_ms is not None:
+        # Both windows, and the number the timer prints, so the log tells the
+        # truth about the window that is running.
+        p.append((O_ARM_TIMEOUT_MS, li(LI_A0_BASE, timeout_ms), f"window {timeout_ms} ms (arm)"))
+        p.append((O_TICK1_REARM_MS, li(LI_A0_BASE, timeout_ms), f"window {timeout_ms} ms (re-arm)"))
+        p.append((O_TICK1_PRINT_MS, li(LI_S3_BASE, timeout_ms), f"window {timeout_ms} ms (printed)"))
 
     if tick2_ms is not None:
         p.append((O_TICK1_REARM_MS, li(LI_A0_BASE, tick2_ms), f"second window {tick2_ms} ms (re-arm)"))
@@ -107,12 +151,16 @@ def build_patch(freq: int | None, tick2_ms: int | None, retry_errno: bool) -> li
     return p
 
 
-def apply_patch(img: bytearray, sites: list[tuple[int, int, str]]) -> None:
-    for off, new, _ in sites:
+def apply_patch(img: bytearray, sites: list[tuple[int, int, str]]) -> list[str]:
+    """Write the sites into the image; return the notes for the ones already right."""
+    skipped: list[str] = []
+    for off, new, what in sites:
         old = struct.unpack_from("<I", img, off)[0]
         if old == new:
-            raise SystemExit(f"0x{off:x} already holds 0x{new:08x}: nothing to do?")
+            skipped.append(f"0x{off:06x} already holds 0x{new:08x}: {what}")
+            continue
         struct.pack_into("<I", img, off, new)
+    return skipped
 
 
 def build_uimage(stock_uimage: bytes, payload: bytes) -> bytes:
@@ -131,10 +179,30 @@ def main() -> int:
     ap.add_argument("kernel", help="stock kernel.bin (the gunzipped uImage payload)")
     ap.add_argument("uimage", help="the stock UIMAGE.BIN the kernel came from")
     ap.add_argument("out", nargs="?", default="UIMAGE.BIN", help="output uImage")
-    ap.add_argument("--freq", type=int, choices=(24, 48), default=24, help="card bus clock in MHz (default 24)")
+    ap.add_argument(
+        "--freq",
+        type=int,
+        choices=(24, 48),
+        default=48,
+        help="card bus clock in MHz (default 48, the stock value; 24 lost its A/B and is kept as a tool)",
+    )
     ap.add_argument("--tick2-ms", type=int, default=None, help="second timeout window; omit to keep 3000")
     ap.add_argument("--retry-errno", action="store_true", help="time out with -EILSEQ so the block layer retries")
+    ap.add_argument(
+        "--timeout-ms",
+        type=int,
+        default=None,
+        help="fault injector: both timeout windows and the printed value set to N ms (S2b is --tick2-ms)",
+    )
+    ap.add_argument(
+        "--poll",
+        action="store_true",
+        help="set MMC_CAP_NEEDS_POLL: mmc_rescan() runs once a second and re-probes the card (P1)",
+    )
     args = ap.parse_args()
+
+    if args.timeout_ms is not None and args.tick2_ms is not None:
+        raise SystemExit("--timeout-ms sets both windows; --tick2-ms would fight it")
 
     img = bytearray(Path(args.kernel).read_bytes())
     uimage = Path(args.uimage).read_bytes()
@@ -146,15 +214,18 @@ def main() -> int:
         raise SystemExit("kernel.bin is not the decompressed payload of that UIMAGE.BIN")
 
     freq = args.freq * 1_000_000
-    sites = build_patch(freq, args.tick2_ms, args.retry_errno)
+    sites = build_patch(freq, args.tick2_ms, args.retry_errno, args.timeout_ms, args.poll)
     if not sites:
         raise SystemExit("no switches given: nothing would change")
 
     print(f"    stock kernel  : {len(img)} bytes, md5 {got}")
     for off, new, what in sites:
         old = struct.unpack_from("<I", img, off)[0]
-        print(f"    0x{off:06x}      : 0x{old:08x} -> 0x{new:08x}  {what}")
-    apply_patch(img, sites)
+        mark = "same" if old == new else "    "
+        print(f"    0x{off:06x}      : 0x{old:08x} -> 0x{new:08x}  {what}  {mark}")
+    skipped = apply_patch(img, sites)
+    if len(skipped) == len(sites):
+        raise SystemExit("every site already holds its new value: nothing would change")
     print(f"    patched kernel: {len(img)} bytes, md5 {hashlib.md5(img).hexdigest()}")
 
     payload = gzip.compress(bytes(img), compresslevel=9, mtime=0)

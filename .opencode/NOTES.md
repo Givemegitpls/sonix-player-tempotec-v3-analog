@@ -1311,3 +1311,234 @@ rootfs has no such path, so every build stopped with ENOENT before installing an
 states its identity in `usr/resource/config.json` (`{"type":"product","firmware_name":"v3_analog",
 "ota_name":"TempoTec V3_ANALOG","version":"1.3",...}`), which the port never overwrites; the guard is
 `checkVendorConfig` now and `guard.test.mjs` feeds it fixtures.
+
+## The card: what the stock kernel actually does (disassembly, 2026-11-25)
+
+Read while chasing the "SD card drops out / the player hangs" pair. The kernel is the stock
+`UIMAGE.BIN` (unpacked: `gzip -d`, 7126564 bytes, base `0x80010000`), symbols decoded from its own
+kallsyms. Two corrections to the recipe in `docs/KERNEL.md`: `kallsyms_names` starts at **0x588910**
+(not 0x58890c), and expansion skips the first *character* of the concatenated token expansion, not
+the first byte (`kallsyms_token_index[c]` is a byte offset into the token table, not a token number).
+A `jal` target printed by `objdump -b binary` is a *low* address: add `0x80000000` to it, not
+`0x80010000`.
+
+- `jzmmc_request_timeout` (`0x80389444`) runs at most **twice**: tick 1 prints `timeout 3000ms …`
+  and re-arms the timer, tick 2 prints `request time out`, dumps the 128 DMA descriptors, sets
+  `cmd->error = -EIO` and completes. About 6 s per stalled request, no controller reset, no card
+  re-init. (An earlier note here said it calls `jzmmc_reset`; that disassembly was of
+  `jzmmc_present_store`, one page earlier.)
+- The block layer then cannot recover either: `mmc_blk_cmd_error` sees `-EIO` (not `-ETIMEDOUT`),
+  returns `ERR_ABORT`, and `mmc_blk_reset` needs `host->ops->hw_reset`, which the ops table at
+  `0x80574e34` leaves NULL. The request ends in `-EIO`, the FAT driver sets the filesystem
+  read-only. The card is *not* marked removed.
+- `jzmmc_detect_interrupt` (`0x80388684`) debounces the card-detect GPIO **1200 ms** before
+  `mmc_detect_change`; insertion is delayed 1000 ms. A discharge shorter than 1.2 s therefore cannot
+  make the card "disappear" through the detect line.
+- `jzmmc_present_store` requires `pdata->removal == NONREMOVABLE`; this board declares the slot
+  `REMOVABLE` (`0x8064e1e4` = 2), so the sysfs `present` node cannot re-arm the card. The slot's
+  pdata: 4-bit + SD/MMC high-speed (`capacity` 7), **48 MHz**, DMA, CD = gpio 86 low-active, power
+  regulator named `LDO6`.
+
+The full write-up, with file offsets and the patch candidates (clock clamp, timeout, `hw_reset`),
+is `docs/KERNEL-MMC.md`.
+
+## Own kernel on the V3: the state after 2026-11-26 (session log)
+
+The kernel work happens in `~/Projects/own/tempotec-v3/src/sonix-blaze/kernel-src/ingenic-x1000-3.10.14`
+(a clone of the Ingenic 3.10.14 X1000 SDK; the parent directory name is historical). Build, pack and
+flash loop that works:
+
+```sh
+cd ~/Projects/own/tempotec-v3/src/sonix-blaze
+docker run --rm -i -v "$PWD":/work -v "$PWD/../../toolchain/rockbox-toolchain":/tc:ro \
+  -w /work/kernel-src/ingenic-x1000-3.10.14 x1000-kbuild bash -c \
+  'export PATH=/tc/bin:$PATH; make -j"$(nproc)" ARCH=mips CROSS_COMPILE=mipsel-rockbox-linux-gnu- \
+   KCFLAGS="-std=gnu89" vmlinux && make ARCH=mips CROSS_COMPILE=mipsel-rockbox-linux-gnu- \
+   KCFLAGS="-std=gnu89" uImage'
+cp arch/mips/boot/uImage ../../../../tempotec-v3-main-wt/sonix-packer/kernel/UIMAGE.BIN  # or the long path
+cd ~/Projects/own/tempotec-v3-main-wt/sonix-packer && STOCK=$PWD/v3_analog_original.upt ./v3_analog_packer.sh
+# then: split the image into 8 MiB parts, adb push each, `cat part.* > v3_analog.upt`, md5,
+# `echo recovery > /proc/jz/reset/reset` (a single 55 MB push is what wedges jzmmc)
+```
+
+Facts, all measured on the stock system unless said otherwise:
+
+- **The stock's MTD geometry**: six partitions (uboot 512K, logo 2.5M, kernel 6M, recovery 7M,
+  rootfs 64M, data 48M), `writesize` 2048, `oobsize` 64, `erasesize` 128K. `mtd0/1/2` are
+  **write-protected by the driver** (a write to `/dev/mtdblock1` reports success and changes
+  nothing), so they cannot carry a breadcrumb.
+- **UBI volume names**: `rootfs` on `ubi0` (`mtd4`) and **`data_vol`** on `ubi1` (`mtd5`, mounted as
+  `ubi1_0`). `mount -t ubifs ubi1:data` fails with `No such device` even on the stock kernel --
+  every mount by the wrong name was a red herring.
+- **The board's SD slot**: `REMOVABLE`, 4-bit + SD/MMC high-speed, 48 MHz, DMA, CD = gpio 86
+  `LOW_ENABLE`, power = the AXP2101's `LDO6` (3300 mV at boot), and six TF pins PA20..PA25 muxed to
+  function 1 by the vendor's `set_tf_io` (called from `jzmmc_probe` and `set_ios`). The SDK driver
+  does none of that on its own; all of it is now in the tree's board file and driver.
+- **The vendor's androidUSB gadget cannot do `acm`**: writing `acm` to
+  `/sys/class/android_usb/android0/functions` makes the device stop enumerating altogether; only
+  `adb` works. `/dev/ttyGS0` never appears. The USB-serial channel is dead.
+- **`/proc/jz/reset/reset`** accepts `wdt` / `hibernate` / `recovery` / `clear` and writes command
+  words into the RTC registers through `RTC_WENR=0xa55a` (`reset_write`, virt `0x80012dc4`); the
+  stock's `/dev/mem` is available, the RTC scratch survives resets. Decoding which value means
+  "recovery" is the open thread that would let a kernel dump DRAM and then read it from recovery.
+- **Drawing into the framebuffer works** from userspace: `tools/fbtool info` on stock says
+  `320x480, 32 bpp, line 1280, smem_len 1228800` (two pages), and a freestanding test that mmaps
+  `/dev/fb0`, fills it and issues `FBIOPAN_DISPLAY` + `FBIOPUT_VSCREENINFO` did put white text on
+  the panel and then left it black. So the drawing code is right; what is unknown is whether our
+  kernel gets that far.
+- **Our kernel's state**: with the late-initcall marker it reaches the end of the initcall list, but
+  `ubi_init` does not attach either volume (no `/data/rescue-dmesg.txt` was ever written) and the
+  card does not come up, so `/init` cannot report anything through them. Whether `/init` runs at
+  all is still unproven: the two-GPIO-blink signal built for that (build 28, `/init` pokes port C
+  bit 25 through `/dev/mem` before anything else) has not been read yet.
+- The initramfs is in the image (build 15's kernel contained the cpio `070701` magic and the
+  `rescue-dmesg.txt` string), so the `/init` path is real, not assumed.
+
+## "It hangs, and sometimes the card is 'not inserted'" (2026-11-26)
+
+The owner's report, in his words: the player sometimes freezes, and sometimes it decides the card is
+out although it is in the slot -- pulling and reinserting brings it back. Work done against the
+stock kernel; the write-up is `docs/KERNEL-MMC.md` (kernel side) and `docs/POWER.md`, "The card
+stops answering" (player side).
+
+What the device showed while the bug was live (11.6 h uptime, stock 3.10.14):
+
+- `MemFree` 1.1 MB of 57.8 MB with kswapd running: allocations go through direct reclaim.
+- Card counters: 7358 reads / 535 MB, 3161 writes / 6.7 MB, **25 ms per write request**, 79 s of
+  write time in total. The card is not slow in general.
+- Exactly one stall in `dmesg`: `jzmmc timeout 3000ms op:25 w sz:29696 … blks:19/58`, 14 s after a
+  resume from `mem`, and no second-tick `request time out` -- the card answered again inside the
+  second window. The log's history has hundreds of these across boots.
+- The card is a 119 GB SDXC, 96% full, vfat, mounted `errors=remount-ro`.
+
+The chain, from the SDK source and the image's own code: a stall -> the driver gives up after 6 s
+with `-EIO` -> `mmc_blk_reset()` cannot run (`host->ops->hw_reset` is NULL) -> vfat remounts
+read-only -> nothing ever remounts it. Separately, a detect edge while a card object exists
+(`present_old && host->mmc->card`) makes `jzmmc_detect_change` take the removal branch even with the
+pin still "present"; `mmc_rescan` then sends CMD13 to a card that is mid-programming, and if the pin
+happens to read "no card" at that moment, `mmc_power_off()` runs and **nothing probes again**
+(`MMC_CAP_NEEDS_POLL` is not set). That is the "inserted but not seen" state; only a physical
+reinsert (a new pin edge) leaves it.
+
+Levers that do **not** exist on this board, each checked on the device: `bind`/`unbind` (the
+driver's `.remove` is `__exit_p(jzmmc_remove)`, i.e. NULL in a built-in kernel -- there is no
+`jzmmc_remove` in kallsyms), `jzmmc_manual_detect` (only walks `manual_list`; MMC0 is `REMOVABLE`),
+sysfs `present` (refuses for `REMOVABLE`), and the slot rail (`regulator.11` = LDO6, `state`
+read-only, no `/dev/i2c-*`).
+
+Player side (in the image and pushed to the device the same day):
+
+- `tune_writeback()` in `system.c`: dirty background/dirty caps a fortieth and a fourteenth of
+  MemTotal (1.4 / 4.1 MB here), `dirty_expire_centisecs` 100, `min_free_kbytes` a twenty-eighth of
+  RAM (2 MB). Switch `[storage] writeback`, values logged at startup. Verified on the device: the
+  sysctls are set and the log line reads `dirty 15% -> 4129 kB, background 10% -> 1445 kB, min_free
+  630 -> 2064 kB`.
+- `storage_recheck_card()` treats a mount that went read-only after being writable as dead
+  (`mount_read_only_now()` = `statvfs`), force-unmounts it and mounts again; a card that is
+  read-only from the start is left alone (`sd_ro_at_mount`), and a remount that comes up read-only
+  is still the same fault (`sd_ro_suspect`), retried on the growing interval.
+- The supervisor backs off (4 s, 12 s after three failures) and no longer turns a failed mount into
+  "no card" while the block device exists: messages now say which shape the fault is.
+  **Not verified live:** the read-only branch. `mount -o remount,ro /mnt/sd_0` as a simulation fails
+  with EBUSY (open writers), and the kernel's own `errors=remount-ro` is the only way in. Next real
+  stall will say so in the log.
+- Deliberately not done: moving the databases/thumbnails to `/data`. The owner rejected it -- "the
+  player is useless without the card". For the record, it would not have fit anyway: thumbnails 78 MB
+  against 36 MB free on `/data`.
+
+Kernel side: `patch/v3-mmc/` (same byte-patch pipeline as `patch/v3-panel-blank/`).
+`--freq 24` (E1) was flashed on 2026-11-26: `mmc0/ios` now reads `clock: 24000000 Hz`, raw read
+17.9 -> 10.2 MB/s, card still `sd high-speed`. `--tick2-ms` (patient second window, 20 s) and
+`--retry-errno` (`-EILSEQ` so the block layer's `retry++ < 5` path re-sends the request) are built
+and verified in disassembly but **not flashed**: E1 is the experiment, and S2/S2b only make sense if
+it does not remove the stalls. S2 as "re-init the card on timeout" cannot be a call to
+`jzmmc_detect_change` -- its `del_timer_sync(&host->request_timer)` never returns when called from
+that timer's own callback.
+
+State on the device after the session: stock kernel + E1 clock patch, image
+`154e8ff7…` (player `f54a8ce8…`) flashed and verified: `mmc0/ios` reads
+`clock: 24000000 Hz`, card `new high speed SDXC`, no `timeout`/`read-only`/`card removed` in the
+first boot. Card keeps that image as `v3_analog.upt`, the first E1 build as `v3_analog_e1.upt`, the
+same-image-with-earlier-player as `v3_analog_e1b.upt`, and the pre-E1 (stock kernel) image as
+`v3_analog_before-e1.upt`. `/data` was cleared of the temporary binary copies.
+
+Two supervisor details that came out of the review after the first deploy, both in the final build:
+the `card_released` check now runs *before* the read-only test (a power-off remounts the card
+read-only on purpose and must not look like the fault), and a remount that comes up read-only again
+counts as a failure, so a card that stays bad is retried on the growing interval instead of being
+unmounted and mounted every four seconds.
+
+What to look at next: the `timeout 3000ms` count per hour at 24 MHz. Zero over a week means the
+cause was timing margin and the timeout patches are unnecessary; still present means the card itself
+pauses and S2b (patience) or S2 (re-init) is the next flash.
+
+## E1 refuted, and the card made to come back by itself (2026-11-26, evening)
+
+The clock experiment was finished first, because it decides what the device runs.
+
+**A/B on the same 1 GiB write, only the kernel differing** (`dd if=/dev/zero of=/mnt/sd_0/.stress.bin
+bs=1M count=1024`, the same card, the same player binary in both images):
+
+| | 48 MHz (stock) run 1 | 48 MHz run 2 | 24 MHz (E1) |
+|---|---|---|---|
+| wall time | 110 s | 99 s | 289 s |
+| `timeout 3000ms` | 0 | 0 | 24 |
+| `request time out` (the `-EIO` that kills the mount) | 0 | 0 | 5 |
+| mount went read-only | no | no | no |
+
+E1 is dead: the driver's windows are a fixed 3 s, so half the clock is half the margin. Stock 48 MHz
+is back on the device.
+
+**The `unbalanced disables for LDO6` warning is cosmetic, not a refcount drift.** It fires on every
+suspend (ten in the log archive, each right after `PM_SUSPEND_PREPARE`). `jzmmc_power_on` calls
+`regulator_enable` only `if (!regulator_is_enabled(...))`, and at boot the rail is already on from the
+bootloader, so the driver's own enable never runs. On the device `/sys/class/regulator/regulator.11`
+reads `num_users 0` with `state enabled`, and the later `regulator_disable` is refused by the core --
+that refusal is the warning. The rail never changes state, so the "the driver loses the card through
+the regulator" theory is wrong and is struck out of `docs/KERNEL-MMC.md`.
+
+**What was flashed instead: `--poll`** (`patch_kernel.py --freq 48 --poll`), one word:
+`MMC_CAP_NEEDS_POLL` (bit 5) in the board's `.capacity`, file `0x63e1ec`, `7 -> 0x27`. `mmc_rescan`
+then re-arms itself every `HZ` (`mmc_schedule_delayed_work(&host->detect, HZ)` at file
+`0x368a3c`..`0x368a50`) and re-probes a card the core has no object for, which is the "card is in, the
+player says it is not" state that used to need a physical reinsert. Cost: one timer wakeup per second
+(`wake_lock()` next to it is a no-op -- no `CONFIG_WAKELOCK` in this image, `/sys/power` has no
+`wake_lock` node). Image `16947a04…`, build `261120261814`; card mounts rw, `clock: 48000000 Hz`,
+256 MiB write at 13.2 MB/s with zero timeouts. **The poll itself is not yet proven from userspace**
+(no ftrace in this kernel, no counter, `/dev/mem` reads of `.data` come back zero at every address
+tried). The marker to look for in `dmesg`: `mmc0: new high speed SDXC card at address 0001` with no
+one having touched the slot.
+
+**What a timeout injector taught (`--timeout-ms N`).** Both windows plus the arming in
+`jzmmc_request` set to `N`: any request longer than `2N` fails with `-EIO` through the driver's own
+path. `N=200` (400 ms) never fired in a 1 GiB write -- the card's own pauses at 48 MHz are shorter.
+`N=10` (20 ms) is too coarse: it kills the CMD13/CMD18 that follows a write while the card is still
+programming, so the block layer aborts metadata reads and the write never reaches the FAT; a 55 MB
+`adb push` failed with `-EIO` while the filesystem stayed `rw`. To fail the *write* rather than the
+status poll behind it, a constant window is not enough.
+
+That unplanned `-EIO` did produce the real chain once (`remote Input/output error`, then `remote
+Read-only file system` from vfat), and it showed the hole in the player side: its supervisor's
+report goes to `/mnt/sd_0/.local/sonix_player.log`, i.e. to the card that just went read-only. The
+remount is only observable through state (the mount is rw again after the next boot), never through
+its own log line.
+
+**Working over adb while the card misbehaves** (cost two surprises today):
+- `adb` disappears entirely (`lsusb` shows nothing, then nothing at all) when the card faults: the
+  player's USB gadget is rebuilt around the card reader and the adb interface goes with it. `adbd` is
+  not restarted by anything in the player (`adb.c` only starts it from the settings switch), so only
+  a reboot or the switch brings it back. Do not assume the device hung.
+- The **stock recovery hung once** when entered with no `v3_analog.upt` on the card. It came back
+  only through power-hold + power-on. Before `echo recovery > /proc/jz/reset/reset`, make sure a
+  complete, md5-checked image is on the card under that name -- a rename of an image already there
+  costs no payload write.
+- Writing a new image to a card that is failing requests is not reliable: `busybox dd` has no
+  `oflag=direct`, `adb push` aborts on the first `-EIO`, and `nomerges=2` +
+  `mount -o remount,errors=continue` keep the fs writable but do not get 55 MB through (every write
+  still ends in a CMD13 that can time out). Flash an image that is already on the card instead.
+
+**Device state now:** image `16947a04…` (stock 48 MHz + `--poll`) as `v3_analog.upt`, the same
+without the bit as `v3_analog_clean48.upt`, plus `v3_analog_24mhz.upt`, `v3_analog_e1.upt`,
+`v3_analog_e1b.upt`, `v3_analog_before-e1.upt`. The injector images were deleted from the card.
+`patch/v3-mmc/patch_kernel.py` grew `--poll` and `--timeout-ms`; both are documented in
+`patch/v3-mmc/README.md` and `docs/KERNEL-MMC.md`.

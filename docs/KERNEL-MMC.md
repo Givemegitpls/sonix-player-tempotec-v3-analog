@@ -166,12 +166,55 @@ Consequences worth knowing, all checked against the device's own `kallsyms`:
 The order of work follows "cheapest first", and the player's own side is
 `docs/POWER.md`, "The card stops answering".
 
-**E1 -- 24 MHz, flashed.** `patch/v3-mmc/patch_kernel.py --freq 24` (B1). Built from the vendor
+**P1 -- poll the card (`--poll`), flashed 2026-11-26.** `MMC_CAP_NEEDS_POLL` (bit 5) added to the
+board's `.capacity` (`0x63e1ec`, `7 -> 0x27`; `jzmmc_probe` ORs that word into `mmc->caps`). With
+that bit the core's `mmc_rescan` re-arms itself every `HZ` (`mmc_schedule_delayed_work(&host->detect,
+HZ)` at file `0x368a3c`..`0x368a50`), and a host with no card object takes the re-probe path:
+`get_cd()` says "present" -> `mmc_rescan_try_freq()` -> `mmc_power_up` -> `jzmmc_power_on` ->
+CMD0/ACMD41/CMD2/CMD3. This is the state that used to need a physical reinsert.
+
+What it costs, measured or read off the kernel: `wake_lock()` next to the reschedule is a no-op
+here (the image has no `CONFIG_WAKELOCK`; `/sys/power` carries no `wake_lock` node), so nothing
+holds suspend off; what remains is one timer wakeup per second. Every rescan of a *present* card
+sends CMD13 (`mmc_sd_detect`), so a card that stops answering for more than the driver's 3 s window
+is now marked removed and re-initialised within the following second instead of staying dead.
+
+**Status: flashed, effect not yet seen live.** The image on the card (`16947a04…`, build
+`261120261814`) carries it and `mmc0/ios` still reads `clock: 48000000 Hz`; a 256 MiB write ran at
+13.2 MB/s with zero timeouts. The evidence that the poll actually runs is not yet captured: there is
+no ftrace in this kernel, no sysfs counter, and `/dev/mem` reads of the kernel's `.data` came back
+zero at every address tried, so the bit cannot be confirmed from userspace. The marker to look for
+is a `mmc0: new high speed SDXC card at address 0001` line in `dmesg` **without** the card having
+been taken out -- that line has so far only ever appeared at boot or after a reinsert.
+
+**The `LDO6` warning is cosmetic.** `WARNING: unbalanced disables for LDO6` from `jzmmc_power_off`
+appears on every suspend (ten in the log archive). It is not a drift: `jzmmc_power_on` enables the
+rail only `if (!regulator_is_enabled(...))`, and at boot the rail is already on from the bootloader,
+so the driver's own `regulator_enable()` never runs; `regulator.11/num_users` reads **0** with
+`state` `enabled`, and the later `regulator_disable()` is refused by the core with that warning.
+The rail therefore never changes, and no amount of suspends can make the driver lose the card.
+That earlier theory is dead.
+
+**E1 -- 24 MHz, flashed, then refuted.** `patch/v3-mmc/patch_kernel.py --freq 24` (B1). Built from the vendor
 `.upt`, flashed over adb on 2026-11-26. Verified on the device: `mmc0/ios` reads
 `clock: 24000000 Hz`, the card still comes up as `sd high-speed`, and a raw read of
-`/dev/mmcblk0` drops from **17.9 MB/s** to **10.2 MB/s**. The stall metric to watch is
-`timeout 3000ms` in `dmesg`/the player's log: the 11.6 h session before the change had one, and the
-log's history holds hundreds across boots.
+`/dev/mmcblk0` drops from **17.9 MB/s** to **10.2 MB/s**.
+
+The A/B that ended it: the same 1 GiB write (`dd if=/dev/zero of=/mnt/sd_0/.stress.bin bs=1M
+count=1024`) on the same card, only the kernel differing (both images carry the same player):
+
+| | 48 MHz (stock) run 1 | 48 MHz run 2 | 24 MHz (E1) |
+|---|---|---|---|
+| wall time | 110 s | 99 s | 289 s |
+| `timeout 3000ms` | 0 | 0 | **24** |
+| `request time out` (-EIO) | 0 | 0 | **5** |
+| filesystem went read-only | no | no | no |
+
+So the "the card is marginal at 48 MHz" hypothesis is wrong: halving the clock made the driver's
+fixed 3 s window *less* adequate, not more, and turned a clean 1 GiB write into 24 timeouts and
+five dead requests. E1 is reverted; the device runs stock 48 MHz again. A 20 ms fault-injection
+window (`--timeout-ms 200`) did not fire even once in the same write, which also says the card's own
+pauses at 48 MHz are shorter than 200 ms — the stalls at 24 MHz were the clock, not the card.
 
 **S2a -- time out with `-EILSEQ` (`--retry-errno`), built, not flashed.** `mmc_blk_cmd_error()`
 answers `ERR_RETRY` for a CRC error and `mmc_blk_issue_rw_rq()` re-sends the request up to five
@@ -192,6 +235,29 @@ inside that timer's own callback the `del_timer_sync` loop never terminates (`ru
 cleared only after the callback returns). A hand-written sequence in the function's own bytes has
 to skip that call; it needs a code cave and a live stall to verify against, so it waits until E1's
 result is known.
+
+**I1 -- a timeout injector (`--timeout-ms N`), built and flashed, kept as a tool.** Both windows of
+`jzmmc_request_timeout` and the arming in `jzmmc_request` set to `N` ms (`0x378f30`, `0x37957c`,
+`0x379498`), so any request that outlives `2N` ends with `-EIO` through the driver's own path. This
+is how the "write fails -> vfat read-only -> the player must remount" chain is reproduced on the
+spot. What it taught, on the device:
+
+- `N=200` (400 ms) never fired during a 1 GiB write: the card's own pauses at 48 MHz are shorter.
+- `N=10` (20 ms) is too coarse: it kills the *status* command (CMD13/CMD18) that follows a write
+  while the card is still programming, so the block layer aborts reads of metadata and the write
+  never reaches the FAT -- the filesystem stayed `rw` through a 55 MB `adb push`. A working injector
+  has to fail the write itself, not the status poll behind it, which a constant window cannot
+  separate.
+- Consequence for the player-side remount test: the real chain did happen once, unplanned, during
+  those pushes (`remote Input/output error`, then `remote Read-only file system` from vfat), but the
+  supervisor's log lives on the card that just went read-only, so its own report is lost exactly
+  when it matters. Remounting was therefore confirmed only by state, not by its log line: the mount
+  came back `rw` on the next boot.
+- Writing to a card that is failing requests: `busybox dd` has no `oflag=direct`, and `adb push`
+  aborts on the first `-EIO`. `echo 2 > /sys/block/mmcblk0/queue/nomerges` plus
+  `mount -o remount,errors=continue` keeps the filesystem writable, but does not make 55 MB get
+  through -- every write still ends in a CMD13 that can time out. Pulling a new image onto such a
+  card is not reliable; flash an image that is already there (a rename costs no payload write).
 
 **S3 -- smaller transfers (not built).** `mmc->max_req_size` is `4096 * 512` = 2 MB without
 `CONFIG_MMC_BLOCK_BOUNCE` (the observed `blks:20/1024` is a 512 KB write inside one request), so a

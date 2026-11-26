@@ -62,9 +62,14 @@ of this repository) with different `udelay` values.
 | `slcd_send_mcu_command` / `_data` | `0x80204610` / `0x80204590` | the write-only command path the table goes through |
 
 Names were recovered from the image's kallsyms (not compressed): `kallsyms_addresses` at file
-`0x5739f0`, `num_syms` `0x53c3` at `0x588900`, `kallsyms_names` from `0x58890c`,
-`kallsyms_token_table` from `0x5c3080`, `kallsyms_token_index` (256×u16) at `0x5c33c0`; the pairs
-are `addrs[k] ↔ names[k+4]`.
+`0x5739f0`, `num_syms` `0x53c3` at `0x588900`, `kallsyms_names` from `0x588910`, `kallsyms_token_table`
+from `0x5c3080`, `kallsyms_token_index` (256×u16) at `0x5c33c0`; the pairs
+are `addrs[k] ↔ names[k+4]`. An entry is `len` + compressed bytes, `kallsyms_token_index[c]` is a
+byte offset into the token table, and expansion drops the **first character** of the concatenated
+expansion (the symbol type). A `jal` target printed by `objdump -b binary` is a low address: add
+`0x80000000`, not `0x80010000`.
+
+The MMC driver read through this is its own document: [KERNEL-MMC.md](KERNEL-MMC.md).
 
 ## Two consequences worth remembering
 
